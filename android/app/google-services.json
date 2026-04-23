@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "446085939347",
+    "project_id": "bluebird-alerts-ea998",
+    "storage_bucket": "bluebird-alerts-ea998.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:446085939347:android:9d90519a94e58169870d66",
+        "android_client_info": {
+          "package_name": "com.ets3d.bluebirdalertsandroid"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCupvraJCDmABn-d90zzjreRhnW1fmESgs"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

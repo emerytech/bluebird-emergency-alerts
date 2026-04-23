@@ -23,6 +23,8 @@ from app.models.schemas import (
     CreateUserRequest,
     DevicesResponse,
     DeviceSummary,
+    MobileLoginRequest,
+    MobileLoginResponse,
     PanicRequest,
     PanicResponse,
     RegisterDeviceRequest,
@@ -35,6 +37,7 @@ from app.services.alarm_store import AlarmStore
 from app.services.apns import APNsClient
 from app.services.alert_log import AlertLog
 from app.services.device_registry import DeviceRegistry
+from app.services.fcm import FCMClient
 from app.services.user_store import UserStore
 from app.web.admin_views import render_admin_page, render_change_password_page, render_login_page
 
@@ -52,6 +55,10 @@ def _apns(req: Request) -> APNsClient:
 
 def _alarm_store(req: Request) -> AlarmStore:
     return req.app.state.alarm_store  # type: ignore[attr-defined]
+
+
+def _fcm(req: Request) -> FCMClient:
+    return req.app.state.fcm_client  # type: ignore[attr-defined]
 
 
 def _alert_log(req: Request) -> AlertLog:
@@ -121,6 +128,25 @@ async def health() -> dict:
     return {"ok": True}
 
 
+@router.post("/auth/login", response_model=MobileLoginResponse)
+async def mobile_login(body: MobileLoginRequest, request: Request) -> MobileLoginResponse:
+    user = await _users(request).authenticate_user(body.login_name, body.password)
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid username or password",
+        )
+    await _users(request).mark_login(user.id)
+    return MobileLoginResponse(
+        user_id=user.id,
+        name=user.name,
+        role=user.role,
+        login_name=user.login_name or body.login_name,
+        must_change_password=user.must_change_password,
+        can_deactivate_alarm=user.role == "admin",
+    )
+
+
 @router.get("/alarm/status", response_model=AlarmStatusResponse)
 async def alarm_status(request: Request) -> AlarmStatusResponse:
     state = await _alarm_store(request).get_state()
@@ -155,16 +181,19 @@ async def activate_alarm(
     state = await _alarm_store(request).activate(message=body.message, activated_by_user_id=triggered_by_user_id)
 
     apns_devices = await _registry(request).list_by_provider("apns")
+    fcm_devices = await _registry(request).list_by_provider("fcm")
     apns_tokens = [device.token for device in apns_devices]
+    fcm_tokens = [device.token for device in fcm_devices]
     sms_numbers = await users.list_sms_targets()
-    plan = BroadcastPlan(apns_tokens=apns_tokens, sms_numbers=sms_numbers)
+    plan = BroadcastPlan(apns_tokens=apns_tokens, fcm_tokens=fcm_tokens, sms_numbers=sms_numbers)
     background_tasks.add_task(_broadcaster(request).broadcast_panic, alert_id=alert_id, message=body.message, plan=plan)
 
     logger.warning(
-        "ALARM ACTIVATED alert_id=%s by_user=%s devices=%s sms_targets=%s message=%r",
+        "ALARM ACTIVATED alert_id=%s by_user=%s apns=%s fcm=%s sms_targets=%s message=%r",
         alert_id,
         triggered_by_user_id,
         len(apns_tokens),
+        len(fcm_tokens),
         len(sms_numbers),
         body.message,
     )
@@ -656,9 +685,11 @@ async def panic(
     await _alarm_store(request).activate(message=body.message, activated_by_user_id=triggered_by_user_id)
 
     apns_devices = await _registry(request).list_by_provider("apns")
+    fcm_devices = await _registry(request).list_by_provider("fcm")
     provider_counts = await _registry(request).provider_counts()
     device_count = await _registry(request).count()
     apns_tokens = [device.token for device in apns_devices]
+    fcm_tokens = [device.token for device in fcm_devices]
     sms_numbers = await _users(request).list_sms_targets()
 
     logger.warning(
@@ -670,17 +701,17 @@ async def panic(
         body.message,
     )
 
-    plan = BroadcastPlan(apns_tokens=apns_tokens, sms_numbers=sms_numbers)
+    plan = BroadcastPlan(apns_tokens=apns_tokens, fcm_tokens=fcm_tokens, sms_numbers=sms_numbers)
     background_tasks.add_task(_broadcaster(request).broadcast_panic, alert_id=alert_id, message=body.message, plan=plan)
 
     return PanicResponse(
         alert_id=alert_id,
         device_count=device_count,
-        attempted=len(apns_tokens),
+        attempted=len(apns_tokens) + len(fcm_tokens),
         succeeded=0,
         failed=0,
         apns_configured=_apns(request).is_configured(),
-        provider_attempts={"apns": len(apns_tokens), "fcm": 0},
+        provider_attempts={"apns": len(apns_tokens), "fcm": len(fcm_tokens)},
         sms_queued=len(sms_numbers),
         twilio_configured=_broadcaster(request).twilio_configured(),
     )

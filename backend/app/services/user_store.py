@@ -353,7 +353,7 @@ class UserStore:
     async def count_other_dashboard_admins(self, excluded_user_id: int) -> int:
         return await anyio.to_thread.run_sync(self._count_other_dashboard_admins_sync, int(excluded_user_id))
 
-    def _authenticate_admin_sync(self, login_name: str, password: str) -> Optional[UserRecord]:
+    def _authenticate_user_sync(self, login_name: str, password: str) -> Optional[UserRecord]:
         with self._connect() as conn:
             row = conn.execute(
                 """
@@ -366,7 +366,7 @@ class UserStore:
             ).fetchone()
         if row is None:
             return None
-        if not bool(int(row[5])) or str(row[3]) != "admin":
+        if not bool(int(row[5])):
             return None
         password_salt = str(row[7]) if row[7] is not None else ""
         password_hash = str(row[8]) if row[8] is not None else ""
@@ -386,6 +386,15 @@ class UserStore:
             last_login_at=str(row[9]) if row[9] is not None else None,
             must_change_password=bool(int(row[10])) if row[10] is not None else False,
         )
+
+    async def authenticate_user(self, login_name: str, password: str) -> Optional[UserRecord]:
+        return await anyio.to_thread.run_sync(self._authenticate_user_sync, login_name, password)
+
+    def _authenticate_admin_sync(self, login_name: str, password: str) -> Optional[UserRecord]:
+        user = self._authenticate_user_sync(login_name, password)
+        if user is None or user.role != "admin":
+            return None
+        return user
 
     async def authenticate_admin(self, login_name: str, password: str) -> Optional[UserRecord]:
         return await anyio.to_thread.run_sync(self._authenticate_admin_sync, login_name, password)

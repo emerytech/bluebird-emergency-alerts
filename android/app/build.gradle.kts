@@ -1,5 +1,6 @@
 plugins {
     id("com.android.application")
+    id("com.google.gms.google-services")
     id("org.jetbrains.kotlin.android")
 }
 
@@ -16,6 +17,7 @@ android {
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         buildConfigField("String", "BACKEND_BASE_URL", "\"https://bluebird.ets3d.com\"")
+        buildConfigField("String", "BACKEND_API_KEY", "\"\"")
     }
 
     buildTypes {
@@ -55,8 +57,10 @@ android {
 
 dependencies {
     val composeBom = platform("androidx.compose:compose-bom:2024.09.00")
+    val firebaseBom = platform("com.google.firebase:firebase-bom:34.12.0")
 
     implementation(composeBom)
+    implementation(firebaseBom)
     androidTestImplementation(composeBom)
 
     implementation("androidx.core:core-ktx:1.13.1")
@@ -67,6 +71,7 @@ dependencies {
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("com.google.firebase:firebase-messaging")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")

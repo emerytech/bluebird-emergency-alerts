@@ -3,15 +3,17 @@
 This backend accepts a panic request, persists it (audit trail), and broadcasts it redundantly:
 
 - Push: APNs to registered iOS devices
+- Push: FCM to registered Android devices
 - SMS: Twilio (optional; enabled via env vars)
 
-Device registration is already platform-aware so Android/FCM can be added without redesigning the API.
+Device registration is platform-aware and supports both APNs and FCM.
 
 ## Project layout
 
 - `app/main.py`: FastAPI app + lifespan wiring
 - `app/api/routes.py`: `/register-device` + `/panic`
 - `app/services/apns.py`: APNs HTTP/2 client (token-based auth, `.p8`)
+- `app/services/fcm.py`: Firebase Admin SDK client for Android/FCM
 - `app/services/device_registry.py`: SQLite-backed platform/provider-aware device registry
 - `app/services/alert_log.py`: SQLite alert log (timestamp, message)
 - `app/services/user_store.py`: SQLite user store (role, phone) for SMS + attribution
@@ -71,7 +73,7 @@ curl -s -X POST http://127.0.0.1:8000/register-device \
   -d '{"device_token":"<64-hex-token>","platform":"ios","push_provider":"apns"}'
 ```
 
-Future Android/FCM registration will use the same route:
+Android/FCM registration uses the same route:
 
 ```bash
 curl -s -X POST http://127.0.0.1:8000/register-device \
@@ -122,11 +124,26 @@ curl -s http://127.0.0.1:8000/alerts -H "X-API-Key: <your key (optional)>"
    - Development build + sandbox device token: `APNS_USE_SANDBOX=true`
    - TestFlight/App Store + production device token: `APNS_USE_SANDBOX=false`
 
+## FCM configuration notes (required for real Android pushes)
+
+1. In Firebase project settings, download the Android app's `google-services.json` and place it in the Android app module.
+2. In Google Cloud / Firebase Admin, create a **service account JSON** for the backend.
+3. Place that server credential somewhere like `backend/secrets/firebase-service-account.json`.
+4. Set:
+
+```env
+FCM_SERVICE_ACCOUNT_JSON=./secrets/firebase-service-account.json
+```
+
+Important:
+- `google-services.json` is for the Android app.
+- `firebase-service-account.json` is for the backend server.
+
 ## Important limitations (Phase 1)
 
 - Device tokens are stored in SQLite and survive backend restarts on the same machine.
 - SQLite is still a single-node local database, so this is not yet a multi-instance shared registry.
-- Android/FCM tokens can register now, but `/panic` only sends APNs pushes until the FCM sender is added.
+- Android/FCM tokens can register and are now included in `/panic` broadcasts when `FCM_SERVICE_ACCOUNT_JSON` is configured.
 - SMS delivery is optional and requires Twilio configuration (`SMS_ENABLED=true` + Twilio env vars).
 - For production reliability, replace in-process background tasks with a durable job queue (outbox pattern).
 - The `/admin` dashboard is read-only and local-operator focused for now; real user login and role enforcement are the next step.

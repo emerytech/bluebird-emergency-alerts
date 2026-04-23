@@ -48,6 +48,9 @@ class Settings(BaseSettings):
     TWILIO_TIMEOUT_SECONDS: float = 5.0
     TWILIO_CONCURRENCY: int = 20
 
+    # Firebase Cloud Messaging (Android)
+    FCM_SERVICE_ACCOUNT_JSON: Optional[str] = None
+
     # Server management
     SERVER_RESTART_COMMAND: Optional[str] = None
 
@@ -70,3 +73,6 @@ class Settings(BaseSettings):
         if not self.SMS_ENABLED:
             return False
         return all([self.TWILIO_ACCOUNT_SID, self.TWILIO_AUTH_TOKEN, self.TWILIO_FROM_NUMBER])
+
+    def fcm_is_configured(self) -> bool:
+        return bool(self.FCM_SERVICE_ACCOUNT_JSON)

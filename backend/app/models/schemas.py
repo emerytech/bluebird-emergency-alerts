@@ -122,6 +122,35 @@ class UsersResponse(BaseModel):
     users: List[UserSummary]
 
 
+class MobileLoginRequest(BaseModel):
+    login_name: str = Field(..., min_length=1, max_length=120)
+    password: str = Field(..., min_length=1, max_length=240)
+
+    @field_validator("login_name")
+    @classmethod
+    def normalize_login_name(cls, v: str) -> str:
+        normalized = v.strip().lower()
+        if not normalized:
+            raise ValueError("login_name is required")
+        return normalized
+
+    @field_validator("password")
+    @classmethod
+    def validate_password(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("password is required")
+        return v
+
+
+class MobileLoginResponse(BaseModel):
+    user_id: int
+    name: str
+    role: str
+    login_name: str
+    must_change_password: bool = False
+    can_deactivate_alarm: bool = False
+
+
 class PanicRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=240, description="Alert message to broadcast.")
     user_id: Optional[int] = Field(default=None, description="Optional user_id attribution (who triggered).")

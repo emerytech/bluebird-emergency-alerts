@@ -24,7 +24,7 @@ Minimal Android app for local backend testing while Apple developer approval is 
 
 The app currently points to:
 
-`http://10.7.0.171:8000`
+`https://bluebird.ets3d.com`
 
 This is set in:
 

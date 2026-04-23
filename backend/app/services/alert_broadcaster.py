@@ -7,12 +7,14 @@ from typing import List, Optional
 
 from app.services.alert_log import AlertLog
 from app.services.apns import APNsClient
+from app.services.fcm import FCMClient
 from app.services.twilio_sms import TwilioSMSClient
 
 
 @dataclass(frozen=True)
 class BroadcastPlan:
     apns_tokens: List[str]
+    fcm_tokens: List[str]
     sms_numbers: List[str]
 
 
@@ -25,8 +27,9 @@ class AlertBroadcaster:
       - This class is designed to be run as a background task.
     """
 
-    def __init__(self, *, apns: APNsClient, twilio: TwilioSMSClient, alert_log: AlertLog) -> None:
+    def __init__(self, *, apns: APNsClient, fcm: FCMClient, twilio: TwilioSMSClient, alert_log: AlertLog) -> None:
         self._apns = apns
+        self._fcm = fcm
         self._twilio = twilio
         self._alert_log = alert_log
         self._logger = logging.getLogger("bluebird.broadcast")
@@ -34,15 +37,19 @@ class AlertBroadcaster:
     def twilio_configured(self) -> bool:
         return self._twilio.is_configured()
 
+    def fcm_configured(self) -> bool:
+        return self._fcm.is_configured()
+
     async def broadcast_panic(self, *, alert_id: int, message: str, plan: BroadcastPlan) -> None:
         """
         Sends APNs + SMS concurrently and logs per-target delivery outcomes.
         """
 
         apns_task = asyncio.create_task(self._send_apns(alert_id=alert_id, message=message, tokens=plan.apns_tokens))
+        fcm_task = asyncio.create_task(self._send_fcm(alert_id=alert_id, message=message, tokens=plan.fcm_tokens))
         sms_task = asyncio.create_task(self._send_sms(alert_id=alert_id, message=message, numbers=plan.sms_numbers))
 
-        await asyncio.gather(apns_task, sms_task)
+        await asyncio.gather(apns_task, fcm_task, sms_task)
 
     async def _send_apns(self, *, alert_id: int, message: str, tokens: List[str]) -> None:
         if not tokens:
@@ -64,6 +71,26 @@ class AlertBroadcaster:
         failed = len(results) - succeeded
         self._logger.info("APNs delivered alert_id=%s ok=%s failed=%s", alert_id, succeeded, failed)
 
+    async def _send_fcm(self, *, alert_id: int, message: str, tokens: List[str]) -> None:
+        if not tokens:
+            return
+
+        results = await self._fcm.send_bulk(tokens, message)
+        for r in results:
+            await self._alert_log.log_delivery(
+                alert_id=alert_id,
+                channel="push",
+                provider="fcm",
+                target=r.token[-8:],
+                ok=r.ok,
+                status_code=r.status_code,
+                error=r.reason,
+            )
+
+        succeeded = sum(1 for r in results if r.ok)
+        failed = len(results) - succeeded
+        self._logger.info("FCM delivered alert_id=%s ok=%s failed=%s", alert_id, succeeded, failed)
+
     async def _send_sms(self, *, alert_id: int, message: str, numbers: List[str]) -> None:
         if not numbers:
             return
@@ -84,4 +111,3 @@ class AlertBroadcaster:
         succeeded = sum(1 for r in results if r.ok)
         failed = len(results) - succeeded
         self._logger.info("SMS delivered alert_id=%s ok=%s failed=%s", alert_id, succeeded, failed)
-

@@ -1,15 +1,18 @@
 package com.ets3d.bluebirdalertsandroid
 
+import android.Manifest
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
+import android.content.pm.PackageManager
 import android.media.AudioAttributes
 import android.media.MediaPlayer
 import android.media.RingtoneManager
-import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
@@ -37,6 +40,8 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.core.content.ContextCompat
+import com.google.firebase.messaging.FirebaseMessaging
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -63,15 +68,50 @@ private val TextMuted   = Color(0xFF94A3B8)
 
 // ── Prefs ──────────────────────────────────────────────────────────────────────
 private const val PREFS      = "bluebird_prefs"
-private const val KEY_API    = "api_key"
 private const val KEY_UID    = "user_id"
 private const val KEY_SETUP  = "setup_done"
-private const val NOTIF_CH   = "bluebird_alerts"
+private const val KEY_NAME   = "user_name"
+private const val KEY_ROLE   = "user_role"
+private const val KEY_LOGIN  = "login_name"
+private const val KEY_CAN_DEACTIVATE = "can_deactivate"
+internal const val NOTIF_CH   = "bluebird_alerts"
 
 private fun prefs(ctx: Context) = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 private fun isSetupDone(ctx: Context) = prefs(ctx).getBoolean(KEY_SETUP, false)
-private fun getApiKey(ctx: Context)   = prefs(ctx).getString(KEY_API, "") ?: ""
 private fun getUserId(ctx: Context)   = prefs(ctx).getString(KEY_UID, "") ?: ""
+private fun getUserName(ctx: Context) = prefs(ctx).getString(KEY_NAME, "") ?: ""
+private fun getUserRole(ctx: Context) = prefs(ctx).getString(KEY_ROLE, "") ?: ""
+private fun getLoginName(ctx: Context) = prefs(ctx).getString(KEY_LOGIN, "") ?: ""
+private fun canDeactivateAlarm(ctx: Context) = prefs(ctx).getBoolean(KEY_CAN_DEACTIVATE, false)
+
+internal fun ensureNotificationChannel(context: Context) {
+    val channel = NotificationChannel(
+        NOTIF_CH,
+        "BlueBird Alerts",
+        NotificationManager.IMPORTANCE_HIGH,
+    ).apply {
+        description = "Emergency school alerts"
+        enableVibration(true)
+        setSound(
+            RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM),
+            AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_ALARM)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                .build(),
+        )
+    }
+    (context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
+        .createNotificationChannel(channel)
+}
+
+private data class AuthUser(
+    val userId: Int,
+    val name: String,
+    val role: String,
+    val loginName: String,
+    val mustChangePassword: Boolean,
+    val canDeactivateAlarm: Boolean,
+)
 
 // ── Data ───────────────────────────────────────────────────────────────────────
 data class AlarmStatus(
@@ -100,9 +140,20 @@ class MainViewModel : ViewModel() {
         if (client != null) return
         client = BackendClient(
             baseUrl = BuildConfig.BACKEND_BASE_URL,
-            apiKey  = getApiKey(ctx),
+            apiKey  = BuildConfig.BACKEND_API_KEY,
         )
+        registerPushToken()
         startPolling()
+    }
+
+    private fun registerPushToken() {
+        FirebaseMessaging.getInstance().token.addOnCompleteListener { task ->
+            if (!task.isSuccessful) return@addOnCompleteListener
+            val token = task.result ?: return@addOnCompleteListener
+            viewModelScope.launch(Dispatchers.IO) {
+                runCatching { client?.registerAndroidDevice(token) }
+            }
+        }
     }
 
     private fun startPolling() {
@@ -153,9 +204,14 @@ class MainViewModel : ViewModel() {
 
 // ── Activity ───────────────────────────────────────────────────────────────────
 class MainActivity : ComponentActivity() {
+    private val requestPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { _ -> }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        createNotificationChannel()
+        ensureNotificationChannel(this)
+        askNotificationPermission()
         setContent {
             BlueBirdTheme {
                 App()
@@ -163,24 +219,14 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun createNotificationChannel() {
-        val channel = NotificationChannel(
-            NOTIF_CH,
-            "BlueBird Alerts",
-            NotificationManager.IMPORTANCE_HIGH,
-        ).apply {
-            description = "Emergency school alerts"
-            enableVibration(true)
-            setSound(
-                RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM),
-                AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_ALARM)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                    .build(),
-            )
+    private fun askNotificationPermission() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) ==
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            return
         }
-        (getSystemService(NOTIFICATION_SERVICE) as NotificationManager)
-            .createNotificationChannel(channel)
+        requestPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
     }
 }
 
@@ -208,19 +254,25 @@ private fun App() {
     var setupDone by remember { mutableStateOf(isSetupDone(ctx)) }
 
     if (!setupDone) {
-        SetupScreen(onDone = { setupDone = true })
+        LoginScreen(onDone = { setupDone = true })
     } else {
-        MainScreen()
+        MainScreen(onLogout = {
+            prefs(ctx).edit().clear().apply()
+            setupDone = false
+        })
     }
 }
 
-// ── Setup screen ───────────────────────────────────────────────────────────────
+// ── Login screen ───────────────────────────────────────────────────────────────
 @Composable
-private fun SetupScreen(onDone: () -> Unit) {
+private fun LoginScreen(onDone: () -> Unit) {
     val ctx = LocalContext.current
-    var apiKey by remember { mutableStateOf("") }
-    var userId by remember { mutableStateOf("") }
-    var showKey by remember { mutableStateOf(false) }
+    val client = remember { BackendClient(BuildConfig.BACKEND_BASE_URL, BuildConfig.BACKEND_API_KEY) }
+    var username by remember { mutableStateOf(getLoginName(ctx)) }
+    var password by remember { mutableStateOf("") }
+    var showPassword by remember { mutableStateOf(false) }
+    var isSubmitting by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
 
     Box(
         modifier = Modifier
@@ -273,18 +325,39 @@ private fun SetupScreen(onDone: () -> Unit) {
                 }
             }
 
-            // API key
             OutlinedTextField(
-                value = apiKey,
-                onValueChange = { apiKey = it },
-                label = { Text("API Key", color = TextMuted) },
-                placeholder = { Text("Leave blank if not required", color = TextMuted) },
+                value = username,
+                onValueChange = {
+                    username = it
+                    error = null
+                },
+                label = { Text("Username", color = TextMuted) },
+                placeholder = { Text("Enter your BlueBird username", color = TextMuted) },
                 singleLine = true,
-                visualTransformation = if (showKey) VisualTransformation.None else PasswordVisualTransformation(),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = BluePrimary,
+                    unfocusedBorderColor = Color(0xFF2A3F5F),
+                    focusedTextColor = TextPri,
+                    unfocusedTextColor = TextPri,
+                    cursorColor = BluePrimary,
+                ),
+                modifier = Modifier.fillMaxWidth(),
+            )
+
+            OutlinedTextField(
+                value = password,
+                onValueChange = {
+                    password = it
+                    error = null
+                },
+                label = { Text("Password", color = TextMuted) },
+                placeholder = { Text("Enter your password", color = TextMuted) },
+                singleLine = true,
+                visualTransformation = if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
                 trailingIcon = {
-                    TextButton(onClick = { showKey = !showKey }) {
-                        Text(if (showKey) "Hide" else "Show", color = BlueLight, fontSize = 12.sp)
+                    TextButton(onClick = { showPassword = !showPassword }) {
+                        Text(if (showPassword) "Hide" else "Show", color = BlueLight, fontSize = 12.sp)
                     }
                 },
                 colors = OutlinedTextFieldDefaults.colors(
@@ -297,40 +370,65 @@ private fun SetupScreen(onDone: () -> Unit) {
                 modifier = Modifier.fillMaxWidth(),
             )
 
-            // User ID
-            OutlinedTextField(
-                value = userId,
-                onValueChange = { userId = it.filter(Char::isDigit) },
-                label = { Text("Your User ID", color = TextMuted) },
-                placeholder = { Text("Optional — needed to deactivate alarms", color = TextMuted) },
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = BluePrimary,
-                    unfocusedBorderColor = Color(0xFF2A3F5F),
-                    focusedTextColor = TextPri,
-                    unfocusedTextColor = TextPri,
-                    cursorColor = BluePrimary,
-                ),
+            error?.let {
+                Text(
+                    text = it,
+                    color = Color(0xFFFCA5A5),
+                    fontSize = 13.sp,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+
+            Text(
+                "Sign in with the username and password created in the BlueBird admin dashboard.",
+                fontSize = 13.sp,
+                color = TextMuted,
+                textAlign = TextAlign.Center,
                 modifier = Modifier.fillMaxWidth(),
             )
 
             Button(
                 onClick = {
-                    prefs(ctx).edit()
-                        .putString(KEY_API, apiKey.trim())
-                        .putString(KEY_UID, userId.trim())
-                        .putBoolean(KEY_SETUP, true)
-                        .apply()
-                    onDone()
+                    val normalizedUsername = username.trim()
+                    if (normalizedUsername.isBlank() || password.isBlank()) {
+                        error = "Enter your username and password."
+                        return@Button
+                    }
+                    isSubmitting = true
+                    error = null
+                    kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch {
+                        runCatching { client.login(normalizedUsername, password) }
+                            .onSuccess { user ->
+                                prefs(ctx).edit()
+                                    .putString(KEY_UID, user.userId.toString())
+                                    .putString(KEY_NAME, user.name)
+                                    .putString(KEY_ROLE, user.role)
+                                    .putString(KEY_LOGIN, user.loginName)
+                                    .putBoolean(KEY_CAN_DEACTIVATE, user.canDeactivateAlarm)
+                                    .putBoolean(KEY_SETUP, true)
+                                    .apply()
+                                kotlinx.coroutines.withContext(Dispatchers.Main) {
+                                    isSubmitting = false
+                                    onDone()
+                                }
+                            }
+                            .onFailure { e ->
+                                kotlinx.coroutines.withContext(Dispatchers.Main) {
+                                    isSubmitting = false
+                                    error = e.message ?: "Sign-in failed."
+                                }
+                            }
+                    }
                 },
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(52.dp),
                 shape = RoundedCornerShape(14.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = BluePrimary),
+                enabled = !isSubmitting,
+                colors = ButtonDefaults.buttonColors(containerColor = BluePrimary, disabledContainerColor = Color(0xFF1D4ED8)),
             ) {
-                Text("Get Started", fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                Text(if (isSubmitting) "Signing In…" else "Sign In", fontSize = 16.sp, fontWeight = FontWeight.Bold)
             }
         }
     }
@@ -338,12 +436,15 @@ private fun SetupScreen(onDone: () -> Unit) {
 
 // ── Main screen ────────────────────────────────────────────────────────────────
 @Composable
-private fun MainScreen(vm: MainViewModel = viewModel()) {
+private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
     val ctx = LocalContext.current
     val state by vm.state.collectAsState()
     var showActivateDialog by remember { mutableStateOf(false) }
     var showDeactivateDialog by remember { mutableStateOf(false) }
     var showSettingsDialog by remember { mutableStateOf(false) }
+    val userName = remember { getUserName(ctx) }
+    val userRole = remember { getUserRole(ctx) }
+    val canDeactivate = remember { canDeactivateAlarm(ctx) }
 
     LaunchedEffect(Unit) { vm.init(ctx) }
 
@@ -377,7 +478,11 @@ private fun MainScreen(vm: MainViewModel = viewModel()) {
             ) {
                 Column {
                     Text("BlueBird Alerts", fontWeight = FontWeight.Bold, fontSize = 20.sp, color = TextPri)
-                    Text("School Safety", fontSize = 12.sp, color = TextMuted)
+                    Text(
+                        if (userName.isNotBlank()) "$userName • ${userRole.replaceFirstChar { it.uppercase() }}" else "School Safety",
+                        fontSize = 12.sp,
+                        color = TextMuted,
+                    )
                 }
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     ConnectionDot(state.connected)
@@ -413,14 +518,13 @@ private fun MainScreen(vm: MainViewModel = viewModel()) {
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 // Deactivate (only when active)
-                if (state.alarm.isActive) {
+                if (state.alarm.isActive && canDeactivate) {
                     OutlinedButton(
                         onClick = { showDeactivateDialog = true },
                         modifier = Modifier.fillMaxWidth().height(52.dp),
                         shape = RoundedCornerShape(14.dp),
                         enabled = !state.isBusy,
-                        colors = OutlinedButtonDefaults.outlinedButtonColors(contentColor = TextPri),
-                        border = ButtonDefaults.outlinedButtonBorder.copy(),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = TextPri),
                     ) {
                         Text(
                             if (state.isBusy) "Working…" else "Deactivate Alarm",
@@ -482,7 +586,10 @@ private fun MainScreen(vm: MainViewModel = viewModel()) {
     }
 
     if (showSettingsDialog) {
-        SettingsDialog(onDismiss = { showSettingsDialog = false })
+        SettingsDialog(onDismiss = { showSettingsDialog = false }, onLogout = {
+            showSettingsDialog = false
+            onLogout()
+        })
     }
 }
 
@@ -540,7 +647,6 @@ private fun AlarmBanner(alarm: AlarmStatus, modifier: Modifier = Modifier) {
     )
 
     val bg = if (alarm.isActive) AlarmRed else NavySurface
-    val borderColor = if (alarm.isActive) Color(0xFFEF4444) else AlarmGreen
 
     Surface(
         modifier = modifier.alpha(if (alarm.isActive) pulseAlpha else 1f),
@@ -573,7 +679,7 @@ private fun AlarmBanner(alarm: AlarmStatus, modifier: Modifier = Modifier) {
             }
 
             if (alarm.isActive) {
-                Divider(color = Color(0x33FFFFFF), thickness = 1.dp)
+                HorizontalDivider(color = Color(0x33FFFFFF), thickness = 1.dp)
                 alarm.message?.let {
                     Text(it, fontSize = 16.sp, color = TextPri, fontWeight = FontWeight.Medium)
                 }
@@ -653,11 +759,12 @@ private fun ConfirmDialog(title: String, body: String, confirmLabel: String, onC
 }
 
 @Composable
-private fun SettingsDialog(onDismiss: () -> Unit) {
+private fun SettingsDialog(onDismiss: () -> Unit, onLogout: () -> Unit) {
     val ctx = LocalContext.current
-    var apiKey by remember { mutableStateOf(getApiKey(ctx)) }
-    var userId by remember { mutableStateOf(getUserId(ctx)) }
-    var saved by remember { mutableStateOf(false) }
+    val userName = remember { getUserName(ctx) }
+    val loginName = remember { getLoginName(ctx) }
+    val userRole = remember { getUserRole(ctx) }
+    val userId = remember { getUserId(ctx) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -665,48 +772,20 @@ private fun SettingsDialog(onDismiss: () -> Unit) {
         title = { Text("Settings", color = TextPri, fontWeight = FontWeight.Bold) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                OutlinedTextField(
-                    value = apiKey,
-                    onValueChange = { apiKey = it },
-                    label = { Text("API Key", color = TextMuted) },
-                    singleLine = true,
-                    visualTransformation = PasswordVisualTransformation(),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = BluePrimary,
-                        unfocusedBorderColor = Color(0xFF2A3F5F),
-                        focusedTextColor = TextPri,
-                        unfocusedTextColor = TextPri,
-                        cursorColor = BluePrimary,
-                    ),
-                )
-                OutlinedTextField(
-                    value = userId,
-                    onValueChange = { userId = it.filter(Char::isDigit) },
-                    label = { Text("Your User ID", color = TextMuted) },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = BluePrimary,
-                        unfocusedBorderColor = Color(0xFF2A3F5F),
-                        focusedTextColor = TextPri,
-                        unfocusedTextColor = TextPri,
-                        cursorColor = BluePrimary,
-                    ),
-                )
-                if (saved) Text("Saved.", color = AlarmGreen, fontSize = 13.sp)
+                Text("Signed in as", color = TextMuted, fontSize = 12.sp)
+                Text(userName.ifBlank { "BlueBird user" }, color = TextPri, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                Text("@${loginName.ifBlank { "unknown" }}", color = BlueLight, fontSize = 13.sp)
+                HorizontalDivider(color = Color(0xFF2A3F5F))
+                Text("Role: ${userRole.replaceFirstChar { it.uppercase() }}", color = TextPri, fontSize = 14.sp)
+                Text("User ID: $userId", color = TextPri, fontSize = 14.sp)
+                Text("Server: ${BuildConfig.BACKEND_BASE_URL}", color = TextMuted, fontSize = 12.sp)
             }
         },
         confirmButton = {
             Button(
-                onClick = {
-                    prefs(ctx).edit()
-                        .putString(KEY_API, apiKey.trim())
-                        .putString(KEY_UID, userId.trim())
-                        .apply()
-                    saved = true
-                },
-                colors = ButtonDefaults.buttonColors(containerColor = BluePrimary),
-            ) { Text("Save") }
+                onClick = onLogout,
+                colors = ButtonDefaults.buttonColors(containerColor = AlarmRed),
+            ) { Text("Log Out") }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) { Text("Close", color = TextMuted) }
@@ -772,6 +851,41 @@ private class BackendClient(baseUrl: String, private val apiKey: String) {
         if (apiKey.isNotBlank()) header("X-API-Key", apiKey)
     }
 
+    fun login(username: String, password: String): AuthUser {
+        val body = JSONObject()
+            .put("login_name", username.trim().lowercase())
+            .put("password", password)
+        val req = Request.Builder()
+            .url("$base/auth/login")
+            .post(body.toString().toRequestBody(json))
+            .build()
+        http.newCall(req).execute().use { res ->
+            val bodyText = requireSuccess(res)
+            val j = JSONObject(bodyText)
+            return AuthUser(
+                userId = j.getInt("user_id"),
+                name = j.getString("name"),
+                role = j.getString("role"),
+                loginName = j.getString("login_name"),
+                mustChangePassword = j.optBoolean("must_change_password"),
+                canDeactivateAlarm = j.optBoolean("can_deactivate_alarm"),
+            )
+        }
+    }
+
+    fun registerAndroidDevice(token: String) {
+        val body = JSONObject()
+            .put("device_token", token.trim())
+            .put("platform", "android")
+            .put("push_provider", "fcm")
+        val req = Request.Builder()
+            .url("$base/register-device")
+            .withAuth()
+            .post(body.toString().toRequestBody(json))
+            .build()
+        http.newCall(req).execute().use { requireSuccess(it) }
+    }
+
     fun alarmStatus(): AlarmStatus {
         val req = Request.Builder().url("$base/alarm/status").withAuth().get().build()
         http.newCall(req).execute().use { res ->
@@ -794,7 +908,7 @@ private class BackendClient(baseUrl: String, private val apiKey: String) {
             .withAuth()
             .post(body.toString().toRequestBody(json))
             .build()
-        http.newCall(req).execute().use { parseAlarm(it) }
+        return http.newCall(req).execute().use { parseAlarm(it) }
     }
 
     fun deactivateAlarm(userId: Int?): AlarmStatus {
@@ -804,7 +918,7 @@ private class BackendClient(baseUrl: String, private val apiKey: String) {
             .withAuth()
             .post(body.toString().toRequestBody(json))
             .build()
-        http.newCall(req).execute().use { parseAlarm(it) }
+        return http.newCall(req).execute().use { parseAlarm(it) }
     }
 
     private fun parseAlarm(res: okhttp3.Response): AlarmStatus {

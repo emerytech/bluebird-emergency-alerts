@@ -14,6 +14,7 @@ from app.services.apns import APNsClient
 from app.services.alert_log import AlertLog
 from app.services.alarm_store import AlarmStore
 from app.services.device_registry import DeviceRegistry
+from app.services.fcm import FCMClient
 from app.services.twilio_sms import TwilioSMSClient
 from app.services.user_store import UserStore
 
@@ -34,16 +35,19 @@ async def lifespan(app: FastAPI):
     alarm_store = AlarmStore(settings.DB_PATH)
     apns_client = APNsClient(settings)
     await apns_client.start()
+    fcm_client = FCMClient(settings)
+    await fcm_client.start()
     user_store = UserStore(settings.DB_PATH)
     twilio_sms = TwilioSMSClient(settings)
     await twilio_sms.start()
-    broadcaster = AlertBroadcaster(apns=apns_client, twilio=twilio_sms, alert_log=alert_log)
+    broadcaster = AlertBroadcaster(apns=apns_client, fcm=fcm_client, twilio=twilio_sms, alert_log=alert_log)
 
     app.state.settings = settings
     app.state.device_registry = device_registry
     app.state.alert_log = alert_log
     app.state.alarm_store = alarm_store
     app.state.apns_client = apns_client
+    app.state.fcm_client = fcm_client
     app.state.user_store = user_store
     app.state.twilio_sms = twilio_sms
     app.state.broadcaster = broadcaster
@@ -51,6 +55,7 @@ async def lifespan(app: FastAPI):
     yield
 
     await apns_client.stop()
+    await fcm_client.stop()
     await twilio_sms.stop()
 
 
