@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 
 from fastapi import FastAPI
 from starlette.middleware.sessions import SessionMiddleware
@@ -22,6 +23,8 @@ settings = Settings()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    app.state.started_at = datetime.now(timezone.utc)
+
     # Load environment/config first so logging uses the intended level.
     configure_logging(settings.LOG_LEVEL)
 

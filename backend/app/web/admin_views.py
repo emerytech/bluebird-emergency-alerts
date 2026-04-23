@@ -488,6 +488,7 @@ def render_admin_page(
     alarm_state: AlarmStateRecord,
     apns_configured: bool,
     twilio_configured: bool,
+    server_info: Mapping[str, str],
     flash_message: Optional[str] = None,
     flash_error: Optional[str] = None,
 ) -> str:
@@ -522,6 +523,7 @@ def render_admin_page(
             <a class="nav-item" href="#alarm">Alarm</a>
             <a class="nav-item" href="#alerts">Alert log</a>
             <a class="nav-item" href="#devices">Devices</a>
+            <a class="nav-item" href="#server">Server</a>
           </nav>
           <form method="post" action="/admin/logout">
             <button class="button button-secondary" type="submit">Log out</button>
@@ -675,6 +677,43 @@ def render_admin_page(
                 {_render_device_rows(devices)}
               </tbody>
             </table>
+          </section>
+
+          <section class="panel span-12" id="server">
+            <div class="panel-header">
+              <div>
+                <p class="eyebrow">Server Management</p>
+                <h2>Backend service</h2>
+                <p class="card-copy">Current process info and service controls. Restart applies the latest deployed code.</p>
+              </div>
+            </div>
+            <div class="metrics-grid" style="margin-bottom:20px;">
+              <article class="metric-card">
+                <div class="meta">Uptime</div>
+                <div class="metric-value" style="font-size:1.3rem;">{escape(server_info.get("uptime", "—"))}</div>
+              </article>
+              <article class="metric-card">
+                <div class="meta">Hostname</div>
+                <div class="metric-value" style="font-size:1.3rem;">{escape(server_info.get("hostname", "—"))}</div>
+              </article>
+              <article class="metric-card">
+                <div class="meta">Python</div>
+                <div class="metric-value" style="font-size:1.3rem;">{escape(server_info.get("python_version", "—"))}</div>
+              </article>
+              <article class="metric-card">
+                <div class="meta">Process ID</div>
+                <div class="metric-value" style="font-size:1.3rem;">{escape(server_info.get("pid", "—"))}</div>
+              </article>
+            </div>
+            {'<p class="mini-copy" style="margin-bottom:14px;">No restart command configured. Set <code>SERVER_RESTART_COMMAND</code> in the server environment to enable this button.</p>' if server_info.get("restart_configured") != "yes" else ""}
+            <form method="post" action="/admin/server/restart"
+                  onsubmit="return confirm('Restart the backend service now? The dashboard will be unavailable for a few seconds.');">
+              <div class="button-row">
+                <button class="button button-danger" type="submit" {'disabled' if server_info.get("restart_configured") != "yes" else ""}>
+                  Restart service
+                </button>
+              </div>
+            </form>
           </section>
         </section>
       </section>

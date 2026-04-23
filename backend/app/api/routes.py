@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import logging
+import os
+import socket
+import sys
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Form, Query, Request
@@ -192,6 +197,32 @@ async def deactivate_alarm(
     )
 
 
+def _build_server_info(request: Request) -> dict:
+    started_at: Optional[datetime] = getattr(request.app.state, "started_at", None)
+    if started_at:
+        delta = datetime.now(timezone.utc) - started_at
+        total = int(delta.total_seconds())
+        days, remainder = divmod(total, 86400)
+        hours, remainder = divmod(remainder, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        parts = []
+        if days:
+            parts.append(f"{days}d")
+        if hours or days:
+            parts.append(f"{hours}h")
+        parts.append(f"{minutes}m {seconds}s")
+        uptime = " ".join(parts)
+    else:
+        uptime = "unknown"
+    return {
+        "uptime": uptime,
+        "hostname": socket.gethostname(),
+        "python_version": sys.version.split()[0],
+        "pid": str(os.getpid()),
+        "restart_configured": "yes" if request.app.state.settings.SERVER_RESTART_COMMAND else "no",
+    }
+
+
 @router.get("/admin", response_class=HTMLResponse, include_in_schema=False)
 async def admin_dashboard(request: Request) -> HTMLResponse:
     if _session_user_id(request) is None:
@@ -210,6 +241,7 @@ async def admin_dashboard(request: Request) -> HTMLResponse:
         alarm_state=alarm_state,
         apns_configured=_apns(request).is_configured(),
         twilio_configured=_broadcaster(request).twilio_configured(),
+        server_info=_build_server_info(request),
         flash_message=flash_message,
         flash_error=flash_error,
     )
@@ -279,6 +311,23 @@ async def admin_login(
 async def admin_logout(request: Request) -> RedirectResponse:
     request.session.clear()
     return RedirectResponse(url="/admin/login", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.post("/admin/server/restart", include_in_schema=False)
+async def server_restart(request: Request, background_tasks: BackgroundTasks) -> RedirectResponse:
+    await _require_dashboard_admin(request)
+    command = request.app.state.settings.SERVER_RESTART_COMMAND
+    if not command:
+        _set_flash(request, error="No restart command configured (SERVER_RESTART_COMMAND is not set).")
+        return RedirectResponse(url="/admin#server", status_code=status.HTTP_303_SEE_OTHER)
+
+    async def _run_restart(cmd: str) -> None:
+        await asyncio.sleep(0.8)
+        await asyncio.create_subprocess_shell(cmd)
+
+    background_tasks.add_task(_run_restart, command)
+    _set_flash(request, message="Restart initiated. The service will be back in a few seconds.")
+    return RedirectResponse(url="/admin#server", status_code=status.HTTP_303_SEE_OTHER)
 
 
 @router.get("/admin/change-password", response_class=HTMLResponse, include_in_schema=False)

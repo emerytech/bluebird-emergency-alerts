@@ -48,6 +48,9 @@ class Settings(BaseSettings):
     TWILIO_TIMEOUT_SECONDS: float = 5.0
     TWILIO_CONCURRENCY: int = 20
 
+    # Server management
+    SERVER_RESTART_COMMAND: Optional[str] = None
+
     @property
     def apns_host(self) -> str:
         return "api.sandbox.push.apple.com" if self.APNS_USE_SANDBOX else "api.push.apple.com"
