@@ -21,6 +21,10 @@ class Settings(BaseSettings):
     PORT: int = 8000
     LOG_LEVEL: str = "INFO"
 
+    # Optional shared-secret API key. If set, write endpoints require `X-API-Key`.
+    API_KEY: Optional[str] = None
+    SESSION_SECRET: str = "bluebird-local-dev-session-secret"
+
     # SQLite (used for alert logging)
     DB_PATH: str = "./data/bluebird.db"
 
@@ -36,6 +40,14 @@ class Settings(BaseSettings):
     APNS_CONCURRENCY: int = 50
     APNS_MAX_RETRIES: int = 2
 
+    # SMS (Twilio)
+    SMS_ENABLED: bool = False
+    TWILIO_ACCOUNT_SID: Optional[str] = None
+    TWILIO_AUTH_TOKEN: Optional[str] = None
+    TWILIO_FROM_NUMBER: Optional[str] = None
+    TWILIO_TIMEOUT_SECONDS: float = 5.0
+    TWILIO_CONCURRENCY: int = 20
+
     @property
     def apns_host(self) -> str:
         return "api.sandbox.push.apple.com" if self.APNS_USE_SANDBOX else "api.push.apple.com"
@@ -49,3 +61,9 @@ class Settings(BaseSettings):
                 self.APNS_BUNDLE_ID,
             ]
         )
+
+    def twilio_is_configured(self) -> bool:
+        # SMS can be disabled explicitly for environments without Twilio.
+        if not self.SMS_ENABLED:
+            return False
+        return all([self.TWILIO_ACCOUNT_SID, self.TWILIO_AUTH_TOKEN, self.TWILIO_FROM_NUMBER])

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
-import asyncio
 import os
 import sqlite3
+import threading
 from dataclasses import dataclass
 from typing import Dict, List
+
+import anyio
 
 
 @dataclass(frozen=True)
@@ -16,7 +18,7 @@ class RegisteredDevice:
 
 class DeviceRegistry:
     """
-    SQLite-backed device registry with an async lock around writes/reads.
+    SQLite-backed device registry with a lock around writes/reads.
 
     Notes:
       - Registrations survive backend restarts.
@@ -26,7 +28,7 @@ class DeviceRegistry:
 
     def __init__(self, db_path: str) -> None:
         self._db_path = db_path
-        self._lock = asyncio.Lock()
+        self._lock = threading.Lock()
         self._init_db()
 
     def _connect(self) -> sqlite3.Connection:
@@ -48,8 +50,8 @@ class DeviceRegistry:
                 """
             )
 
-    async def register(self, token: str, platform: str, push_provider: str) -> bool:
-        async with self._lock:
+    def _register_sync(self, token: str, platform: str, push_provider: str) -> bool:
+        with self._lock:
             with self._connect() as conn:
                 row = conn.execute(
                     """
@@ -74,12 +76,16 @@ class DeviceRegistry:
                 )
                 return is_new
 
+    async def register(self, token: str, platform: str, push_provider: str) -> bool:
+        # Run in a worker thread to avoid blocking the asyncio loop on SQLite I/O.
+        return await anyio.to_thread.run_sync(self._register_sync, token, platform, push_provider)
+
     async def list_tokens(self) -> List[str]:
         devices = await self.list_devices()
         return [device.token for device in devices]
 
-    async def list_by_provider(self, push_provider: str) -> List[RegisteredDevice]:
-        async with self._lock:
+    def _list_by_provider_sync(self, push_provider: str) -> List[RegisteredDevice]:
+        with self._lock:
             with self._connect() as conn:
                 rows = conn.execute(
                     """
@@ -99,8 +105,11 @@ class DeviceRegistry:
             for row in rows
         ]
 
-    async def list_devices(self) -> List[RegisteredDevice]:
-        async with self._lock:
+    async def list_by_provider(self, push_provider: str) -> List[RegisteredDevice]:
+        return await anyio.to_thread.run_sync(self._list_by_provider_sync, push_provider)
+
+    def _list_devices_sync(self) -> List[RegisteredDevice]:
+        with self._lock:
             with self._connect() as conn:
                 rows = conn.execute(
                     """
@@ -118,14 +127,20 @@ class DeviceRegistry:
             for row in rows
         ]
 
-    async def count(self) -> int:
-        async with self._lock:
+    async def list_devices(self) -> List[RegisteredDevice]:
+        return await anyio.to_thread.run_sync(self._list_devices_sync)
+
+    def _count_sync(self) -> int:
+        with self._lock:
             with self._connect() as conn:
                 row = conn.execute("SELECT COUNT(*) FROM registered_devices;").fetchone()
         return int(row[0]) if row else 0
 
-    async def platform_counts(self) -> Dict[str, int]:
-        async with self._lock:
+    async def count(self) -> int:
+        return await anyio.to_thread.run_sync(self._count_sync)
+
+    def _platform_counts_sync(self) -> Dict[str, int]:
+        with self._lock:
             with self._connect() as conn:
                 rows = conn.execute(
                     """
@@ -136,8 +151,11 @@ class DeviceRegistry:
                 ).fetchall()
         return {str(row[0]): int(row[1]) for row in rows}
 
-    async def provider_counts(self) -> Dict[str, int]:
-        async with self._lock:
+    async def platform_counts(self) -> Dict[str, int]:
+        return await anyio.to_thread.run_sync(self._platform_counts_sync)
+
+    def _provider_counts_sync(self) -> Dict[str, int]:
+        with self._lock:
             with self._connect() as conn:
                 rows = conn.execute(
                     """
@@ -147,3 +165,6 @@ class DeviceRegistry:
                     """
                 ).fetchall()
         return {str(row[0]): int(row[1]) for row in rows}
+
+    async def provider_counts(self) -> Dict[str, int]:
+        return await anyio.to_thread.run_sync(self._provider_counts_sync)

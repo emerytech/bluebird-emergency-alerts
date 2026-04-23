@@ -8,6 +8,8 @@ backend/.env
 backend/data/*.db
 backend/data/*.db-shm
 backend/data/*.db-wal
+backend/secrets/
+backend/**/*.p8
 
 # macOS temp files
 .AppleDouble
@@ -22,6 +24,7 @@ BlueBirdAlerts/DerivedData/
 
 # Android
 android/.gradle/
+android/.gradle-local/
 android/local.properties
 android/**/build/
 android/.idea/

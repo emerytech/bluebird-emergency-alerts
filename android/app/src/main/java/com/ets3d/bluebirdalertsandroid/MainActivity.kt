@@ -1,9 +1,16 @@
 package com.ets3d.bluebirdalertsandroid
 
+import android.content.Context
+import android.media.AudioAttributes
+import android.media.MediaPlayer
+import android.media.RingtoneManager
+import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -24,6 +31,8 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -32,6 +41,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -39,9 +49,11 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -67,6 +79,13 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+data class AlarmUiState(
+    val isActive: Boolean = false,
+    val message: String? = null,
+    val activatedAt: String? = null,
+    val activatedByUserId: Int? = null,
+)
+
 data class UiState(
     val backendBaseUrl: String = BuildConfig.BACKEND_BASE_URL,
     val backendReachable: Boolean? = null,
@@ -80,13 +99,45 @@ data class UiState(
     val isRegistering: Boolean = false,
     val isSending: Boolean = false,
     val isRefreshing: Boolean = false,
+    val isDeactivating: Boolean = false,
     val localTestTokenSuffix: String = LOCAL_TEST_DEVICE_TOKEN.takeLast(8),
+    val alarm: AlarmUiState = AlarmUiState(),
 )
 
 class MainViewModel : ViewModel() {
     private val client = BackendClient(BuildConfig.BACKEND_BASE_URL)
     private val _uiState = MutableStateFlow(UiState())
     val uiState: StateFlow<UiState> = _uiState
+
+    init {
+        startAlarmPolling()
+    }
+
+    private fun startAlarmPolling() {
+        viewModelScope.launch(Dispatchers.IO) {
+            while (isActive) {
+                runCatching { client.alarmStatus() }
+                    .onSuccess { alarm ->
+                        _uiState.update { state ->
+                            state.copy(
+                                alarm = AlarmUiState(
+                                    isActive = alarm.isActive,
+                                    message = alarm.message,
+                                    activatedAt = alarm.activatedAt,
+                                    activatedByUserId = alarm.activatedByUserId,
+                                ),
+                            )
+                        }
+                    }
+                    .onFailure { error ->
+                        _uiState.update { state ->
+                            state.copy(lastError = "Alarm status check failed: ${error.message}")
+                        }
+                    }
+                delay(3000)
+            }
+        }
+    }
 
     fun testBackend() {
         viewModelScope.launch(Dispatchers.IO) {
@@ -146,8 +197,9 @@ class MainViewModel : ViewModel() {
             runCatching {
                 val devices = client.devices()
                 val alerts = client.alerts(limit = 5)
-                devices to alerts
-            }.onSuccess { (devices, alerts) ->
+                val alarm = client.alarmStatus()
+                Triple(devices, alerts, alarm)
+            }.onSuccess { (devices, alerts, alarm) ->
                 _uiState.update {
                     it.copy(
                         registeredDeviceCount = devices.deviceCount,
@@ -155,6 +207,12 @@ class MainViewModel : ViewModel() {
                         recentAlerts = alerts.alerts.map { alert -> "#${alert.alertId} ${alert.message}" },
                         lastStatus = "Loaded backend debug data.",
                         isRefreshing = false,
+                        alarm = AlarmUiState(
+                            isActive = alarm.isActive,
+                            message = alarm.message,
+                            activatedAt = alarm.activatedAt,
+                            activatedByUserId = alarm.activatedByUserId,
+                        ),
                     )
                 }
             }.onFailure { error ->
@@ -168,29 +226,66 @@ class MainViewModel : ViewModel() {
         }
     }
 
-    fun sendPanic(message: String) {
+    fun activateAlarm(message: String, userIdText: String) {
         viewModelScope.launch(Dispatchers.IO) {
             _uiState.update { it.copy(isSending = true, lastError = null) }
-            runCatching { client.panic(message) }
-                .onSuccess { response ->
-                    _uiState.update {
-                        it.copy(
-                            registeredDeviceCount = response.deviceCount,
-                            lastStatus = "Alert #${response.alertId}: attempted ${response.attempted}, ok ${response.succeeded}, failed ${response.failed}",
-                            lastError = if (response.apnsConfigured) null else "Backend accepted the alert, but APNs is not configured yet.",
-                            isSending = false,
-                        )
-                    }
-                    loadDebugData()
+            runCatching {
+                client.activateAlarm(
+                    message = message,
+                    userId = userIdText.trim().toIntOrNull(),
+                )
+            }.onSuccess { response ->
+                _uiState.update {
+                    it.copy(
+                        lastStatus = "Alarm activated.",
+                        isSending = false,
+                        alarm = AlarmUiState(
+                            isActive = response.isActive,
+                            message = response.message,
+                            activatedAt = response.activatedAt,
+                            activatedByUserId = response.activatedByUserId,
+                        ),
+                    )
                 }
-                .onFailure { error ->
-                    _uiState.update {
-                        it.copy(
-                            lastError = "Panic failed: ${error.message}",
-                            isSending = false,
-                        )
-                    }
+                loadDebugData()
+            }.onFailure { error ->
+                _uiState.update {
+                    it.copy(
+                        lastError = "Alarm activation failed: ${error.message}",
+                        isSending = false,
+                    )
                 }
+            }
+        }
+    }
+
+    fun deactivateAlarm(adminUserIdText: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            _uiState.update { it.copy(isDeactivating = true, lastError = null) }
+            runCatching {
+                client.deactivateAlarm(adminUserIdText.trim().toIntOrNull())
+            }.onSuccess { response ->
+                _uiState.update {
+                    it.copy(
+                        lastStatus = "Alarm deactivated.",
+                        isDeactivating = false,
+                        alarm = AlarmUiState(
+                            isActive = response.isActive,
+                            message = response.message,
+                            activatedAt = response.activatedAt,
+                            activatedByUserId = response.activatedByUserId,
+                        ),
+                    )
+                }
+                loadDebugData()
+            }.onFailure { error ->
+                _uiState.update {
+                    it.copy(
+                        lastError = "Alarm deactivation failed: ${error.message}",
+                        isDeactivating = false,
+                    )
+                }
+            }
         }
     }
 }
@@ -229,16 +324,47 @@ private class BackendClient(baseUrl: String) {
         }
     }
 
-    fun panic(message: String): PanicResponse {
+    fun activateAlarm(message: String, userId: Int?): AlarmStatusResponse {
         val body = JSONObject().put("message", message)
+        if (userId != null) {
+            body.put("user_id", userId)
+        }
         val request = Request.Builder()
-            .url("$normalizedBaseUrl/panic")
+            .url("$normalizedBaseUrl/alarm/activate")
             .post(body.toString().toRequestBody(jsonMediaType))
             .build()
 
         http.newCall(request).execute().use { response ->
             val responseBody = requireSuccess(response)
-            return PanicResponse(JSONObject(responseBody))
+            return AlarmStatusResponse(JSONObject(responseBody))
+        }
+    }
+
+    fun deactivateAlarm(userId: Int?): AlarmStatusResponse {
+        val body = JSONObject()
+        if (userId != null) {
+            body.put("user_id", userId)
+        }
+        val request = Request.Builder()
+            .url("$normalizedBaseUrl/alarm/deactivate")
+            .post(body.toString().toRequestBody(jsonMediaType))
+            .build()
+
+        http.newCall(request).execute().use { response ->
+            val responseBody = requireSuccess(response)
+            return AlarmStatusResponse(JSONObject(responseBody))
+        }
+    }
+
+    fun alarmStatus(): AlarmStatusResponse {
+        val request = Request.Builder()
+            .url("$normalizedBaseUrl/alarm/status")
+            .get()
+            .build()
+
+        http.newCall(request).execute().use { response ->
+            val body = requireSuccess(response)
+            return AlarmStatusResponse(JSONObject(body))
         }
     }
 
@@ -295,21 +421,17 @@ private data class RegisterDeviceResponse(
     )
 }
 
-private data class PanicResponse(
-    val alertId: Int,
-    val deviceCount: Int,
-    val attempted: Int,
-    val succeeded: Int,
-    val failed: Int,
-    val apnsConfigured: Boolean,
+private data class AlarmStatusResponse(
+    val isActive: Boolean,
+    val message: String?,
+    val activatedAt: String?,
+    val activatedByUserId: Int?,
 ) {
     constructor(json: JSONObject) : this(
-        alertId = json.optInt("alert_id"),
-        deviceCount = json.optInt("device_count"),
-        attempted = json.optInt("attempted"),
-        succeeded = json.optInt("succeeded"),
-        failed = json.optInt("failed"),
-        apnsConfigured = json.optBoolean("apns_configured"),
+        isActive = json.optBoolean("is_active"),
+        message = json.optString("message").ifBlank { null },
+        activatedAt = json.optString("activated_at").ifBlank { null },
+        activatedByUserId = if (json.has("activated_by_user_id") && !json.isNull("activated_by_user_id")) json.optInt("activated_by_user_id") else null,
     )
 }
 
@@ -351,7 +473,20 @@ private data class AlertsResponse(
 private fun BlueBirdAlertsScreen(viewModel: MainViewModel) {
     val state by viewModel.uiState.collectAsState()
     var message by remember { mutableStateOf("Emergency alert. Please follow school procedures.") }
+    var triggerUserId by remember { mutableStateOf("") }
+    var adminUserId by remember { mutableStateOf("") }
     var showConfirm by remember { mutableStateOf(false) }
+    val alarmMessage = state.alarm.message
+    val activatedAt = state.alarm.activatedAt
+    val activatedByUserId = state.alarm.activatedByUserId
+
+    AlarmSoundEffect(isAlarmActive = state.alarm.isActive)
+
+    LaunchedEffect(alarmMessage) {
+        if (state.alarm.isActive && !alarmMessage.isNullOrBlank()) {
+            message = alarmMessage
+        }
+    }
 
     Column(
         modifier = Modifier
@@ -369,6 +504,8 @@ private fun BlueBirdAlertsScreen(viewModel: MainViewModel) {
             Text("BlueBird Alerts", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
         }
 
+        AlarmBanner(state.alarm)
+
         StatusRow("Backend", state.backendBaseUrl)
         StatusRow(
             "Backend status",
@@ -380,6 +517,13 @@ private fun BlueBirdAlertsScreen(viewModel: MainViewModel) {
         )
         StatusRow("Device", if (state.deviceRegistered) "registered" else "not registered")
         StatusRow("Token source", "local test")
+        StatusRow("Alarm sound", if (state.alarm.isActive) "playing until cleared" else "idle")
+        if (activatedAt != null) {
+            StatusRow("Activated at", activatedAt)
+        }
+        if (activatedByUserId != null) {
+            StatusRow("Activated by", activatedByUserId.toString())
+        }
         if (state.registeredDeviceCount > 0) {
             StatusRow("Registered devices", state.registeredDeviceCount.toString())
         }
@@ -418,8 +562,16 @@ private fun BlueBirdAlertsScreen(viewModel: MainViewModel) {
             value = message,
             onValueChange = { message = it },
             modifier = Modifier.fillMaxWidth(),
-            label = { Text("Alert message") },
+            label = { Text("Alarm message") },
             minLines = 3,
+        )
+
+        OutlinedTextField(
+            value = triggerUserId,
+            onValueChange = { triggerUserId = it.filter(Char::isDigit) },
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("Trigger user id (optional)") },
+            singleLine = true,
         )
 
         Button(
@@ -432,10 +584,26 @@ private fun BlueBirdAlertsScreen(viewModel: MainViewModel) {
             enabled = !state.isSending && message.isNotBlank(),
         ) {
             Text(
-                text = if (state.isSending) "Sending..." else "PANIC",
-                fontSize = 32.sp,
+                text = if (state.isSending) "Activating..." else "ACTIVATE ALARM",
+                fontSize = 28.sp,
                 fontWeight = FontWeight.ExtraBold,
             )
+        }
+
+        OutlinedTextField(
+            value = adminUserId,
+            onValueChange = { adminUserId = it.filter(Char::isDigit) },
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("Admin user id to deactivate") },
+            singleLine = true,
+        )
+
+        OutlinedButton(
+            onClick = { viewModel.deactivateAlarm(adminUserId) },
+            modifier = Modifier.fillMaxWidth(),
+            enabled = !state.isDeactivating && adminUserId.isNotBlank(),
+        ) {
+            Text(if (state.isDeactivating) "Deactivating..." else "Deactivate Alarm")
         }
 
         if (state.recentAlerts.isNotEmpty()) {
@@ -451,16 +619,16 @@ private fun BlueBirdAlertsScreen(viewModel: MainViewModel) {
     if (showConfirm) {
         AlertDialog(
             onDismissRequest = { showConfirm = false },
-            title = { Text("Send emergency alert?") },
+            title = { Text("Activate alarm?") },
             text = { Text(message) },
             confirmButton = {
                 TextButton(
                     onClick = {
                         showConfirm = false
-                        viewModel.sendPanic(message)
+                        viewModel.activateAlarm(message, triggerUserId)
                     },
                 ) {
-                    Text("Send")
+                    Text("Activate")
                 }
             },
             dismissButton = {
@@ -469,6 +637,84 @@ private fun BlueBirdAlertsScreen(viewModel: MainViewModel) {
                 }
             },
         )
+    }
+}
+
+@Composable
+private fun AlarmBanner(alarm: AlarmUiState) {
+    val color = if (alarm.isActive) Color(0xFFD32F2F) else Color(0xFF1F7A4D)
+    val text = if (alarm.isActive) "ALARM ACTIVE" else "Alarm clear"
+    val detail = if (alarm.isActive) alarm.message ?: "Emergency alert in progress." else "No active school alarm."
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(color, RoundedCornerShape(18.dp))
+            .padding(18.dp),
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text(text, color = Color.White, fontWeight = FontWeight.ExtraBold, fontSize = 22.sp)
+            Text(detail, color = Color.White)
+        }
+    }
+}
+
+@Composable
+private fun AlarmSoundEffect(isAlarmActive: Boolean) {
+    val context = LocalContext.current
+    val player = remember { AlarmPlayer(context.applicationContext) }
+
+    DisposableEffect(isAlarmActive) {
+        if (isAlarmActive) {
+            player.start()
+        } else {
+            player.stop()
+        }
+        onDispose { }
+    }
+
+    DisposableEffect(Unit) {
+        onDispose { player.release() }
+    }
+}
+
+private class AlarmPlayer(private val context: Context) {
+    private var mediaPlayer: MediaPlayer? = null
+
+    fun start() {
+        if (mediaPlayer?.isPlaying == true) return
+        val uri = defaultAlarmUri()
+        val player = MediaPlayer()
+        player.setAudioAttributes(
+            AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_ALARM)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                .build(),
+        )
+        player.setDataSource(context, uri)
+        player.isLooping = true
+        player.prepare()
+        player.start()
+        mediaPlayer = player
+    }
+
+    fun stop() {
+        mediaPlayer?.run {
+            if (isPlaying) {
+                stop()
+            }
+            reset()
+            release()
+        }
+        mediaPlayer = null
+    }
+
+    fun release() {
+        stop()
+    }
+
+    private fun defaultAlarmUri(): Uri {
+        return RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
+            ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
     }
 }
 
