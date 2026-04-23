@@ -1,5 +1,7 @@
 package com.ets3d.bluebirdalertsandroid
 
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.content.Context
 import android.media.AudioAttributes
 import android.media.MediaPlayer
@@ -8,41 +10,28 @@ import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.ViewModel
@@ -59,691 +48,783 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
-import org.json.JSONArray
 import org.json.JSONObject
+import java.util.concurrent.TimeUnit
 
-class MainActivity : ComponentActivity() {
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        setContent {
-            BlueBirdAlertsTheme {
-                Surface(
-                    modifier = Modifier.fillMaxSize(),
-                    color = MaterialTheme.colorScheme.background,
-                ) {
-                    val viewModel: MainViewModel = viewModel()
-                    BlueBirdAlertsScreen(viewModel)
-                }
-            }
-        }
-    }
-}
+// ── Brand colours ─────────────────────────────────────────────────────────────
+private val Navy        = Color(0xFF0B1A33)
+private val NavySurface = Color(0xFF122040)
+private val BluePrimary = Color(0xFF2563EB)
+private val BlueLight   = Color(0xFF3B82F6)
+private val AlarmRed    = Color(0xFFDC2626)
+private val AlarmGreen  = Color(0xFF16A34A)
+private val TextPri     = Color(0xFFFFFFFF)
+private val TextMuted   = Color(0xFF94A3B8)
 
-data class AlarmUiState(
+// ── Prefs ──────────────────────────────────────────────────────────────────────
+private const val PREFS      = "bluebird_prefs"
+private const val KEY_API    = "api_key"
+private const val KEY_UID    = "user_id"
+private const val KEY_SETUP  = "setup_done"
+private const val NOTIF_CH   = "bluebird_alerts"
+
+private fun prefs(ctx: Context) = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+private fun isSetupDone(ctx: Context) = prefs(ctx).getBoolean(KEY_SETUP, false)
+private fun getApiKey(ctx: Context)   = prefs(ctx).getString(KEY_API, "") ?: ""
+private fun getUserId(ctx: Context)   = prefs(ctx).getString(KEY_UID, "") ?: ""
+
+// ── Data ───────────────────────────────────────────────────────────────────────
+data class AlarmStatus(
     val isActive: Boolean = false,
-    val message: String? = null,
+    val message: String?  = null,
     val activatedAt: String? = null,
     val activatedByUserId: Int? = null,
 )
 
 data class UiState(
-    val backendBaseUrl: String = BuildConfig.BACKEND_BASE_URL,
-    val backendReachable: Boolean? = null,
-    val deviceRegistered: Boolean = false,
-    val registeredDeviceCount: Int = 0,
-    val providerCountsText: String = "",
-    val lastStatus: String? = null,
-    val lastError: String? = null,
-    val recentAlerts: List<String> = emptyList(),
-    val isTestingBackend: Boolean = false,
-    val isRegistering: Boolean = false,
-    val isSending: Boolean = false,
-    val isRefreshing: Boolean = false,
-    val isDeactivating: Boolean = false,
-    val localTestTokenSuffix: String = LOCAL_TEST_DEVICE_TOKEN.takeLast(8),
-    val alarm: AlarmUiState = AlarmUiState(),
+    val alarm: AlarmStatus      = AlarmStatus(),
+    val connected: Boolean?     = null,   // null = unknown, true/false = result
+    val isBusy: Boolean         = false,
+    val successMsg: String?     = null,
+    val errorMsg: String?       = null,
 )
 
+// ── ViewModel ──────────────────────────────────────────────────────────────────
 class MainViewModel : ViewModel() {
-    private val client = BackendClient(BuildConfig.BACKEND_BASE_URL)
-    private val _uiState = MutableStateFlow(UiState())
-    val uiState: StateFlow<UiState> = _uiState
+    private val _state = MutableStateFlow(UiState())
+    val state: StateFlow<UiState> = _state
 
-    init {
-        startAlarmPolling()
+    private var client: BackendClient? = null
+
+    fun init(ctx: Context) {
+        if (client != null) return
+        client = BackendClient(
+            baseUrl = BuildConfig.BACKEND_BASE_URL,
+            apiKey  = getApiKey(ctx),
+        )
+        startPolling()
     }
 
-    private fun startAlarmPolling() {
+    private fun startPolling() {
         viewModelScope.launch(Dispatchers.IO) {
             while (isActive) {
-                runCatching { client.alarmStatus() }
+                runCatching { client!!.alarmStatus() }
                     .onSuccess { alarm ->
-                        _uiState.update { state ->
-                            state.copy(
-                                alarm = AlarmUiState(
-                                    isActive = alarm.isActive,
-                                    message = alarm.message,
-                                    activatedAt = alarm.activatedAt,
-                                    activatedByUserId = alarm.activatedByUserId,
-                                ),
-                            )
-                        }
+                        _state.update { it.copy(alarm = alarm, connected = true) }
                     }
-                    .onFailure { error ->
-                        _uiState.update { state ->
-                            state.copy(lastError = "Alarm status check failed: ${error.message}")
-                        }
+                    .onFailure {
+                        _state.update { it.copy(connected = false) }
                     }
-                delay(3000)
+                delay(4_000)
             }
         }
     }
 
-    fun testBackend() {
+    fun activateAlarm(ctx: Context, message: String) {
+        val userId = getUserId(ctx).toIntOrNull()
         viewModelScope.launch(Dispatchers.IO) {
-            _uiState.update { it.copy(isTestingBackend = true, lastError = null) }
-            runCatching { client.health() }
-                .onSuccess { ok ->
-                    _uiState.update {
-                        it.copy(
-                            backendReachable = ok,
-                            lastStatus = if (ok) "Backend reachable." else "Backend returned an unhealthy response.",
-                            isTestingBackend = false,
-                        )
-                    }
+            _state.update { it.copy(isBusy = true, errorMsg = null) }
+            runCatching { client!!.activateAlarm(message, userId) }
+                .onSuccess { alarm ->
+                    _state.update { it.copy(alarm = alarm, isBusy = false, successMsg = "Alarm activated.") }
                 }
-                .onFailure { error ->
-                    _uiState.update {
-                        it.copy(
-                            backendReachable = false,
-                            lastError = "Backend test failed: ${error.message}",
-                            isTestingBackend = false,
-                        )
-                    }
+                .onFailure { e ->
+                    _state.update { it.copy(isBusy = false, errorMsg = e.message ?: "Failed to activate alarm.") }
                 }
         }
     }
 
-    fun registerLocalTestDevice() {
+    fun deactivateAlarm(ctx: Context) {
+        val userId = getUserId(ctx).toIntOrNull()
         viewModelScope.launch(Dispatchers.IO) {
-            _uiState.update { it.copy(isRegistering = true, lastError = null) }
-            runCatching { client.registerLocalAndroidDevice(LOCAL_TEST_DEVICE_TOKEN) }
-                .onSuccess { response ->
-                    _uiState.update {
-                        it.copy(
-                            deviceRegistered = response.deviceCount > 0,
-                            registeredDeviceCount = response.deviceCount,
-                            providerCountsText = response.providerCounts.entries.joinToString { entry -> "${entry.key}: ${entry.value}" },
-                            lastStatus = "Registered local test device. Devices: ${response.deviceCount}",
-                            isRegistering = false,
-                        )
-                    }
+            _state.update { it.copy(isBusy = true, errorMsg = null) }
+            runCatching { client!!.deactivateAlarm(userId) }
+                .onSuccess { alarm ->
+                    _state.update { it.copy(alarm = alarm, isBusy = false, successMsg = "Alarm cleared.") }
                 }
-                .onFailure { error ->
-                    _uiState.update {
-                        it.copy(
-                            deviceRegistered = false,
-                            lastError = "Register device failed: ${error.message}",
-                            isRegistering = false,
-                        )
-                    }
+                .onFailure { e ->
+                    _state.update { it.copy(isBusy = false, errorMsg = e.message ?: "Failed to deactivate alarm.") }
                 }
         }
     }
 
-    fun loadDebugData() {
-        viewModelScope.launch(Dispatchers.IO) {
-            _uiState.update { it.copy(isRefreshing = true, lastError = null) }
-            runCatching {
-                val devices = client.devices()
-                val alerts = client.alerts(limit = 5)
-                val alarm = client.alarmStatus()
-                Triple(devices, alerts, alarm)
-            }.onSuccess { (devices, alerts, alarm) ->
-                _uiState.update {
-                    it.copy(
-                        registeredDeviceCount = devices.deviceCount,
-                        providerCountsText = devices.providerCounts.entries.joinToString { entry -> "${entry.key}: ${entry.value}" },
-                        recentAlerts = alerts.alerts.map { alert -> "#${alert.alertId} ${alert.message}" },
-                        lastStatus = "Loaded backend debug data.",
-                        isRefreshing = false,
-                        alarm = AlarmUiState(
-                            isActive = alarm.isActive,
-                            message = alarm.message,
-                            activatedAt = alarm.activatedAt,
-                            activatedByUserId = alarm.activatedByUserId,
-                        ),
-                    )
-                }
-            }.onFailure { error ->
-                _uiState.update {
-                    it.copy(
-                        lastError = "Load debug data failed: ${error.message}",
-                        isRefreshing = false,
-                    )
-                }
+    fun clearMessages() = _state.update { it.copy(successMsg = null, errorMsg = null) }
+}
+
+// ── Activity ───────────────────────────────────────────────────────────────────
+class MainActivity : ComponentActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        createNotificationChannel()
+        setContent {
+            BlueBirdTheme {
+                App()
             }
         }
     }
 
-    fun activateAlarm(message: String, userIdText: String) {
-        viewModelScope.launch(Dispatchers.IO) {
-            _uiState.update { it.copy(isSending = true, lastError = null) }
-            runCatching {
-                client.activateAlarm(
-                    message = message,
-                    userId = userIdText.trim().toIntOrNull(),
+    private fun createNotificationChannel() {
+        val channel = NotificationChannel(
+            NOTIF_CH,
+            "BlueBird Alerts",
+            NotificationManager.IMPORTANCE_HIGH,
+        ).apply {
+            description = "Emergency school alerts"
+            enableVibration(true)
+            setSound(
+                RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM),
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_ALARM)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                    .build(),
+            )
+        }
+        (getSystemService(NOTIFICATION_SERVICE) as NotificationManager)
+            .createNotificationChannel(channel)
+    }
+}
+
+// ── Theme ──────────────────────────────────────────────────────────────────────
+@Composable
+private fun BlueBirdTheme(content: @Composable () -> Unit) {
+    MaterialTheme(
+        colorScheme = darkColorScheme(
+            primary   = BluePrimary,
+            background = Navy,
+            surface   = NavySurface,
+            onPrimary  = TextPri,
+            onBackground = TextPri,
+            onSurface  = TextPri,
+            error      = AlarmRed,
+        ),
+        content = content,
+    )
+}
+
+// ── Root ───────────────────────────────────────────────────────────────────────
+@Composable
+private fun App() {
+    val ctx = LocalContext.current
+    var setupDone by remember { mutableStateOf(isSetupDone(ctx)) }
+
+    if (!setupDone) {
+        SetupScreen(onDone = { setupDone = true })
+    } else {
+        MainScreen()
+    }
+}
+
+// ── Setup screen ───────────────────────────────────────────────────────────────
+@Composable
+private fun SetupScreen(onDone: () -> Unit) {
+    val ctx = LocalContext.current
+    var apiKey by remember { mutableStateOf("") }
+    var userId by remember { mutableStateOf("") }
+    var showKey by remember { mutableStateOf(false) }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(
+                Brush.verticalGradient(listOf(Navy, Color(0xFF0D2347)))
+            ),
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(32.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(20.dp),
+        ) {
+            Text(
+                "🐦",
+                fontSize = 64.sp,
+            )
+            Text(
+                "BlueBird Alerts",
+                fontSize = 28.sp,
+                fontWeight = FontWeight.Bold,
+                color = TextPri,
+            )
+            Text(
+                "School emergency alert system",
+                fontSize = 14.sp,
+                color = TextMuted,
+                textAlign = TextAlign.Center,
+            )
+
+            Spacer(Modifier.height(8.dp))
+
+            // Server URL (read-only)
+            Surface(
+                shape = RoundedCornerShape(14.dp),
+                color = NavySurface,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Column(Modifier.padding(16.dp)) {
+                    Text("Server", fontSize = 12.sp, color = TextMuted)
+                    Text(
+                        BuildConfig.BACKEND_BASE_URL,
+                        fontSize = 14.sp,
+                        color = BlueLight,
+                        fontWeight = FontWeight.Medium,
+                    )
+                }
+            }
+
+            // API key
+            OutlinedTextField(
+                value = apiKey,
+                onValueChange = { apiKey = it },
+                label = { Text("API Key", color = TextMuted) },
+                placeholder = { Text("Leave blank if not required", color = TextMuted) },
+                singleLine = true,
+                visualTransformation = if (showKey) VisualTransformation.None else PasswordVisualTransformation(),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                trailingIcon = {
+                    TextButton(onClick = { showKey = !showKey }) {
+                        Text(if (showKey) "Hide" else "Show", color = BlueLight, fontSize = 12.sp)
+                    }
+                },
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = BluePrimary,
+                    unfocusedBorderColor = Color(0xFF2A3F5F),
+                    focusedTextColor = TextPri,
+                    unfocusedTextColor = TextPri,
+                    cursorColor = BluePrimary,
+                ),
+                modifier = Modifier.fillMaxWidth(),
+            )
+
+            // User ID
+            OutlinedTextField(
+                value = userId,
+                onValueChange = { userId = it.filter(Char::isDigit) },
+                label = { Text("Your User ID", color = TextMuted) },
+                placeholder = { Text("Optional — needed to deactivate alarms", color = TextMuted) },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = BluePrimary,
+                    unfocusedBorderColor = Color(0xFF2A3F5F),
+                    focusedTextColor = TextPri,
+                    unfocusedTextColor = TextPri,
+                    cursorColor = BluePrimary,
+                ),
+                modifier = Modifier.fillMaxWidth(),
+            )
+
+            Button(
+                onClick = {
+                    prefs(ctx).edit()
+                        .putString(KEY_API, apiKey.trim())
+                        .putString(KEY_UID, userId.trim())
+                        .putBoolean(KEY_SETUP, true)
+                        .apply()
+                    onDone()
+                },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(52.dp),
+                shape = RoundedCornerShape(14.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = BluePrimary),
+            ) {
+                Text("Get Started", fontSize = 16.sp, fontWeight = FontWeight.Bold)
+            }
+        }
+    }
+}
+
+// ── Main screen ────────────────────────────────────────────────────────────────
+@Composable
+private fun MainScreen(vm: MainViewModel = viewModel()) {
+    val ctx = LocalContext.current
+    val state by vm.state.collectAsState()
+    var showActivateDialog by remember { mutableStateOf(false) }
+    var showDeactivateDialog by remember { mutableStateOf(false) }
+    var showSettingsDialog by remember { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) { vm.init(ctx) }
+
+    // Dismiss flash messages after 3s
+    LaunchedEffect(state.successMsg, state.errorMsg) {
+        if (state.successMsg != null || state.errorMsg != null) {
+            delay(3_000)
+            vm.clearMessages()
+        }
+    }
+
+    AlarmSoundEffect(isAlarmActive = state.alarm.isActive)
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Navy),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState()),
+        ) {
+            // ── Top bar ──────────────────────────────────────────────
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp, vertical = 16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Column {
+                    Text("BlueBird Alerts", fontWeight = FontWeight.Bold, fontSize = 20.sp, color = TextPri)
+                    Text("School Safety", fontSize = 12.sp, color = TextMuted)
+                }
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    ConnectionDot(state.connected)
+                    TextButton(onClick = { showSettingsDialog = true }) {
+                        Text("⚙", fontSize = 20.sp, color = TextMuted)
+                    }
+                }
+            }
+
+            // ── Flash messages ───────────────────────────────────────
+            state.successMsg?.let {
+                FlashBanner(it, isError = false)
+            }
+            state.errorMsg?.let {
+                FlashBanner(it, isError = true)
+            }
+
+            // ── Alarm banner ─────────────────────────────────────────
+            AlarmBanner(
+                alarm = state.alarm,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp, vertical = 8.dp),
+            )
+
+            Spacer(Modifier.weight(1f))
+
+            // ── Action buttons ───────────────────────────────────────
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp, vertical = 24.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                // Deactivate (only when active)
+                if (state.alarm.isActive) {
+                    OutlinedButton(
+                        onClick = { showDeactivateDialog = true },
+                        modifier = Modifier.fillMaxWidth().height(52.dp),
+                        shape = RoundedCornerShape(14.dp),
+                        enabled = !state.isBusy,
+                        colors = OutlinedButtonDefaults.outlinedButtonColors(contentColor = TextPri),
+                        border = ButtonDefaults.outlinedButtonBorder.copy(),
+                    ) {
+                        Text(
+                            if (state.isBusy) "Working…" else "Deactivate Alarm",
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                    }
+                }
+
+                // Activate
+                Button(
+                    onClick = { showActivateDialog = true },
+                    modifier = Modifier.fillMaxWidth().height(72.dp),
+                    shape = RoundedCornerShape(18.dp),
+                    enabled = !state.isBusy,
+                    colors = ButtonDefaults.buttonColors(containerColor = AlarmRed),
+                ) {
+                    Text(
+                        if (state.isBusy) "Sending…" else "ACTIVATE ALARM",
+                        fontSize = 22.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        letterSpacing = 1.sp,
+                    )
+                }
+
+                Text(
+                    "Version ${BuildConfig.VERSION_NAME}  ·  ${BuildConfig.BACKEND_BASE_URL}",
+                    fontSize = 11.sp,
+                    color = TextMuted,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth(),
                 )
-            }.onSuccess { response ->
-                _uiState.update {
-                    it.copy(
-                        lastStatus = "Alarm activated.",
-                        isSending = false,
-                        alarm = AlarmUiState(
-                            isActive = response.isActive,
-                            message = response.message,
-                            activatedAt = response.activatedAt,
-                            activatedByUserId = response.activatedByUserId,
-                        ),
-                    )
-                }
-                loadDebugData()
-            }.onFailure { error ->
-                _uiState.update {
-                    it.copy(
-                        lastError = "Alarm activation failed: ${error.message}",
-                        isSending = false,
-                    )
-                }
             }
         }
     }
 
-    fun deactivateAlarm(adminUserIdText: String) {
-        viewModelScope.launch(Dispatchers.IO) {
-            _uiState.update { it.copy(isDeactivating = true, lastError = null) }
-            runCatching {
-                client.deactivateAlarm(adminUserIdText.trim().toIntOrNull())
-            }.onSuccess { response ->
-                _uiState.update {
-                    it.copy(
-                        lastStatus = "Alarm deactivated.",
-                        isDeactivating = false,
-                        alarm = AlarmUiState(
-                            isActive = response.isActive,
-                            message = response.message,
-                            activatedAt = response.activatedAt,
-                            activatedByUserId = response.activatedByUserId,
-                        ),
+    // ── Dialogs ───────────────────────────────────────────────────────────────
+    if (showActivateDialog) {
+        ActivateDialog(
+            isBusy = state.isBusy,
+            onConfirm = { msg ->
+                showActivateDialog = false
+                vm.activateAlarm(ctx, msg)
+            },
+            onDismiss = { showActivateDialog = false },
+        )
+    }
+
+    if (showDeactivateDialog) {
+        ConfirmDialog(
+            title = "Deactivate alarm?",
+            body = "This will clear the active alarm for the whole school. Only admins can do this.",
+            confirmLabel = "Deactivate",
+            onConfirm = {
+                showDeactivateDialog = false
+                vm.deactivateAlarm(ctx)
+            },
+            onDismiss = { showDeactivateDialog = false },
+        )
+    }
+
+    if (showSettingsDialog) {
+        SettingsDialog(onDismiss = { showSettingsDialog = false })
+    }
+}
+
+// ── Composable components ──────────────────────────────────────────────────────
+
+@Composable
+private fun ConnectionDot(connected: Boolean?) {
+    val color = when (connected) {
+        true  -> AlarmGreen
+        false -> AlarmRed
+        null  -> Color(0xFF64748B)
+    }
+    val label = when (connected) {
+        true  -> "Connected"
+        false -> "Offline"
+        null  -> "Checking…"
+    }
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        Box(
+            modifier = Modifier
+                .size(10.dp)
+                .clip(CircleShape)
+                .background(color)
+        )
+        Text(label, fontSize = 12.sp, color = TextMuted)
+    }
+}
+
+@Composable
+private fun FlashBanner(message: String, isError: Boolean) {
+    val bg = if (isError) Color(0xFF450A0A) else Color(0xFF052E16)
+    val fg = if (isError) Color(0xFFFCA5A5) else Color(0xFF86EFAC)
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 20.dp, vertical = 4.dp)
+            .background(bg, RoundedCornerShape(12.dp))
+            .padding(14.dp),
+    ) {
+        Text(message, color = fg, fontSize = 14.sp)
+    }
+}
+
+@Composable
+private fun AlarmBanner(alarm: AlarmStatus, modifier: Modifier = Modifier) {
+    val pulse = rememberInfiniteTransition(label = "pulse")
+    val pulseAlpha by pulse.animateFloat(
+        initialValue = 1f,
+        targetValue  = if (alarm.isActive) 0.65f else 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(900, easing = EaseInOut),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "pulseAlpha",
+    )
+
+    val bg = if (alarm.isActive) AlarmRed else NavySurface
+    val borderColor = if (alarm.isActive) Color(0xFFEF4444) else AlarmGreen
+
+    Surface(
+        modifier = modifier.alpha(if (alarm.isActive) pulseAlpha else 1f),
+        shape = RoundedCornerShape(24.dp),
+        color = bg,
+        tonalElevation = 4.dp,
+    ) {
+        Column(
+            modifier = Modifier.padding(28.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    if (alarm.isActive) "⚠" else "✓",
+                    fontSize = 32.sp,
+                )
+                Column {
+                    Text(
+                        if (alarm.isActive) "ALARM ACTIVE" else "All Clear",
+                        fontWeight = FontWeight.ExtraBold,
+                        fontSize = 26.sp,
+                        color = TextPri,
+                    )
+                    Text(
+                        if (alarm.isActive) "Emergency alert in progress" else "No active school alarm",
+                        fontSize = 14.sp,
+                        color = if (alarm.isActive) Color(0xFFFFCDD2) else TextMuted,
                     )
                 }
-                loadDebugData()
-            }.onFailure { error ->
-                _uiState.update {
-                    it.copy(
-                        lastError = "Alarm deactivation failed: ${error.message}",
-                        isDeactivating = false,
-                    )
+            }
+
+            if (alarm.isActive) {
+                Divider(color = Color(0x33FFFFFF), thickness = 1.dp)
+                alarm.message?.let {
+                    Text(it, fontSize = 16.sp, color = TextPri, fontWeight = FontWeight.Medium)
+                }
+                alarm.activatedAt?.let {
+                    Text("Activated: $it", fontSize = 12.sp, color = Color(0xFFFFCDD2))
+                }
+                alarm.activatedByUserId?.let {
+                    Text("Triggered by user #$it", fontSize = 12.sp, color = Color(0xFFFFCDD2))
                 }
             }
         }
     }
 }
 
-private class BackendClient(baseUrl: String) {
-    private val http = OkHttpClient()
-    private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
-    private val normalizedBaseUrl = baseUrl.trimEnd('/')
+@Composable
+private fun ActivateDialog(isBusy: Boolean, onConfirm: (String) -> Unit, onDismiss: () -> Unit) {
+    var message by remember { mutableStateOf("Emergency alert. Please follow school procedures.") }
 
-    fun health(): Boolean {
-        val request = Request.Builder()
-            .url("$normalizedBaseUrl/health")
-            .get()
-            .build()
-
-        http.newCall(request).execute().use { response ->
-            val body = requireSuccess(response)
-            return JSONObject(body).optBoolean("ok", false)
-        }
-    }
-
-    fun registerLocalAndroidDevice(token: String): RegisterDeviceResponse {
-        val body = JSONObject()
-            .put("device_token", token)
-            .put("platform", "android")
-            .put("push_provider", "fcm")
-
-        val request = Request.Builder()
-            .url("$normalizedBaseUrl/register-device")
-            .post(body.toString().toRequestBody(jsonMediaType))
-            .build()
-
-        http.newCall(request).execute().use { response ->
-            val responseBody = requireSuccess(response)
-            return RegisterDeviceResponse(JSONObject(responseBody))
-        }
-    }
-
-    fun activateAlarm(message: String, userId: Int?): AlarmStatusResponse {
-        val body = JSONObject().put("message", message)
-        if (userId != null) {
-            body.put("user_id", userId)
-        }
-        val request = Request.Builder()
-            .url("$normalizedBaseUrl/alarm/activate")
-            .post(body.toString().toRequestBody(jsonMediaType))
-            .build()
-
-        http.newCall(request).execute().use { response ->
-            val responseBody = requireSuccess(response)
-            return AlarmStatusResponse(JSONObject(responseBody))
-        }
-    }
-
-    fun deactivateAlarm(userId: Int?): AlarmStatusResponse {
-        val body = JSONObject()
-        if (userId != null) {
-            body.put("user_id", userId)
-        }
-        val request = Request.Builder()
-            .url("$normalizedBaseUrl/alarm/deactivate")
-            .post(body.toString().toRequestBody(jsonMediaType))
-            .build()
-
-        http.newCall(request).execute().use { response ->
-            val responseBody = requireSuccess(response)
-            return AlarmStatusResponse(JSONObject(responseBody))
-        }
-    }
-
-    fun alarmStatus(): AlarmStatusResponse {
-        val request = Request.Builder()
-            .url("$normalizedBaseUrl/alarm/status")
-            .get()
-            .build()
-
-        http.newCall(request).execute().use { response ->
-            val body = requireSuccess(response)
-            return AlarmStatusResponse(JSONObject(body))
-        }
-    }
-
-    fun devices(): DevicesResponse {
-        val request = Request.Builder()
-            .url("$normalizedBaseUrl/devices")
-            .get()
-            .build()
-
-        http.newCall(request).execute().use { response ->
-            val body = requireSuccess(response)
-            return DevicesResponse(JSONObject(body))
-        }
-    }
-
-    fun alerts(limit: Int): AlertsResponse {
-        val request = Request.Builder()
-            .url("$normalizedBaseUrl/alerts?limit=$limit")
-            .get()
-            .build()
-
-        http.newCall(request).execute().use { response ->
-            val body = requireSuccess(response)
-            return AlertsResponse(JSONObject(body))
-        }
-    }
-
-    private fun requireSuccess(response: okhttp3.Response): String {
-        val body = response.body?.string().orEmpty()
-        if (!response.isSuccessful) {
-            val errorMessage = runCatching {
-                val detail = JSONObject(body).opt("detail")
-                when (detail) {
-                    is String -> detail
-                    is JSONArray -> detail.optJSONObject(0)?.optString("msg") ?: body
-                    else -> body
-                }
-            }.getOrDefault(body.ifBlank { "Request failed." })
-            error(errorMessage)
-        }
-        return body
-    }
-}
-
-private data class RegisterDeviceResponse(
-    val registered: Boolean,
-    val deviceCount: Int,
-    val providerCounts: Map<String, Int>,
-) {
-    constructor(json: JSONObject) : this(
-        registered = json.optBoolean("registered"),
-        deviceCount = json.optInt("device_count"),
-        providerCounts = jsonObjectToMap(json.optJSONObject("provider_counts")),
-    )
-}
-
-private data class AlarmStatusResponse(
-    val isActive: Boolean,
-    val message: String?,
-    val activatedAt: String?,
-    val activatedByUserId: Int?,
-) {
-    constructor(json: JSONObject) : this(
-        isActive = json.optBoolean("is_active"),
-        message = json.optString("message").ifBlank { null },
-        activatedAt = json.optString("activated_at").ifBlank { null },
-        activatedByUserId = if (json.has("activated_by_user_id") && !json.isNull("activated_by_user_id")) json.optInt("activated_by_user_id") else null,
-    )
-}
-
-private data class DevicesResponse(
-    val deviceCount: Int,
-    val providerCounts: Map<String, Int>,
-) {
-    constructor(json: JSONObject) : this(
-        deviceCount = json.optInt("device_count"),
-        providerCounts = jsonObjectToMap(json.optJSONObject("provider_counts")),
-    )
-}
-
-private data class AlertItem(
-    val alertId: Int,
-    val message: String,
-)
-
-private data class AlertsResponse(
-    val alerts: List<AlertItem>,
-) {
-    constructor(json: JSONObject) : this(
-        alerts = buildList {
-            val array = json.optJSONArray("alerts") ?: JSONArray()
-            for (index in 0 until array.length()) {
-                val item = array.optJSONObject(index) ?: continue
-                add(
-                    AlertItem(
-                        alertId = item.optInt("alert_id"),
-                        message = item.optString("message"),
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = NavySurface,
+        title = { Text("Activate school alarm?", color = TextPri, fontWeight = FontWeight.Bold) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text("This will send an emergency alert to all registered devices.", color = TextMuted, fontSize = 14.sp)
+                OutlinedTextField(
+                    value = message,
+                    onValueChange = { message = it },
+                    label = { Text("Alert message", color = TextMuted) },
+                    minLines = 3,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = AlarmRed,
+                        unfocusedBorderColor = Color(0xFF2A3F5F),
+                        focusedTextColor = TextPri,
+                        unfocusedTextColor = TextPri,
+                        cursorColor = AlarmRed,
                     ),
                 )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { if (message.isNotBlank()) onConfirm(message) },
+                enabled = !isBusy && message.isNotBlank(),
+                colors = ButtonDefaults.buttonColors(containerColor = AlarmRed),
+            ) {
+                Text("Activate", fontWeight = FontWeight.Bold)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel", color = TextMuted)
             }
         },
     )
 }
 
 @Composable
-private fun BlueBirdAlertsScreen(viewModel: MainViewModel) {
-    val state by viewModel.uiState.collectAsState()
-    var message by remember { mutableStateOf("Emergency alert. Please follow school procedures.") }
-    var triggerUserId by remember { mutableStateOf("") }
-    var adminUserId by remember { mutableStateOf("") }
-    var showConfirm by remember { mutableStateOf(false) }
-    val alarmMessage = state.alarm.message
-    val activatedAt = state.alarm.activatedAt
-    val activatedByUserId = state.alarm.activatedByUserId
-
-    AlarmSoundEffect(isAlarmActive = state.alarm.isActive)
-
-    LaunchedEffect(alarmMessage) {
-        if (state.alarm.isActive && !alarmMessage.isNullOrBlank()) {
-            message = alarmMessage
-        }
-    }
-
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(20.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
-    ) {
-        Column(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            Text("! ", fontSize = 36.sp, color = Color(0xFFD32F2F), fontWeight = FontWeight.Bold)
-            Text("BlueBird Alerts", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-        }
-
-        AlarmBanner(state.alarm)
-
-        StatusRow("Backend", state.backendBaseUrl)
-        StatusRow(
-            "Backend status",
-            when (state.backendReachable) {
-                true -> "reachable"
-                false -> "unreachable"
-                null -> "not tested"
-            },
-        )
-        StatusRow("Device", if (state.deviceRegistered) "registered" else "not registered")
-        StatusRow("Token source", "local test")
-        StatusRow("Alarm sound", if (state.alarm.isActive) "playing until cleared" else "idle")
-        if (activatedAt != null) {
-            StatusRow("Activated at", activatedAt)
-        }
-        if (activatedByUserId != null) {
-            StatusRow("Activated by", activatedByUserId.toString())
-        }
-        if (state.registeredDeviceCount > 0) {
-            StatusRow("Registered devices", state.registeredDeviceCount.toString())
-        }
-        if (state.providerCountsText.isNotBlank()) {
-            StatusRow("Providers", state.providerCountsText)
-        }
-
-        state.lastStatus?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary) }
-        state.lastError?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
-
-        OutlinedButton(
-            onClick = { viewModel.testBackend() },
-            modifier = Modifier.fillMaxWidth(),
-            enabled = !state.isTestingBackend,
-        ) {
-            Text(if (state.isTestingBackend) "Testing..." else "Test Backend")
-        }
-
-        OutlinedButton(
-            onClick = { viewModel.registerLocalTestDevice() },
-            modifier = Modifier.fillMaxWidth(),
-            enabled = !state.isRegistering,
-        ) {
-            Text(if (state.isRegistering) "Registering..." else "Use Local Test Device")
-        }
-
-        OutlinedButton(
-            onClick = { viewModel.loadDebugData() },
-            modifier = Modifier.fillMaxWidth(),
-            enabled = !state.isRefreshing,
-        ) {
-            Text(if (state.isRefreshing) "Refreshing..." else "Load Debug Data")
-        }
-
-        OutlinedTextField(
-            value = message,
-            onValueChange = { message = it },
-            modifier = Modifier.fillMaxWidth(),
-            label = { Text("Alarm message") },
-            minLines = 3,
-        )
-
-        OutlinedTextField(
-            value = triggerUserId,
-            onValueChange = { triggerUserId = it.filter(Char::isDigit) },
-            modifier = Modifier.fillMaxWidth(),
-            label = { Text("Trigger user id (optional)") },
-            singleLine = true,
-        )
-
-        Button(
-            onClick = { showConfirm = true },
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(120.dp),
-            shape = RoundedCornerShape(28.dp),
-            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD32F2F)),
-            enabled = !state.isSending && message.isNotBlank(),
-        ) {
-            Text(
-                text = if (state.isSending) "Activating..." else "ACTIVATE ALARM",
-                fontSize = 28.sp,
-                fontWeight = FontWeight.ExtraBold,
-            )
-        }
-
-        OutlinedTextField(
-            value = adminUserId,
-            onValueChange = { adminUserId = it.filter(Char::isDigit) },
-            modifier = Modifier.fillMaxWidth(),
-            label = { Text("Admin user id to deactivate") },
-            singleLine = true,
-        )
-
-        OutlinedButton(
-            onClick = { viewModel.deactivateAlarm(adminUserId) },
-            modifier = Modifier.fillMaxWidth(),
-            enabled = !state.isDeactivating && adminUserId.isNotBlank(),
-        ) {
-            Text(if (state.isDeactivating) "Deactivating..." else "Deactivate Alarm")
-        }
-
-        if (state.recentAlerts.isNotEmpty()) {
-            Text("Recent Alerts", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-            state.recentAlerts.forEach { alert ->
-                Text(alert, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary)
+private fun ConfirmDialog(title: String, body: String, confirmLabel: String, onConfirm: () -> Unit, onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = NavySurface,
+        title = { Text(title, color = TextPri, fontWeight = FontWeight.Bold) },
+        text = { Text(body, color = TextMuted) },
+        confirmButton = {
+            Button(
+                onClick = onConfirm,
+                colors = ButtonDefaults.buttonColors(containerColor = BluePrimary),
+            ) {
+                Text(confirmLabel, fontWeight = FontWeight.Bold)
             }
-        }
-
-        Spacer(modifier = Modifier.height(12.dp))
-    }
-
-    if (showConfirm) {
-        AlertDialog(
-            onDismissRequest = { showConfirm = false },
-            title = { Text("Activate alarm?") },
-            text = { Text(message) },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        showConfirm = false
-                        viewModel.activateAlarm(message, triggerUserId)
-                    },
-                ) {
-                    Text("Activate")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showConfirm = false }) {
-                    Text("Cancel")
-                }
-            },
-        )
-    }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel", color = TextMuted) }
+        },
+    )
 }
 
 @Composable
-private fun AlarmBanner(alarm: AlarmUiState) {
-    val color = if (alarm.isActive) Color(0xFFD32F2F) else Color(0xFF1F7A4D)
-    val text = if (alarm.isActive) "ALARM ACTIVE" else "Alarm clear"
-    val detail = if (alarm.isActive) alarm.message ?: "Emergency alert in progress." else "No active school alarm."
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(color, RoundedCornerShape(18.dp))
-            .padding(18.dp),
-    ) {
-        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text(text, color = Color.White, fontWeight = FontWeight.ExtraBold, fontSize = 22.sp)
-            Text(detail, color = Color.White)
-        }
-    }
+private fun SettingsDialog(onDismiss: () -> Unit) {
+    val ctx = LocalContext.current
+    var apiKey by remember { mutableStateOf(getApiKey(ctx)) }
+    var userId by remember { mutableStateOf(getUserId(ctx)) }
+    var saved by remember { mutableStateOf(false) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = NavySurface,
+        title = { Text("Settings", color = TextPri, fontWeight = FontWeight.Bold) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                OutlinedTextField(
+                    value = apiKey,
+                    onValueChange = { apiKey = it },
+                    label = { Text("API Key", color = TextMuted) },
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = BluePrimary,
+                        unfocusedBorderColor = Color(0xFF2A3F5F),
+                        focusedTextColor = TextPri,
+                        unfocusedTextColor = TextPri,
+                        cursorColor = BluePrimary,
+                    ),
+                )
+                OutlinedTextField(
+                    value = userId,
+                    onValueChange = { userId = it.filter(Char::isDigit) },
+                    label = { Text("Your User ID", color = TextMuted) },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = BluePrimary,
+                        unfocusedBorderColor = Color(0xFF2A3F5F),
+                        focusedTextColor = TextPri,
+                        unfocusedTextColor = TextPri,
+                        cursorColor = BluePrimary,
+                    ),
+                )
+                if (saved) Text("Saved.", color = AlarmGreen, fontSize = 13.sp)
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    prefs(ctx).edit()
+                        .putString(KEY_API, apiKey.trim())
+                        .putString(KEY_UID, userId.trim())
+                        .apply()
+                    saved = true
+                },
+                colors = ButtonDefaults.buttonColors(containerColor = BluePrimary),
+            ) { Text("Save") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Close", color = TextMuted) }
+        },
+    )
 }
 
+// ── Alarm sound ────────────────────────────────────────────────────────────────
 @Composable
 private fun AlarmSoundEffect(isAlarmActive: Boolean) {
-    val context = LocalContext.current
-    val player = remember { AlarmPlayer(context.applicationContext) }
+    val ctx = LocalContext.current
+    val player = remember { AlarmPlayer(ctx.applicationContext) }
 
     DisposableEffect(isAlarmActive) {
-        if (isAlarmActive) {
-            player.start()
-        } else {
-            player.stop()
-        }
-        onDispose { }
+        if (isAlarmActive) player.start() else player.stop()
+        onDispose {}
     }
-
     DisposableEffect(Unit) {
         onDispose { player.release() }
     }
 }
 
-private class AlarmPlayer(private val context: Context) {
-    private var mediaPlayer: MediaPlayer? = null
+private class AlarmPlayer(private val ctx: Context) {
+    private var player: MediaPlayer? = null
 
     fun start() {
-        if (mediaPlayer?.isPlaying == true) return
-        val uri = defaultAlarmUri()
-        val player = MediaPlayer()
-        player.setAudioAttributes(
-            AudioAttributes.Builder()
-                .setUsage(AudioAttributes.USAGE_ALARM)
-                .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                .build(),
-        )
-        player.setDataSource(context, uri)
-        player.isLooping = true
-        player.prepare()
-        player.start()
-        mediaPlayer = player
+        if (player?.isPlaying == true) return
+        val uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
+            ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+            ?: return
+        player = MediaPlayer().apply {
+            setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_ALARM)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                    .build()
+            )
+            setDataSource(ctx, uri)
+            isLooping = true
+            prepare()
+            start()
+        }
     }
 
     fun stop() {
-        mediaPlayer?.run {
-            if (isPlaying) {
-                stop()
-            }
-            reset()
-            release()
-        }
-        mediaPlayer = null
+        player?.run { if (isPlaying) stop(); reset(); release() }
+        player = null
     }
 
-    fun release() {
-        stop()
-    }
-
-    private fun defaultAlarmUri(): Uri {
-        return RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
-            ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
-    }
+    fun release() = stop()
 }
 
-@Composable
-private fun StatusRow(label: String, value: String) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(label, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.secondary)
-        Text(value, style = MaterialTheme.typography.bodyMedium)
+// ── Backend client ─────────────────────────────────────────────────────────────
+private class BackendClient(baseUrl: String, private val apiKey: String) {
+    private val http = OkHttpClient.Builder()
+        .connectTimeout(10, TimeUnit.SECONDS)
+        .readTimeout(10, TimeUnit.SECONDS)
+        .build()
+    private val json = "application/json; charset=utf-8".toMediaType()
+    private val base = baseUrl.trimEnd('/')
+
+    private fun Request.Builder.withAuth() = apply {
+        if (apiKey.isNotBlank()) header("X-API-Key", apiKey)
     }
-}
 
-@Composable
-private fun BlueBirdAlertsTheme(content: @Composable () -> Unit) {
-    MaterialTheme(content = content)
-}
-
-private fun jsonObjectToMap(jsonObject: JSONObject?): Map<String, Int> {
-    if (jsonObject == null) return emptyMap()
-    return buildMap {
-        val keys = jsonObject.keys()
-        while (keys.hasNext()) {
-            val key = keys.next()
-            put(key, jsonObject.optInt(key))
+    fun alarmStatus(): AlarmStatus {
+        val req = Request.Builder().url("$base/alarm/status").withAuth().get().build()
+        http.newCall(req).execute().use { res ->
+            val body = requireSuccess(res)
+            val j = JSONObject(body)
+            return AlarmStatus(
+                isActive          = j.optBoolean("is_active"),
+                message           = j.optString("message").ifBlank { null },
+                activatedAt       = j.optString("activated_at").ifBlank { null },
+                activatedByUserId = if (j.has("activated_by_user_id") && !j.isNull("activated_by_user_id"))
+                    j.optInt("activated_by_user_id") else null,
+            )
         }
     }
-}
 
-private const val LOCAL_TEST_DEVICE_TOKEN = "local-android-device-token-001"
+    fun activateAlarm(message: String, userId: Int?): AlarmStatus {
+        val body = JSONObject().put("message", message).apply { userId?.let { put("user_id", it) } }
+        val req = Request.Builder()
+            .url("$base/alarm/activate")
+            .withAuth()
+            .post(body.toString().toRequestBody(json))
+            .build()
+        http.newCall(req).execute().use { parseAlarm(it) }
+    }
+
+    fun deactivateAlarm(userId: Int?): AlarmStatus {
+        val body = JSONObject().apply { userId?.let { put("user_id", it) } }
+        val req = Request.Builder()
+            .url("$base/alarm/deactivate")
+            .withAuth()
+            .post(body.toString().toRequestBody(json))
+            .build()
+        http.newCall(req).execute().use { parseAlarm(it) }
+    }
+
+    private fun parseAlarm(res: okhttp3.Response): AlarmStatus {
+        val body = requireSuccess(res)
+        val j = JSONObject(body)
+        return AlarmStatus(
+            isActive          = j.optBoolean("is_active"),
+            message           = j.optString("message").ifBlank { null },
+            activatedAt       = j.optString("activated_at").ifBlank { null },
+            activatedByUserId = if (j.has("activated_by_user_id") && !j.isNull("activated_by_user_id"))
+                j.optInt("activated_by_user_id") else null,
+        )
+    }
+
+    private fun requireSuccess(res: okhttp3.Response): String {
+        val body = res.body?.string().orEmpty()
+        if (!res.isSuccessful) {
+            val detail = runCatching { JSONObject(body).optString("detail") }.getOrDefault(body)
+            error(detail.ifBlank { "Request failed (${res.code})" })
+        }
+        return body
+    }
+}
