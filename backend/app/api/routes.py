@@ -103,6 +103,11 @@ async def _require_admin_user(users: UserStore, user_id: Optional[int]) -> int:
     return user.id
 
 
+@router.get("/", include_in_schema=False)
+async def root() -> RedirectResponse:
+    return RedirectResponse(url="/admin", status_code=status.HTTP_303_SEE_OTHER)
+
+
 @router.get("/health")
 async def health() -> dict:
     return {"ok": True}
