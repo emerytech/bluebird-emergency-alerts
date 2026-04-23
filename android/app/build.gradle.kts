@@ -15,7 +15,7 @@ android {
         versionName = "1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        buildConfigField("String", "BACKEND_BASE_URL", "\"http://10.7.0.171:8000\"")
+        buildConfigField("String", "BACKEND_BASE_URL", "\"https://bluebird.ets3d.com\"")
     }
 
     buildTypes {
