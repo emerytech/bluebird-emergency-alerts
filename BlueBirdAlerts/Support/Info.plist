@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
 	<key>BACKEND_BASE_URL</key>
-	<string>http://10.7.0.171:8000</string>
+	<string>https://bluebird.ets3d.com</string>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>

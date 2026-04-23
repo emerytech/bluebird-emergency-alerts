@@ -7,6 +7,6 @@ enum Config {
             return url
         }
 
-        return URL(string: "http://10.7.0.171:8000")!
+        return URL(string: "https://bluebird.ets3d.com")!
     }
 }

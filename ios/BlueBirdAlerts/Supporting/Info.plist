@@ -40,19 +40,12 @@
 
   <!-- Used by Config.backendBaseURL -->
   <key>BACKEND_BASE_URL</key>
-  <string>http://10.1.1.90:8000</string>
+  <string>https://bluebird.ets3d.com</string>
 
   <!-- Recommended so APNs notifications can be delivered in background. -->
   <key>UIBackgroundModes</key>
   <array>
     <string>remote-notification</string>
   </array>
-
-  <!-- DEV ONLY: allow http:// while testing on LAN. Remove for production (use HTTPS). -->
-  <key>NSAppTransportSecurity</key>
-  <dict>
-    <key>NSAllowsArbitraryLoads</key>
-    <true/>
-  </dict>
 </dict>
 </plist>

@@ -7,7 +7,6 @@ enum Config {
             return url
         }
 
-        // Safe fallback for simulator. For a real iPhone, set BACKEND_BASE_URL to your Mac's LAN IP.
-        return URL(string: "http://127.0.0.1:8000")!
+        return URL(string: "https://bluebird.ets3d.com")!
     }
 }
