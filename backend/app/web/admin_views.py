@@ -705,13 +705,13 @@ def render_admin_page(
                 <div class="metric-value" style="font-size:1.3rem;">{escape(server_info.get("pid", "—"))}</div>
               </article>
             </div>
-            {'<p class="mini-copy" style="margin-bottom:14px;">No restart command configured. Set <code>SERVER_RESTART_COMMAND</code> in the server environment to enable this button.</p>' if server_info.get("restart_configured") != "yes" else ""}
+            <p class="mini-copy" style="margin-bottom:14px;">
+              {'Uses <code>SERVER_RESTART_COMMAND</code> env var.' if server_info.get("restart_configured") == "yes" else 'No <code>SERVER_RESTART_COMMAND</code> set — will self-restart the process.'}
+            </p>
             <form method="post" action="/admin/server/restart"
                   onsubmit="return confirm('Restart the backend service now? The dashboard will be unavailable for a few seconds.');">
               <div class="button-row">
-                <button class="button button-danger" type="submit" {'disabled' if server_info.get("restart_configured") != "yes" else ""}>
-                  Restart service
-                </button>
+                <button class="button button-danger" type="submit">Restart service</button>
               </div>
             </form>
           </section>

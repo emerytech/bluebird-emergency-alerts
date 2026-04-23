@@ -5,6 +5,7 @@ import logging
 import os
 import socket
 import sys
+import time
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -313,19 +314,23 @@ async def admin_logout(request: Request) -> RedirectResponse:
     return RedirectResponse(url="/admin/login", status_code=status.HTTP_303_SEE_OTHER)
 
 
+def _do_restart(command: Optional[str]) -> None:
+    time.sleep(0.8)
+    if command:
+        os.system(command)
+    else:
+        # Self-restart: re-exec the same process image (ported from emeryos).
+        try:
+            os.execv(sys.argv[0], sys.argv)
+        except Exception:
+            os.execv(sys.executable, [sys.executable] + sys.argv)
+
+
 @router.post("/admin/server/restart", include_in_schema=False)
 async def server_restart(request: Request, background_tasks: BackgroundTasks) -> RedirectResponse:
     await _require_dashboard_admin(request)
     command = request.app.state.settings.SERVER_RESTART_COMMAND
-    if not command:
-        _set_flash(request, error="No restart command configured (SERVER_RESTART_COMMAND is not set).")
-        return RedirectResponse(url="/admin#server", status_code=status.HTTP_303_SEE_OTHER)
-
-    async def _run_restart(cmd: str) -> None:
-        await asyncio.sleep(0.8)
-        await asyncio.create_subprocess_shell(cmd)
-
-    background_tasks.add_task(_run_restart, command)
+    background_tasks.add_task(_do_restart, command)
     _set_flash(request, message="Restart initiated. The service will be back in a few seconds.")
     return RedirectResponse(url="/admin#server", status_code=status.HTTP_303_SEE_OTHER)
 
