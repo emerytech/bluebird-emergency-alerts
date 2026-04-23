@@ -430,6 +430,55 @@ def _render_user_cards(users: Sequence[UserRecord]) -> str:
     return "".join(cards)
 
 
+def render_change_password_page(
+    *,
+    user_name: str,
+    error: Optional[str] = None,
+) -> str:
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Change Password — BlueBird Admin</title>
+  <style>{_base_styles()}</style>
+</head>
+<body>
+  <main class="login-shell">
+    <section class="hero-card">
+      <div class="stack">
+        <p class="eyebrow">BlueBird Alerts</p>
+        <h1>Password change required</h1>
+        <p class="hero-copy">
+          Your account was set up with a temporary password. Please choose a new password before continuing.
+        </p>
+      </div>
+    </section>
+    <section class="login-panel">
+      <div class="stack">
+        <p class="eyebrow">Welcome, {escape(user_name)}</p>
+        <h2>Set a new password</h2>
+      </div>
+      {_render_flash(error, "error")}
+      <form method="post" action="/admin/change-password" class="stack">
+        <div class="field">
+          <label for="new_password">New password</label>
+          <input id="new_password" name="new_password" type="password" autocomplete="new-password" />
+        </div>
+        <div class="field">
+          <label for="confirm_password">Confirm new password</label>
+          <input id="confirm_password" name="confirm_password" type="password" autocomplete="new-password" />
+        </div>
+        <div class="button-row">
+          <button class="button button-primary" type="submit">Set password and continue</button>
+        </div>
+      </form>
+    </section>
+  </main>
+</body>
+</html>"""
+
+
 def render_admin_page(
     *,
     current_user: UserRecord,
@@ -569,6 +618,10 @@ def render_admin_page(
                 <div class="field">
                   <label>Password</label>
                   <input name="password" type="password" placeholder="optional login password" />
+                </div>
+                <div class="checkbox-row">
+                  <input type="checkbox" name="must_change_password" value="1" id="must_change_password" />
+                  <label for="must_change_password">Require password change on first login</label>
                 </div>
               </div>
               <div class="button-row">

@@ -22,6 +22,7 @@ class UserRecord:
     login_name: Optional[str]
     can_login: bool
     last_login_at: Optional[str]
+    must_change_password: bool = False
 
 
 class UserStore:
@@ -77,6 +78,8 @@ class UserStore:
             conn.execute("ALTER TABLE users ADD COLUMN password_hash TEXT NULL;")
         if "last_login_at" not in cols:
             conn.execute("ALTER TABLE users ADD COLUMN last_login_at TEXT NULL;")
+        if "must_change_password" not in cols:
+            conn.execute("ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0;")
 
     def _create_user_sync(
         self,
@@ -87,14 +90,15 @@ class UserStore:
         login_name: Optional[str],
         password_salt: Optional[str],
         password_hash: Optional[str],
+        must_change_password: bool,
     ) -> int:
         with self._connect() as conn:
             cur = conn.execute(
                 """
-                INSERT INTO users (created_at, name, role, phone_e164, is_active, login_name, password_salt, password_hash)
-                VALUES (?, ?, ?, ?, 1, ?, ?, ?);
+                INSERT INTO users (created_at, name, role, phone_e164, is_active, login_name, password_salt, password_hash, must_change_password)
+                VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?);
                 """,
-                (created_at, name, role, phone_e164, login_name, password_salt, password_hash),
+                (created_at, name, role, phone_e164, login_name, password_salt, password_hash, 1 if must_change_password else 0),
             )
             return int(cur.lastrowid)
 
@@ -106,6 +110,7 @@ class UserStore:
         phone_e164: Optional[str],
         login_name: Optional[str] = None,
         password: Optional[str] = None,
+        must_change_password: bool = False,
     ) -> int:
         created_at = datetime.now(timezone.utc).isoformat()
         normalized_login = login_name.strip().lower() if login_name else None
@@ -122,13 +127,14 @@ class UserStore:
             normalized_login,
             password_salt,
             password_hash,
+            must_change_password,
         )
 
     def _list_users_sync(self) -> List[UserRecord]:
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT id, created_at, name, role, phone_e164, is_active, login_name, password_hash, last_login_at
+                SELECT id, created_at, name, role, phone_e164, is_active, login_name, password_hash, last_login_at, must_change_password
                 FROM users
                 ORDER BY id ASC;
                 """
@@ -145,6 +151,7 @@ class UserStore:
                 login_name=str(row[6]) if row[6] is not None else None,
                 can_login=bool(row[6]) and bool(row[7]),
                 last_login_at=str(row[8]) if row[8] is not None else None,
+                must_change_password=bool(int(row[9])) if row[9] is not None else False,
             )
             for row in rows
         ]
@@ -200,7 +207,7 @@ class UserStore:
         with self._connect() as conn:
             row = conn.execute(
                 """
-                SELECT id, created_at, name, role, phone_e164, is_active, login_name, password_hash, last_login_at
+                SELECT id, created_at, name, role, phone_e164, is_active, login_name, password_hash, last_login_at, must_change_password
                 FROM users
                 WHERE id = ?
                 LIMIT 1;
@@ -219,6 +226,7 @@ class UserStore:
             login_name=str(row[6]) if row[6] is not None else None,
             can_login=bool(row[6]) and bool(row[7]),
             last_login_at=str(row[8]) if row[8] is not None else None,
+            must_change_password=bool(int(row[9])) if row[9] is not None else False,
         )
 
     async def get_user(self, user_id: int) -> Optional[UserRecord]:
@@ -349,7 +357,7 @@ class UserStore:
         with self._connect() as conn:
             row = conn.execute(
                 """
-                SELECT id, created_at, name, role, phone_e164, is_active, login_name, password_salt, password_hash, last_login_at
+                SELECT id, created_at, name, role, phone_e164, is_active, login_name, password_salt, password_hash, last_login_at, must_change_password
                 FROM users
                 WHERE login_name = ?
                 LIMIT 1;
@@ -376,6 +384,7 @@ class UserStore:
             login_name=str(row[6]) if row[6] is not None else None,
             can_login=True,
             last_login_at=str(row[9]) if row[9] is not None else None,
+            must_change_password=bool(int(row[10])) if row[10] is not None else False,
         )
 
     async def authenticate_admin(self, login_name: str, password: str) -> Optional[UserRecord]:
@@ -397,3 +406,14 @@ class UserStore:
 
     async def delete_user(self, user_id: int) -> None:
         await anyio.to_thread.run_sync(self._delete_user_sync, int(user_id))
+
+    def _change_password_sync(self, user_id: int, password_salt: str, password_hash: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE users SET password_salt = ?, password_hash = ?, must_change_password = 0 WHERE id = ?;",
+                (password_salt, password_hash, int(user_id)),
+            )
+
+    async def change_password(self, user_id: int, new_password: str) -> None:
+        password_salt, password_hash = hash_password(new_password)
+        await anyio.to_thread.run_sync(self._change_password_sync, int(user_id), password_salt, password_hash)

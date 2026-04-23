@@ -30,7 +30,7 @@ from app.services.apns import APNsClient
 from app.services.alert_log import AlertLog
 from app.services.device_registry import DeviceRegistry
 from app.services.user_store import UserStore
-from app.web.admin_views import render_admin_page, render_login_page
+from app.web.admin_views import render_admin_page, render_change_password_page, render_login_page
 
 
 router = APIRouter()
@@ -82,6 +82,8 @@ async def _require_dashboard_admin(request: Request) -> UserStore:
     if user is None or not user.is_active or user.role != "admin" or not user.can_login:
         request.session.clear()
         raise HTTPException(status_code=status.HTTP_303_SEE_OTHER, headers={"Location": "/admin/login"})
+    if user.must_change_password:
+        raise HTTPException(status_code=status.HTTP_303_SEE_OTHER, headers={"Location": "/admin/change-password"})
     request.state.admin_user = user
     return _users(request)
 
@@ -267,6 +269,8 @@ async def admin_login(
         return RedirectResponse(url="/admin/login", status_code=status.HTTP_303_SEE_OTHER)
     request.session["admin_user_id"] = user.id
     await _users(request).mark_login(user.id)
+    if user.must_change_password:
+        return RedirectResponse(url="/admin/change-password", status_code=status.HTTP_303_SEE_OTHER)
     _set_flash(request, message=f"Welcome back, {user.name}.")
     return RedirectResponse(url="/admin", status_code=status.HTTP_303_SEE_OTHER)
 
@@ -277,6 +281,45 @@ async def admin_logout(request: Request) -> RedirectResponse:
     return RedirectResponse(url="/admin/login", status_code=status.HTTP_303_SEE_OTHER)
 
 
+@router.get("/admin/change-password", response_class=HTMLResponse, include_in_schema=False)
+async def change_password_page(request: Request) -> HTMLResponse:
+    user_id = _session_user_id(request)
+    if user_id is None:
+        return RedirectResponse(url="/admin/login", status_code=status.HTTP_303_SEE_OTHER)
+    user = await _users(request).get_user(user_id)
+    if user is None or not user.is_active:
+        request.session.clear()
+        return RedirectResponse(url="/admin/login", status_code=status.HTTP_303_SEE_OTHER)
+    if not user.must_change_password:
+        return RedirectResponse(url="/admin", status_code=status.HTTP_303_SEE_OTHER)
+    flash_message, flash_error = _pop_flash(request)
+    return HTMLResponse(render_change_password_page(user_name=user.name, error=flash_error))
+
+
+@router.post("/admin/change-password", include_in_schema=False)
+async def change_password_submit(
+    request: Request,
+    new_password: str = Form(...),
+    confirm_password: str = Form(...),
+) -> RedirectResponse:
+    user_id = _session_user_id(request)
+    if user_id is None:
+        return RedirectResponse(url="/admin/login", status_code=status.HTTP_303_SEE_OTHER)
+    user = await _users(request).get_user(user_id)
+    if user is None or not user.is_active:
+        request.session.clear()
+        return RedirectResponse(url="/admin/login", status_code=status.HTTP_303_SEE_OTHER)
+    if new_password != confirm_password:
+        _set_flash(request, error="Passwords do not match.")
+        return RedirectResponse(url="/admin/change-password", status_code=status.HTTP_303_SEE_OTHER)
+    if len(new_password) < 8:
+        _set_flash(request, error="Password must be at least 8 characters.")
+        return RedirectResponse(url="/admin/change-password", status_code=status.HTTP_303_SEE_OTHER)
+    await _users(request).change_password(user_id, new_password)
+    _set_flash(request, message="Password updated. Welcome!")
+    return RedirectResponse(url="/admin", status_code=status.HTTP_303_SEE_OTHER)
+
+
 @router.post("/admin/users/create", include_in_schema=False)
 async def admin_create_user(
     request: Request,
@@ -285,6 +328,7 @@ async def admin_create_user(
     phone_e164: str = Form(default=""),
     login_name: str = Form(default=""),
     password: str = Form(default=""),
+    must_change_password: Optional[str] = Form(default=None),
 ) -> RedirectResponse:
     await _require_dashboard_admin(request)
     normalized_name = name.strip()
@@ -306,6 +350,7 @@ async def admin_create_user(
             phone_e164=normalized_phone,
             login_name=login_name.strip() or None,
             password=password.strip() or None,
+            must_change_password=must_change_password == "1",
         )
     except Exception as exc:
         _set_flash(request, error=f"Could not create user: {exc}")
