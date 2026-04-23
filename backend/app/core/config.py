@@ -1,0 +1,51 @@
+from __future__ import annotations
+
+from typing import Optional
+
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    """
+    Centralized configuration via environment variables.
+
+    For local development:
+      - copy `.env.example` to `.env`
+      - fill in APNs values
+    """
+
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+
+    # Server
+    HOST: str = "0.0.0.0"
+    PORT: int = 8000
+    LOG_LEVEL: str = "INFO"
+
+    # SQLite (used for alert logging)
+    DB_PATH: str = "./data/bluebird.db"
+
+    # APNs
+    APNS_USE_SANDBOX: bool = True
+    APNS_TEAM_ID: Optional[str] = None
+    APNS_KEY_ID: Optional[str] = None
+    APNS_P8_PATH: Optional[str] = None
+    APNS_BUNDLE_ID: Optional[str] = None
+
+    # Reliability tuning
+    APNS_TIMEOUT_SECONDS: float = 10.0
+    APNS_CONCURRENCY: int = 50
+    APNS_MAX_RETRIES: int = 2
+
+    @property
+    def apns_host(self) -> str:
+        return "api.sandbox.push.apple.com" if self.APNS_USE_SANDBOX else "api.push.apple.com"
+
+    def apns_is_configured(self) -> bool:
+        return all(
+            [
+                self.APNS_TEAM_ID,
+                self.APNS_KEY_ID,
+                self.APNS_P8_PATH,
+                self.APNS_BUNDLE_ID,
+            ]
+        )
