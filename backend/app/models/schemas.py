@@ -226,6 +226,38 @@ class AdminMessageResponse(BaseModel):
     message: str
 
 
+class AdminMessageInboxItem(BaseModel):
+    message_id: int
+    created_at: str
+    sender_user_id: Optional[int] = None
+    sender_label: Optional[str] = None
+    message: str
+    status: str
+    response_message: Optional[str] = None
+    response_created_at: Optional[str] = None
+    response_by_user_id: Optional[int] = None
+    response_by_label: Optional[str] = None
+
+
+class AdminMessageInboxResponse(BaseModel):
+    unread_count: int
+    messages: List[AdminMessageInboxItem]
+
+
+class AdminMessageReplyRequest(BaseModel):
+    admin_user_id: int
+    message_id: int
+    message: str = Field(..., min_length=1, max_length=240)
+
+    @field_validator("message")
+    @classmethod
+    def normalize_reply_message(cls, v: str) -> str:
+        normalized = v.strip()
+        if not normalized:
+            raise ValueError("message is required")
+        return normalized
+
+
 class QuietPeriodRequestCreate(BaseModel):
     user_id: int
     reason: Optional[str] = Field(default=None, max_length=240)

@@ -21,6 +21,9 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 
 from app.api.deps import require_api_key
 from app.models.schemas import (
+    AdminMessageInboxItem,
+    AdminMessageInboxResponse,
+    AdminMessageReplyRequest,
     AdminMessageRequest,
     AdminMessageResponse,
     AlarmActivateRequest,
@@ -55,7 +58,7 @@ from app.services.alert_log import AlertLog
 from app.services.device_registry import DeviceRegistry
 from app.services.fcm import FCMClient
 from app.services.quiet_period_store import QuietPeriodStore
-from app.services.report_store import ReportStore
+from app.services.report_store import AdminMessageRecord, ReportStore
 from app.services.platform_admin_store import PlatformAdminStore
 from app.services.school_registry import SchoolRegistry
 from app.services.totp import generate_secret as generate_totp_secret, otpauth_uri, verify_code as verify_totp_code
@@ -498,6 +501,28 @@ async def _require_admin_user(users: UserStore, user_id: Optional[int]) -> int:
     return user.id
 
 
+async def _require_dashboard_admin_id(users: UserStore, user_id: int) -> int:
+    user = await users.get_user(int(user_id))
+    if user is None or not user.is_active or user.role != "admin":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only active admin users can perform this action")
+    return user.id
+
+
+def _to_admin_inbox_item(item: AdminMessageRecord) -> AdminMessageInboxItem:
+    return AdminMessageInboxItem(
+        message_id=item.id,
+        created_at=item.created_at,
+        sender_user_id=item.sender_user_id,
+        sender_label=item.sender_label,
+        message=item.message,
+        status=item.status,
+        response_message=item.response_message,
+        response_created_at=item.response_created_at,
+        response_by_user_id=item.response_by_user_id,
+        response_by_label=item.response_by_label,
+    )
+
+
 @router.get("/", include_in_schema=False)
 async def root(request: Request) -> RedirectResponse:
     school_prefix = _school_prefix(request)
@@ -694,6 +719,8 @@ async def admin_dashboard(request: Request) -> HTMLResponse:
     alarm_state = await _alarm_store(request).get_state()
     reports = await _reports(request).list_reports(limit=25)
     broadcasts = await _reports(request).list_broadcast_updates(limit=10)
+    admin_messages = await _reports(request).list_admin_messages(limit=40)
+    unread_admin_messages = sum(1 for item in admin_messages if item.status == "open")
     quiet_periods = await _quiet_periods(request).list_recent(limit=25)
     flash_message, flash_error = _pop_flash(request)
     html = render_admin_page(
@@ -708,6 +735,8 @@ async def admin_dashboard(request: Request) -> HTMLResponse:
         alarm_state=alarm_state,
         reports=reports,
         broadcasts=broadcasts,
+        admin_messages=admin_messages,
+        unread_admin_messages=unread_admin_messages,
         quiet_periods=quiet_periods,
         apns_configured=_apns(request).is_configured(),
         twilio_configured=_broadcaster(request).twilio_configured(),
@@ -1796,6 +1825,31 @@ async def admin_create_broadcast(
     return RedirectResponse(url="/admin#reports", status_code=status.HTTP_303_SEE_OTHER)
 
 
+@router.post("/admin/messages/{message_id}/reply", include_in_schema=False)
+async def admin_reply_message(
+    request: Request,
+    message_id: int,
+    message: str = Form(...),
+) -> RedirectResponse:
+    await _require_dashboard_admin(request)
+    reply_text = message.strip()
+    if not reply_text:
+        _set_flash(request, error="Reply message cannot be empty.")
+        return RedirectResponse(url="/admin#messages", status_code=status.HTTP_303_SEE_OTHER)
+    admin_id = _session_user_id(request)
+    reply = await _reports(request).reply_admin_message(
+        message_id=message_id,
+        response_message=reply_text,
+        response_by_user_id=admin_id,
+        response_by_label=_current_school_actor_label(request),
+    )
+    if reply is None:
+        _set_flash(request, error="Message was not found.")
+        return RedirectResponse(url="/admin#messages", status_code=status.HTTP_303_SEE_OTHER)
+    _set_flash(request, message="Reply sent to user message.")
+    return RedirectResponse(url="/admin#messages", status_code=status.HTTP_303_SEE_OTHER)
+
+
 @router.post("/admin/quiet-periods/grant", include_in_schema=False)
 async def admin_grant_quiet_period(
     request: Request,
@@ -2075,20 +2129,73 @@ async def message_admin(
     _: None = Depends(require_api_key),
 ) -> AdminMessageResponse:
     user_id = await _validated_user_id(_users(request), body.user_id)
-    message_id = await _reports(request).create_report(
-        user_id=user_id,
-        category="admin_message",
-        note=body.message,
+    sender_user = await _users(request).get_user(user_id) if user_id is not None else None
+    sender_label = (
+        sender_user.name
+        if sender_user is not None
+        else (f"User #{user_id}" if user_id is not None else "Unknown user")
     )
-    reports = await _reports(request).list_reports(limit=20)
-    created = next((item for item in reports if item.id == message_id), None)
+    message_id = await _reports(request).create_admin_message(
+        sender_user_id=user_id,
+        sender_label=sender_label,
+        message=body.message,
+    )
+    messages = await _reports(request).list_admin_messages(limit=30)
+    created = next((item for item in messages if item.id == message_id), None)
     if created is None:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not load created admin message")
     return AdminMessageResponse(
         message_id=created.id,
         created_at=created.created_at,
-        user_id=created.user_id,
-        message=created.note or "",
+        user_id=created.sender_user_id,
+        message=created.message,
+    )
+
+
+@router.get("/messages/inbox", response_model=AdminMessageInboxResponse)
+async def message_inbox(
+    request: Request,
+    user_id: int = Query(..., ge=1),
+    limit: int = Query(default=30, ge=1, le=100),
+    _: None = Depends(require_api_key),
+) -> AdminMessageInboxResponse:
+    users = _users(request)
+    user = await users.get_user(user_id)
+    if user is None or not user.is_active:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Active user is required")
+    if user.role == "admin":
+        messages = await _reports(request).list_admin_messages(limit=limit)
+    else:
+        messages = await _reports(request).list_admin_messages_for_user(user_id=user_id, limit=limit)
+    unread = sum(1 for item in messages if item.status == "open")
+    return AdminMessageInboxResponse(
+        unread_count=unread,
+        messages=[_to_admin_inbox_item(item) for item in messages],
+    )
+
+
+@router.post("/messages/reply", response_model=AdminMessageResponse)
+async def message_reply(
+    body: AdminMessageReplyRequest,
+    request: Request,
+    _: None = Depends(require_api_key),
+) -> AdminMessageResponse:
+    users = _users(request)
+    admin_id = await _require_dashboard_admin_id(users, body.admin_user_id)
+    admin_user = await users.get_user(admin_id)
+    reply = await _reports(request).reply_admin_message(
+        message_id=body.message_id,
+        response_message=body.message,
+        response_by_user_id=admin_id,
+        response_by_label=(admin_user.login_name or admin_user.name) if admin_user else f"Admin #{admin_id}",
+    )
+    if reply is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Message not found")
+    return AdminMessageResponse(
+        message_id=reply.id,
+        created_at=reply.created_at,
+        user_id=reply.sender_user_id,
+        message=reply.response_message or "",
     )
 
 

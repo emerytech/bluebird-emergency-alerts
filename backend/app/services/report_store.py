@@ -27,6 +27,20 @@ class BroadcastUpdateRecord:
     message: str
 
 
+@dataclass(frozen=True)
+class AdminMessageRecord:
+    id: int
+    created_at: str
+    sender_user_id: Optional[int]
+    sender_label: Optional[str]
+    message: str
+    status: str
+    response_message: Optional[str]
+    response_created_at: Optional[str]
+    response_by_user_id: Optional[int]
+    response_by_label: Optional[str]
+
+
 class ReportStore:
     def __init__(self, db_path: str) -> None:
         self._db_path = db_path
@@ -58,6 +72,22 @@ class ReportStore:
                     admin_user_id INTEGER NULL,
                     admin_label TEXT NULL,
                     message TEXT NOT NULL
+                );
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS admin_messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created_at TEXT NOT NULL,
+                    sender_user_id INTEGER NULL,
+                    sender_label TEXT NULL,
+                    message TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'open',
+                    response_message TEXT NULL,
+                    response_created_at TEXT NULL,
+                    response_by_user_id INTEGER NULL,
+                    response_by_label TEXT NULL
                 );
                 """
             )
@@ -157,3 +187,138 @@ class ReportStore:
 
     async def list_broadcast_updates(self, *, limit: int = 5) -> List[BroadcastUpdateRecord]:
         return await anyio.to_thread.run_sync(self._list_broadcast_updates_sync, int(limit))
+
+    def _create_admin_message_sync(
+        self,
+        created_at: str,
+        sender_user_id: Optional[int],
+        sender_label: Optional[str],
+        message: str,
+    ) -> int:
+        with self._connect() as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO admin_messages (created_at, sender_user_id, sender_label, message, status)
+                VALUES (?, ?, ?, ?, 'open');
+                """,
+                (created_at, sender_user_id, sender_label, message),
+            )
+            return int(cur.lastrowid)
+
+    async def create_admin_message(
+        self,
+        *,
+        sender_user_id: Optional[int],
+        sender_label: Optional[str],
+        message: str,
+    ) -> int:
+        return await anyio.to_thread.run_sync(
+            self._create_admin_message_sync,
+            datetime.now(timezone.utc).isoformat(),
+            sender_user_id,
+            sender_label,
+            message,
+        )
+
+    def _reply_admin_message_sync(
+        self,
+        message_id: int,
+        response_message: str,
+        response_by_user_id: Optional[int],
+        response_by_label: Optional[str],
+    ) -> Optional[AdminMessageRecord]:
+        response_created_at = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE admin_messages
+                SET status = 'answered',
+                    response_message = ?,
+                    response_created_at = ?,
+                    response_by_user_id = ?,
+                    response_by_label = ?
+                WHERE id = ?;
+                """,
+                (
+                    response_message,
+                    response_created_at,
+                    response_by_user_id,
+                    response_by_label,
+                    int(message_id),
+                ),
+            )
+            row = conn.execute(
+                """
+                SELECT id, created_at, sender_user_id, sender_label, message, status,
+                       response_message, response_created_at, response_by_user_id, response_by_label
+                FROM admin_messages
+                WHERE id = ?
+                LIMIT 1;
+                """,
+                (int(message_id),),
+            ).fetchone()
+        if row is None:
+            return None
+        return AdminMessageRecord(
+            id=int(row[0]),
+            created_at=str(row[1]),
+            sender_user_id=int(row[2]) if row[2] is not None else None,
+            sender_label=str(row[3]) if row[3] is not None else None,
+            message=str(row[4]),
+            status=str(row[5]),
+            response_message=str(row[6]) if row[6] is not None else None,
+            response_created_at=str(row[7]) if row[7] is not None else None,
+            response_by_user_id=int(row[8]) if row[8] is not None else None,
+            response_by_label=str(row[9]) if row[9] is not None else None,
+        )
+
+    async def reply_admin_message(
+        self,
+        *,
+        message_id: int,
+        response_message: str,
+        response_by_user_id: Optional[int],
+        response_by_label: Optional[str],
+    ) -> Optional[AdminMessageRecord]:
+        return await anyio.to_thread.run_sync(
+            self._reply_admin_message_sync,
+            int(message_id),
+            response_message,
+            response_by_user_id,
+            response_by_label,
+        )
+
+    def _list_admin_messages_sync(self, limit: int) -> List[AdminMessageRecord]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, created_at, sender_user_id, sender_label, message, status,
+                       response_message, response_created_at, response_by_user_id, response_by_label
+                FROM admin_messages
+                ORDER BY id DESC
+                LIMIT ?;
+                """,
+                (int(limit),),
+            ).fetchall()
+        return [
+            AdminMessageRecord(
+                id=int(row[0]),
+                created_at=str(row[1]),
+                sender_user_id=int(row[2]) if row[2] is not None else None,
+                sender_label=str(row[3]) if row[3] is not None else None,
+                message=str(row[4]),
+                status=str(row[5]),
+                response_message=str(row[6]) if row[6] is not None else None,
+                response_created_at=str(row[7]) if row[7] is not None else None,
+                response_by_user_id=int(row[8]) if row[8] is not None else None,
+                response_by_label=str(row[9]) if row[9] is not None else None,
+            )
+            for row in rows
+        ]
+
+    async def list_admin_messages(self, *, limit: int = 50) -> List[AdminMessageRecord]:
+        return await anyio.to_thread.run_sync(self._list_admin_messages_sync, int(limit))
+
+    async def list_admin_messages_for_user(self, *, user_id: int, limit: int = 50) -> List[AdminMessageRecord]:
+        messages = await self.list_admin_messages(limit=limit)
+        return [item for item in messages if item.sender_user_id == int(user_id)]

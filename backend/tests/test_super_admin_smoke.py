@@ -152,3 +152,84 @@ def test_platform_audit_feed_endpoint_returns_labeled_human_readable_rows(client
     assert row["actor"] == "Platform Super Admin (superadmin)"
     assert "Avery Lane" in row["details"]
     assert "User #" not in row["details"]
+
+
+def test_admin_message_inbox_and_reply_flow(client: TestClient, login_super_admin) -> None:
+    login_super_admin()
+    _create_school(client, name="Cedar High", slug="cedar-high")
+    _enter_school(client, "cedar-high")
+
+    create_teacher = client.post(
+        "/cedar-high/admin/users/create",
+        data={
+            "name": "Taylor Teacher",
+            "role": "teacher",
+            "phone_e164": "",
+            "login_name": "",
+            "password": "",
+        },
+        follow_redirects=False,
+    )
+    assert create_teacher.status_code == 303
+
+    create_admin = client.post(
+        "/cedar-high/admin/users/create",
+        data={
+            "name": "Alex Admin",
+            "role": "admin",
+            "phone_e164": "",
+            "login_name": "alex.admin",
+            "password": "Password@123",
+        },
+        follow_redirects=False,
+    )
+    assert create_admin.status_code == 303
+
+    school = client.app.state.tenant_manager.school_for_slug("cedar-high")
+    assert school is not None
+    tenant = client.app.state.tenant_manager.get(school)
+    users = asyncio.run(tenant.user_store.list_users())
+    teacher = next(u for u in users if u.name == "Taylor Teacher")
+    admin = next(u for u in users if u.name == "Alex Admin")
+
+    created = client.post(
+        "/cedar-high/message-admin",
+        json={"user_id": teacher.id, "message": "Need help by room 12"},
+        headers={"X-API-Key": "test-api-key"},
+    )
+    assert created.status_code == 200
+    created_body = created.json()
+    assert created_body["message"] == "Need help by room 12"
+    message_id = int(created_body["message_id"])
+
+    admin_inbox = client.get(
+        f"/cedar-high/messages/inbox?user_id={admin.id}&limit=20",
+        headers={"X-API-Key": "test-api-key"},
+    )
+    assert admin_inbox.status_code == 200
+    admin_payload = admin_inbox.json()
+    assert admin_payload["unread_count"] >= 1
+    item = next(row for row in admin_payload["messages"] if int(row["message_id"]) == message_id)
+    assert item["sender_label"] == "Taylor Teacher"
+    assert item["status"] == "open"
+
+    replied = client.post(
+        "/cedar-high/messages/reply",
+        json={
+            "admin_user_id": admin.id,
+            "message_id": message_id,
+            "message": "Received. Help is on the way.",
+        },
+        headers={"X-API-Key": "test-api-key"},
+    )
+    assert replied.status_code == 200
+
+    teacher_inbox = client.get(
+        f"/cedar-high/messages/inbox?user_id={teacher.id}&limit=20",
+        headers={"X-API-Key": "test-api-key"},
+    )
+    assert teacher_inbox.status_code == 200
+    teacher_payload = teacher_inbox.json()
+    teacher_item = next(row for row in teacher_payload["messages"] if int(row["message_id"]) == message_id)
+    assert teacher_item["status"] == "answered"
+    assert teacher_item["response_message"] == "Received. Help is on the way."

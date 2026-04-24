@@ -182,6 +182,18 @@ data class BroadcastUpdate(
     val message: String,
 )
 
+data class AdminInboxMessage(
+    val messageId: Int,
+    val createdAt: String,
+    val senderUserId: Int? = null,
+    val senderLabel: String? = null,
+    val message: String,
+    val status: String,
+    val responseMessage: String? = null,
+    val responseCreatedAt: String? = null,
+    val responseByLabel: String? = null,
+)
+
 private data class SafetyAction(
     val key: String,
     val title: String,
@@ -243,6 +255,8 @@ data class UiState(
     val isBusy: Boolean         = false,
     val successMsg: String?     = null,
     val errorMsg: String?       = null,
+    val adminInbox: List<AdminInboxMessage> = emptyList(),
+    val unreadAdminMessages: Int = 0,
 )
 
 // ── ViewModel ──────────────────────────────────────────────────────────────────
@@ -340,6 +354,38 @@ class MainViewModel : ViewModel() {
                 }
                 .onFailure { e ->
                     _state.update { it.copy(isBusy = false, errorMsg = e.message ?: "Failed to message admins.") }
+                }
+        }
+    }
+
+    fun refreshAdminInbox(ctx: Context) {
+        val userId = getUserId(ctx).toIntOrNull() ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { client!!.messageInbox(userId = userId) }
+                .onSuccess { inbox ->
+                    _state.update { it.copy(adminInbox = inbox.messages, unreadAdminMessages = inbox.unreadCount) }
+                }
+        }
+    }
+
+    fun replyToAdminMessage(ctx: Context, messageId: Int, message: String) {
+        val userId = getUserId(ctx).toIntOrNull() ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            _state.update { it.copy(isBusy = true, errorMsg = null) }
+            runCatching { client!!.replyAdminMessage(adminUserId = userId, messageId = messageId, message = message) }
+                .onSuccess {
+                    val inbox = runCatching { client!!.messageInbox(userId = userId) }.getOrNull()
+                    _state.update {
+                        it.copy(
+                            isBusy = false,
+                            successMsg = "Reply sent.",
+                            adminInbox = inbox?.messages ?: it.adminInbox,
+                            unreadAdminMessages = inbox?.unreadCount ?: it.unreadAdminMessages,
+                        )
+                    }
+                }
+                .onFailure { e ->
+                    _state.update { it.copy(isBusy = false, errorMsg = e.message ?: "Failed to reply to message.") }
                 }
         }
     }
@@ -744,11 +790,20 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
     var showMessageAdminDialog by remember { mutableStateOf(false) }
     var showSettingsScreen by remember { mutableStateOf(false) }
     var pendingSafetyAction by remember { mutableStateOf<SafetyAction?>(null) }
+    var replyTarget by remember { mutableStateOf<AdminInboxMessage?>(null) }
     val userName = remember { getUserName(ctx) }
     val userRole = remember { getUserRole(ctx) }
     val canDeactivate = remember { canDeactivateAlarm(ctx) }
+    val isAdmin = remember(userRole) { userRole.equals("admin", ignoreCase = true) }
 
     LaunchedEffect(Unit) { vm.init(ctx) }
+    LaunchedEffect(isAdmin) {
+        if (!isAdmin) return@LaunchedEffect
+        while (true) {
+            vm.refreshAdminInbox(ctx)
+            delay(8_000)
+        }
+    }
 
     // Dismiss flash messages after 3s
     LaunchedEffect(state.successMsg, state.errorMsg) {
@@ -853,6 +908,16 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                     if (state.alarm.broadcasts.isNotEmpty()) {
                         BroadcastsCard(
                             broadcasts = state.alarm.broadcasts,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 20.dp, vertical = 8.dp),
+                        )
+                    }
+                    if (isAdmin) {
+                        AdminInboxCard(
+                            messages = state.adminInbox,
+                            unreadCount = state.unreadAdminMessages,
+                            onReply = { replyTarget = it },
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(horizontal = 20.dp, vertical = 8.dp),
@@ -973,6 +1038,17 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                 vm.sendAdminMessage(ctx, message)
             },
             onDismiss = { showMessageAdminDialog = false },
+        )
+    }
+    replyTarget?.let { target ->
+        AdminReplyDialog(
+            target = target,
+            isBusy = state.isBusy,
+            onDismiss = { replyTarget = null },
+            onConfirm = { reply ->
+                replyTarget = null
+                vm.replyToAdminMessage(ctx, target.messageId, reply)
+            },
         )
     }
 }
@@ -1460,6 +1536,109 @@ private fun MessageAdminDialog(
 }
 
 @Composable
+private fun AdminInboxCard(
+    messages: List<AdminInboxMessage>,
+    unreadCount: Int,
+    onReply: (AdminInboxMessage) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(20.dp),
+        color = SurfaceMain,
+        tonalElevation = 2.dp,
+    ) {
+        Column(
+            modifier = Modifier.padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Text("Admin Inbox 🔔 ${if (unreadCount > 0) "($unreadCount)" else ""}", color = TextPri, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+            if (messages.isEmpty()) {
+                Text("No user messages yet.", color = TextMuted, fontSize = 13.sp)
+            } else {
+                messages.take(4).forEach { item ->
+                    Surface(
+                        shape = RoundedCornerShape(14.dp),
+                        color = SurfaceSoft,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            Text(
+                                "${item.senderLabel ?: "User"} • ${item.createdAt}",
+                                color = TextMuted,
+                                fontSize = 12.sp,
+                            )
+                            Text(item.message, color = TextPri, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                            if (!item.responseMessage.isNullOrBlank()) {
+                                Text("Reply: ${item.responseMessage}", color = BlueDark, fontSize = 12.sp)
+                            }
+                            if (item.status == "open") {
+                                OutlinedButton(
+                                    onClick = { onReply(item) },
+                                    shape = RoundedCornerShape(10.dp),
+                                    modifier = Modifier.fillMaxWidth(),
+                                ) {
+                                    Text("Reply", fontWeight = FontWeight.SemiBold)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AdminReplyDialog(
+    target: AdminInboxMessage,
+    isBusy: Boolean,
+    onDismiss: () -> Unit,
+    onConfirm: (String) -> Unit,
+) {
+    var reply by remember(target.messageId) { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = SurfaceMain,
+        title = { Text("Reply to ${target.senderLabel ?: "user"}", color = TextPri, fontWeight = FontWeight.Bold) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(target.message, color = TextMuted, fontSize = 13.sp)
+                OutlinedTextField(
+                    value = reply,
+                    onValueChange = { reply = it },
+                    label = { Text("Reply message", color = TextMuted) },
+                    minLines = 2,
+                    maxLines = 4,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = BluePrimary,
+                        unfocusedBorderColor = BorderSoft,
+                        focusedTextColor = TextPri,
+                        unfocusedTextColor = TextPri,
+                        cursorColor = BluePrimary,
+                        focusedContainerColor = SurfaceSoft,
+                        unfocusedContainerColor = SurfaceSoft,
+                    ),
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onConfirm(reply.trim()) },
+                enabled = !isBusy && reply.isNotBlank(),
+                colors = ButtonDefaults.buttonColors(containerColor = BluePrimary),
+            ) { Text("Send Reply") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel", color = TextMuted) }
+        },
+    )
+}
+
+@Composable
 private fun ConfirmDialog(title: String, body: String, confirmLabel: String, onConfirm: () -> Unit, onDismiss: () -> Unit) {
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -1695,6 +1874,56 @@ private class BackendClient(baseUrl: String, private val apiKey: String) {
         http.newCall(req).execute().use { requireSuccess(it) }
     }
 
+    fun messageInbox(userId: Int): MessageInboxResponse {
+        val req = Request.Builder()
+            .url("$base/messages/inbox?user_id=$userId&limit=40")
+            .withAuth()
+            .get()
+            .build()
+        http.newCall(req).execute().use { res ->
+            val body = requireSuccess(res)
+            val j = JSONObject(body)
+            val messagesJson = j.optJSONArray("messages")
+            val messages = buildList {
+                if (messagesJson != null) {
+                    for (i in 0 until messagesJson.length()) {
+                        val item = messagesJson.optJSONObject(i) ?: continue
+                        add(
+                            AdminInboxMessage(
+                                messageId = item.optInt("message_id"),
+                                createdAt = item.optString("created_at"),
+                                senderUserId = if (item.has("sender_user_id") && !item.isNull("sender_user_id")) item.optInt("sender_user_id") else null,
+                                senderLabel = item.optString("sender_label").ifBlank { null },
+                                message = item.optString("message"),
+                                status = item.optString("status"),
+                                responseMessage = item.optString("response_message").ifBlank { null },
+                                responseCreatedAt = item.optString("response_created_at").ifBlank { null },
+                                responseByLabel = item.optString("response_by_label").ifBlank { null },
+                            )
+                        )
+                    }
+                }
+            }
+            return MessageInboxResponse(
+                unreadCount = j.optInt("unread_count"),
+                messages = messages,
+            )
+        }
+    }
+
+    fun replyAdminMessage(adminUserId: Int, messageId: Int, message: String) {
+        val body = JSONObject()
+            .put("admin_user_id", adminUserId)
+            .put("message_id", messageId)
+            .put("message", message)
+        val req = Request.Builder()
+            .url("$base/messages/reply")
+            .withAuth()
+            .post(body.toString().toRequestBody(json))
+            .build()
+        http.newCall(req).execute().use { requireSuccess(it) }
+    }
+
     fun activateAlarm(message: String, userId: Int?): AlarmStatus {
         val body = JSONObject().put("message", message).apply { userId?.let { put("user_id", it) } }
         val req = Request.Builder()
@@ -1753,3 +1982,8 @@ private class BackendClient(baseUrl: String, private val apiKey: String) {
         return body
     }
 }
+
+private data class MessageInboxResponse(
+    val unreadCount: Int,
+    val messages: List<AdminInboxMessage>,
+)

@@ -8,7 +8,7 @@ from app.services.alert_log import AlertRecord
 from app.services.alarm_store import AlarmStateRecord
 from app.services.device_registry import RegisteredDevice
 from app.services.quiet_period_store import QuietPeriodRecord
-from app.services.report_store import BroadcastUpdateRecord, ReportRecord
+from app.services.report_store import AdminMessageRecord, BroadcastUpdateRecord, ReportRecord
 from app.services.school_registry import SchoolRecord
 from app.services.user_store import UserRecord
 
@@ -244,13 +244,30 @@ def _base_styles(theme: Optional[Mapping[str, str]] = None) -> str:
     .nav-group { display: grid; gap: 10px; }
     .nav-list { display: grid; gap: 10px; margin-top: 16px; }
     .nav-item {
-      display: block;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
       padding: 14px 16px;
       border-radius: 16px;
       color: var(--nav-text);
       background: rgba(255,255,255,0.04);
       border: 1px solid rgba(255,255,255,0.08);
       transition: transform 180ms ease, border-color 180ms ease, background 180ms ease;
+    }
+    .nav-badge {
+      display: inline-flex;
+      min-width: 20px;
+      min-height: 20px;
+      align-items: center;
+      justify-content: center;
+      padding: 0 6px;
+      border-radius: 999px;
+      background: #dc2626;
+      color: #fff;
+      font-size: 0.72rem;
+      font-weight: 800;
+      line-height: 1;
     }
     .nav-item:hover {
       transform: translateX(4px);
@@ -384,6 +401,47 @@ def _render_broadcast_rows(broadcasts: Sequence[BroadcastUpdateRecord]) -> str:
         actor = item.admin_label or (str(item.admin_user_id) if item.admin_user_id is not None else "admin")
         rows.append(
             f"<tr><td>{escape(item.created_at)}</td><td>{escape(actor)}</td><td>{escape(item.message)}</td></tr>"
+        )
+    return "".join(rows)
+
+
+def _render_admin_message_rows(messages: Sequence[AdminMessageRecord], school_path_prefix: str) -> str:
+    if not messages:
+        return '<tr><td colspan="7" class="mini-copy">No user messages yet.</td></tr>'
+    prefix = escape(school_path_prefix)
+    rows = []
+    for item in messages:
+        sender = item.sender_label or (f"User #{item.sender_user_id}" if item.sender_user_id is not None else "Unknown")
+        response_block = (
+            f"<div><strong>{escape(item.response_message or '')}</strong></div>"
+            f"<div class=\"mini-copy\">{escape(item.response_created_at or '')} • {escape(item.response_by_label or 'admin')}</div>"
+            if item.response_message
+            else "<span class=\"mini-copy\">No reply yet.</span>"
+        )
+        action_html = (
+            f"""
+            <form method="post" action="{prefix}/admin/messages/{item.id}/reply" class="stack">
+              <div class="field">
+                <input name="message" placeholder="Reply to this user message..." />
+              </div>
+              <div class="button-row">
+                <button class="button button-secondary" type="submit">Reply</button>
+              </div>
+            </form>
+            """
+            if item.status == "open"
+            else "<span class=\"mini-copy\">Answered</span>"
+        )
+        rows.append(
+            "<tr>"
+            f"<td>{item.id}</td>"
+            f"<td>{escape(item.created_at)}</td>"
+            f"<td>{escape(sender)}</td>"
+            f"<td>{escape(item.message)}</td>"
+            f"<td>{escape(item.status)}</td>"
+            f"<td>{response_block}</td>"
+            f"<td>{action_html}</td>"
+            "</tr>"
         )
     return "".join(rows)
 
@@ -1140,6 +1198,8 @@ def render_admin_page(
     alarm_state: AlarmStateRecord,
     reports: Sequence[ReportRecord],
     broadcasts: Sequence[BroadcastUpdateRecord],
+    admin_messages: Sequence[AdminMessageRecord],
+    unread_admin_messages: int,
     quiet_periods: Sequence[QuietPeriodRecord],
     apns_configured: bool,
     twilio_configured: bool,
@@ -1281,6 +1341,7 @@ def render_admin_page(
             <a class="nav-item" href="#security">Security</a>
             <a class="nav-item" href="#users">Users</a>
             <a class="nav-item" href="#alarm">Alarm</a>
+            <a class="nav-item" href="#messages">Messages {'<span class="nav-badge">' + str(unread_admin_messages) + '</span>' if unread_admin_messages > 0 else ''}</a>
             <a class="nav-item" href="#reports">Reports</a>
             <a class="nav-item" href="#quiet-periods">Quiet Periods</a>
             <a class="nav-item" href="#alerts">Alert log</a>
@@ -1322,6 +1383,7 @@ def render_admin_page(
             <article class="metric-card"><div class="meta">Devices</div><div class="metric-value">{len(devices)}</div></article>
             <article class="metric-card"><div class="meta">Recent alerts</div><div class="metric-value">{len(alerts)}</div></article>
             <article class="metric-card"><div class="meta">User reports</div><div class="metric-value">{len(reports)}</div></article>
+            <article class="metric-card"><div class="meta">Open messages</div><div class="metric-value">{unread_admin_messages}</div></article>
             <article class="metric-card"><div class="meta">Quiet periods</div><div class="metric-value">{len(quiet_periods)}</div></article>
           </div>
           <div class="status-row" style="margin-top:16px;">
@@ -1473,6 +1535,24 @@ def render_admin_page(
               </thead>
               <tbody>
                 {_render_broadcast_rows(broadcasts)}
+              </tbody>
+            </table>
+          </section>
+
+          <section class="panel command-section span-12" id="messages">
+            <div class="panel-header">
+              <div>
+                <p class="eyebrow">Messaging</p>
+                <h2>User messages inbox {'🔔' if unread_admin_messages > 0 else ''}</h2>
+                <p class="card-copy">Review incoming mobile messages and reply directly from the admin console.</p>
+              </div>
+            </div>
+            <table>
+              <thead>
+                <tr><th>ID</th><th>Created</th><th>From</th><th>Message</th><th>Status</th><th>Response</th><th>Action</th></tr>
+              </thead>
+              <tbody>
+                {_render_admin_message_rows(admin_messages, school_path_prefix)}
               </tbody>
             </table>
           </section>
