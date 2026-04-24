@@ -1007,6 +1007,8 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                         AdminInboxCard(
                             messages = state.adminInbox,
                             unreadCount = state.unreadAdminMessages,
+                            isBusy = state.isBusy,
+                            onSendMessage = { vm.sendAdminMessage(ctx, it) },
                             onReply = { replyTarget = it },
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -1060,14 +1062,16 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                             }
                         }
 
-                        OutlinedButton(
-                            onClick = { showMessageAdminDialog = true },
-                            modifier = Modifier.fillMaxWidth().height(52.dp),
-                            shape = RoundedCornerShape(14.dp),
-                            enabled = !state.isBusy,
-                            colors = ButtonDefaults.outlinedButtonColors(contentColor = BlueDark),
-                        ) {
-                            Text("Message Admin", fontWeight = FontWeight.SemiBold)
+                        if (!isAdmin) {
+                            OutlinedButton(
+                                onClick = { showMessageAdminDialog = true },
+                                modifier = Modifier.fillMaxWidth().height(52.dp),
+                                shape = RoundedCornerShape(14.dp),
+                                enabled = !state.isBusy,
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = BlueDark),
+                            ) {
+                                Text("Message Admin", fontWeight = FontWeight.SemiBold)
+                            }
                         }
 
                         OutlinedButton(
@@ -1963,9 +1967,12 @@ private fun MessageAdminDialog(
 private fun AdminInboxCard(
     messages: List<AdminInboxMessage>,
     unreadCount: Int,
+    isBusy: Boolean,
+    onSendMessage: (String) -> Unit,
     onReply: (AdminInboxMessage) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    var outboundMessage by remember { mutableStateOf("") }
     Surface(
         modifier = modifier,
         shape = RoundedCornerShape(20.dp),
@@ -1977,6 +1984,39 @@ private fun AdminInboxCard(
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             Text("Admin Inbox 🔔 ${if (unreadCount > 0) "($unreadCount)" else ""}", color = TextPri, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+            OutlinedTextField(
+                value = outboundMessage,
+                onValueChange = { outboundMessage = it },
+                label = { Text("Send a message to admins", color = TextMuted) },
+                placeholder = { Text("Team update or quick note...", color = TextMuted) },
+                minLines = 2,
+                maxLines = 4,
+                enabled = !isBusy,
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = BluePrimary,
+                    unfocusedBorderColor = BorderSoft,
+                    focusedTextColor = TextPri,
+                    unfocusedTextColor = TextPri,
+                    cursorColor = BluePrimary,
+                    focusedContainerColor = SurfaceSoft,
+                    unfocusedContainerColor = SurfaceSoft,
+                ),
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Button(
+                onClick = {
+                    val trimmed = outboundMessage.trim()
+                    if (trimmed.isNotBlank()) {
+                        onSendMessage(trimmed)
+                        outboundMessage = ""
+                    }
+                },
+                enabled = !isBusy && outboundMessage.isNotBlank(),
+                colors = ButtonDefaults.buttonColors(containerColor = BluePrimary),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(if (isBusy) "Sending…" else "Send Message", fontWeight = FontWeight.SemiBold)
+            }
             if (messages.isEmpty()) {
                 Text("No user messages yet.", color = TextMuted, fontSize = 13.sp)
             } else {
