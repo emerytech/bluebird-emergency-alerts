@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
+import hmac
+import json
 import logging
 import os
 import socket
@@ -65,6 +69,9 @@ from app.web.admin_views import (
 
 router = APIRouter()
 logger = logging.getLogger("bluebird.routes")
+TRUST_DEVICE_TTL_SECONDS = 14 * 24 * 60 * 60
+ADMIN_TRUST_COOKIE = "bluebird_admin_trusted_device"
+SUPER_ADMIN_TRUST_COOKIE = "bluebird_super_admin_trusted_device"
 
 
 def _registry(req: Request) -> DeviceRegistry:
@@ -172,6 +179,142 @@ def _school_theme(school) -> dict[str, str]:
         "sidebar_start": getattr(school, "sidebar_start", None) or "",
         "sidebar_end": getattr(school, "sidebar_end", None) or "",
     }
+
+
+def _client_fingerprint(request: Request) -> str:
+    user_agent = request.headers.get("user-agent", "").strip()
+    return hashlib.sha256(user_agent.encode("utf-8")).hexdigest()
+
+
+def _sign_trust_payload(request: Request, payload: dict[str, object]) -> str:
+    payload_bytes = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    signature = hmac.new(
+        request.app.state.settings.SESSION_SECRET.encode("utf-8"),
+        payload_bytes,
+        hashlib.sha256,
+    ).digest()
+    return (
+        base64.urlsafe_b64encode(payload_bytes).rstrip(b"=").decode("ascii")
+        + "."
+        + base64.urlsafe_b64encode(signature).rstrip(b"=").decode("ascii")
+    )
+
+
+def _decode_trust_token(request: Request, token: str) -> Optional[dict[str, object]]:
+    try:
+        payload_b64, signature_b64 = token.split(".", 1)
+        payload_bytes = base64.urlsafe_b64decode(payload_b64 + "=" * (-len(payload_b64) % 4))
+        signature = base64.urlsafe_b64decode(signature_b64 + "=" * (-len(signature_b64) % 4))
+    except Exception:
+        return None
+    expected_signature = hmac.new(
+        request.app.state.settings.SESSION_SECRET.encode("utf-8"),
+        payload_bytes,
+        hashlib.sha256,
+    ).digest()
+    if not hmac.compare_digest(signature, expected_signature):
+        return None
+    try:
+        payload = json.loads(payload_bytes.decode("utf-8"))
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    expires_at = payload.get("exp")
+    if not isinstance(expires_at, int) or expires_at < int(time.time()):
+        return None
+    if payload.get("fp") != _client_fingerprint(request):
+        return None
+    return payload
+
+
+def _issue_admin_trust_token(request: Request, *, user_id: int) -> str:
+    school_slug = str(request.state.school.slug)
+    return _sign_trust_payload(
+        request,
+        {
+            "scope": "school-admin",
+            "uid": user_id,
+            "school": school_slug,
+            "fp": _client_fingerprint(request),
+            "exp": int(time.time()) + TRUST_DEVICE_TTL_SECONDS,
+        },
+    )
+
+
+def _issue_super_admin_trust_token(request: Request, *, admin_id: int) -> str:
+    return _sign_trust_payload(
+        request,
+        {
+            "scope": "super-admin",
+            "uid": admin_id,
+            "fp": _client_fingerprint(request),
+            "exp": int(time.time()) + TRUST_DEVICE_TTL_SECONDS,
+        },
+    )
+
+
+def _is_admin_device_trusted(request: Request, *, user_id: int) -> bool:
+    token = str(request.cookies.get(ADMIN_TRUST_COOKIE, "") or "").strip()
+    if not token:
+        return False
+    payload = _decode_trust_token(request, token)
+    return bool(
+        payload
+        and payload.get("scope") == "school-admin"
+        and payload.get("uid") == user_id
+        and payload.get("school") == str(request.state.school.slug)
+    )
+
+
+def _is_super_admin_device_trusted(request: Request, *, admin_id: int) -> bool:
+    token = str(request.cookies.get(SUPER_ADMIN_TRUST_COOKIE, "") or "").strip()
+    if not token:
+        return False
+    payload = _decode_trust_token(request, token)
+    return bool(payload and payload.get("scope") == "super-admin" and payload.get("uid") == admin_id)
+
+
+def _apply_admin_trust_cookie(request: Request, response: RedirectResponse, *, user_id: int) -> None:
+    response.set_cookie(
+        ADMIN_TRUST_COOKIE,
+        _issue_admin_trust_token(request, user_id=user_id),
+        max_age=TRUST_DEVICE_TTL_SECONDS,
+        httponly=True,
+        secure=request.url.scheme == "https",
+        samesite="lax",
+        path=_school_prefix(request) or "/",
+    )
+
+
+def _clear_admin_trust_cookie(request: Request, response: RedirectResponse) -> None:
+    response.delete_cookie(
+        ADMIN_TRUST_COOKIE,
+        path=_school_prefix(request) or "/",
+        secure=request.url.scheme == "https",
+        samesite="lax",
+    )
+
+
+def _apply_super_admin_trust_cookie(request: Request, response: RedirectResponse, *, admin_id: int) -> None:
+    response.set_cookie(
+        SUPER_ADMIN_TRUST_COOKIE,
+        _issue_super_admin_trust_token(request, admin_id=admin_id),
+        max_age=TRUST_DEVICE_TTL_SECONDS,
+        httponly=True,
+        secure=request.url.scheme == "https",
+        samesite="lax",
+        path="/super-admin",
+    )
+
+
+def _clear_super_admin_trust_cookie(request: Request, response: RedirectResponse) -> None:
+    response.delete_cookie(
+        SUPER_ADMIN_TRUST_COOKIE,
+        path="/super-admin",
+        secure=request.url.scheme == "https",
+        samesite="lax",
+    )
 
 
 async def _require_dashboard_admin(request: Request) -> UserStore:
@@ -487,6 +630,16 @@ async def admin_login(
         _set_flash(request, error="Invalid admin username or password.")
         return RedirectResponse(url="/admin/login", status_code=status.HTTP_303_SEE_OTHER)
     if user.totp_enabled:
+        if _is_admin_device_trusted(request, user_id=user.id):
+            request.session["admin_user_id"] = user.id
+            _clear_pending_admin(request)
+            await _users(request).mark_login(user.id)
+            response = RedirectResponse(
+                url=_school_url(request, "/admin/change-password") if user.must_change_password else _school_url(request, "/admin"),
+                status_code=status.HTTP_303_SEE_OTHER,
+            )
+            _set_flash(request, message="Trusted device recognized. Two-factor verification skipped for this device.")
+            return response
         request.session["pending_admin_user_id"] = user.id
         return RedirectResponse(url="/admin/totp", status_code=status.HTTP_303_SEE_OTHER)
     request.session["admin_user_id"] = user.id
@@ -520,6 +673,7 @@ async def admin_totp_page(request: Request) -> HTMLResponse:
             message=flash_message,
             error=flash_error,
             theme=_school_theme(request.state.school),
+            allow_trust_device=True,
         )
     )
 
@@ -528,6 +682,7 @@ async def admin_totp_page(request: Request) -> HTMLResponse:
 async def admin_totp_submit(
     request: Request,
     code: str = Form(...),
+    trust_device: Optional[str] = Form(default=None),
 ) -> RedirectResponse:
     pending_user_id = _pending_admin_user_id(request)
     if pending_user_id is None:
@@ -540,16 +695,27 @@ async def admin_totp_submit(
     request.session["admin_user_id"] = user.id
     _clear_pending_admin(request)
     await _users(request).mark_login(user.id)
+    response = RedirectResponse(
+        url=_school_url(request, "/admin/change-password") if user.must_change_password else _school_url(request, "/admin"),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+    if trust_device == "1":
+        _apply_admin_trust_cookie(request, response, user_id=user.id)
+        _set_flash(request, message=f"Welcome back, {user.name}. This device is trusted for 14 days.")
+    else:
+        _clear_admin_trust_cookie(request, response)
+        _set_flash(request, message=f"Welcome back, {user.name}.")
     if user.must_change_password:
-        return RedirectResponse(url="/admin/change-password", status_code=status.HTTP_303_SEE_OTHER)
-    _set_flash(request, message=f"Welcome back, {user.name}.")
-    return RedirectResponse(url="/admin", status_code=status.HTTP_303_SEE_OTHER)
+        return response
+    return response
 
 
 @router.post("/admin/logout", include_in_schema=False)
 async def admin_logout(request: Request) -> RedirectResponse:
     request.session.clear()
-    return RedirectResponse(url="/admin/login", status_code=status.HTTP_303_SEE_OTHER)
+    response = RedirectResponse(url="/admin/login", status_code=status.HTTP_303_SEE_OTHER)
+    _clear_admin_trust_cookie(request, response)
+    return response
 
 
 @router.get("/admin/totp/status")
@@ -654,7 +820,9 @@ async def admin_totp_disable_form(
     await _users(request).set_totp_secret(user.id, None)
     request.session.pop("admin_totp_setup_secret", None)
     _set_flash(request, message="Two-factor authentication has been disabled for your admin account.")
-    return RedirectResponse(url=_school_url(request, "/admin#security"), status_code=status.HTTP_303_SEE_OTHER)
+    response = RedirectResponse(url=_school_url(request, "/admin#security"), status_code=status.HTTP_303_SEE_OTHER)
+    _clear_admin_trust_cookie(request, response)
+    return response
 
 
 @router.get("/super-admin/login", response_class=HTMLResponse, include_in_schema=False)
@@ -679,6 +847,16 @@ async def super_admin_login(
         _set_flash(request, error="Invalid super admin credentials.")
         return RedirectResponse(url="/super-admin/login", status_code=status.HTTP_303_SEE_OTHER)
     if admin.totp_enabled:
+        if _is_super_admin_device_trusted(request, admin_id=admin.id):
+            request.session["super_admin_id"] = admin.id
+            _clear_pending_super_admin(request)
+            await _platform_admins(request).mark_login(admin.id)
+            response = RedirectResponse(
+                url="/super-admin/change-password" if admin.must_change_password else "/super-admin",
+                status_code=status.HTTP_303_SEE_OTHER,
+            )
+            _set_flash(request, message="Trusted device recognized. Two-factor verification skipped for this device.")
+            return response
         request.session["pending_super_admin_id"] = admin.id
         return RedirectResponse(url="/super-admin/totp", status_code=status.HTTP_303_SEE_OTHER)
     request.session["super_admin_id"] = admin.id
@@ -712,6 +890,7 @@ async def super_admin_totp_page(request: Request) -> HTMLResponse:
             user_label=admin.login_name,
             message=flash_message,
             error=flash_error,
+            allow_trust_device=True,
         )
     )
 
@@ -720,6 +899,7 @@ async def super_admin_totp_page(request: Request) -> HTMLResponse:
 async def super_admin_totp_submit(
     request: Request,
     code: str = Form(...),
+    trust_device: Optional[str] = Form(default=None),
 ) -> RedirectResponse:
     pending_admin_id = _pending_super_admin_id(request)
     if pending_admin_id is None:
@@ -732,18 +912,28 @@ async def super_admin_totp_submit(
     request.session["super_admin_id"] = admin.id
     _clear_pending_super_admin(request)
     await _platform_admins(request).mark_login(admin.id)
+    response = RedirectResponse(
+        url="/super-admin/change-password" if admin.must_change_password else "/super-admin",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+    if trust_device == "1":
+        _apply_super_admin_trust_cookie(request, response, admin_id=admin.id)
+        _set_flash(request, message="Signed in to super admin. This device is trusted for 14 days.")
+    else:
+        _clear_super_admin_trust_cookie(request, response)
+        _set_flash(request, message="Signed in to super admin.")
     if admin.must_change_password:
-        _set_flash(request, message="Please change your temporary super admin password before continuing.")
-        return RedirectResponse(url="/super-admin/change-password", status_code=status.HTTP_303_SEE_OTHER)
-    _set_flash(request, message="Signed in to super admin.")
-    return RedirectResponse(url="/super-admin", status_code=status.HTTP_303_SEE_OTHER)
+        return response
+    return response
 
 
 @router.post("/super-admin/logout", include_in_schema=False)
 async def super_admin_logout(request: Request) -> RedirectResponse:
     request.session.pop("super_admin_id", None)
     _clear_pending_super_admin(request)
-    return RedirectResponse(url="/super-admin/login", status_code=status.HTTP_303_SEE_OTHER)
+    response = RedirectResponse(url="/super-admin/login", status_code=status.HTTP_303_SEE_OTHER)
+    _clear_super_admin_trust_cookie(request, response)
+    return response
 
 
 @router.get("/super-admin/totp/status")
@@ -861,7 +1051,9 @@ async def super_admin_totp_disable_form(
     await _platform_admins(request).set_totp_secret(admin.id, None)
     request.session.pop("super_admin_totp_setup_secret", None)
     _set_flash(request, message="Two-factor authentication has been disabled for the super admin account.")
-    return RedirectResponse(url="/super-admin#security", status_code=status.HTTP_303_SEE_OTHER)
+    response = RedirectResponse(url="/super-admin#security", status_code=status.HTTP_303_SEE_OTHER)
+    _clear_super_admin_trust_cookie(request, response)
+    return response
 
 
 @router.get("/super-admin/change-password", response_class=HTMLResponse, include_in_schema=False)
@@ -913,7 +1105,9 @@ async def super_admin_change_password_submit(
         return RedirectResponse(url="/super-admin/change-password", status_code=status.HTTP_303_SEE_OTHER)
     await _platform_admins(request).change_password(admin_id, new_password)
     _set_flash(request, message="Super admin password updated.")
-    return RedirectResponse(url="/super-admin", status_code=status.HTTP_303_SEE_OTHER)
+    response = RedirectResponse(url="/super-admin", status_code=status.HTTP_303_SEE_OTHER)
+    _clear_super_admin_trust_cookie(request, response)
+    return response
 
 
 @router.get("/super-admin", response_class=HTMLResponse, include_in_schema=False)
@@ -1228,7 +1422,9 @@ async def change_password_submit(
         return RedirectResponse(url="/admin/change-password", status_code=status.HTTP_303_SEE_OTHER)
     await _users(request).change_password(user_id, new_password)
     _set_flash(request, message="Password updated. Welcome!")
-    return RedirectResponse(url="/admin", status_code=status.HTTP_303_SEE_OTHER)
+    response = RedirectResponse(url="/admin", status_code=status.HTTP_303_SEE_OTHER)
+    _clear_admin_trust_cookie(request, response)
+    return response
 
 
 @router.post("/admin/users/create", include_in_schema=False)

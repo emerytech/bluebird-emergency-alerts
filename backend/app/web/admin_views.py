@@ -565,7 +565,16 @@ def render_totp_page(
     message: Optional[str] = None,
     error: Optional[str] = None,
     theme: Optional[Mapping[str, str]] = None,
+    allow_trust_device: bool = False,
 ) -> str:
+    trust_device_html = ""
+    if allow_trust_device:
+        trust_device_html = """
+        <label style="display:flex; align-items:flex-start; gap:10px; font-size:0.96rem; color:var(--muted);">
+          <input type="checkbox" name="trust_device" value="1" style="margin-top:3px; min-height:auto; width:auto;" />
+          <span>Trust this device for 14 days</span>
+        </label>
+        """
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -600,6 +609,7 @@ def render_totp_page(
           <label for="code">Authenticator code</label>
           <input id="code" name="code" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="one-time-code" />
         </div>
+        {trust_device_html}
         <div class="button-row">
           <button class="button button-primary" type="submit">Verify code</button>
           <a class="button button-secondary" href="{cancel_action}">Cancel</a>
