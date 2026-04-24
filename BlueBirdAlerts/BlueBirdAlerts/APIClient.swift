@@ -87,6 +87,74 @@ struct APIClient {
         return try JSONDecoder().decode(TeamAssistListResponse.self, from: data)
     }
 
+    func listSchools() async throws -> SchoolsCatalogResponse {
+        let url = Config.backendBaseURL.appendingPathComponent("schools")
+        let (data, response) = try await URLSession.shared.data(from: url)
+        try requireSuccess(response: response, data: data)
+        return try JSONDecoder().decode(SchoolsCatalogResponse.self, from: data)
+    }
+
+    func login(username: String, password: String) async throws -> MobileLoginResponse {
+        let url = baseURL.appendingPathComponent("auth/login")
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(MobileLoginRequest(loginName: username, password: password))
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try requireSuccess(response: response, data: data)
+        return try JSONDecoder().decode(MobileLoginResponse.self, from: data)
+    }
+
+    func messageAdmin(userID: Int?, message: String) async throws -> AdminMessageResponse {
+        let url = baseURL.appendingPathComponent("message-admin")
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        withAPIKey(&request)
+        request.httpBody = try JSONEncoder().encode(MessageAdminRequest(userID: userID, message: message))
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try requireSuccess(response: response, data: data)
+        return try JSONDecoder().decode(AdminMessageResponse.self, from: data)
+    }
+
+    func listMessageRecipients() async throws -> [MessageRecipient] {
+        let url = baseURL.appendingPathComponent("users")
+        var request = URLRequest(url: url)
+        withAPIKey(&request)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try requireSuccess(response: response, data: data)
+        let users = try JSONDecoder().decode(UsersResponse.self, from: data).users
+        return users
+            .filter { $0.isActive && $0.role.lowercased() != "admin" }
+            .map { MessageRecipient(userID: $0.userID, label: "\($0.name) (\($0.role))") }
+            .sorted { $0.label.localizedCaseInsensitiveCompare($1.label) == .orderedAscending }
+    }
+
+    func sendMessageFromAdmin(
+        adminUserID: Int,
+        message: String,
+        recipientUserIDs: [Int],
+        sendToAll: Bool,
+    ) async throws -> AdminSendMessageResponse {
+        let url = baseURL.appendingPathComponent("messages/send")
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        withAPIKey(&request)
+        request.httpBody = try JSONEncoder().encode(
+            AdminSendMessageRequest(
+                adminUserID: adminUserID,
+                message: message,
+                recipientUserIDs: recipientUserIDs,
+                sendToAll: sendToAll
+            )
+        )
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try requireSuccess(response: response, data: data)
+        return try JSONDecoder().decode(AdminSendMessageResponse.self, from: data)
+    }
+
     private func requireSuccess(response: URLResponse, data: Data) throws {
         guard let http = response as? HTTPURLResponse else { return }
         guard (200..<300).contains(http.statusCode) else {
@@ -258,4 +326,112 @@ struct TeamAssistSummary: Decodable, Identifiable {
         case createdBy = "created_by"
         case createdAt = "created_at"
     }
+}
+
+struct SchoolsCatalogResponse: Decodable {
+    let schools: [SchoolCatalogItem]
+}
+
+struct SchoolCatalogItem: Decodable, Identifiable {
+    let name: String
+    let slug: String
+    let path: String
+
+    var id: String { slug }
+}
+
+private struct MobileLoginRequest: Encodable {
+    let loginName: String
+    let password: String
+
+    enum CodingKeys: String, CodingKey {
+        case loginName = "login_name"
+        case password
+    }
+}
+
+struct MobileLoginResponse: Decodable {
+    let userID: Int
+    let name: String
+    let role: String
+    let loginName: String
+    let canDeactivateAlarm: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case userID = "user_id"
+        case name
+        case role
+        case loginName = "login_name"
+        case canDeactivateAlarm = "can_deactivate_alarm"
+    }
+}
+
+private struct MessageAdminRequest: Encodable {
+    let userID: Int?
+    let message: String
+
+    enum CodingKeys: String, CodingKey {
+        case userID = "user_id"
+        case message
+    }
+}
+
+private struct AdminSendMessageRequest: Encodable {
+    let adminUserID: Int
+    let message: String
+    let recipientUserIDs: [Int]
+    let sendToAll: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case adminUserID = "admin_user_id"
+        case message
+        case recipientUserIDs = "recipient_user_ids"
+        case sendToAll = "send_to_all"
+    }
+}
+
+struct AdminMessageResponse: Decodable {
+    let messageID: Int
+    let createdAt: String
+    let message: String
+
+    enum CodingKeys: String, CodingKey {
+        case messageID = "message_id"
+        case createdAt = "created_at"
+        case message
+    }
+}
+
+struct AdminSendMessageResponse: Decodable {
+    let sentCount: Int
+    let recipientScope: String
+
+    enum CodingKeys: String, CodingKey {
+        case sentCount = "sent_count"
+        case recipientScope = "recipient_scope"
+    }
+}
+
+private struct UsersResponse: Decodable {
+    let users: [UserSummary]
+}
+
+private struct UserSummary: Decodable {
+    let userID: Int
+    let name: String
+    let role: String
+    let isActive: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case userID = "user_id"
+        case name
+        case role
+        case isActive = "is_active"
+    }
+}
+
+struct MessageRecipient: Identifiable {
+    let userID: Int
+    let label: String
+    var id: Int { userID }
 }

@@ -8,7 +8,13 @@ struct BlueBirdAlertsApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            Group {
+                if appState.setupDone {
+                    ContentView()
+                } else {
+                    LoginView()
+                }
+            }
                 .environmentObject(appState)
                 .task {
                     await requestNotificationsAndRegister()

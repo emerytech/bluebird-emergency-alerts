@@ -1234,6 +1234,15 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                                 .padding(horizontal = 20.dp, vertical = 8.dp),
                         )
                     }
+                    SafetyActionGrid(
+                        actions = SafetyActions,
+                        enabled = !state.isBusy && !state.alarm.isActive,
+                        onSelect = { action -> pendingSafetyAction = action },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 20.dp, vertical = 8.dp),
+                    )
+
                     if (isAdmin) {
                         AdminInboxCard(
                             messages = state.adminInbox,
@@ -1256,15 +1265,6 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                                 .padding(horizontal = 20.dp, vertical = 8.dp),
                         )
                     }
-
-                    SafetyActionGrid(
-                        actions = SafetyActions,
-                        enabled = !state.isBusy && !state.alarm.isActive,
-                        onSelect = { action -> pendingSafetyAction = action },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 20.dp, vertical = 8.dp),
-                    )
 
                     Spacer(Modifier.weight(1f))
 
