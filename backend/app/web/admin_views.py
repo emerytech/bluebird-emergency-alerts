@@ -617,6 +617,10 @@ def render_super_admin_page(
     school_rows: Sequence[Mapping[str, object]],
     git_pull_configured: bool,
     server_info: Mapping[str, str],
+    super_admin_login_name: str,
+    totp_enabled: bool,
+    totp_setup_secret: Optional[str] = None,
+    totp_setup_uri: Optional[str] = None,
     flash_message: Optional[str] = None,
     flash_error: Optional[str] = None,
 ) -> str:
@@ -633,6 +637,54 @@ def render_super_admin_page(
         )
         for item in school_rows
     ) or '<tr><td colspan="5" class="mini-copy">No schools yet.</td></tr>'
+    if totp_enabled:
+        security_html = f"""
+          <div class="flash success">
+            Two-factor authentication is active for <strong>{escape(super_admin_login_name)}</strong>.
+          </div>
+          <form method="post" action="/super-admin/totp/disable-form" class="stack" style="max-width:460px;">
+            <div class="field">
+              <label for="current_password">Current password</label>
+              <input id="current_password" name="current_password" type="password" autocomplete="current-password" />
+            </div>
+            <div class="button-row">
+              <button class="button button-danger-outline" type="submit">Disable 2FA</button>
+            </div>
+          </form>
+        """
+    else:
+        setup_details = '<p class="mini-copy">Start setup to generate a secret for your authenticator app.</p>'
+        if totp_setup_secret:
+            safe_uri = escape(totp_setup_uri or "#")
+            setup_details = f"""
+              <div class="flash">
+                <strong>Secret key</strong><br />
+                <code style="font-size:1rem; letter-spacing:0.12em;">{escape(totp_setup_secret)}</code>
+                <div class="mini-copy" style="margin-top:10px;">Paste this into your authenticator app, or open the setup link if your device supports it.</div>
+                <div class="button-row" style="margin-top:12px;">
+                  <a class="button button-secondary" href="{safe_uri}">Open in Authenticator App</a>
+                </div>
+              </div>
+              <form method="post" action="/super-admin/totp/enable-form" class="stack">
+                <div class="field">
+                  <label for="code">Enter the 6-digit code</label>
+                  <input id="code" name="code" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="one-time-code" />
+                </div>
+                <div class="button-row">
+                  <button class="button button-primary" type="submit">Enable 2FA</button>
+                </div>
+              </form>
+            """
+        security_html = f"""
+          <div class="stack" style="max-width:680px;">
+            <form method="post" action="/super-admin/totp/setup-form">
+              <div class="button-row">
+                <button class="button button-primary" type="submit">Start 2FA Setup</button>
+              </div>
+            </form>
+            {setup_details}
+          </div>
+        """
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -660,6 +712,7 @@ def render_super_admin_page(
           <nav class="nav-list">
             <a class="nav-item" href="#schools">Schools</a>
             <a class="nav-item" href="#create-school">Create school</a>
+            <a class="nav-item" href="#security">Security</a>
             <a class="nav-item" href="/super-admin/change-password">Change password</a>
             <a class="nav-item" href="#server-tools">Server tools</a>
           </nav>
@@ -724,6 +777,26 @@ def render_super_admin_page(
             </div>
           </form>
           <p class="mini-copy" style="margin-top:14px;">New school URLs use the same domain with a school path, like <code>https://{escape(base_domain)}/school-slug/admin</code>.</p>
+        </section>
+        <section class="panel command-section" id="security">
+          <div class="panel-header">
+            <div>
+              <p class="eyebrow">Security</p>
+              <h2>Super admin account protection</h2>
+              <p class="card-copy">Use an authenticator app for time-based one-time codes. This protects the platform account without adding SMS or email dependencies.</p>
+            </div>
+          </div>
+          <div class="metrics-grid" style="margin-bottom:20px;">
+            <article class="metric-card">
+              <div class="meta">Account</div>
+              <div class="metric-value" style="font-size:1.2rem;">{escape(super_admin_login_name)}</div>
+            </article>
+            <article class="metric-card">
+              <div class="meta">2FA Status</div>
+              <div class="metric-value" style="font-size:1.2rem;">{'Enabled' if totp_enabled else 'Not enabled'}</div>
+            </article>
+          </div>
+          {security_html}
         </section>
         <section class="panel command-section">
           <div class="panel-header">
@@ -1019,6 +1092,9 @@ def render_admin_page(
     apns_configured: bool,
     twilio_configured: bool,
     server_info: Mapping[str, str],
+    totp_enabled: bool,
+    totp_setup_secret: Optional[str] = None,
+    totp_setup_uri: Optional[str] = None,
     flash_message: Optional[str] = None,
     flash_error: Optional[str] = None,
 ) -> str:
@@ -1030,6 +1106,57 @@ def render_admin_page(
     login_enabled = sum(1 for user in users if user.can_login)
     alarm_status_class = "danger" if alarm_state.is_active else "ok"
     alarm_status_label = "ALARM ACTIVE" if alarm_state.is_active else "Alarm clear"
+    if totp_enabled:
+        admin_security_html = """
+          <div class="flash success">
+            Two-factor authentication is active for this admin account.
+          </div>
+          <form method="post" action="{prefix}/admin/totp/disable-form" class="stack" style="max-width:460px;">
+            <div class="field">
+              <label for="current_password">Current password</label>
+              <input id="current_password" name="current_password" type="password" autocomplete="current-password" />
+            </div>
+            <div class="button-row">
+              <button class="button button-danger-outline" type="submit">Disable 2FA</button>
+              <a class="button button-secondary" href="{prefix}/admin/change-password">Change password</a>
+            </div>
+          </form>
+        """.replace("{prefix}", prefix)
+    else:
+        setup_details = '<p class="mini-copy">Start setup to generate a secret for your authenticator app.</p>'
+        if totp_setup_secret:
+            safe_uri = escape(totp_setup_uri or "#")
+            setup_details = f"""
+              <div class="flash">
+                <strong>Secret key</strong><br />
+                <code style="font-size:1rem; letter-spacing:0.12em;">{escape(totp_setup_secret)}</code>
+                <div class="mini-copy" style="margin-top:10px;">Paste this into your authenticator app, or open the setup link if your device supports it.</div>
+                <div class="button-row" style="margin-top:12px;">
+                  <a class="button button-secondary" href="{safe_uri}">Open in Authenticator App</a>
+                </div>
+              </div>
+              <form method="post" action="{prefix}/admin/totp/enable-form" class="stack">
+                <div class="field">
+                  <label for="code">Enter the 6-digit code</label>
+                  <input id="code" name="code" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="one-time-code" />
+                </div>
+                <div class="button-row">
+                  <button class="button button-primary" type="submit">Enable 2FA</button>
+                  <a class="button button-secondary" href="{prefix}/admin/change-password">Change password</a>
+                </div>
+              </form>
+            """
+        admin_security_html = f"""
+          <div class="stack" style="max-width:680px;">
+            <form method="post" action="{prefix}/admin/totp/setup-form">
+              <div class="button-row">
+                <button class="button button-primary" type="submit">Start 2FA Setup</button>
+                <a class="button button-secondary" href="{prefix}/admin/change-password">Change password</a>
+              </div>
+            </form>
+            {setup_details}
+          </div>
+        """
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1057,6 +1184,7 @@ def render_admin_page(
             <p class="nav-label">Command Deck</p>
           <nav class="nav-list">
             <a class="nav-item" href="#overview">Overview</a>
+            <a class="nav-item" href="#security">Security</a>
             <a class="nav-item" href="#users">Users</a>
             <a class="nav-item" href="#alarm">Alarm</a>
             <a class="nav-item" href="#reports">Reports</a>
@@ -1105,6 +1233,31 @@ def render_admin_page(
             {_count_list(platform_counts)}
             {_count_list(provider_counts)}
           </div>
+        </section>
+
+        <section class="panel command-section" id="security">
+          <div class="panel-header">
+            <div>
+              <p class="eyebrow">Security</p>
+              <h2>Admin account protection</h2>
+              <p class="card-copy">Use an authenticator app for time-based one-time codes. This protects your school dashboard account without adding SMS or email dependencies.</p>
+            </div>
+          </div>
+          <div class="metrics-grid" style="margin-bottom:20px;">
+            <article class="metric-card">
+              <div class="meta">Account</div>
+              <div class="metric-value" style="font-size:1.2rem;">{escape(current_user.login_name or current_user.name)}</div>
+            </article>
+            <article class="metric-card">
+              <div class="meta">Role</div>
+              <div class="metric-value" style="font-size:1.2rem;">{escape(current_user.role)}</div>
+            </article>
+            <article class="metric-card">
+              <div class="meta">2FA Status</div>
+              <div class="metric-value" style="font-size:1.2rem;">{'Enabled' if totp_enabled else 'Not enabled'}</div>
+            </article>
+          </div>
+          {admin_security_html}
         </section>
 
         <section class="grid">

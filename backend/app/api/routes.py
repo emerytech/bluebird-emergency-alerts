@@ -404,6 +404,17 @@ async def admin_dashboard(request: Request) -> HTMLResponse:
         apns_configured=_apns(request).is_configured(),
         twilio_configured=_broadcaster(request).twilio_configured(),
         server_info=_build_server_info(request),
+        totp_enabled=bool(getattr(request.state.admin_user, "totp_enabled", False)),  # type: ignore[attr-defined]
+        totp_setup_secret=str(request.session.get("admin_totp_setup_secret", "") or "") or None,
+        totp_setup_uri=(
+            otpauth_uri(
+                str(request.session.get("admin_totp_setup_secret", "") or "").strip(),
+                request.state.admin_user.login_name or request.state.admin_user.name,  # type: ignore[attr-defined]
+                issuer=f"BlueBird Alerts ({request.state.school.slug})",
+            )
+            if str(request.session.get("admin_totp_setup_secret", "") or "").strip()
+            else None
+        ),
         flash_message=flash_message,
         flash_error=flash_error,
     )
@@ -561,6 +572,18 @@ async def admin_totp_setup(request: Request) -> dict[str, object]:
     return {"ok": True, "secret": secret, "otpauth_uri": otpauth_uri(secret, label, issuer=issuer)}
 
 
+@router.post("/admin/totp/setup-form", include_in_schema=False)
+async def admin_totp_setup_form(request: Request) -> RedirectResponse:
+    await _require_dashboard_admin(request)
+    user = request.state.admin_user  # type: ignore[attr-defined]
+    if bool(getattr(user, "totp_enabled", False)):
+        _set_flash(request, error="Two-factor authentication is already enabled.")
+        return RedirectResponse(url=_school_url(request, "/admin#security"), status_code=status.HTTP_303_SEE_OTHER)
+    request.session["admin_totp_setup_secret"] = generate_totp_secret()
+    _set_flash(request, message="Authenticator setup secret generated. Add it to your app, then confirm with a 6-digit code.")
+    return RedirectResponse(url=_school_url(request, "/admin#security"), status_code=status.HTTP_303_SEE_OTHER)
+
+
 @router.post("/admin/totp/enable")
 async def admin_totp_enable(
     request: Request,
@@ -578,6 +601,26 @@ async def admin_totp_enable(
     return {"ok": True, "enabled": True}
 
 
+@router.post("/admin/totp/enable-form", include_in_schema=False)
+async def admin_totp_enable_form(
+    request: Request,
+    code: str = Form(...),
+) -> RedirectResponse:
+    await _require_dashboard_admin(request)
+    user = request.state.admin_user  # type: ignore[attr-defined]
+    secret = str(request.session.get("admin_totp_setup_secret", "") or "").strip()
+    if not secret:
+        _set_flash(request, error="Start TOTP setup first.")
+        return RedirectResponse(url=_school_url(request, "/admin#security"), status_code=status.HTTP_303_SEE_OTHER)
+    if not verify_totp_code(secret, code):
+        _set_flash(request, error="Invalid authenticator code.")
+        return RedirectResponse(url=_school_url(request, "/admin#security"), status_code=status.HTTP_303_SEE_OTHER)
+    await _users(request).set_totp_secret(user.id, secret)
+    request.session.pop("admin_totp_setup_secret", None)
+    _set_flash(request, message="Two-factor authentication is now enabled for your admin account.")
+    return RedirectResponse(url=_school_url(request, "/admin#security"), status_code=status.HTTP_303_SEE_OTHER)
+
+
 @router.post("/admin/totp/disable")
 async def admin_totp_disable(
     request: Request,
@@ -590,6 +633,22 @@ async def admin_totp_disable(
     await _users(request).set_totp_secret(user.id, None)
     request.session.pop("admin_totp_setup_secret", None)
     return {"ok": True, "enabled": False}
+
+
+@router.post("/admin/totp/disable-form", include_in_schema=False)
+async def admin_totp_disable_form(
+    request: Request,
+    current_password: str = Form(...),
+) -> RedirectResponse:
+    await _require_dashboard_admin(request)
+    user = request.state.admin_user  # type: ignore[attr-defined]
+    if not await _users(request).verify_current_password(user.id, current_password):
+        _set_flash(request, error="Current password is incorrect.")
+        return RedirectResponse(url=_school_url(request, "/admin#security"), status_code=status.HTTP_303_SEE_OTHER)
+    await _users(request).set_totp_secret(user.id, None)
+    request.session.pop("admin_totp_setup_secret", None)
+    _set_flash(request, message="Two-factor authentication has been disabled for your admin account.")
+    return RedirectResponse(url=_school_url(request, "/admin#security"), status_code=status.HTTP_303_SEE_OTHER)
 
 
 @router.get("/super-admin/login", response_class=HTMLResponse, include_in_schema=False)
@@ -701,6 +760,21 @@ async def super_admin_totp_setup(request: Request) -> dict[str, object]:
     return {"ok": True, "secret": secret, "otpauth_uri": otpauth_uri(secret, admin.login_name, issuer="BlueBird Alerts")}
 
 
+@router.post("/super-admin/totp/setup-form", include_in_schema=False)
+async def super_admin_totp_setup_form(request: Request) -> RedirectResponse:
+    _require_super_admin(request)
+    admin = await _platform_admins(request).get_by_id(_super_admin_id(request) or 0)
+    if admin is None:
+        _set_flash(request, error="Super admin account not found.")
+        return RedirectResponse(url="/super-admin#security", status_code=status.HTTP_303_SEE_OTHER)
+    if admin.totp_enabled:
+        _set_flash(request, error="Two-factor authentication is already enabled.")
+        return RedirectResponse(url="/super-admin#security", status_code=status.HTTP_303_SEE_OTHER)
+    request.session["super_admin_totp_setup_secret"] = generate_totp_secret()
+    _set_flash(request, message="Authenticator setup secret generated. Add it to your app, then confirm with a 6-digit code.")
+    return RedirectResponse(url="/super-admin#security", status_code=status.HTTP_303_SEE_OTHER)
+
+
 @router.post("/super-admin/totp/enable")
 async def super_admin_totp_enable(
     request: Request,
@@ -720,6 +794,29 @@ async def super_admin_totp_enable(
     return {"ok": True, "enabled": True}
 
 
+@router.post("/super-admin/totp/enable-form", include_in_schema=False)
+async def super_admin_totp_enable_form(
+    request: Request,
+    code: str = Form(...),
+) -> RedirectResponse:
+    _require_super_admin(request)
+    admin = await _platform_admins(request).get_by_id(_super_admin_id(request) or 0)
+    if admin is None:
+        _set_flash(request, error="Super admin account not found.")
+        return RedirectResponse(url="/super-admin#security", status_code=status.HTTP_303_SEE_OTHER)
+    secret = str(request.session.get("super_admin_totp_setup_secret", "") or "").strip()
+    if not secret:
+        _set_flash(request, error="Start TOTP setup first.")
+        return RedirectResponse(url="/super-admin#security", status_code=status.HTTP_303_SEE_OTHER)
+    if not verify_totp_code(secret, code):
+        _set_flash(request, error="Invalid authenticator code.")
+        return RedirectResponse(url="/super-admin#security", status_code=status.HTTP_303_SEE_OTHER)
+    await _platform_admins(request).set_totp_secret(admin.id, secret)
+    request.session.pop("super_admin_totp_setup_secret", None)
+    _set_flash(request, message="Two-factor authentication is now enabled for the super admin account.")
+    return RedirectResponse(url="/super-admin#security", status_code=status.HTTP_303_SEE_OTHER)
+
+
 @router.post("/super-admin/totp/disable")
 async def super_admin_totp_disable(
     request: Request,
@@ -734,6 +831,25 @@ async def super_admin_totp_disable(
     await _platform_admins(request).set_totp_secret(admin.id, None)
     request.session.pop("super_admin_totp_setup_secret", None)
     return {"ok": True, "enabled": False}
+
+
+@router.post("/super-admin/totp/disable-form", include_in_schema=False)
+async def super_admin_totp_disable_form(
+    request: Request,
+    current_password: str = Form(...),
+) -> RedirectResponse:
+    _require_super_admin(request)
+    admin = await _platform_admins(request).get_by_id(_super_admin_id(request) or 0)
+    if admin is None:
+        _set_flash(request, error="Super admin account not found.")
+        return RedirectResponse(url="/super-admin#security", status_code=status.HTTP_303_SEE_OTHER)
+    if not await _platform_admins(request).verify_current_password(admin.id, current_password):
+        _set_flash(request, error="Current password is incorrect.")
+        return RedirectResponse(url="/super-admin#security", status_code=status.HTTP_303_SEE_OTHER)
+    await _platform_admins(request).set_totp_secret(admin.id, None)
+    request.session.pop("super_admin_totp_setup_secret", None)
+    _set_flash(request, message="Two-factor authentication has been disabled for the super admin account.")
+    return RedirectResponse(url="/super-admin#security", status_code=status.HTTP_303_SEE_OTHER)
 
 
 @router.get("/super-admin/change-password", response_class=HTMLResponse, include_in_schema=False)
@@ -873,6 +989,18 @@ async def super_admin_dashboard(request: Request) -> HTMLResponse:
             school_rows=school_rows,
             git_pull_configured=bool(request.app.state.settings.SERVER_GIT_PULL_COMMAND),  # type: ignore[attr-defined]
             server_info=_build_server_info(request),
+            super_admin_login_name=admin.login_name if admin else "superadmin",
+            totp_enabled=bool(admin.totp_enabled) if admin else False,
+            totp_setup_secret=str(request.session.get("super_admin_totp_setup_secret", "") or "") or None,
+            totp_setup_uri=(
+                otpauth_uri(
+                    str(request.session.get("super_admin_totp_setup_secret", "") or "").strip(),
+                    admin.login_name,
+                    issuer="BlueBird Alerts",
+                )
+                if admin and str(request.session.get("super_admin_totp_setup_secret", "") or "").strip()
+                else None
+            ),
             flash_message=flash_message,
             flash_error=flash_error,
         )
