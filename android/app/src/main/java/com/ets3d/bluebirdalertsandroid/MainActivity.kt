@@ -871,6 +871,7 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
     var showSettingsScreen by remember { mutableStateOf(false) }
     var pendingSafetyAction by remember { mutableStateOf<SafetyAction?>(null) }
     var showQuietRequestOverlay by remember { mutableStateOf(false) }
+    var showQuietDeleteConfirmOverlay by remember { mutableStateOf(false) }
     var replyTarget by remember { mutableStateOf<AdminInboxMessage?>(null) }
     val userName = remember { getUserName(ctx) }
     val userRole = remember { getUserRole(ctx) }
@@ -981,7 +982,8 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                         QuietPeriodStatusBanner(
                             status = quiet,
                             isBusy = state.isBusy,
-                            onDelete = { vm.deleteQuietPeriodRequest(ctx) },
+                            onDeletePending = { vm.deleteQuietPeriodRequest(ctx) },
+                            onDeleteApproved = { showQuietDeleteConfirmOverlay = true },
                         )
                     }
 
@@ -1112,6 +1114,16 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
             },
         )
     }
+    if (showQuietDeleteConfirmOverlay) {
+        QuietPeriodDeleteConfirmOverlay(
+            isBusy = state.isBusy,
+            onCancel = { showQuietDeleteConfirmOverlay = false },
+            onConfirm = {
+                showQuietDeleteConfirmOverlay = false
+                vm.deleteQuietPeriodRequest(ctx)
+            },
+        )
+    }
 
     // ── Dialogs ───────────────────────────────────────────────────────────────
     if (showDeactivateDialog) {
@@ -1206,7 +1218,8 @@ private fun FlashBanner(message: String, isError: Boolean) {
 private fun QuietPeriodStatusBanner(
     status: QuietPeriodMobileStatus,
     isBusy: Boolean,
-    onDelete: () -> Unit,
+    onDeletePending: () -> Unit,
+    onDeleteApproved: () -> Unit,
 ) {
     val normalized = status.status?.lowercase().orEmpty()
     if (normalized.isBlank()) return
@@ -1251,7 +1264,9 @@ private fun QuietPeriodStatusBanner(
             }
             if (normalized == "pending" || normalized == "approved") {
                 Button(
-                    onClick = onDelete,
+                    onClick = {
+                        if (normalized == "approved") onDeleteApproved() else onDeletePending()
+                    },
                     enabled = !isBusy,
                     shape = RoundedCornerShape(10.dp),
                     colors = ButtonDefaults.buttonColors(
@@ -1262,12 +1277,121 @@ private fun QuietPeriodStatusBanner(
                     ),
                 ) {
                     Text(
-                        if (isBusy) "Deleting..." else "Delete Request",
+                        if (isBusy) "Deleting..." else if (normalized == "approved") "End Quiet Period" else "Delete Request",
                         fontSize = 13.sp,
                         fontWeight = FontWeight.SemiBold,
                     )
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun QuietPeriodDeleteConfirmOverlay(
+    isBusy: Boolean,
+    onCancel: () -> Unit,
+    onConfirm: () -> Unit,
+) {
+    var slideValue by remember { mutableStateOf(0f) }
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color(0xCC0B1220))
+            .navigationBarsPadding()
+            .statusBarsPadding(),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 24.dp, vertical = 20.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Text("BlueBird Alerts", color = Color(0xFFD4DCEE), fontSize = 16.sp, fontWeight = FontWeight.Bold)
+            Spacer(modifier = Modifier.height(24.dp))
+            Surface(
+                shape = CircleShape,
+                color = Color(0xFFDC2626),
+                modifier = Modifier.size(86.dp),
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Text("!", fontSize = 34.sp, color = Color.White, fontWeight = FontWeight.ExtraBold)
+                }
+            }
+            Spacer(modifier = Modifier.height(14.dp))
+            Text(
+                "END QUIET PERIOD EARLY",
+                color = Color.White,
+                fontWeight = FontWeight.ExtraBold,
+                fontSize = 24.sp,
+                textAlign = TextAlign.Center,
+            )
+            Spacer(modifier = Modifier.height(12.dp))
+            Text(
+                "Do you really want to end this approved quiet period early?",
+                color = Color(0xFFE2E8F0),
+                fontWeight = FontWeight.Medium,
+                fontSize = 15.sp,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(modifier = Modifier.height(24.dp))
+            Surface(
+                shape = RoundedCornerShape(28.dp),
+                color = Color(0xFF5B616B),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
+                    Text(
+                        if (isBusy) "Ending…" else "Slide to Confirm →",
+                        color = Color.White,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 16.sp,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Slider(
+                        value = slideValue,
+                        onValueChange = { slideValue = it },
+                        onValueChangeFinished = {
+                            if (!isBusy && slideValue >= 0.95f) {
+                                onConfirm()
+                            }
+                            slideValue = 0f
+                        },
+                        enabled = !isBusy,
+                        colors = SliderDefaults.colors(
+                            thumbColor = Color.White,
+                            activeTrackColor = Color(0xFFFCA5A5),
+                            inactiveTrackColor = Color(0xFF6D747F),
+                        ),
+                        valueRange = 0f..1f,
+                    )
+                }
+            }
+            Spacer(modifier = Modifier.weight(1f))
+            Surface(
+                shape = CircleShape,
+                color = Color(0xCC9CA3AF),
+                modifier = Modifier.size(68.dp),
+            ) {
+                Button(
+                    onClick = onCancel,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color.Transparent,
+                        contentColor = Color.White,
+                    ),
+                    modifier = Modifier.fillMaxSize(),
+                ) {
+                    Text("✕", fontSize = 26.sp, fontWeight = FontWeight.Bold)
+                }
+            }
+            Text(
+                "Cancel",
+                color = Color.White,
+                fontSize = 14.sp,
+                modifier = Modifier.padding(top = 6.dp),
+            )
         }
     }
 }
