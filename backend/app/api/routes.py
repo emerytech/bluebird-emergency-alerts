@@ -604,13 +604,16 @@ async def admin_totp_enable(
 @router.post("/admin/totp/enable-form", include_in_schema=False)
 async def admin_totp_enable_form(
     request: Request,
-    code: str = Form(...),
+    code: str = Form(default=""),
 ) -> RedirectResponse:
     await _require_dashboard_admin(request)
     user = request.state.admin_user  # type: ignore[attr-defined]
     secret = str(request.session.get("admin_totp_setup_secret", "") or "").strip()
     if not secret:
         _set_flash(request, error="Start TOTP setup first.")
+        return RedirectResponse(url=_school_url(request, "/admin#security"), status_code=status.HTTP_303_SEE_OTHER)
+    if not code.strip():
+        _set_flash(request, error="Enter the 6-digit authenticator code.")
         return RedirectResponse(url=_school_url(request, "/admin#security"), status_code=status.HTTP_303_SEE_OTHER)
     if not verify_totp_code(secret, code):
         _set_flash(request, error="Invalid authenticator code.")
@@ -638,10 +641,13 @@ async def admin_totp_disable(
 @router.post("/admin/totp/disable-form", include_in_schema=False)
 async def admin_totp_disable_form(
     request: Request,
-    current_password: str = Form(...),
+    current_password: str = Form(default=""),
 ) -> RedirectResponse:
     await _require_dashboard_admin(request)
     user = request.state.admin_user  # type: ignore[attr-defined]
+    if not current_password.strip():
+        _set_flash(request, error="Enter your current password to disable 2FA.")
+        return RedirectResponse(url=_school_url(request, "/admin#security"), status_code=status.HTTP_303_SEE_OTHER)
     if not await _users(request).verify_current_password(user.id, current_password):
         _set_flash(request, error="Current password is incorrect.")
         return RedirectResponse(url=_school_url(request, "/admin#security"), status_code=status.HTTP_303_SEE_OTHER)
@@ -797,7 +803,7 @@ async def super_admin_totp_enable(
 @router.post("/super-admin/totp/enable-form", include_in_schema=False)
 async def super_admin_totp_enable_form(
     request: Request,
-    code: str = Form(...),
+    code: str = Form(default=""),
 ) -> RedirectResponse:
     _require_super_admin(request)
     admin = await _platform_admins(request).get_by_id(_super_admin_id(request) or 0)
@@ -807,6 +813,9 @@ async def super_admin_totp_enable_form(
     secret = str(request.session.get("super_admin_totp_setup_secret", "") or "").strip()
     if not secret:
         _set_flash(request, error="Start TOTP setup first.")
+        return RedirectResponse(url="/super-admin#security", status_code=status.HTTP_303_SEE_OTHER)
+    if not code.strip():
+        _set_flash(request, error="Enter the 6-digit authenticator code.")
         return RedirectResponse(url="/super-admin#security", status_code=status.HTTP_303_SEE_OTHER)
     if not verify_totp_code(secret, code):
         _set_flash(request, error="Invalid authenticator code.")
@@ -836,12 +845,15 @@ async def super_admin_totp_disable(
 @router.post("/super-admin/totp/disable-form", include_in_schema=False)
 async def super_admin_totp_disable_form(
     request: Request,
-    current_password: str = Form(...),
+    current_password: str = Form(default=""),
 ) -> RedirectResponse:
     _require_super_admin(request)
     admin = await _platform_admins(request).get_by_id(_super_admin_id(request) or 0)
     if admin is None:
         _set_flash(request, error="Super admin account not found.")
+        return RedirectResponse(url="/super-admin#security", status_code=status.HTTP_303_SEE_OTHER)
+    if not current_password.strip():
+        _set_flash(request, error="Enter your current password to disable 2FA.")
         return RedirectResponse(url="/super-admin#security", status_code=status.HTTP_303_SEE_OTHER)
     if not await _platform_admins(request).verify_current_password(admin.id, current_password):
         _set_flash(request, error="Current password is incorrect.")
