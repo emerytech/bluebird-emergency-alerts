@@ -12,6 +12,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from html import escape
+from types import SimpleNamespace
 from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Form, Query, Request
@@ -141,6 +142,15 @@ def _clear_pending_admin(request: Request) -> None:
 
 def _clear_pending_super_admin(request: Request) -> None:
     request.session.pop("pending_super_admin_id", None)
+
+
+def _super_admin_school_slug(request: Request) -> Optional[str]:
+    value = request.session.get("super_admin_school_slug")
+    return str(value).strip() if isinstance(value, str) and str(value).strip() else None
+
+
+def _clear_super_admin_school_scope(request: Request) -> None:
+    request.session.pop("super_admin_school_slug", None)
 
 
 def _set_flash(request: Request, *, message: Optional[str] = None, error: Optional[str] = None) -> None:
@@ -318,6 +328,23 @@ def _clear_super_admin_trust_cookie(request: Request, response: RedirectResponse
 
 
 async def _require_dashboard_admin(request: Request) -> UserStore:
+    active_super_admin_id = _super_admin_id(request)
+    active_super_admin_school_slug = _super_admin_school_slug(request)
+    current_school_slug = str(getattr(request.state.school, "slug", "") or "")
+    if active_super_admin_id is not None and active_super_admin_school_slug == current_school_slug:
+        platform_admin = await _platform_admins(request).get_by_id(active_super_admin_id)
+        if platform_admin is None:
+            request.session.pop("super_admin_id", None)
+            _clear_super_admin_school_scope(request)
+            raise HTTPException(status_code=status.HTTP_303_SEE_OTHER, headers={"Location": "/super-admin/login"})
+        request.state.super_admin_school_access = True
+        request.state.super_admin_actor = platform_admin
+        request.state.admin_user = SimpleNamespace(
+            name=f"{platform_admin.login_name} (Super Admin)",
+            login_name=platform_admin.login_name,
+            role="super_admin",
+        )
+        return _users(request)
     user_id = _session_user_id(request)
     if user_id is None:
         raise HTTPException(status_code=status.HTTP_303_SEE_OTHER, headers={"Location": _school_url(request, "/admin/login")})
@@ -328,6 +355,7 @@ async def _require_dashboard_admin(request: Request) -> UserStore:
     if user.must_change_password:
         raise HTTPException(status_code=status.HTTP_303_SEE_OTHER, headers={"Location": _school_url(request, "/admin/change-password")})
     request.state.admin_user = user
+    request.state.super_admin_school_access = False
     return _users(request)
 
 
@@ -520,7 +548,9 @@ def _build_server_info(request: Request) -> dict:
 
 @router.get("/admin", response_class=HTMLResponse, include_in_schema=False)
 async def admin_dashboard(request: Request) -> HTMLResponse:
-    if _session_user_id(request) is None:
+    if _session_user_id(request) is None and not (
+        _super_admin_ok(request) and _super_admin_school_slug(request) == str(request.state.school.slug)
+    ):
         return RedirectResponse(url="/admin/login", status_code=status.HTTP_303_SEE_OTHER)
     await _require_dashboard_admin(request)
     devices = await _registry(request).list_devices()
@@ -560,12 +590,20 @@ async def admin_dashboard(request: Request) -> HTMLResponse:
         ),
         flash_message=flash_message,
         flash_error=flash_error,
+        super_admin_mode=bool(getattr(request.state, "super_admin_school_access", False)),
+        super_admin_actor_name=(
+            getattr(getattr(request.state, "super_admin_actor", None), "login_name", None)
+            if getattr(request.state, "super_admin_school_access", False)
+            else None
+        ),
     )
     return HTMLResponse(content=html)
 
 
 @router.get("/admin/login", response_class=HTMLResponse, include_in_schema=False)
 async def admin_login_page(request: Request) -> HTMLResponse:
+    if _super_admin_ok(request) and _super_admin_school_slug(request) == str(request.state.school.slug):
+        return RedirectResponse(url="/admin", status_code=status.HTTP_303_SEE_OTHER)
     if _session_user_id(request) is not None:
         user = await _users(request).get_user(_session_user_id(request) or 0)
         if user and user.role == "admin" and user.is_active and user.can_login:
@@ -1124,6 +1162,13 @@ async def super_admin_dashboard(request: Request) -> HTMLResponse:
         school_prefix = f"/{school.slug}"
         admin_count = await request.app.state.tenant_manager.get(school).user_store.count_dashboard_admins()  # type: ignore[attr-defined]
         admin_url = f"https://{base_domain}{school_prefix}/admin"
+        access_controls_html = f"""
+            <form method="post" action="/super-admin/schools/{school.slug}/enter" style="margin-top:10px;">
+              <div class="button-row">
+                <button class="button button-primary" type="submit">Open Admin as Super Admin</button>
+              </div>
+            </form>
+        """
         pin_controls_html = (
             f"""
             <form method="post" action="/super-admin/schools/{school.slug}/setup-pin" class="stack" style="margin-top:10px;">
@@ -1174,6 +1219,7 @@ async def super_admin_dashboard(request: Request) -> HTMLResponse:
                 "admin_url": admin_url,
                 "admin_url_label": f"{base_domain}{school_prefix}/admin",
                 "api_base_label": f"{base_domain}{school_prefix}",
+                "access_controls_html": access_controls_html,
                 "setup_status": "Ready" if admin_count > 0 else "Needs first admin",
                 "setup_hint": (
                     "School dashboard login is active."
@@ -1325,6 +1371,27 @@ async def super_admin_update_school_theme(
     return RedirectResponse(url="/super-admin#schools", status_code=status.HTTP_303_SEE_OTHER)
 
 
+@router.post("/super-admin/schools/{slug}/enter", include_in_schema=False)
+async def super_admin_enter_school(
+    request: Request,
+    slug: str,
+) -> RedirectResponse:
+    _require_super_admin(request)
+    from app.services.tenant_manager import normalize_school_slug
+
+    normalized_slug = normalize_school_slug(slug)
+    school = await _schools(request).get_school(normalized_slug)
+    if school is None or not school.is_active:
+        _set_flash(request, error="School not found.")
+        return RedirectResponse(url="/super-admin#schools", status_code=status.HTTP_303_SEE_OTHER)
+    request.session["super_admin_school_slug"] = school.slug
+    request.session.pop("admin_user_id", None)
+    request.session.pop("pending_admin_user_id", None)
+    request.session.pop("admin_totp_setup_secret", None)
+    _set_flash(request, message=f"Entered {school.name} as super admin.")
+    return RedirectResponse(url=f"/{school.slug}/admin", status_code=status.HTTP_303_SEE_OTHER)
+
+
 def _run_server_command(command: Optional[str]) -> None:
     if command:
         os.system(command)
@@ -1367,6 +1434,17 @@ def _do_restart(command: Optional[str]) -> None:
             os.execv(sys.argv[0], sys.argv)
         except Exception:
             os.execv(sys.executable, [sys.executable] + sys.argv)
+
+
+@router.post("/admin/super-admin/exit", include_in_schema=False)
+async def admin_exit_super_admin_access(request: Request) -> RedirectResponse:
+    if _super_admin_ok(request):
+        _clear_super_admin_school_scope(request)
+    request.session.pop("admin_user_id", None)
+    request.session.pop("pending_admin_user_id", None)
+    request.session.pop("admin_totp_setup_secret", None)
+    _set_flash(request, message="Returned to the super admin console.")
+    return RedirectResponse(url="/super-admin", status_code=status.HTTP_303_SEE_OTHER)
 
 
 @router.post("/admin/server/restart", include_in_schema=False)
@@ -1487,10 +1565,13 @@ async def admin_deactivate_alarm(
     request: Request,
 ) -> RedirectResponse:
     await _require_dashboard_admin(request)
-    await deactivate_alarm(
-        AlarmDeactivateRequest(user_id=_session_user_id(request)),
-        request,
-    )
+    if bool(getattr(request.state, "super_admin_school_access", False)):
+        await _alarm_store(request).deactivate(deactivated_by_user_id=None)
+    else:
+        await deactivate_alarm(
+            AlarmDeactivateRequest(user_id=_session_user_id(request)),
+            request,
+        )
     _set_flash(request, message="Alarm deactivated.")
     return RedirectResponse(url="/admin", status_code=status.HTTP_303_SEE_OTHER)
 
@@ -1640,7 +1721,7 @@ async def admin_delete_user(
 
     await _users(request).delete_user(user_id)
 
-    if current_admin_id == user_id:
+    if current_admin_id is not None and current_admin_id == user_id:
         request.session.clear()
         return RedirectResponse(url="/admin/login", status_code=status.HTTP_303_SEE_OTHER)
 

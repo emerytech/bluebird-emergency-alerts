@@ -641,7 +641,7 @@ def render_super_admin_page(
             f"<td><code>{escape(str(item['slug']))}</code></td>"
             f"<td><a href=\"{escape(str(item['admin_url']))}\" target=\"_blank\">{escape(str(item['admin_url_label']))}</a>"
             f"<div class=\"mini-copy\">Mobile/API base: <code>{escape(str(item['api_base_label']))}</code></div></td>"
-            f"<td>{escape(str(item['setup_status']))}<div class=\"mini-copy\">{escape(str(item['setup_hint']))}</div>{str(item['pin_controls_html'])}{str(item['theme_controls_html'])}</td>"
+            f"<td>{escape(str(item['setup_status']))}<div class=\"mini-copy\">{escape(str(item['setup_hint']))}</div>{str(item['access_controls_html'])}{str(item['pin_controls_html'])}{str(item['theme_controls_html'])}</td>"
             f"<td>{'Active' if bool(item['is_active']) else 'Inactive'}</td>"
             "</tr>"
         )
@@ -1108,6 +1108,8 @@ def render_admin_page(
     totp_setup_uri: Optional[str] = None,
     flash_message: Optional[str] = None,
     flash_error: Optional[str] = None,
+    super_admin_mode: bool = False,
+    super_admin_actor_name: Optional[str] = None,
 ) -> str:
     prefix = escape(school_path_prefix)
     role_counts = Counter(user.role for user in users)
@@ -1118,7 +1120,37 @@ def render_admin_page(
     alarm_status_class = "danger" if alarm_state.is_active else "ok"
     alarm_status_label = "ALARM ACTIVE" if alarm_state.is_active else "Alarm clear"
     security_feedback = f"{_render_flash(flash_message, 'success')}{_render_flash(flash_error, 'error')}"
-    if totp_enabled:
+    super_admin_shell_action_html = ""
+    super_admin_banner_html = ""
+    if super_admin_mode:
+        super_admin_shell_action_html = f"""
+            <form method="post" action="{prefix}/admin/super-admin/exit">
+              <button class="button button-secondary" type="submit">Return to Super Admin</button>
+            </form>
+        """
+        super_admin_banner_html = f"""
+        <section class="panel command-section">
+          <div class="flash success">
+            <strong>Super Admin Access</strong><br />
+            You are operating inside <strong>{escape(school_name)}</strong> as platform super admin <strong>{escape(super_admin_actor_name or 'superadmin')}</strong>. Actions here affect this school directly.
+          </div>
+        </section>
+        """
+    if super_admin_mode:
+        admin_security_html = f"""
+          <div class="flash success">
+            This school console is being accessed through the platform super admin account <strong>{escape(super_admin_actor_name or 'superadmin')}</strong>.
+          </div>
+          <div class="flash">
+            School-admin password, 2FA, and account-rotation controls stay with the real tenant admin accounts. Use the school user list to create or update those accounts as needed.
+          </div>
+          <form method="post" action="{prefix}/admin/super-admin/exit">
+            <div class="button-row">
+              <button class="button button-secondary" type="submit">Return to Super Admin</button>
+            </div>
+          </form>
+        """
+    elif totp_enabled:
         admin_security_html = """
           {security_feedback}
           <div class="flash success">
@@ -1209,6 +1241,7 @@ def render_admin_page(
           </div>
           <div class="shell-actions">
             <p class="signal-copy">Manage people, alerts, readiness, and response from one school operations console.</p>
+            {super_admin_shell_action_html}
             <form method="post" action="{prefix}/admin/logout">
             <button class="button button-secondary" type="submit">Log out</button>
           </form>
@@ -1219,6 +1252,7 @@ def render_admin_page(
       <section class="content-stack workspace">
         {_render_flash(flash_message, "success")}
         {_render_flash(flash_error, "error")}
+        {super_admin_banner_html}
 
         <section class="panel command-section" id="overview">
           <div class="panel-header hero-band">
