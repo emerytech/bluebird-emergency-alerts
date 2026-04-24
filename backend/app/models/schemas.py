@@ -330,6 +330,28 @@ class QuietPeriodDeleteRequest(BaseModel):
     user_id: int
 
 
+class QuietPeriodAdminActionRequest(BaseModel):
+    admin_user_id: int
+
+
+class QuietPeriodAdminItem(BaseModel):
+    request_id: int
+    user_id: int
+    user_name: Optional[str] = None
+    user_role: Optional[str] = None
+    reason: Optional[str] = None
+    status: str
+    requested_at: str
+    approved_at: Optional[str] = None
+    approved_by_user_id: Optional[int] = None
+    approved_by_label: Optional[str] = None
+    expires_at: Optional[str] = None
+
+
+class QuietPeriodAdminListResponse(BaseModel):
+    requests: List[QuietPeriodAdminItem]
+
+
 class AdminBroadcastRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=240)
 

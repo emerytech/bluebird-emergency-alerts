@@ -28,13 +28,15 @@ private struct SafetyActionItem: Identifiable {
     let message: String
 }
 
-private let safetyActions: [SafetyActionItem] = [
-    .init(id: "secure", title: AppLabels.secure.uppercased(), icon: "hand.raised.fill", color: Color(red: 0.23, green: 0.66, blue: 0.95), message: "SECURE emergency initiated. Follow school secure procedures."),
-    .init(id: "lockdown", title: AppLabels.lockdown.uppercased(), icon: "lock.fill", color: Color(red: 0.94, green: 0.27, blue: 0.27), message: "LOCKDOWN emergency initiated. Follow lockdown procedures immediately."),
-    .init(id: "evacuation", title: AppLabels.evacuation.uppercased(), icon: "figure.walk.motion", color: Color(red: 0.52, green: 0.80, blue: 0.09), message: "EVACUATE emergency initiated. Move to evacuation locations now."),
-    .init(id: "shelter", title: AppLabels.shelter.uppercased(), icon: "house.fill", color: Color(red: 0.96, green: 0.62, blue: 0.12), message: "SHELTER emergency initiated. Move into shelter protocol."),
-    .init(id: "hold", title: "HOLD", icon: "pause.fill", color: Color(red: 0.58, green: 0.20, blue: 0.92), message: "HOLD emergency initiated. Keep current position until cleared.")
-]
+private func buildSafetyActions(featureLabels: [String: String]) -> [SafetyActionItem] {
+    [
+        .init(id: "secure", title: AppLabels.labelForFeatureKey(AppLabels.keySecure, overrides: featureLabels).uppercased(), icon: "hand.raised.fill", color: Color(red: 0.23, green: 0.66, blue: 0.95), message: "SECURE emergency initiated. Follow school secure procedures."),
+        .init(id: "lockdown", title: AppLabels.labelForFeatureKey(AppLabels.keyLockdown, overrides: featureLabels).uppercased(), icon: "lock.fill", color: Color(red: 0.94, green: 0.27, blue: 0.27), message: "LOCKDOWN emergency initiated. Follow lockdown procedures immediately."),
+        .init(id: "evacuation", title: AppLabels.labelForFeatureKey(AppLabels.keyEvacuation, overrides: featureLabels).uppercased(), icon: "figure.walk.motion", color: Color(red: 0.52, green: 0.80, blue: 0.09), message: "EVACUATE emergency initiated. Move to evacuation locations now."),
+        .init(id: "shelter", title: AppLabels.labelForFeatureKey(AppLabels.keyShelter, overrides: featureLabels).uppercased(), icon: "house.fill", color: Color(red: 0.96, green: 0.62, blue: 0.12), message: "SHELTER emergency initiated. Move into shelter protocol."),
+        .init(id: "hold", title: "HOLD", icon: "pause.fill", color: Color(red: 0.58, green: 0.20, blue: 0.92), message: "HOLD emergency initiated. Keep current position until cleared."),
+    ]
+}
 private let teamAssistTypes = [
     "Fight in Progress",
     "Irate Parent",
@@ -66,6 +68,9 @@ struct ContentView: View {
     @State private var teamAssistForwardRecipients: [MessageRecipient] = []
     @State private var forwardingTeamAssist: TeamAssistSummary?
     @State private var isUpdatingTeamAssist = false
+    @State private var adminQuietPeriodRequests: [QuietPeriodAdminRequest] = []
+    @State private var isUpdatingQuietPeriodRequests = false
+    @State private var featureLabels: [String: String] = AppLabels.defaultFeatureLabels
 
     private var api: APIClient {
         APIClient(baseURL: appState.serverURL, apiKey: Config.backendApiKey)
@@ -74,6 +79,28 @@ struct ContentView: View {
     private var isAdminSession: Bool {
         let role = appState.userRole.lowercased()
         return role == "admin" || role == "super_admin" || role == "platform_super_admin"
+    }
+
+    private var safetyActions: [SafetyActionItem] {
+        buildSafetyActions(featureLabels: featureLabels)
+    }
+
+    private var requestHelpLabel: String {
+        AppLabels.labelForFeatureKey(AppLabels.keyRequestHelp, overrides: featureLabels)
+    }
+
+    private var activeRequestHelpLabel: String {
+        if requestHelpLabel.caseInsensitiveCompare(AppLabels.requestHelp) == .orderedSame {
+            return AppLabels.activeHelpRequests
+        }
+        return "Active \(requestHelpLabel)"
+    }
+
+    private var noActiveRequestHelpLabel: String {
+        if requestHelpLabel.caseInsensitiveCompare(AppLabels.requestHelp) == .orderedSame {
+            return AppLabels.noActiveHelpRequests
+        }
+        return "No active \(requestHelpLabel.lowercased())."
     }
 
     var body: some View {
@@ -95,6 +122,7 @@ struct ContentView: View {
                         safetyGrid
                         if isAdminSession {
                             adminMessageCard
+                            adminQuietPeriodRequestsCard
                         }
                         customPanicCard
                         supportActionsCard
@@ -123,10 +151,12 @@ struct ContentView: View {
                 await refreshIncidentFeed()
             }
             .task {
+                await loadFeatureLabels()
                 await refreshIncidentFeed()
                 if isAdminSession {
                     await loadAdminRecipients()
                     await loadTeamAssistForwardRecipients()
+                    await loadAdminQuietPeriodRequests()
                 }
                 if let token = appState.deviceToken, appState.initialDeviceAuthUserID == nil {
                     appState.usingLocalTestToken = (token == localTestToken)
@@ -137,9 +167,13 @@ struct ContentView: View {
                     try? await Task.sleep(nanoseconds: 10_000_000_000)
                     await refreshIncidentFeed()
                     tick += 1
+                    if tick % 18 == 0 {
+                        await loadFeatureLabels()
+                    }
                     if isAdminSession && tick % 6 == 0 {
                         await loadAdminRecipients()
                         await loadTeamAssistForwardRecipients()
+                        await loadAdminQuietPeriodRequests()
                     }
                 }
             }
@@ -152,6 +186,7 @@ struct ContentView: View {
             .sheet(item: $forwardingTeamAssist) { teamAssist in
                 TeamAssistForwardSheet(
                     teamAssist: teamAssist,
+                    requestHelpLabel: requestHelpLabel,
                     recipients: teamAssistForwardRecipients.filter { $0.userID != appState.userID },
                     isBusy: isUpdatingTeamAssist,
                     onSelect: { recipient in
@@ -159,7 +194,7 @@ struct ContentView: View {
                     }
                 )
             }
-            .confirmationDialog(AppLabels.requestHelp, isPresented: $showTeamAssistPicker, titleVisibility: .visible) {
+            .confirmationDialog(requestHelpLabel, isPresented: $showTeamAssistPicker, titleVisibility: .visible) {
                 ForEach(teamAssistTypes, id: \.self) { type in
                     Button(type) {
                         Task { await submitTeamAssist(type: type) }
@@ -275,11 +310,11 @@ struct ContentView: View {
 
                 Divider()
 
-                Text(AppLabels.activeHelpRequests)
+                Text(activeRequestHelpLabel)
                     .font(.subheadline.weight(.bold))
                     .foregroundStyle(Color(red: 0.06, green: 0.46, blue: 0.43))
                 if activeTeamAssists.isEmpty {
-                    Text(AppLabels.noActiveHelpRequests)
+                    Text(noActiveRequestHelpLabel)
                         .font(.subheadline)
                         .foregroundStyle(textMuted)
                 } else {
@@ -391,6 +426,69 @@ struct ContentView: View {
         }
     }
 
+    private var adminQuietPeriodRequestsCard: some View {
+        card {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Quiet Period Requests")
+                    .font(.headline)
+                    .foregroundStyle(textPrimary)
+
+                if adminQuietPeriodRequests.isEmpty {
+                    Text("No pending quiet period requests.")
+                        .font(.subheadline)
+                        .foregroundStyle(textMuted)
+                } else {
+                    ForEach(adminQuietPeriodRequests.prefix(10)) { item in
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("\(item.userName ?? "User #\(item.userID)") • \((item.userRole ?? "user").capitalized)")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(textPrimary)
+                            Text("Requested: \(item.requestedAt)")
+                                .font(.caption)
+                                .foregroundStyle(textMuted)
+                            if let reason = item.reason, !reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                Text("Reason: \(reason)")
+                                    .font(.caption)
+                                    .foregroundStyle(textMuted)
+                            }
+                            HStack(spacing: 10) {
+                                Button {
+                                    Task { await approveQuietPeriodRequest(item) }
+                                } label: {
+                                    Text("Approve")
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(.white)
+                                        .padding(.horizontal, 12)
+                                        .padding(.vertical, 8)
+                                        .background(Color(red: 0.10, green: 0.40, blue: 0.20))
+                                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                                }
+                                .disabled(isUpdatingQuietPeriodRequests || item.status.lowercased() != "pending")
+
+                                Button {
+                                    Task { await denyQuietPeriodRequest(item) }
+                                } label: {
+                                    Text("Deny")
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(.white)
+                                        .padding(.horizontal, 12)
+                                        .padding(.vertical, 8)
+                                        .background(Color(red: 0.72, green: 0.11, blue: 0.11))
+                                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                                }
+                                .disabled(isUpdatingQuietPeriodRequests || item.status.lowercased() != "pending")
+                            }
+                        }
+                        .padding(10)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color(red: 0.97, green: 0.98, blue: 1.0))
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    }
+                }
+            }
+        }
+    }
+
     private var customPanicCard: some View {
         card {
             VStack(spacing: 14) {
@@ -432,7 +530,7 @@ struct ContentView: View {
         card {
             VStack(spacing: DSSpacing.md) {
                 PrimaryButton(
-                    isSubmittingQuickAction ? "Submitting..." : AppLabels.requestHelp,
+                    isSubmittingQuickAction ? "Submitting..." : requestHelpLabel,
                     isLoading: isSubmittingQuickAction,
                     isEnabled: !isSubmittingQuickAction
                 ) {
@@ -628,7 +726,7 @@ struct ContentView: View {
 
     private func teamAssistFeedRow(item: TeamAssistSummary) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            feedRow(title: AppLabels.featureDisplayName(for: item.type), subtitle: teamAssistSubtitle(for: item))
+            feedRow(title: AppLabels.featureDisplayName(for: item.type, overrides: featureLabels), subtitle: teamAssistSubtitle(for: item))
             if isAdminSession {
                 HStack(spacing: 10) {
                     Menu {
@@ -839,6 +937,38 @@ struct ContentView: View {
         }
     }
 
+    private func loadAdminQuietPeriodRequests() async {
+        guard isAdminSession, let adminUserID = appState.userID else { return }
+        do {
+            let response = try await api.adminQuietPeriodRequests(adminUserID: adminUserID)
+            adminQuietPeriodRequests = response.requests
+        } catch {
+            if adminQuietPeriodRequests.isEmpty {
+                appState.lastError = "Could not load quiet period requests."
+            }
+        }
+    }
+
+    private func loadFeatureLabels() async {
+        do {
+            let remote = try await api.configLabels()
+            if remote.isEmpty { return }
+            var merged = AppLabels.defaultFeatureLabels
+            for (rawKey, rawValue) in remote {
+                let key = AppLabels.normalizeFeatureKey(rawKey)
+                let value = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !value.isEmpty {
+                    merged[key] = value
+                }
+            }
+            featureLabels = merged
+        } catch {
+            if featureLabels.isEmpty {
+                featureLabels = AppLabels.defaultFeatureLabels
+            }
+        }
+    }
+
     private func sendAdminMessage() async {
         guard let adminUserID = appState.userID else {
             appState.lastError = "No admin session is active."
@@ -943,6 +1073,40 @@ struct ContentView: View {
             await refreshIncidentFeed()
         } catch {
             appState.lastError = "Request-help forward failed: \(error.localizedDescription)"
+        }
+    }
+
+    private func approveQuietPeriodRequest(_ item: QuietPeriodAdminRequest) async {
+        guard let adminUserID = appState.userID else {
+            appState.lastError = "Admin sign-in is required."
+            return
+        }
+        isUpdatingQuietPeriodRequests = true
+        defer { isUpdatingQuietPeriodRequests = false }
+        do {
+            _ = try await api.approveQuietPeriodRequest(requestID: item.requestID, adminUserID: adminUserID)
+            appState.lastError = nil
+            appState.lastStatus = "Quiet period request approved."
+            await loadAdminQuietPeriodRequests()
+        } catch {
+            appState.lastError = "Approve failed: \(error.localizedDescription)"
+        }
+    }
+
+    private func denyQuietPeriodRequest(_ item: QuietPeriodAdminRequest) async {
+        guard let adminUserID = appState.userID else {
+            appState.lastError = "Admin sign-in is required."
+            return
+        }
+        isUpdatingQuietPeriodRequests = true
+        defer { isUpdatingQuietPeriodRequests = false }
+        do {
+            _ = try await api.denyQuietPeriodRequest(requestID: item.requestID, adminUserID: adminUserID)
+            appState.lastError = nil
+            appState.lastStatus = "Quiet period request denied."
+            await loadAdminQuietPeriodRequests()
+        } catch {
+            appState.lastError = "Deny failed: \(error.localizedDescription)"
         }
     }
 
@@ -1085,6 +1249,7 @@ private struct RecipientSelectionSheet: View {
 
 private struct TeamAssistForwardSheet: View {
     let teamAssist: TeamAssistSummary
+    let requestHelpLabel: String
     let recipients: [MessageRecipient]
     let isBusy: Bool
     let onSelect: (MessageRecipient) -> Void
@@ -1114,7 +1279,7 @@ private struct TeamAssistForwardSheet: View {
                     }
                 }
             }
-            .navigationTitle(AppLabels.forwardRequestHelp)
+            .navigationTitle("Forward \(requestHelpLabel)")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {

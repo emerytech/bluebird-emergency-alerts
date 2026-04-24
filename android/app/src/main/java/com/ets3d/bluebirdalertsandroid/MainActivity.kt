@@ -242,6 +242,19 @@ data class QuietPeriodMobileStatus(
     val expiresAt: String? = null,
 )
 
+data class AdminQuietPeriodRequest(
+    val requestId: Int,
+    val userId: Int,
+    val userName: String?,
+    val userRole: String?,
+    val reason: String?,
+    val status: String,
+    val requestedAt: String,
+    val approvedAt: String? = null,
+    val approvedByLabel: String? = null,
+    val expiresAt: String? = null,
+)
+
 private data class SafetyAction(
     val key: String,
     val title: String,
@@ -250,31 +263,31 @@ private data class SafetyAction(
     val message: String,
 )
 
-private val SafetyActions = listOf(
+private fun buildSafetyActions(featureLabels: Map<String, String>): List<SafetyAction> = listOf(
     SafetyAction(
-        key = "secure",
-        title = AppLabels.SECURE.uppercase(),
+        key = AppLabels.KEY_SECURE,
+        title = AppLabels.labelForFeatureKey(AppLabels.KEY_SECURE, featureLabels).uppercase(),
         emoji = "\uD83D\uDD10",
         color = Color(0xFF3BA8F2),
         message = "SECURE emergency initiated. Follow school secure procedures.",
     ),
     SafetyAction(
-        key = "lockdown",
-        title = AppLabels.LOCKDOWN.uppercase(),
+        key = AppLabels.KEY_LOCKDOWN,
+        title = AppLabels.labelForFeatureKey(AppLabels.KEY_LOCKDOWN, featureLabels).uppercase(),
         emoji = "\uD83D\uDD12",
         color = Color(0xFFEF4444),
         message = "LOCKDOWN emergency initiated. Follow lockdown procedures immediately.",
     ),
     SafetyAction(
-        key = "evacuation",
-        title = AppLabels.EVACUATION.uppercase(),
+        key = AppLabels.KEY_EVACUATION,
+        title = AppLabels.labelForFeatureKey(AppLabels.KEY_EVACUATION, featureLabels).uppercase(),
         emoji = "\uD83D\uDEB6",
         color = Color(0xFF84CC16),
         message = "EVACUATE emergency initiated. Move to evacuation locations now.",
     ),
     SafetyAction(
-        key = "shelter",
-        title = AppLabels.SHELTER.uppercase(),
+        key = AppLabels.KEY_SHELTER,
+        title = AppLabels.labelForFeatureKey(AppLabels.KEY_SHELTER, featureLabels).uppercase(),
         emoji = "\uD83C\uDFE0",
         color = Color(0xFFF59E0B),
         message = "SHELTER emergency initiated. Move into shelter protocol.",
@@ -341,6 +354,8 @@ data class UiState(
     val activeTeamAssists: List<TeamAssistFeedItem> = emptyList(),
     val isRefreshingFeed: Boolean = false,
     val teamAssistActionRecipients: List<TeamAssistActionRecipient> = emptyList(),
+    val adminQuietPeriodRequests: List<AdminQuietPeriodRequest> = emptyList(),
+    val featureLabels: Map<String, String> = AppLabels.DEFAULT_FEATURE_LABELS,
 )
 
 // ── ViewModel ──────────────────────────────────────────────────────────────────
@@ -356,8 +371,20 @@ class MainViewModel : ViewModel() {
             baseUrl = getServerUrl(ctx),
             apiKey  = BuildConfig.BACKEND_API_KEY,
         )
+        refreshFeatureLabels()
         registerPushToken(ctx)
         startPolling(ctx)
+    }
+
+    fun refreshFeatureLabels() {
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { client!!.configLabels() }
+                .onSuccess { labels ->
+                    if (labels.isNotEmpty()) {
+                        _state.update { it.copy(featureLabels = AppLabels.DEFAULT_FEATURE_LABELS + labels) }
+                    }
+                }
+        }
     }
 
     private fun registerPushToken(ctx: Context) {
@@ -374,6 +401,7 @@ class MainViewModel : ViewModel() {
     private fun startPolling(ctx: Context) {
         val userId = getUserId(ctx).toIntOrNull()
         viewModelScope.launch(Dispatchers.IO) {
+            var tick = 0
             while (isActive) {
                 runCatching { client!!.alarmStatus() }
                     .onSuccess { alarm ->
@@ -389,6 +417,15 @@ class MainViewModel : ViewModel() {
                         }
                 }
                 refreshIncidentFeedsOnce()
+                tick += 1
+                if (tick % 18 == 0) {
+                    runCatching { client!!.configLabels() }
+                        .onSuccess { labels ->
+                            if (labels.isNotEmpty()) {
+                                _state.update { it.copy(featureLabels = AppLabels.DEFAULT_FEATURE_LABELS + labels) }
+                            }
+                        }
+                }
                 delay(10_000)
             }
         }
@@ -519,6 +556,16 @@ class MainViewModel : ViewModel() {
             runCatching { client!!.listTeamAssistActionRecipients() }
                 .onSuccess { recipients ->
                     _state.update { it.copy(teamAssistActionRecipients = recipients) }
+                }
+        }
+    }
+
+    fun refreshAdminQuietPeriodRequests(ctx: Context) {
+        val adminUserId = getUserId(ctx).toIntOrNull() ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { client!!.listAdminQuietPeriodRequests(adminUserId = adminUserId) }
+                .onSuccess { requests ->
+                    _state.update { it.copy(adminQuietPeriodRequests = requests) }
                 }
         }
     }
@@ -671,6 +718,58 @@ class MainViewModel : ViewModel() {
 
     fun confirmTeamAssistCancel(ctx: Context, teamAssistId: Int) {
         confirmRequestHelpCancel(ctx = ctx, teamAssistId = teamAssistId)
+    }
+
+    fun approveQuietPeriodRequest(ctx: Context, requestId: Int) {
+        val adminUserId = getUserId(ctx).toIntOrNull()
+        if (adminUserId == null) {
+            _state.update { it.copy(errorMsg = "Admin sign-in is required.") }
+            return
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            _state.update { it.copy(isBusy = true, errorMsg = null) }
+            runCatching { client!!.approveQuietPeriodRequest(requestId = requestId, adminUserId = adminUserId) }
+                .onSuccess {
+                    val quiet = runCatching { client!!.quietPeriodStatus(userId = adminUserId) }.getOrNull()
+                    val requests = runCatching { client!!.listAdminQuietPeriodRequests(adminUserId = adminUserId) }.getOrDefault(_state.value.adminQuietPeriodRequests)
+                    _state.update {
+                        it.copy(
+                            isBusy = false,
+                            successMsg = "Quiet period request approved.",
+                            quietPeriodStatus = quiet ?: it.quietPeriodStatus,
+                            adminQuietPeriodRequests = requests,
+                        )
+                    }
+                }
+                .onFailure { e ->
+                    _state.update { it.copy(isBusy = false, errorMsg = e.message ?: "Failed to approve quiet period request.") }
+                }
+        }
+    }
+
+    fun denyQuietPeriodRequest(ctx: Context, requestId: Int) {
+        val adminUserId = getUserId(ctx).toIntOrNull()
+        if (adminUserId == null) {
+            _state.update { it.copy(errorMsg = "Admin sign-in is required.") }
+            return
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            _state.update { it.copy(isBusy = true, errorMsg = null) }
+            runCatching { client!!.denyQuietPeriodRequest(requestId = requestId, adminUserId = adminUserId) }
+                .onSuccess {
+                    val requests = runCatching { client!!.listAdminQuietPeriodRequests(adminUserId = adminUserId) }.getOrDefault(_state.value.adminQuietPeriodRequests)
+                    _state.update {
+                        it.copy(
+                            isBusy = false,
+                            successMsg = "Quiet period request denied.",
+                            adminQuietPeriodRequests = requests,
+                        )
+                    }
+                }
+                .onFailure { e ->
+                    _state.update { it.copy(isBusy = false, errorMsg = e.message ?: "Failed to deny quiet period request.") }
+                }
+        }
     }
 
     fun deleteQuietPeriodRequest(ctx: Context) {
@@ -1157,6 +1256,8 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
     val canDeactivate = remember { canDeactivateAlarm(ctx) }
     val isAdmin = remember(userRole) { userRole.equals("admin", ignoreCase = true) }
     var biometricsEnabled by remember { mutableStateOf(biometricsAllowed(ctx)) }
+    val safetyActions = remember(state.featureLabels) { buildSafetyActions(state.featureLabels) }
+    val requestHelpLabel = AppLabels.labelForFeatureKey(AppLabels.KEY_REQUEST_HELP, state.featureLabels)
 
     val runProtectedAction: (Boolean, () -> Unit) -> Unit = { adminFeature, action ->
         if (!biometricsEnabled) {
@@ -1188,8 +1289,10 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
         if (!isAdmin) return@LaunchedEffect
         vm.refreshAdminRecipients()
         vm.refreshTeamAssistActionRecipients()
+        vm.refreshAdminQuietPeriodRequests(ctx)
         while (true) {
             vm.refreshAdminInbox(ctx)
+            vm.refreshAdminQuietPeriodRequests(ctx)
             delay(8_000)
         }
     }
@@ -1314,6 +1417,7 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                         onSelectTab = { feedTab = it },
                         incidents = state.activeIncidents,
                         teamAssists = state.activeTeamAssists,
+                        featureLabels = state.featureLabels,
                         isAdmin = isAdmin,
                         currentUserId = getUserId(ctx).toIntOrNull(),
                         actionRecipients = state.teamAssistActionRecipients,
@@ -1357,7 +1461,7 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                         )
                     }
                     SafetyActionGrid(
-                        actions = SafetyActions,
+                        actions = safetyActions,
                         enabled = !state.isBusy && !state.alarm.isActive,
                         onSelect = { action -> pendingSafetyAction = action },
                         modifier = Modifier
@@ -1382,6 +1486,19 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                                 }
                             },
                             onReply = { replyTarget = it },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 20.dp, vertical = 8.dp),
+                        )
+                        AdminQuietPeriodRequestsCard(
+                            requests = state.adminQuietPeriodRequests,
+                            isBusy = state.isBusy,
+                            onApprove = { requestId ->
+                                runProtectedAction(true) { vm.approveQuietPeriodRequest(ctx, requestId) }
+                            },
+                            onDeny = { requestId ->
+                                runProtectedAction(true) { vm.denyQuietPeriodRequest(ctx, requestId) }
+                            },
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(horizontal = 20.dp, vertical = 8.dp),
@@ -1444,7 +1561,7 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                             enabled = !state.isBusy,
                             colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFF0F766E)),
                         ) {
-                            Text(AppLabels.REQUEST_HELP, fontWeight = FontWeight.SemiBold)
+                            Text(requestHelpLabel, fontWeight = FontWeight.SemiBold)
                         }
 
                         OutlinedButton(
@@ -1503,6 +1620,7 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
     }
     if (showTeamAssistDialog) {
         TeamAssistDialog(
+            titleLabel = requestHelpLabel,
             isBusy = state.isBusy,
             onDismiss = { showTeamAssistDialog = false },
             onConfirm = { type ->
@@ -1607,6 +1725,7 @@ private fun ActiveSafetyFeedCard(
     onSelectTab: (Int) -> Unit,
     incidents: List<IncidentFeedItem>,
     teamAssists: List<TeamAssistFeedItem>,
+    featureLabels: Map<String, String>,
     isAdmin: Boolean,
     currentUserId: Int?,
     actionRecipients: List<TeamAssistActionRecipient>,
@@ -1661,6 +1780,7 @@ private fun ActiveSafetyFeedCard(
                     teamAssists.take(8).forEach { teamAssist ->
                         TeamAssistRow(
                             teamAssist = teamAssist,
+                            featureLabels = featureLabels,
                             isAdmin = isAdmin,
                             currentUserId = currentUserId,
                             actionRecipients = actionRecipients,
@@ -1678,6 +1798,7 @@ private fun ActiveSafetyFeedCard(
 @Composable
 private fun TeamAssistRow(
     teamAssist: TeamAssistFeedItem,
+    featureLabels: Map<String, String>,
     isAdmin: Boolean,
     currentUserId: Int?,
     actionRecipients: List<TeamAssistActionRecipient>,
@@ -1709,7 +1830,7 @@ private fun TeamAssistRow(
     }
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         FeedRow(
-            title = AppLabels.featureDisplayName(teamAssist.type),
+            title = AppLabels.featureDisplayName(teamAssist.type, featureLabels),
             subtitle = subtitleParts.joinToString(" • "),
             tone = Color(0xFF0F766E),
         )
@@ -1881,6 +2002,82 @@ private fun QuietPeriodStatusBanner(
                         fontSize = 13.sp,
                         fontWeight = FontWeight.SemiBold,
                     )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AdminQuietPeriodRequestsCard(
+    requests: List<AdminQuietPeriodRequest>,
+    isBusy: Boolean,
+    onApprove: (Int) -> Unit,
+    onDeny: (Int) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        modifier = modifier,
+        color = SurfaceMain,
+        shape = RoundedCornerShape(20.dp),
+        shadowElevation = 4.dp,
+    ) {
+        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("Quiet Period Requests", color = TextPri, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+            if (requests.isEmpty()) {
+                Text("No pending quiet period requests.", color = TextMuted, fontSize = 13.sp)
+            } else {
+                requests.take(10).forEach { item ->
+                    Surface(
+                        color = Color(0xFFF8FAFF),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text(
+                                text = (item.userName ?: "User #${item.userId}") + " • ${(item.userRole ?: "user").replaceFirstChar { it.uppercase() }}",
+                                color = TextPri,
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 14.sp,
+                            )
+                            Text(
+                                text = "Requested: ${formatIsoForBanner(item.requestedAt) ?: item.requestedAt}",
+                                color = TextMuted,
+                                fontSize = 12.sp,
+                            )
+                            item.reason?.takeIf { it.isNotBlank() }?.let { reason ->
+                                Text(
+                                    text = "Reason: $reason",
+                                    color = TextMuted,
+                                    fontSize = 12.sp,
+                                )
+                            }
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Button(
+                                    onClick = { onApprove(item.requestId) },
+                                    enabled = !isBusy && item.status.equals("pending", ignoreCase = true),
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = Color(0xFF166534),
+                                        contentColor = Color.White,
+                                    ),
+                                    shape = RoundedCornerShape(10.dp),
+                                ) {
+                                    Text("Approve", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                                }
+                                Button(
+                                    onClick = { onDeny(item.requestId) },
+                                    enabled = !isBusy && item.status.equals("pending", ignoreCase = true),
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = Color(0xFFB91C1C),
+                                        contentColor = Color.White,
+                                    ),
+                                    shape = RoundedCornerShape(10.dp),
+                                ) {
+                                    Text("Deny", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -2514,6 +2711,7 @@ private fun ReportDialog(
 
 @Composable
 private fun TeamAssistDialog(
+    titleLabel: String,
     isBusy: Boolean,
     onConfirm: (String) -> Unit,
     onDismiss: () -> Unit,
@@ -2521,7 +2719,7 @@ private fun TeamAssistDialog(
     var selectedType by remember { mutableStateOf(TeamAssistTypes.first()) }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(AppLabels.REQUEST_HELP, color = TextPri, fontWeight = FontWeight.Bold) },
+        title = { Text(titleLabel, color = TextPri, fontWeight = FontWeight.Bold) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text(
@@ -2994,6 +3192,27 @@ private class BackendClient(baseUrl: String, private val apiKey: String) {
         }
     }
 
+    fun configLabels(): Map<String, String> {
+        val req = Request.Builder()
+            .url("$base/config/labels")
+            .withAuth()
+            .get()
+            .build()
+        http.newCall(req).execute().use { res ->
+            val payload = JSONObject(requireSuccess(res))
+            val labels = mutableMapOf<String, String>()
+            val keys = payload.keys()
+            while (keys.hasNext()) {
+                val key = keys.next()
+                val value = payload.optString(key).trim()
+                if (value.isNotBlank()) {
+                    labels[key] = value
+                }
+            }
+            return labels
+        }
+    }
+
     fun login(username: String, password: String): AuthUser {
         val body = JSONObject()
             .put("login_name", username.trim().lowercase())
@@ -3220,6 +3439,59 @@ private class BackendClient(baseUrl: String, private val apiKey: String) {
             .apply { reason?.let { put("reason", it) } }
         val req = Request.Builder()
             .url("$base/quiet-periods/request")
+            .withAuth()
+            .post(body.toString().toRequestBody(json))
+            .build()
+        http.newCall(req).execute().use { requireSuccess(it) }
+    }
+
+    fun listAdminQuietPeriodRequests(adminUserId: Int): List<AdminQuietPeriodRequest> {
+        val req = Request.Builder()
+            .url("$base/quiet-periods/admin/requests?admin_user_id=$adminUserId&limit=120")
+            .withAuth()
+            .get()
+            .build()
+        http.newCall(req).execute().use { res ->
+            val body = JSONObject(requireSuccess(res))
+            val items = body.optJSONArray("requests")
+            return buildList {
+                if (items != null) {
+                    for (i in 0 until items.length()) {
+                        val item = items.optJSONObject(i) ?: continue
+                        add(
+                            AdminQuietPeriodRequest(
+                                requestId = item.optInt("request_id"),
+                                userId = item.optInt("user_id"),
+                                userName = item.optNullableString("user_name"),
+                                userRole = item.optNullableString("user_role"),
+                                reason = item.optNullableString("reason"),
+                                status = item.optString("status"),
+                                requestedAt = item.optString("requested_at"),
+                                approvedAt = item.optNullableString("approved_at"),
+                                approvedByLabel = item.optNullableString("approved_by_label"),
+                                expiresAt = item.optNullableString("expires_at"),
+                            ),
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    fun approveQuietPeriodRequest(requestId: Int, adminUserId: Int) {
+        val body = JSONObject().put("admin_user_id", adminUserId)
+        val req = Request.Builder()
+            .url("$base/quiet-periods/$requestId/approve")
+            .withAuth()
+            .post(body.toString().toRequestBody(json))
+            .build()
+        http.newCall(req).execute().use { requireSuccess(it) }
+    }
+
+    fun denyQuietPeriodRequest(requestId: Int, adminUserId: Int) {
+        val body = JSONObject().put("admin_user_id", adminUserId)
+        val req = Request.Builder()
+            .url("$base/quiet-periods/$requestId/deny")
             .withAuth()
             .post(body.toString().toRequestBody(json))
             .build()

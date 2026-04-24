@@ -53,6 +53,9 @@ from app.models.schemas import (
     PanicResponse,
     PublicSchoolSummary,
     QuietPeriodRequestCreate,
+    QuietPeriodAdminActionRequest,
+    QuietPeriodAdminItem,
+    QuietPeriodAdminListResponse,
     QuietPeriodDeleteRequest,
     QuietPeriodStatusResponse,
     QuietPeriodSummary,
@@ -591,6 +594,20 @@ def _to_team_assist_summary(item) -> TeamAssistSummary:
         cancel_requester_confirmed=bool(item.cancel_requester_confirmed_at),
         cancel_admin_confirmed=bool(item.cancel_admin_confirmed_at),
         cancel_admin_label=item.cancel_admin_label,
+    )
+
+
+def _to_quiet_period_summary(record) -> QuietPeriodSummary:
+    return QuietPeriodSummary(
+        request_id=record.id,
+        user_id=record.user_id,
+        reason=record.reason,
+        status=record.status,
+        requested_at=record.requested_at,
+        approved_at=record.approved_at,
+        approved_by_user_id=record.approved_by_user_id,
+        approved_by_label=record.approved_by_label,
+        expires_at=record.expires_at,
     )
 
 
@@ -2582,17 +2599,77 @@ async def request_quiet_period(
         user_id=body.user_id,
         reason=body.reason,
     )
-    return QuietPeriodSummary(
-        request_id=record.id,
-        user_id=record.user_id,
-        reason=record.reason,
-        status=record.status,
-        requested_at=record.requested_at,
-        approved_at=record.approved_at,
-        approved_by_user_id=record.approved_by_user_id,
-        approved_by_label=record.approved_by_label,
-        expires_at=record.expires_at,
+    return _to_quiet_period_summary(record)
+
+
+@router.get("/quiet-periods/admin/requests", response_model=QuietPeriodAdminListResponse)
+async def admin_quiet_period_requests(
+    request: Request,
+    admin_user_id: int = Query(..., ge=1),
+    limit: int = Query(default=100, ge=1, le=300),
+    _: None = Depends(require_api_key),
+) -> QuietPeriodAdminListResponse:
+    await _require_active_user_with_roles(_users(request), admin_user_id, roles={"admin"})
+    records = await _quiet_periods(request).list_recent(limit=limit)
+    visible = [item for item in records if item.status in {"pending", "approved"}]
+    all_users = await _users(request).list_users()
+    users_by_id = {int(u.id): u for u in all_users}
+    return QuietPeriodAdminListResponse(
+        requests=[
+            QuietPeriodAdminItem(
+                request_id=item.id,
+                user_id=item.user_id,
+                user_name=users_by_id.get(int(item.user_id)).name if users_by_id.get(int(item.user_id)) is not None else None,
+                user_role=users_by_id.get(int(item.user_id)).role if users_by_id.get(int(item.user_id)) is not None else None,
+                reason=item.reason,
+                status=item.status,
+                requested_at=item.requested_at,
+                approved_at=item.approved_at,
+                approved_by_user_id=item.approved_by_user_id,
+                approved_by_label=item.approved_by_label,
+                expires_at=item.expires_at,
+            )
+            for item in visible
+        ]
     )
+
+
+@router.post("/quiet-periods/{request_id}/approve", response_model=QuietPeriodSummary)
+async def approve_quiet_period_request_api(
+    request_id: int,
+    body: QuietPeriodAdminActionRequest,
+    request: Request,
+    _: None = Depends(require_api_key),
+) -> QuietPeriodSummary:
+    admin_id = await _require_active_user_with_roles(_users(request), body.admin_user_id, roles={"admin"})
+    admin_user = await _users(request).get_user(admin_id)
+    record = await _quiet_periods(request).approve_request(
+        request_id=request_id,
+        admin_user_id=admin_id,
+        admin_label=admin_user.name if admin_user is not None else None,
+    )
+    if record is None or record.status != "approved":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Quiet period request is not pending")
+    return _to_quiet_period_summary(record)
+
+
+@router.post("/quiet-periods/{request_id}/deny", response_model=QuietPeriodSummary)
+async def deny_quiet_period_request_api(
+    request_id: int,
+    body: QuietPeriodAdminActionRequest,
+    request: Request,
+    _: None = Depends(require_api_key),
+) -> QuietPeriodSummary:
+    admin_id = await _require_active_user_with_roles(_users(request), body.admin_user_id, roles={"admin"})
+    admin_user = await _users(request).get_user(admin_id)
+    record = await _quiet_periods(request).deny_request(
+        request_id=request_id,
+        admin_user_id=admin_id,
+        admin_label=admin_user.name if admin_user is not None else None,
+    )
+    if record is None or record.status != "denied":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Quiet period request is not pending")
+    return _to_quiet_period_summary(record)
 
 
 @router.get("/quiet-periods/status", response_model=QuietPeriodStatusResponse)
@@ -2637,17 +2714,7 @@ async def delete_quiet_period_request(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Quiet period request not found")
     if record.status not in {"cancelled"}:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Quiet period request is not deletable")
-    return QuietPeriodSummary(
-        request_id=record.id,
-        user_id=record.user_id,
-        reason=record.reason,
-        status=record.status,
-        requested_at=record.requested_at,
-        approved_at=record.approved_at,
-        approved_by_user_id=record.approved_by_user_id,
-        approved_by_label=record.approved_by_label,
-        expires_at=record.expires_at,
-    )
+    return _to_quiet_period_summary(record)
 
 
 @router.post("/message-admin", response_model=AdminMessageResponse)

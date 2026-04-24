@@ -91,6 +91,15 @@ struct APIClient {
         try await activeRequestHelp()
     }
 
+    func configLabels() async throws -> [String: String] {
+        let url = baseURL.appendingPathComponent("config/labels")
+        var request = URLRequest(url: url)
+        withAPIKey(&request)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try requireSuccess(response: response, data: data)
+        return try JSONDecoder().decode([String: String].self, from: data)
+    }
+
     func createRequestHelp(userID: Int, type: String) async throws -> TeamAssistSummary {
         let url = baseURL.appendingPathComponent("team-assist/create")
         var request = URLRequest(url: url)
@@ -163,6 +172,46 @@ struct APIClient {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         withAPIKey(&request)
         request.httpBody = try JSONEncoder().encode(QuietPeriodRequestPayload(userID: userID, reason: reason))
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try requireSuccess(response: response, data: data)
+        return try JSONDecoder().decode(QuietPeriodRequestResponse.self, from: data)
+    }
+
+    func adminQuietPeriodRequests(adminUserID: Int, limit: Int = 120) async throws -> QuietPeriodAdminListResponse {
+        var components = URLComponents(url: baseURL.appendingPathComponent("quiet-periods/admin/requests"), resolvingAgainstBaseURL: false)
+        components?.queryItems = [
+            URLQueryItem(name: "admin_user_id", value: String(adminUserID)),
+            URLQueryItem(name: "limit", value: String(limit)),
+        ]
+        guard let url = components?.url else {
+            throw NSError(domain: "BlueBird.API", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid quiet period admin requests URL"])
+        }
+        var request = URLRequest(url: url)
+        withAPIKey(&request)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try requireSuccess(response: response, data: data)
+        return try JSONDecoder().decode(QuietPeriodAdminListResponse.self, from: data)
+    }
+
+    func approveQuietPeriodRequest(requestID: Int, adminUserID: Int) async throws -> QuietPeriodRequestResponse {
+        let url = baseURL.appendingPathComponent("quiet-periods/\(requestID)/approve")
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        withAPIKey(&request)
+        request.httpBody = try JSONEncoder().encode(QuietPeriodAdminActionPayload(adminUserID: adminUserID))
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try requireSuccess(response: response, data: data)
+        return try JSONDecoder().decode(QuietPeriodRequestResponse.self, from: data)
+    }
+
+    func denyQuietPeriodRequest(requestID: Int, adminUserID: Int) async throws -> QuietPeriodRequestResponse {
+        let url = baseURL.appendingPathComponent("quiet-periods/\(requestID)/deny")
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        withAPIKey(&request)
+        request.httpBody = try JSONEncoder().encode(QuietPeriodAdminActionPayload(adminUserID: adminUserID))
         let (data, response) = try await URLSession.shared.data(for: request)
         try requireSuccess(response: response, data: data)
         return try JSONDecoder().decode(QuietPeriodRequestResponse.self, from: data)
@@ -538,6 +587,14 @@ private struct QuietPeriodRequestPayload: Encodable {
     }
 }
 
+private struct QuietPeriodAdminActionPayload: Encodable {
+    let adminUserID: Int
+
+    enum CodingKeys: String, CodingKey {
+        case adminUserID = "admin_user_id"
+    }
+}
+
 struct AdminMessageResponse: Decodable {
     let messageID: Int
     let createdAt: String
@@ -567,6 +624,38 @@ struct QuietPeriodRequestResponse: Decodable {
     enum CodingKeys: String, CodingKey {
         case requestID = "request_id"
         case status
+    }
+}
+
+struct QuietPeriodAdminListResponse: Decodable {
+    let requests: [QuietPeriodAdminRequest]
+}
+
+struct QuietPeriodAdminRequest: Decodable, Identifiable {
+    let requestID: Int
+    let userID: Int
+    let userName: String?
+    let userRole: String?
+    let reason: String?
+    let status: String
+    let requestedAt: String
+    let approvedAt: String?
+    let approvedByLabel: String?
+    let expiresAt: String?
+
+    var id: Int { requestID }
+
+    enum CodingKeys: String, CodingKey {
+        case requestID = "request_id"
+        case userID = "user_id"
+        case userName = "user_name"
+        case userRole = "user_role"
+        case reason
+        case status
+        case requestedAt = "requested_at"
+        case approvedAt = "approved_at"
+        case approvedByLabel = "approved_by_label"
+        case expiresAt = "expires_at"
     }
 }
 

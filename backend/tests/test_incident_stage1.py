@@ -125,6 +125,37 @@ def test_config_labels_endpoint_returns_feature_labels(client: TestClient, login
     assert body["secure"] == "Secure Perimeter"
 
 
+def test_admin_quiet_period_mobile_list_and_approve(client: TestClient, login_super_admin) -> None:
+    login_super_admin()
+    _create_school(client, name="Quiet Mobile", slug="quiet-mobile")
+    teacher_id = _create_user(client, "quiet-mobile", name="Quiet Teacher", role="teacher")
+    admin_id = _create_user(client, "quiet-mobile", name="Quiet Admin", role="admin")
+
+    created = client.post(
+        "/quiet-mobile/quiet-periods/request",
+        json={"user_id": teacher_id, "reason": "Taking an exam"},
+        headers={"X-API-Key": "test-api-key"},
+    )
+    assert created.status_code == 200
+    request_id = int(created.json()["request_id"])
+
+    listing = client.get(
+        f"/quiet-mobile/quiet-periods/admin/requests?admin_user_id={admin_id}",
+        headers={"X-API-Key": "test-api-key"},
+    )
+    assert listing.status_code == 200
+    rows = listing.json()["requests"]
+    assert any(item["request_id"] == request_id and item["user_name"] == "Quiet Teacher" for item in rows)
+
+    approved = client.post(
+        f"/quiet-mobile/quiet-periods/{request_id}/approve",
+        json={"admin_user_id": admin_id},
+        headers={"X-API-Key": "test-api-key"},
+    )
+    assert approved.status_code == 200
+    assert approved.json()["status"] == "approved"
+
+
 def test_team_assist_admin_action_records_actor_label(client: TestClient, login_super_admin) -> None:
     login_super_admin()
     _create_school(client, name="Assist Action", slug="assist-action")
