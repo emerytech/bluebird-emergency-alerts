@@ -1,5 +1,6 @@
 import SwiftUI
 import LocalAuthentication
+import UIKit
 
 private let appBg = Color(red: 0.93, green: 0.96, blue: 1.0)
 private let appBgDeep = Color(red: 0.86, green: 0.91, blue: 1.0)
@@ -7,6 +8,17 @@ private let surfaceMain = Color.white
 private let textPrimary = Color(red: 0.06, green: 0.13, blue: 0.25)
 private let textMuted = Color(red: 0.27, green: 0.34, blue: 0.48)
 private let bluePrimary = Color(red: 0.11, green: 0.37, blue: 0.89)
+private let fieldDarkBg = Color(red: 0.22, green: 0.25, blue: 0.31)
+private let fieldDarkBorder = Color.white.opacity(0.12)
+private let placeholderMuted = Color(red: 0.62, green: 0.67, blue: 0.76)
+
+private struct PressableScaleButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.985 : 1.0)
+            .animation(.easeOut(duration: 0.14), value: configuration.isPressed)
+    }
+}
 
 private struct SafetyActionItem: Identifiable {
     let id: String
@@ -37,7 +49,8 @@ struct ContentView: View {
     @State private var slideValue: Double = 0
     @State private var adminOutboundMessage = ""
     @State private var adminRecipients: [MessageRecipient] = []
-    @State private var selectedRecipientID: Int?
+    @State private var selectedRecipientIDs: Set<Int> = []
+    @State private var showRecipientSheet = false
     @State private var isSendingAdminMessage = false
 
     private var api: APIClient {
@@ -75,6 +88,11 @@ struct ContentView: View {
                     .padding(.vertical, 14)
                 }
             }
+            .simultaneousGesture(
+                TapGesture().onEnded {
+                    dismissKeyboard()
+                }
+            )
             .navigationTitle("BlueBird Alerts")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -107,6 +125,12 @@ struct ContentView: View {
                         await loadAdminRecipients()
                     }
                 }
+            }
+            .sheet(isPresented: $showRecipientSheet) {
+                RecipientSelectionSheet(
+                    recipients: adminRecipients,
+                    selectedRecipientIDs: $selectedRecipientIDs
+                )
             }
         }
         .overlay {
@@ -217,66 +241,122 @@ struct ContentView: View {
 
     private var adminMessageCard: some View {
         card {
-            VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 14) {
                 Text("Admin Messaging")
                     .font(.headline)
                     .foregroundStyle(textPrimary)
 
-                TextField("Message users...", text: $adminOutboundMessage, axis: .vertical)
-                    .textFieldStyle(.roundedBorder)
+                TextField("", text: $adminOutboundMessage, prompt: Text("Message users...").foregroundStyle(placeholderMuted), axis: .vertical)
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 12)
+                    .background(fieldDarkBg)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .stroke(fieldDarkBorder, lineWidth: 1)
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                     .lineLimit(2...4)
 
-                Menu {
-                    Button("All users") { selectedRecipientID = nil }
-                    ForEach(adminRecipients) { recipient in
-                        Button(recipient.label) { selectedRecipientID = recipient.userID }
-                    }
+                Button {
+                    showRecipientSheet = true
                 } label: {
                     HStack {
-                        Text("Recipients: \(recipientLabel)")
-                            .foregroundStyle(textPrimary)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Recipients")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(textMuted)
+                            Text(recipientLabel)
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(textPrimary)
+                        }
                         Spacer()
-                        Image(systemName: "chevron.up.chevron.down")
-                            .foregroundStyle(textMuted)
+                        Image(systemName: "person.2.badge.gearshape")
+                            .foregroundStyle(bluePrimary)
+                        Image(systemName: "chevron.right")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(textPrimary)
                     }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 10)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 12)
                     .background(Color.white)
                     .overlay(
-                        RoundedRectangle(cornerRadius: 10)
+                        RoundedRectangle(cornerRadius: 12)
                             .stroke(Color.black.opacity(0.1), lineWidth: 1)
                     )
-                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                }
+                .buttonStyle(.plain)
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Message Preview")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(textMuted)
+                    Text(adminOutboundMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Type a message to preview." : adminOutboundMessage)
+                        .font(.subheadline)
+                        .foregroundStyle(Color(red: 0.93, green: 0.95, blue: 0.98))
+                        .lineSpacing(2)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 12)
+                        .background(fieldDarkBg)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .stroke(fieldDarkBorder, lineWidth: 1)
+                        )
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                 }
 
                 Button {
                     Task { await sendAdminMessage() }
                 } label: {
                     Text(isSendingAdminMessage ? "Sending..." : "Send Message")
-                        .frame(maxWidth: .infinity, minHeight: 42)
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity, minHeight: 46)
+                        .background(
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .fill(bluePrimary.opacity(canSendAdminMessage ? 1.0 : 0.55))
+                        )
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(bluePrimary)
-                .disabled(isSendingAdminMessage || adminOutboundMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .buttonStyle(PressableScaleButtonStyle())
+                .shadow(color: canSendAdminMessage ? bluePrimary.opacity(0.28) : .clear, radius: 8, x: 0, y: 3)
+                .disabled(!canSendAdminMessage)
             }
         }
     }
 
     private var customPanicCard: some View {
         card {
-            VStack(spacing: 10) {
-                TextField("Custom emergency message", text: $message, axis: .vertical)
-                    .textFieldStyle(.roundedBorder)
+            VStack(spacing: 14) {
+                TextField("", text: $message, prompt: Text("Custom emergency message").foregroundStyle(placeholderMuted), axis: .vertical)
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 12)
+                    .background(fieldDarkBg)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .stroke(fieldDarkBorder, lineWidth: 1)
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                     .lineLimit(2...4)
 
                 Button {
                     Task { await authenticateThenSendPanic() }
                 } label: {
                     Text(isSending ? "Sending..." : "Send Custom Panic")
-                        .frame(maxWidth: .infinity, minHeight: 42)
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity, minHeight: 46)
+                        .background(
+                            LinearGradient(
+                                colors: [Color(red: 0.93, green: 0.25, blue: 0.25), Color(red: 0.80, green: 0.13, blue: 0.13)],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                        )
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(.red)
+                .buttonStyle(PressableScaleButtonStyle())
+                .shadow(color: Color.red.opacity(0.24), radius: 8, x: 0, y: 3)
                 .disabled(isSending || message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }
@@ -322,22 +402,7 @@ struct ContentView: View {
                     .foregroundStyle(.white)
 
                 VStack(spacing: 8) {
-                    Text("Slide to Initiate →")
-                        .font(.headline.weight(.semibold))
-                        .foregroundStyle(.white)
-                    Slider(value: $slideValue, in: 0...1, onEditingChanged: { isEditing in
-                        if !isEditing && slideValue < 0.97 {
-                            withAnimation(.easeOut(duration: 0.15)) {
-                                slideValue = 0
-                            }
-                        }
-                    })
-                        .tint(.white)
-                        .onChange(of: slideValue) { _, newValue in
-                            if newValue >= 0.97 {
-                                Task { await initiateAction(action) }
-                            }
-                        }
+                    slideToInitiateControl(action: action)
                 }
                 .padding(14)
                 .background(Color.white.opacity(0.2))
@@ -375,6 +440,59 @@ struct ContentView: View {
         await authenticateThenSendPanic()
     }
 
+    private func slideToInitiateControl(action: SafetyActionItem) -> some View {
+        GeometryReader { geo in
+            let knobSize: CGFloat = 56
+            let horizontalInset: CGFloat = 6
+            let maxOffset = max(0, geo.size.width - knobSize - horizontalInset * 2)
+
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(Color.white.opacity(0.22))
+
+                Text("Slide to Initiate")
+                    .font(.headline.weight(.semibold))
+                    .foregroundStyle(.white.opacity(0.95))
+                    .frame(maxWidth: .infinity)
+                    .padding(.leading, 34)
+                    .padding(.trailing, 12)
+
+                Circle()
+                    .fill(.white)
+                    .overlay {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(Color(red: 0.86, green: 0.26, blue: 0.22))
+                            .font(.system(size: 24, weight: .bold))
+                    }
+                    .frame(width: knobSize, height: knobSize)
+                    .offset(x: horizontalInset + CGFloat(slideValue) * maxOffset)
+                    .gesture(
+                        DragGesture(minimumDistance: 0)
+                            .onChanged { value in
+                                let proposed = value.location.x - (knobSize / 2) - horizontalInset
+                                let clamped = min(max(0, proposed), maxOffset)
+                                guard maxOffset > 0 else {
+                                    slideValue = 0
+                                    return
+                                }
+                                slideValue = Double(clamped / maxOffset)
+                            }
+                            .onEnded { _ in
+                                if slideValue >= 0.92 {
+                                    Task { await initiateAction(action) }
+                                } else {
+                                    withAnimation(.easeOut(duration: 0.18)) {
+                                        slideValue = 0
+                                    }
+                                }
+                            }
+                    )
+            }
+            .frame(height: 68)
+        }
+        .frame(height: 68)
+    }
+
     private func flashBanner(message: String, isError: Bool) -> some View {
         Text(message)
             .font(.subheadline)
@@ -387,10 +505,10 @@ struct ContentView: View {
 
     private func card<Content: View>(@ViewBuilder content: () -> Content) -> some View {
         content()
-            .padding(14)
+            .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(surfaceMain)
-            .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
             .shadow(color: .black.opacity(0.06), radius: 8, x: 0, y: 3)
     }
 
@@ -501,16 +619,33 @@ struct ContentView: View {
     }
 
     private var recipientLabel: String {
-        if let selectedRecipientID, let recipient = adminRecipients.first(where: { $0.userID == selectedRecipientID }) {
-            return recipient.label
+        guard !adminRecipients.isEmpty else { return "All users" }
+        if selectedRecipientIDs.count == adminRecipients.count {
+            return "All users"
         }
-        return "All users"
+        if selectedRecipientIDs.isEmpty {
+            return "No users selected"
+        }
+        return "\(selectedRecipientIDs.count) users selected"
+    }
+
+    private var canSendAdminMessage: Bool {
+        !isSendingAdminMessage &&
+        !adminOutboundMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+        !adminRecipients.isEmpty &&
+        !selectedRecipientIDs.isEmpty
     }
 
     private func loadAdminRecipients() async {
         guard isAdminSession else { return }
         do {
-            adminRecipients = try await api.listMessageRecipients()
+            let recipients = try await api.listMessageRecipients()
+            adminRecipients = recipients
+            if selectedRecipientIDs.isEmpty || selectedRecipientIDs.count > recipients.count {
+                selectedRecipientIDs = Set(recipients.map(\.userID))
+            } else {
+                selectedRecipientIDs = selectedRecipientIDs.intersection(Set(recipients.map(\.userID)))
+            }
         } catch {
             if adminRecipients.isEmpty {
                 appState.lastError = "Could not load user recipients for admin messaging."
@@ -530,12 +665,14 @@ struct ContentView: View {
         defer { isSendingAdminMessage = false }
 
         do {
-            let recipientIDs = selectedRecipientID.map { [$0] } ?? []
+            let allRecipientIDs = adminRecipients.map(\.userID)
+            let recipientIDs = selectedRecipientIDs.isEmpty ? allRecipientIDs : Array(selectedRecipientIDs)
+            let isAllSelected = Set(recipientIDs).count == Set(allRecipientIDs).count
             let response = try await api.sendMessageFromAdmin(
                 adminUserID: adminUserID,
                 message: trimmed,
                 recipientUserIDs: recipientIDs,
-                sendToAll: selectedRecipientID == nil
+                sendToAll: isAllSelected
             )
             adminOutboundMessage = ""
             appState.lastError = nil
@@ -543,6 +680,10 @@ struct ContentView: View {
         } catch {
             appState.lastError = "Send message failed: \(error.localizedDescription)"
         }
+    }
+
+    private func dismissKeyboard() {
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
     }
 
     private func authenticateIfNeeded(reason: String) async -> Bool {
@@ -558,6 +699,101 @@ struct ContentView: View {
                 continuation.resume(returning: success)
             }
         }
+    }
+}
+
+private struct RecipientSelectionSheet: View {
+    let recipients: [MessageRecipient]
+    @Binding var selectedRecipientIDs: Set<Int>
+    @Environment(\.dismiss) private var dismiss
+    @State private var searchText = ""
+
+    private var filteredRecipients: [MessageRecipient] {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if query.isEmpty { return recipients }
+        return recipients.filter { $0.label.localizedCaseInsensitiveContains(query) }
+    }
+
+    private var allSelected: Bool {
+        !recipients.isEmpty && selectedRecipientIDs.count == recipients.count
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    Button {
+                        if allSelected {
+                            selectedRecipientIDs.removeAll()
+                        } else {
+                            selectedRecipientIDs = Set(recipients.map(\.userID))
+                        }
+                    } label: {
+                        HStack(spacing: 12) {
+                            Image(systemName: allSelected ? "checkmark.square.fill" : "square")
+                                .foregroundStyle(allSelected ? bluePrimary : textMuted)
+                            Text("Select All Users")
+                                .foregroundStyle(textPrimary)
+                                .font(.body.weight(.semibold))
+                        }
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                Section {
+                    ForEach(filteredRecipients) { recipient in
+                        Button {
+                            if selectedRecipientIDs.contains(recipient.userID) {
+                                selectedRecipientIDs.remove(recipient.userID)
+                            } else {
+                                selectedRecipientIDs.insert(recipient.userID)
+                            }
+                        } label: {
+                            HStack(spacing: 12) {
+                                Image(systemName: selectedRecipientIDs.contains(recipient.userID) ? "checkmark.square.fill" : "square")
+                                    .foregroundStyle(selectedRecipientIDs.contains(recipient.userID) ? bluePrimary : textMuted)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(parsedRecipientName(from: recipient.label))
+                                        .foregroundStyle(textPrimary)
+                                    if let role = parsedRecipientRole(from: recipient.label) {
+                                        Text(role)
+                                            .font(.caption)
+                                            .foregroundStyle(textMuted)
+                                    }
+                                }
+                            }
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+            .searchable(text: $searchText, prompt: "Search users")
+            .navigationTitle("Select Recipients")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { dismiss() }
+                        .fontWeight(.semibold)
+                }
+            }
+        }
+    }
+
+    private func parsedRecipientName(from label: String) -> String {
+        if let open = label.firstIndex(of: "(") {
+            return label[..<open].trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return label
+    }
+
+    private func parsedRecipientRole(from label: String) -> String? {
+        guard let open = label.firstIndex(of: "("), let close = label.lastIndex(of: ")"), open < close else {
+            return nil
+        }
+        return String(label[label.index(after: open)..<close])
     }
 }
 

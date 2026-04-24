@@ -2363,34 +2363,13 @@ private fun AdminInboxCard(
     } else {
         "${selectedRecipientIds.size} selected"
     }
-    Surface(
-        modifier = modifier,
-        shape = RoundedCornerShape(20.dp),
-        color = SurfaceMain,
-        tonalElevation = 2.dp,
-    ) {
-        Column(
-            modifier = Modifier.padding(20.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            Text("Admin Inbox 🔔 ${if (unreadCount > 0) "($unreadCount)" else ""}", color = TextPri, fontWeight = FontWeight.Bold, fontSize = 18.sp)
-            OutlinedTextField(
+    CardView(modifier = modifier) {
+        SectionContainer("Admin Inbox 🔔 ${if (unreadCount > 0) "($unreadCount)" else ""}") {
+            TextInput(
                 value = outboundMessage,
                 onValueChange = { outboundMessage = it },
-                label = { Text("Send a message to users", color = TextMuted) },
-                placeholder = { Text("Team update or quick note...", color = TextMuted) },
-                minLines = 2,
-                maxLines = 4,
-                enabled = !isBusy,
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = BluePrimary,
-                    unfocusedBorderColor = BorderSoft,
-                    focusedTextColor = TextPri,
-                    unfocusedTextColor = TextPri,
-                    cursorColor = BluePrimary,
-                    focusedContainerColor = SurfaceSoft,
-                    unfocusedContainerColor = SurfaceSoft,
-                ),
+                label = "Send a message to users",
+                placeholder = "Team update or quick note...",
                 modifier = Modifier.fillMaxWidth(),
             )
             OutlinedButton(
@@ -2401,7 +2380,8 @@ private fun AdminInboxCard(
             ) {
                 Text("Recipients: $recipientLabel", fontWeight = FontWeight.SemiBold)
             }
-            Button(
+            PrimaryButton(
+                text = if (isBusy) "Sending…" else "Send Message",
                 onClick = {
                     val trimmed = outboundMessage.trim()
                     if (trimmed.isNotBlank()) {
@@ -2410,11 +2390,9 @@ private fun AdminInboxCard(
                     }
                 },
                 enabled = !isBusy && outboundMessage.isNotBlank() && (sendToAll || selectedRecipientIds.isNotEmpty()),
-                colors = ButtonDefaults.buttonColors(containerColor = BluePrimary),
+                isLoading = isBusy,
                 modifier = Modifier.fillMaxWidth(),
-            ) {
-                Text(if (isBusy) "Sending…" else "Send Message", fontWeight = FontWeight.SemiBold)
-            }
+            )
             if (messages.isEmpty()) {
                 Text("No user messages yet.", color = TextMuted, fontSize = 13.sp)
             } else {
