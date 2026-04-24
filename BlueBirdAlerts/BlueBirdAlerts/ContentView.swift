@@ -68,6 +68,8 @@ struct ContentView: View {
     @State private var teamAssistForwardRecipients: [MessageRecipient] = []
     @State private var forwardingTeamAssist: TeamAssistSummary?
     @State private var isUpdatingTeamAssist = false
+    @State private var adminPromptRequestHelpID: Int?
+    @State private var dismissedAdminPromptRequestHelpID: Int?
     @State private var adminQuietPeriodRequests: [QuietPeriodAdminRequest] = []
     @State private var isUpdatingQuietPeriodRequests = false
     @State private var featureLabels: [String: String] = AppLabels.defaultFeatureLabels
@@ -101,6 +103,11 @@ struct ContentView: View {
             return AppLabels.noActiveHelpRequests
         }
         return "No active \(requestHelpLabel.lowercased())."
+    }
+
+    private var adminPromptRequestHelpItem: TeamAssistSummary? {
+        guard let id = adminPromptRequestHelpID else { return nil }
+        return activeTeamAssists.first(where: { $0.id == id })
     }
 
     var body: some View {
@@ -231,6 +238,43 @@ struct ContentView: View {
                             Button("Close") { showQuietPeriodSheet = false }
                         }
                     }
+                }
+            }
+            .sheet(
+                isPresented: Binding(
+                    get: { isAdminSession && adminPromptRequestHelpItem != nil },
+                    set: { presented in
+                        if !presented {
+                            if let current = adminPromptRequestHelpID {
+                                dismissedAdminPromptRequestHelpID = current
+                            }
+                            adminPromptRequestHelpID = nil
+                        }
+                    }
+                )
+            ) {
+                if let promptItem = adminPromptRequestHelpItem {
+                    AdminRequestHelpPromptSheet(
+                        requestHelpLabel: requestHelpLabel,
+                        item: promptItem,
+                        isBusy: isUpdatingTeamAssist,
+                        onAcknowledge: {
+                            dismissedAdminPromptRequestHelpID = promptItem.id
+                            adminPromptRequestHelpID = nil
+                            Task { await applyTeamAssistAction(promptItem, action: "acknowledge") }
+                        },
+                        onResponding: {
+                            dismissedAdminPromptRequestHelpID = promptItem.id
+                            adminPromptRequestHelpID = nil
+                            Task { await applyTeamAssistAction(promptItem, action: "responding") }
+                        },
+                        onLater: {
+                            dismissedAdminPromptRequestHelpID = promptItem.id
+                            adminPromptRequestHelpID = nil
+                        }
+                    )
+                    .presentationDetents([.medium])
+                    .presentationDragIndicator(.visible)
                 }
             }
         }
@@ -834,6 +878,7 @@ struct ContentView: View {
             let (incidents, teamAssists) = try await (incidentsResponse, teamAssistResponse)
             activeIncidents = incidents.incidents
             activeTeamAssists = teamAssists.teamAssists
+            syncAdminRequestHelpPrompt()
             appState.lastError = nil
             appState.backendReachable = true
         } catch {
@@ -966,6 +1011,28 @@ struct ContentView: View {
             if featureLabels.isEmpty {
                 featureLabels = AppLabels.defaultFeatureLabels
             }
+        }
+    }
+
+    private func syncAdminRequestHelpPrompt() {
+        guard isAdminSession else {
+            adminPromptRequestHelpID = nil
+            dismissedAdminPromptRequestHelpID = nil
+            return
+        }
+        let nextPendingID = activeTeamAssists.first {
+            $0.status.lowercased() == "active" && $0.createdBy != appState.userID
+        }?.id
+        guard let nextPendingID else {
+            adminPromptRequestHelpID = nil
+            dismissedAdminPromptRequestHelpID = nil
+            return
+        }
+        if adminPromptRequestHelpID == nil && dismissedAdminPromptRequestHelpID != nextPendingID {
+            adminPromptRequestHelpID = nextPendingID
+        }
+        if let showingID = adminPromptRequestHelpID, activeTeamAssists.allSatisfy({ $0.id != showingID }) {
+            adminPromptRequestHelpID = nil
         }
     }
 
@@ -1244,6 +1311,52 @@ private struct RecipientSelectionSheet: View {
             return nil
         }
         return String(label[label.index(after: open)..<close])
+    }
+}
+
+private struct AdminRequestHelpPromptSheet: View {
+    let requestHelpLabel: String
+    let item: TeamAssistSummary
+    let isBusy: Bool
+    let onAcknowledge: () -> Void
+    let onResponding: () -> Void
+    let onLater: () -> Void
+
+    var body: some View {
+        NavigationStack {
+            VStack(alignment: .leading, spacing: 14) {
+                Text("Incoming \(requestHelpLabel)")
+                    .font(.title3.weight(.bold))
+                    .foregroundStyle(textPrimary)
+                Text("From #\(item.createdBy) • \(item.createdAt)")
+                    .font(.subheadline)
+                    .foregroundStyle(textMuted)
+                Text("Take action now to clear this active request.")
+                    .font(.subheadline)
+                    .foregroundStyle(textPrimary)
+
+                HStack(spacing: 10) {
+                    Button("Acknowledge") { onAcknowledge() }
+                        .buttonStyle(.bordered)
+                        .tint(bluePrimary)
+                        .disabled(isBusy)
+                    Button("Responding") { onResponding() }
+                        .buttonStyle(.borderedProminent)
+                        .tint(Color(red: 0.06, green: 0.46, blue: 0.43))
+                        .disabled(isBusy)
+                }
+                .padding(.top, 4)
+
+                Spacer(minLength: 0)
+            }
+            .padding(20)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Later") { onLater() }
+                        .disabled(isBusy)
+                }
+            }
+        }
     }
 }
 

@@ -177,8 +177,12 @@ def test_team_assist_admin_action_records_actor_label(client: TestClient, login_
     )
     assert action.status_code == 200
     body = action.json()
-    assert body["status"] == "acknowledged"
+    assert body["status"] == "resolved"
     assert body["acted_by_label"] == "Admin Actor"
+
+    active_after = client.get("/assist-action/team-assist/active", headers={"X-API-Key": "test-api-key"})
+    assert active_after.status_code == 200
+    assert all(item["id"] != team_assist_id for item in active_after.json()["team_assists"])
 
 
 def test_team_assist_cancel_requires_requester_and_admin_confirmation(client: TestClient, login_super_admin) -> None:

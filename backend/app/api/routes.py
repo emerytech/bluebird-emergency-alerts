@@ -2376,18 +2376,17 @@ async def team_assist_action(
     if existing.status == "cancelled":
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Request help item is already cancelled")
 
-    next_status = "acknowledged"
+    # Admin response should immediately clear active request-help alarm state.
+    # We keep the action type in logs/notifications for audit visibility.
+    next_status = "resolved"
     forward_to_user_id: Optional[int] = None
     forward_to_label: Optional[str] = None
-    if body.action == "responding":
-        next_status = "responding"
-    elif body.action == "forward":
+    if body.action == "forward":
         if body.forward_to_user_id is None:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="forward_to_user_id is required")
         forward_user = await users.get_user(int(body.forward_to_user_id))
         if forward_user is None or not forward_user.is_active:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Forward target user not found")
-        next_status = "forwarded"
         forward_to_user_id = forward_user.id
         forward_to_label = forward_user.name
 

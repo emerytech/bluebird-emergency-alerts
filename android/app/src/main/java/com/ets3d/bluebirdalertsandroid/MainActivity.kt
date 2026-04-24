@@ -1249,10 +1249,13 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
     var showQuietRequestOverlay by remember { mutableStateOf(false) }
     var showQuietDeleteConfirmOverlay by remember { mutableStateOf(false) }
     var showTeamAssistDialog by remember { mutableStateOf(false) }
+    var promptRequestHelpId by remember { mutableStateOf<Int?>(null) }
+    var dismissedPromptRequestHelpId by remember { mutableStateOf<Int?>(null) }
     var replyTarget by remember { mutableStateOf<AdminInboxMessage?>(null) }
     var feedTab by remember { mutableStateOf(0) }
     val userName = remember { getUserName(ctx) }
     val userRole = remember { getUserRole(ctx) }
+    val currentUserId = remember { getUserId(ctx).toIntOrNull() }
     val canDeactivate = remember { canDeactivateAlarm(ctx) }
     val isAdmin = remember(userRole) { userRole.equals("admin", ignoreCase = true) }
     var biometricsEnabled by remember { mutableStateOf(biometricsAllowed(ctx)) }
@@ -1294,6 +1297,28 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
             vm.refreshAdminInbox(ctx)
             vm.refreshAdminQuietPeriodRequests(ctx)
             delay(8_000)
+        }
+    }
+
+    LaunchedEffect(isAdmin, state.activeTeamAssists) {
+        if (!isAdmin) {
+            promptRequestHelpId = null
+            dismissedPromptRequestHelpId = null
+            return@LaunchedEffect
+        }
+        val firstPendingId = state.activeTeamAssists
+            .firstOrNull { it.status.equals("active", ignoreCase = true) && it.createdBy != currentUserId }
+            ?.id
+        if (firstPendingId == null) {
+            promptRequestHelpId = null
+            dismissedPromptRequestHelpId = null
+            return@LaunchedEffect
+        }
+        if (promptRequestHelpId == null && dismissedPromptRequestHelpId != firstPendingId) {
+            promptRequestHelpId = firstPendingId
+        }
+        if (promptRequestHelpId != null && state.activeTeamAssists.none { it.id == promptRequestHelpId }) {
+            promptRequestHelpId = null
         }
     }
 
@@ -1419,7 +1444,7 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                         teamAssists = state.activeTeamAssists,
                         featureLabels = state.featureLabels,
                         isAdmin = isAdmin,
-                        currentUserId = getUserId(ctx).toIntOrNull(),
+                        currentUserId = currentUserId,
                         actionRecipients = state.teamAssistActionRecipients,
                         isBusy = state.isBusy,
                         isRefreshing = state.isRefreshingFeed,
@@ -1626,6 +1651,77 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
             onConfirm = { type ->
                 showTeamAssistDialog = false
                 vm.requestHelp(ctx, type)
+            },
+        )
+    }
+
+    val promptRequest = promptRequestHelpId?.let { id ->
+        state.activeTeamAssists.firstOrNull { it.id == id }
+    }
+    if (isAdmin && promptRequest != null) {
+        AlertDialog(
+            onDismissRequest = {
+                dismissedPromptRequestHelpId = promptRequest.id
+                promptRequestHelpId = null
+            },
+            containerColor = SurfaceMain,
+            title = { Text("Incoming $requestHelpLabel", color = TextPri, fontWeight = FontWeight.Bold) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "From #${promptRequest.createdBy} • ${formatIsoForBanner(promptRequest.createdAt) ?: promptRequest.createdAt}",
+                        color = TextMuted,
+                        fontSize = 13.sp,
+                    )
+                    Text("Take action now to clear this active request.", color = TextPri, fontSize = 14.sp)
+                }
+            },
+            confirmButton = {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(
+                        enabled = !state.isBusy,
+                        onClick = {
+                            dismissedPromptRequestHelpId = promptRequest.id
+                            promptRequestHelpId = null
+                            runProtectedAction(true) {
+                                vm.updateRequestHelpAction(
+                                    ctx = ctx,
+                                    teamAssistId = promptRequest.id,
+                                    action = "acknowledge",
+                                )
+                            }
+                        },
+                    ) {
+                        Text("Acknowledge", color = BluePrimary, fontWeight = FontWeight.SemiBold)
+                    }
+                    Button(
+                        enabled = !state.isBusy,
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0F766E)),
+                        onClick = {
+                            dismissedPromptRequestHelpId = promptRequest.id
+                            promptRequestHelpId = null
+                            runProtectedAction(true) {
+                                vm.updateRequestHelpAction(
+                                    ctx = ctx,
+                                    teamAssistId = promptRequest.id,
+                                    action = "responding",
+                                )
+                            }
+                        },
+                    ) {
+                        Text("Responding", fontWeight = FontWeight.SemiBold)
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        dismissedPromptRequestHelpId = promptRequest.id
+                        promptRequestHelpId = null
+                    },
+                ) {
+                    Text("Later", color = TextMuted)
+                }
             },
         )
     }
