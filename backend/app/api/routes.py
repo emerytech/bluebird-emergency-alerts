@@ -212,6 +212,103 @@ def _current_school_actor_label(request: Request) -> Optional[str]:
     return None
 
 
+def _is_platform_actor_label(label: Optional[str]) -> bool:
+    return bool(label and label.strip().lower().startswith("platform super admin"))
+
+
+def _quiet_period_action_label(status: str) -> str:
+    normalized = (status or "").strip().lower()
+    if normalized == "approved":
+        return "Quiet period approved"
+    if normalized == "cleared":
+        return "Quiet period removed"
+    if normalized == "denied":
+        return "Quiet period denied"
+    if normalized == "expired":
+        return "Quiet period expired"
+    return f"Quiet period {normalized or 'updated'}"
+
+
+async def _platform_activity_feed(
+    request: Request,
+    *,
+    limit: int = 80,
+) -> list[dict[str, str]]:
+    schools = await _schools(request).list_schools()
+    feed: list[dict[str, str]] = []
+    for school in schools:
+        tenant = request.app.state.tenant_manager.get(school)  # type: ignore[attr-defined]
+        school_label = school.name or school.slug
+
+        alerts = await tenant.alert_log.list_recent(limit=30)
+        for alert in alerts:
+            if not _is_platform_actor_label(alert.triggered_by_label):
+                continue
+            feed.append(
+                {
+                    "created_at": alert.created_at,
+                    "school": school_label,
+                    "action": "Alarm/Broadcast push",
+                    "actor": alert.triggered_by_label or "Platform Super Admin",
+                    "details": alert.message,
+                }
+            )
+
+        broadcasts = await tenant.report_store.list_broadcast_updates(limit=30)
+        for item in broadcasts:
+            if not _is_platform_actor_label(item.admin_label):
+                continue
+            feed.append(
+                {
+                    "created_at": item.created_at,
+                    "school": school_label,
+                    "action": "Broadcast update",
+                    "actor": item.admin_label or "Platform Super Admin",
+                    "details": item.message,
+                }
+            )
+
+        quiet_periods = await tenant.quiet_period_store.list_recent(limit=30)
+        for item in quiet_periods:
+            if not _is_platform_actor_label(item.approved_by_label):
+                continue
+            reason = f" ({item.reason})" if item.reason else ""
+            feed.append(
+                {
+                    "created_at": item.approved_at or item.requested_at,
+                    "school": school_label,
+                    "action": _quiet_period_action_label(item.status),
+                    "actor": item.approved_by_label or "Platform Super Admin",
+                    "details": f"User #{item.user_id}{reason}",
+                }
+            )
+
+        alarm_state = await tenant.alarm_store.get_state()
+        if _is_platform_actor_label(alarm_state.activated_by_label) and alarm_state.activated_at:
+            feed.append(
+                {
+                    "created_at": alarm_state.activated_at,
+                    "school": school_label,
+                    "action": "Alarm activated",
+                    "actor": alarm_state.activated_by_label or "Platform Super Admin",
+                    "details": alarm_state.message or "No message",
+                }
+            )
+        if _is_platform_actor_label(alarm_state.deactivated_by_label) and alarm_state.deactivated_at:
+            feed.append(
+                {
+                    "created_at": alarm_state.deactivated_at,
+                    "school": school_label,
+                    "action": "Alarm deactivated",
+                    "actor": alarm_state.deactivated_by_label or "Platform Super Admin",
+                    "details": alarm_state.message or "Alarm cleared",
+                }
+            )
+
+    feed.sort(key=lambda item: item.get("created_at", ""), reverse=True)
+    return feed[:max(1, int(limit))]
+
+
 def _client_fingerprint(request: Request) -> str:
     user_agent = request.headers.get("user-agent", "").strip()
     return hashlib.sha256(user_agent.encode("utf-8")).hexdigest()
@@ -1208,6 +1305,7 @@ async def super_admin_dashboard(request: Request) -> HTMLResponse:
         return RedirectResponse(url="/super-admin/change-password", status_code=status.HTTP_303_SEE_OTHER)
     flash_message, flash_error = _pop_flash(request)
     schools = await _schools(request).list_schools()
+    platform_activity_rows = await _platform_activity_feed(request, limit=120)
     base_domain = str(request.app.state.settings.BASE_DOMAIN).strip().lower()  # type: ignore[attr-defined]
     school_rows: list[dict[str, object]] = []
     for school in schools:
@@ -1291,6 +1389,7 @@ async def super_admin_dashboard(request: Request) -> HTMLResponse:
         render_super_admin_page(
             base_domain=request.app.state.settings.BASE_DOMAIN,  # type: ignore[attr-defined]
             school_rows=school_rows,
+            platform_activity_rows=platform_activity_rows,
             git_pull_configured=bool(request.app.state.settings.SERVER_GIT_PULL_COMMAND),  # type: ignore[attr-defined]
             server_info=_build_server_info(request),
             super_admin_login_name=admin.login_name if admin else "superadmin",

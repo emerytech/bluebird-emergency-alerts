@@ -636,6 +636,7 @@ def render_super_admin_page(
     *,
     base_domain: str,
     school_rows: Sequence[Mapping[str, object]],
+    platform_activity_rows: Sequence[Mapping[str, str]],
     git_pull_configured: bool,
     server_info: Mapping[str, str],
     super_admin_login_name: str,
@@ -659,6 +660,18 @@ def render_super_admin_page(
         for item in school_rows
     ) or '<tr><td colspan="5" class="mini-copy">No schools yet.</td></tr>'
     security_feedback = f"{_render_flash(flash_message, 'success')}{_render_flash(flash_error, 'error')}"
+    platform_rows = "".join(
+        (
+            "<tr>"
+            f"<td>{escape(str(item.get('created_at', '')))}</td>"
+            f"<td>{escape(str(item.get('school', '')))}</td>"
+            f"<td>{escape(str(item.get('action', '')))}</td>"
+            f"<td>{escape(str(item.get('actor', '')))}</td>"
+            f"<td>{escape(str(item.get('details', '')))}</td>"
+            "</tr>"
+        )
+        for item in platform_activity_rows
+    ) or '<tr><td colspan="5" class="mini-copy">No platform-super-admin activity recorded yet.</td></tr>'
     if totp_enabled:
         security_html = f"""
           {security_feedback}
@@ -735,6 +748,7 @@ def render_super_admin_page(
             <p class="nav-label">Control</p>
           <nav class="nav-list">
             <a class="nav-item" href="#schools">Schools</a>
+            <a class="nav-item" href="#platform-audit">Platform audit</a>
             <a class="nav-item" href="#create-school">Create school</a>
             <a class="nav-item" href="#security">Security</a>
             <a class="nav-item" href="/super-admin/change-password">Change password</a>
@@ -769,6 +783,21 @@ def render_super_admin_page(
               <tr><th>Name</th><th>Slug</th><th>School URLs</th><th>Setup</th><th>Status</th></tr>
             </thead>
             <tbody>{rows}</tbody>
+          </table>
+        </section>
+        <section class="panel command-section" id="platform-audit">
+          <div class="panel-header">
+            <div>
+              <p class="eyebrow">Audit</p>
+              <h2>Platform super-admin activity</h2>
+              <p class="card-copy">Cross-school activity feed for actions performed while operating as platform super admin.</p>
+            </div>
+          </div>
+          <table>
+            <thead>
+              <tr><th>Time (UTC)</th><th>School</th><th>Action</th><th>By</th><th>Details</th></tr>
+            </thead>
+            <tbody>{platform_rows}</tbody>
           </table>
         </section>
         <section class="panel command-section" id="create-school">
