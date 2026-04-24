@@ -491,6 +491,7 @@ async def activate_alarm(
     alert_id = await _alert_log(request).log_alert(
         body.message,
         triggered_by_user_id=triggered_by_user_id,
+        triggered_by_label=_current_school_actor_label(request),
         trigger_ip=trigger_ip,
         trigger_user_agent=trigger_user_agent,
     )
@@ -1660,6 +1661,7 @@ async def admin_create_broadcast(
         alert_id = await _alert_log(request).log_alert(
             normalized_message,
             triggered_by_user_id=admin_user_id,
+            triggered_by_label=_current_school_actor_label(request),
             trigger_ip=trigger_ip,
             trigger_user_agent=trigger_user_agent,
         )
@@ -1699,6 +1701,26 @@ async def admin_grant_quiet_period(
         admin_label=_current_school_actor_label(request),
     )
     _set_flash(request, message=f"Quiet period granted for {user.name} for 24 hours.")
+    return RedirectResponse(url="/admin#quiet-periods", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.post("/admin/quiet-periods/{request_id}/clear", include_in_schema=False)
+async def admin_clear_quiet_period(
+    request: Request,
+    request_id: int,
+) -> RedirectResponse:
+    await _require_dashboard_admin(request)
+    record = await _quiet_periods(request).clear_quiet_period(
+        request_id=request_id,
+        admin_user_id=_session_user_id(request) or 0,
+        admin_label=_current_school_actor_label(request),
+    )
+    if record is None or record.status != "cleared":
+        _set_flash(request, error="Active quiet period was not found.")
+        return RedirectResponse(url="/admin#quiet-periods", status_code=status.HTTP_303_SEE_OTHER)
+    user = await _users(request).get_user(record.user_id)
+    label = user.name if user else f"User #{record.user_id}"
+    _set_flash(request, message=f"Removed the quiet period for {label}.")
     return RedirectResponse(url="/admin#quiet-periods", status_code=status.HTTP_303_SEE_OTHER)
 
 
@@ -1830,6 +1852,7 @@ async def alerts(
                 created_at=alert.created_at,
                 message=alert.message,
                 triggered_by_user_id=alert.triggered_by_user_id,
+                triggered_by_label=alert.triggered_by_label,
             )
             for alert in recent_alerts
         ]
@@ -1957,10 +1980,15 @@ async def panic(
     alert_id = await _alert_log(request).log_alert(
         body.message,
         triggered_by_user_id=triggered_by_user_id,
+        triggered_by_label=_current_school_actor_label(request),
         trigger_ip=trigger_ip,
         trigger_user_agent=trigger_user_agent,
     )
-    await _alarm_store(request).activate(message=body.message, activated_by_user_id=triggered_by_user_id)
+    await _alarm_store(request).activate(
+        message=body.message,
+        activated_by_user_id=triggered_by_user_id,
+        activated_by_label=_current_school_actor_label(request),
+    )
 
     paused_user_ids = set(await _quiet_periods(request).active_user_ids())
     apns_devices = await _registry(request).list_by_provider("apns")

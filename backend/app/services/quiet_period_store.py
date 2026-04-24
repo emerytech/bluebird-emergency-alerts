@@ -270,3 +270,32 @@ class QuietPeriodStore:
 
     async def active_user_ids(self) -> List[int]:
         return await anyio.to_thread.run_sync(self._active_user_ids_sync)
+
+    def _clear_quiet_period_sync(self, request_id: int, admin_user_id: int, admin_label: Optional[str]) -> Optional[QuietPeriodRecord]:
+        self._expire_old_sync()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE quiet_period_requests
+                SET status = 'cleared',
+                    approved_at = ?,
+                    approved_by_user_id = ?,
+                    approved_by_label = ?,
+                    expires_at = NULL
+                WHERE id = ?
+                  AND status = 'approved';
+                """,
+                (datetime.now(timezone.utc).isoformat(), int(admin_user_id), admin_label, int(request_id)),
+            )
+            row = conn.execute(
+                """
+                SELECT id, user_id, reason, status, requested_at, approved_at, approved_by_user_id, approved_by_label, expires_at
+                FROM quiet_period_requests
+                WHERE id = ?;
+                """,
+                (int(request_id),),
+            ).fetchone()
+        return self._row_to_record(row) if row is not None else None
+
+    async def clear_quiet_period(self, *, request_id: int, admin_user_id: int, admin_label: Optional[str] = None) -> Optional[QuietPeriodRecord]:
+        return await anyio.to_thread.run_sync(self._clear_quiet_period_sync, int(request_id), int(admin_user_id), admin_label)

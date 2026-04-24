@@ -279,6 +279,7 @@ class AlertSummary(BaseModel):
     created_at: str
     message: str
     triggered_by_user_id: Optional[int] = None
+    triggered_by_label: Optional[str] = None
 
 
 class AlertsResponse(BaseModel):

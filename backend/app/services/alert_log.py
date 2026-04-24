@@ -15,6 +15,7 @@ class AlertRecord:
     created_at: str
     message: str
     triggered_by_user_id: Optional[int] = None
+    triggered_by_label: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -64,6 +65,7 @@ class AlertLog:
                     created_at TEXT NOT NULL,
                     message TEXT NOT NULL,
                     triggered_by_user_id INTEGER NULL,
+                    triggered_by_label TEXT NULL,
                     trigger_ip TEXT NULL,
                     trigger_user_agent TEXT NULL
                 );
@@ -102,6 +104,8 @@ class AlertLog:
         cols = {str(row[1]) for row in conn.execute("PRAGMA table_info(alerts);").fetchall()}
         if "triggered_by_user_id" not in cols:
             conn.execute("ALTER TABLE alerts ADD COLUMN triggered_by_user_id INTEGER NULL;")
+        if "triggered_by_label" not in cols:
+            conn.execute("ALTER TABLE alerts ADD COLUMN triggered_by_label TEXT NULL;")
         if "trigger_ip" not in cols:
             conn.execute("ALTER TABLE alerts ADD COLUMN trigger_ip TEXT NULL;")
         if "trigger_user_agent" not in cols:
@@ -112,16 +116,17 @@ class AlertLog:
         created_at: str,
         message: str,
         triggered_by_user_id: Optional[int],
+        triggered_by_label: Optional[str],
         trigger_ip: Optional[str],
         trigger_user_agent: Optional[str],
     ) -> int:
         with self._connect() as conn:
             cur = conn.execute(
                 """
-                INSERT INTO alerts (created_at, message, triggered_by_user_id, trigger_ip, trigger_user_agent)
-                VALUES (?, ?, ?, ?, ?);
+                INSERT INTO alerts (created_at, message, triggered_by_user_id, triggered_by_label, trigger_ip, trigger_user_agent)
+                VALUES (?, ?, ?, ?, ?, ?);
                 """,
-                (created_at, message, triggered_by_user_id, trigger_ip, trigger_user_agent),
+                (created_at, message, triggered_by_user_id, triggered_by_label, trigger_ip, trigger_user_agent),
             )
             return int(cur.lastrowid)
 
@@ -130,6 +135,7 @@ class AlertLog:
         message: str,
         *,
         triggered_by_user_id: Optional[int] = None,
+        triggered_by_label: Optional[str] = None,
         trigger_ip: Optional[str] = None,
         trigger_user_agent: Optional[str] = None,
     ) -> int:
@@ -145,6 +151,7 @@ class AlertLog:
             created_at,
             message,
             triggered_by_user_id,
+            triggered_by_label,
             trigger_ip,
             trigger_user_agent,
         )
@@ -153,7 +160,7 @@ class AlertLog:
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT id, created_at, message, triggered_by_user_id
+                SELECT id, created_at, message, triggered_by_user_id, triggered_by_label
                 FROM alerts
                 ORDER BY id DESC
                 LIMIT ?;
@@ -167,6 +174,7 @@ class AlertLog:
                 created_at=str(row[1]),
                 message=str(row[2]),
                 triggered_by_user_id=int(row[3]) if row[3] is not None else None,
+                triggered_by_label=str(row[4]) if row[4] is not None else None,
             )
             for row in rows
         ]

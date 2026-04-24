@@ -390,13 +390,22 @@ def _render_broadcast_rows(broadcasts: Sequence[BroadcastUpdateRecord]) -> str:
 
 def _render_quiet_period_rows(records: Sequence[QuietPeriodRecord], users: Sequence[UserRecord]) -> str:
     if not records:
-        return '<tr><td colspan="6" class="mini-copy">No quiet periods yet.</td></tr>'
+        return '<tr><td colspan="7" class="mini-copy">No quiet periods yet.</td></tr>'
     user_names = {user.id: user.name for user in users}
     rows = []
     for item in records:
         approver = item.approved_by_label or (f"User #{item.approved_by_user_id}" if item.approved_by_user_id is not None else "—")
+        action_html = "—"
+        if item.status == "approved":
+            action_html = f"""
+            <form method="post" action="/admin/quiet-periods/{item.id}/clear" onsubmit="return confirm('Remove this quiet period?');">
+              <div class="button-row">
+                <button class="button button-danger-outline" type="submit">Remove</button>
+              </div>
+            </form>
+            """
         rows.append(
-            f"<tr><td>{escape(user_names.get(item.user_id, f'User #{item.user_id}'))}</td><td>{escape(item.status)}</td><td>{escape(item.reason or '—')}</td><td>{escape(approver)}</td><td>{escape(item.requested_at)}</td><td>{escape(item.expires_at or '—')}</td></tr>"
+            f"<tr><td>{escape(user_names.get(item.user_id, f'User #{item.user_id}'))}</td><td>{escape(item.status)}</td><td>{escape(item.reason or '—')}</td><td>{escape(approver)}</td><td>{escape(item.requested_at)}</td><td>{escape(item.expires_at or '—')}</td><td>{action_html}</td></tr>"
         )
     return "".join(rows)
 
@@ -906,12 +915,13 @@ def _render_alert_rows(alerts: Sequence[AlertRecord]) -> str:
         return '<tr><td colspan="4" class="mini-copy">No alerts logged yet.</td></tr>'
     rows = []
     for alert in alerts:
+        actor = alert.triggered_by_label or (str(alert.triggered_by_user_id) if alert.triggered_by_user_id is not None else "Unknown")
         rows.append(
             "<tr>"
             f"<td>{alert.id}</td>"
             f"<td>{escape(alert.created_at)}</td>"
             f"<td>{escape(alert.message)}</td>"
-            f"<td>{escape(str(alert.triggered_by_user_id) if alert.triggered_by_user_id is not None else 'Unknown')}</td>"
+            f"<td>{escape(actor)}</td>"
             "</tr>"
         )
     return "".join(rows)
@@ -1130,6 +1140,11 @@ def render_admin_page(
               <button class="button button-secondary" type="submit">Return to Super Admin</button>
             </form>
         """
+        super_admin_recorded_badge_html = f"""
+          <div class="flash" style="margin-bottom:14px;">
+            Recorded as <strong>Platform Super Admin ({escape(super_admin_actor_name or 'superadmin')})</strong>
+          </div>
+        """
         super_admin_banner_html = f"""
         <section class="panel command-section">
           <div class="flash success">
@@ -1138,6 +1153,8 @@ def render_admin_page(
           </div>
         </section>
         """
+    else:
+        super_admin_recorded_badge_html = ""
     if super_admin_mode:
         admin_security_html = f"""
           <div class="flash success">
@@ -1319,6 +1336,7 @@ def render_admin_page(
                 <p class="card-copy">Dashboard actions are attributed to your logged-in admin account automatically.</p>
               </div>
             </div>
+            {super_admin_recorded_badge_html}
             <form method="post" action="{prefix}/admin/alarm/activate" class="stack">
               <div class="field">
                 <label for="alarm_message">Alarm message</label>
@@ -1406,6 +1424,7 @@ def render_admin_page(
                 <p class="card-copy">Post short verified updates that all signed-in mobile users will see on their app status screen.</p>
               </div>
             </div>
+            {super_admin_recorded_badge_html}
             <form method="post" action="{prefix}/admin/broadcasts/create" class="stack">
               <div class="field">
                 <label for="broadcast_message">Broadcast message</label>
@@ -1455,6 +1474,7 @@ def render_admin_page(
                 <p class="card-copy">Use this for approved temporary exceptions like weddings or funerals. Quiet periods expire automatically after 24 hours.</p>
               </div>
             </div>
+            {super_admin_recorded_badge_html}
             <form method="post" action="{prefix}/admin/quiet-periods/grant" class="stack">
               <div class="form-grid">
                 <div class="field">
@@ -1474,7 +1494,7 @@ def render_admin_page(
             </form>
             <table style="margin-top:16px;">
               <thead>
-                <tr><th>User</th><th>Status</th><th>Reason</th><th>Approved By</th><th>Requested</th><th>Expires</th></tr>
+                <tr><th>User</th><th>Status</th><th>Reason</th><th>Approved By</th><th>Requested</th><th>Expires</th><th>Action</th></tr>
               </thead>
               <tbody>
                 {_render_quiet_period_rows(quiet_periods, users)}
