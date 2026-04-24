@@ -375,10 +375,11 @@ struct ContentView: View {
                         }
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(.white)
-                        .frame(maxWidth: .infinity, minHeight: 42)
+                        .frame(maxWidth: .infinity, minHeight: 46)
                         .background(bluePrimary)
-                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                     }
+                    .shadow(color: bluePrimary.opacity(0.16), radius: 8, x: 0, y: 3)
                     .buttonStyle(PressableScaleButtonStyle())
 
                     Button {
@@ -390,10 +391,11 @@ struct ContentView: View {
                         }
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(.white)
-                        .frame(maxWidth: .infinity, minHeight: 42)
-                        .background(Color(red: 0.58, green: 0.20, blue: 0.92))
-                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        .frame(maxWidth: .infinity, minHeight: 46)
+                        .background(Color(red: 0.56, green: 0.23, blue: 0.92))
+                        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                     }
+                    .shadow(color: Color(red: 0.56, green: 0.23, blue: 0.92).opacity(0.16), radius: 8, x: 0, y: 3)
                     .buttonStyle(PressableScaleButtonStyle())
                 }
             }

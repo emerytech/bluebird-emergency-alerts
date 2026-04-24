@@ -80,6 +80,7 @@ private val BorderSoft  = Color(0x1A123478)
 private val BluePrimary = Color(0xFF1B5FE4)
 private val BlueLight   = Color(0xFF2F84FF)
 private val BlueDark    = Color(0xFF092054)
+private val QuietPurple = Color(0xFF8E3BEB)
 private val AlarmRed    = Color(0xFFDC2626)
 private val AlarmGreen  = Color(0xFF16A34A)
 private val TextPri     = Color(0xFF10203F)
@@ -1841,33 +1842,60 @@ private fun DashboardPanelTabsCard(
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
                 Button(
                     onClick = { onSelectPanel(DashboardPanel.Home) },
-                    modifier = Modifier.weight(1f).height(44.dp),
+                    modifier = Modifier.weight(1f).height(46.dp),
                     colors = ButtonDefaults.buttonColors(
                         containerColor = if (activePanel == DashboardPanel.Home) BlueDark else SurfaceSoft,
                         contentColor = if (activePanel == DashboardPanel.Home) Color.White else TextPri,
                     ),
-                    shape = RoundedCornerShape(12.dp),
-                ) { Text("Home", fontWeight = FontWeight.SemiBold) }
+                    shape = RoundedCornerShape(16.dp),
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Icon(
+                            painter = painterResource(android.R.drawable.ic_menu_view),
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                        )
+                        Text("Home", fontWeight = FontWeight.SemiBold)
+                    }
+                }
 
                 Button(
                     onClick = { onSelectPanel(DashboardPanel.Messaging) },
-                    modifier = Modifier.weight(1f).height(44.dp),
+                    modifier = Modifier.weight(1f).height(46.dp),
                     colors = ButtonDefaults.buttonColors(
                         containerColor = if (activePanel == DashboardPanel.Messaging) BluePrimary else SurfaceSoft,
                         contentColor = if (activePanel == DashboardPanel.Messaging) Color.White else TextPri,
                     ),
-                    shape = RoundedCornerShape(12.dp),
-                ) { Text("Messaging", fontWeight = FontWeight.SemiBold) }
+                    shape = RoundedCornerShape(16.dp),
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Icon(
+                            painter = painterResource(android.R.drawable.ic_dialog_email),
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                        )
+                        Text("Messaging", fontWeight = FontWeight.SemiBold)
+                    }
+                }
 
                 Button(
                     onClick = { onSelectPanel(DashboardPanel.QuietPeriod) },
-                    modifier = Modifier.weight(1f).height(44.dp),
+                    modifier = Modifier.weight(1f).height(46.dp),
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = if (activePanel == DashboardPanel.QuietPeriod) Color(0xFF7A3FE0) else Color(0xFF965CF0),
+                        containerColor = if (activePanel == DashboardPanel.QuietPeriod) QuietPurple else QuietPurple.copy(alpha = 0.75f),
                         contentColor = Color.White,
                     ),
-                    shape = RoundedCornerShape(12.dp),
-                ) { Text("Quiet Period", fontWeight = FontWeight.SemiBold) }
+                    shape = RoundedCornerShape(16.dp),
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Icon(
+                            painter = painterResource(android.R.drawable.ic_lock_idle_alarm),
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                        )
+                        Text("Quiet Period", fontWeight = FontWeight.SemiBold)
+                    }
+                }
             }
         }
     }
