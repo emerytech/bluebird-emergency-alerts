@@ -87,7 +87,7 @@ private fun getUserName(ctx: Context) = prefs(ctx).getString(KEY_NAME, "") ?: ""
 private fun getUserRole(ctx: Context) = prefs(ctx).getString(KEY_ROLE, "") ?: ""
 private fun getLoginName(ctx: Context) = prefs(ctx).getString(KEY_LOGIN, "") ?: ""
 private fun canDeactivateAlarm(ctx: Context) = prefs(ctx).getBoolean(KEY_CAN_DEACTIVATE, false)
-private fun getServerUrl(ctx: Context) = prefs(ctx).getString(KEY_SERVER_URL, BuildConfig.BACKEND_BASE_URL) ?: BuildConfig.BACKEND_BASE_URL
+private fun getServerUrl(ctx: Context) = prefs(ctx).getString(KEY_SERVER_URL, "") ?: ""
 private fun extractSchoolSlug(value: String): String {
     val trimmed = value.trim().removeSuffix("/")
     if (trimmed.isBlank()) return ""
