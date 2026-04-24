@@ -666,6 +666,7 @@ def _render_user_cards(users: Sequence[UserRecord]) -> str:
 def render_change_password_page(
     *,
     user_name: str,
+    message: Optional[str] = None,
     error: Optional[str] = None,
     action: str = "/admin/change-password",
     title: str = "Change Password — BlueBird Admin",
@@ -695,6 +696,7 @@ def render_change_password_page(
         <p class="eyebrow">Welcome, {escape(user_name)}</p>
         <h2>Set a new password</h2>
       </div>
+      {_render_flash(message, "success")}
       {_render_flash(error, "error")}
       <form method="post" action="{escape(action)}" class="stack">
         <div class="field">
