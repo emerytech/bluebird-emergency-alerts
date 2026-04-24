@@ -283,3 +283,84 @@ def test_user_can_delete_own_quiet_period_request(client: TestClient, login_supe
     assert status_resp.status_code == 200
     status_body = status_resp.json()
     assert status_body["status"] == "cancelled"
+
+
+def test_admin_can_send_message_to_single_user_or_all_users(client: TestClient, login_super_admin) -> None:
+    login_super_admin()
+    _create_school(client, name="Pine Hill", slug="pine-hill")
+    _enter_school(client, "pine-hill")
+
+    for name in ("Admin One", "Teacher One", "Teacher Two"):
+        role = "admin" if "Admin" in name else "teacher"
+        login_name = "admin.one" if role == "admin" else ""
+        password = "Password@123" if role == "admin" else ""
+        created = client.post(
+            "/pine-hill/admin/users/create",
+            data={
+                "name": name,
+                "role": role,
+                "phone_e164": "",
+                "login_name": login_name,
+                "password": password,
+            },
+            follow_redirects=False,
+        )
+        assert created.status_code == 303
+
+    school = client.app.state.tenant_manager.school_for_slug("pine-hill")
+    assert school is not None
+    tenant = client.app.state.tenant_manager.get(school)
+    users = asyncio.run(tenant.user_store.list_users())
+    admin = next(u for u in users if u.name == "Admin One")
+    teacher_one = next(u for u in users if u.name == "Teacher One")
+    teacher_two = next(u for u in users if u.name == "Teacher Two")
+
+    single = client.post(
+        "/pine-hill/messages/send",
+        json={
+            "admin_user_id": admin.id,
+            "message": "Single recipient note",
+            "recipient_user_id": teacher_one.id,
+            "send_to_all": False,
+        },
+        headers={"X-API-Key": "test-api-key"},
+    )
+    assert single.status_code == 200
+    assert single.json()["sent_count"] == 1
+
+    inbox_one = client.get(
+        f"/pine-hill/messages/inbox?user_id={teacher_one.id}&limit=20",
+        headers={"X-API-Key": "test-api-key"},
+    )
+    assert inbox_one.status_code == 200
+    assert any(item["message"] == "Single recipient note" for item in inbox_one.json()["messages"])
+
+    inbox_two = client.get(
+        f"/pine-hill/messages/inbox?user_id={teacher_two.id}&limit=20",
+        headers={"X-API-Key": "test-api-key"},
+    )
+    assert inbox_two.status_code == 200
+    assert not any(item["message"] == "Single recipient note" for item in inbox_two.json()["messages"])
+
+    all_msg = client.post(
+        "/pine-hill/messages/send",
+        json={
+            "admin_user_id": admin.id,
+            "message": "All users note",
+            "send_to_all": True,
+        },
+        headers={"X-API-Key": "test-api-key"},
+    )
+    assert all_msg.status_code == 200
+    assert all_msg.json()["sent_count"] >= 2
+
+    inbox_one_after = client.get(
+        f"/pine-hill/messages/inbox?user_id={teacher_one.id}&limit=20",
+        headers={"X-API-Key": "test-api-key"},
+    )
+    inbox_two_after = client.get(
+        f"/pine-hill/messages/inbox?user_id={teacher_two.id}&limit=20",
+        headers={"X-API-Key": "test-api-key"},
+    )
+    assert any(item["message"] == "All users note" for item in inbox_one_after.json()["messages"])
+    assert any(item["message"] == "All users note" for item in inbox_two_after.json()["messages"])

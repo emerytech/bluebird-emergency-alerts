@@ -219,11 +219,37 @@ class AdminMessageRequest(BaseModel):
         return normalized
 
 
+class AdminSendMessageRequest(BaseModel):
+    admin_user_id: int
+    message: str = Field(..., min_length=1, max_length=240)
+    recipient_user_id: Optional[int] = None
+    send_to_all: bool = False
+
+    @field_validator("message")
+    @classmethod
+    def normalize_admin_message(cls, v: str) -> str:
+        normalized = v.strip()
+        if not normalized:
+            raise ValueError("message is required")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_recipient_scope(self) -> "AdminSendMessageRequest":
+        if not self.send_to_all and self.recipient_user_id is None:
+            raise ValueError("recipient_user_id is required when send_to_all is false")
+        return self
+
+
 class AdminMessageResponse(BaseModel):
     message_id: int
     created_at: str
     user_id: Optional[int] = None
     message: str
+
+
+class AdminSendMessageResponse(BaseModel):
+    sent_count: int
+    recipient_scope: str
 
 
 class AdminMessageInboxItem(BaseModel):

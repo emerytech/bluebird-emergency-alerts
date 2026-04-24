@@ -25,6 +25,8 @@ from app.models.schemas import (
     AdminMessageInboxResponse,
     AdminMessageReplyRequest,
     AdminMessageRequest,
+    AdminSendMessageRequest,
+    AdminSendMessageResponse,
     AdminMessageResponse,
     AlarmActivateRequest,
     AlarmDeactivateRequest,
@@ -2330,8 +2332,11 @@ async def message_admin(
     )
     message_id = await _reports(request).create_admin_message(
         sender_user_id=user_id,
+        recipient_user_id=None,
         sender_label=sender_label,
+        direction="user_to_admin",
         message=body.message,
+        status="open",
     )
     messages = await _reports(request).list_admin_messages(limit=30)
     created = next((item for item in messages if item.id == message_id), None)
@@ -2342,6 +2347,45 @@ async def message_admin(
         created_at=created.created_at,
         user_id=created.sender_user_id,
         message=created.message,
+    )
+
+
+@router.post("/messages/send", response_model=AdminSendMessageResponse)
+async def admin_send_message(
+    body: AdminSendMessageRequest,
+    request: Request,
+    _: None = Depends(require_api_key),
+) -> AdminSendMessageResponse:
+    users = _users(request)
+    admin_id = await _require_dashboard_admin_id(users, body.admin_user_id)
+    admin_user = await users.get_user(admin_id)
+    sender_label = (admin_user.login_name or admin_user.name) if admin_user else f"Admin #{admin_id}"
+
+    recipients: list[int] = []
+    if body.send_to_all:
+        all_users = await users.list_users()
+        recipients = [u.id for u in all_users if u.is_active and u.role != "admin"]
+    else:
+        target = await users.get_user(int(body.recipient_user_id or 0))
+        if target is None or not target.is_active or target.role == "admin":
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Recipient user not found")
+        recipients = [target.id]
+
+    if not recipients:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="No active non-admin recipients found")
+
+    for recipient_user_id in recipients:
+        await _reports(request).create_admin_message(
+            sender_user_id=admin_id,
+            recipient_user_id=recipient_user_id,
+            sender_label=sender_label,
+            direction="admin_to_user",
+            message=body.message,
+            status="delivered",
+        )
+    return AdminSendMessageResponse(
+        sent_count=len(recipients),
+        recipient_scope="all" if body.send_to_all else "single",
     )
 
 

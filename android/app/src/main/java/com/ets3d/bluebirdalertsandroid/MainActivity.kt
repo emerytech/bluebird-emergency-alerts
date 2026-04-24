@@ -205,6 +205,11 @@ data class AdminInboxMessage(
     val responseByLabel: String? = null,
 )
 
+data class InboxRecipient(
+    val userId: Int,
+    val label: String,
+)
+
 data class QuietPeriodMobileStatus(
     val requestId: Int? = null,
     val status: String? = null,
@@ -278,6 +283,7 @@ data class UiState(
     val errorMsg: String?       = null,
     val adminInbox: List<AdminInboxMessage> = emptyList(),
     val unreadAdminMessages: Int = 0,
+    val adminMessageRecipients: List<InboxRecipient> = emptyList(),
     val quietPeriodStatus: QuietPeriodMobileStatus? = null,
 )
 
@@ -387,12 +393,47 @@ class MainViewModel : ViewModel() {
         }
     }
 
+    fun sendAdminMessageToUsers(ctx: Context, message: String, recipientUserId: Int?, sendToAll: Boolean) {
+        val adminUserId = getUserId(ctx).toIntOrNull()
+        if (adminUserId == null) {
+            _state.update { it.copy(errorMsg = "Admin sign-in is required.") }
+            return
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            _state.update { it.copy(isBusy = true, errorMsg = null) }
+            runCatching {
+                client!!.sendMessageFromAdmin(
+                    adminUserId = adminUserId,
+                    message = message,
+                    recipientUserId = recipientUserId,
+                    sendToAll = sendToAll,
+                )
+            }
+                .onSuccess { sentCount ->
+                    val label = if (sendToAll) "all users" else "selected user"
+                    _state.update { it.copy(isBusy = false, successMsg = "Message sent to $label ($sentCount).") }
+                }
+                .onFailure { e ->
+                    _state.update { it.copy(isBusy = false, errorMsg = e.message ?: "Failed to send admin message.") }
+                }
+        }
+    }
+
     fun refreshAdminInbox(ctx: Context) {
         val userId = getUserId(ctx).toIntOrNull() ?: return
         viewModelScope.launch(Dispatchers.IO) {
             runCatching { client!!.messageInbox(userId = userId) }
                 .onSuccess { inbox ->
                     _state.update { it.copy(adminInbox = inbox.messages, unreadAdminMessages = inbox.unreadCount) }
+                }
+        }
+    }
+
+    fun refreshAdminRecipients() {
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { client!!.listMessageRecipients() }
+                .onSuccess { recipients ->
+                    _state.update { it.copy(adminMessageRecipients = recipients) }
                 }
         }
     }
@@ -881,6 +922,7 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
     LaunchedEffect(Unit) { vm.init(ctx) }
     LaunchedEffect(isAdmin) {
         if (!isAdmin) return@LaunchedEffect
+        vm.refreshAdminRecipients()
         while (true) {
             vm.refreshAdminInbox(ctx)
             delay(8_000)
@@ -1007,8 +1049,16 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                         AdminInboxCard(
                             messages = state.adminInbox,
                             unreadCount = state.unreadAdminMessages,
+                            recipients = state.adminMessageRecipients,
                             isBusy = state.isBusy,
-                            onSendMessage = { vm.sendAdminMessage(ctx, it) },
+                            onSendMessage = { message, recipientUserId, sendToAll ->
+                                vm.sendAdminMessageToUsers(
+                                    ctx = ctx,
+                                    message = message,
+                                    recipientUserId = recipientUserId,
+                                    sendToAll = sendToAll,
+                                )
+                            },
                             onReply = { replyTarget = it },
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -1967,12 +2017,19 @@ private fun MessageAdminDialog(
 private fun AdminInboxCard(
     messages: List<AdminInboxMessage>,
     unreadCount: Int,
+    recipients: List<InboxRecipient>,
     isBusy: Boolean,
-    onSendMessage: (String) -> Unit,
+    onSendMessage: (String, Int?, Boolean) -> Unit,
     onReply: (AdminInboxMessage) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var outboundMessage by remember { mutableStateOf("") }
+    var expanded by remember { mutableStateOf(false) }
+    var selectedRecipientId by remember { mutableStateOf<Int?>(null) }
+    val recipientLabel = when (selectedRecipientId) {
+        null -> "All users"
+        else -> recipients.firstOrNull { it.userId == selectedRecipientId }?.label ?: "Select user"
+    }
     Surface(
         modifier = modifier,
         shape = RoundedCornerShape(20.dp),
@@ -1987,7 +2044,7 @@ private fun AdminInboxCard(
             OutlinedTextField(
                 value = outboundMessage,
                 onValueChange = { outboundMessage = it },
-                label = { Text("Send a message to admins", color = TextMuted) },
+                label = { Text("Send a message to users", color = TextMuted) },
                 placeholder = { Text("Team update or quick note...", color = TextMuted) },
                 minLines = 2,
                 maxLines = 4,
@@ -2003,11 +2060,43 @@ private fun AdminInboxCard(
                 ),
                 modifier = Modifier.fillMaxWidth(),
             )
+            Box(modifier = Modifier.fillMaxWidth()) {
+                OutlinedButton(
+                    onClick = { expanded = true },
+                    enabled = !isBusy,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(10.dp),
+                ) {
+                    Text("Recipient: $recipientLabel", fontWeight = FontWeight.SemiBold)
+                }
+                DropdownMenu(
+                    expanded = expanded,
+                    onDismissRequest = { expanded = false },
+                    modifier = Modifier.fillMaxWidth(0.92f),
+                ) {
+                    DropdownMenuItem(
+                        text = { Text("All users") },
+                        onClick = {
+                            selectedRecipientId = null
+                            expanded = false
+                        },
+                    )
+                    recipients.forEach { recipient ->
+                        DropdownMenuItem(
+                            text = { Text(recipient.label) },
+                            onClick = {
+                                selectedRecipientId = recipient.userId
+                                expanded = false
+                            },
+                        )
+                    }
+                }
+            }
             Button(
                 onClick = {
                     val trimmed = outboundMessage.trim()
                     if (trimmed.isNotBlank()) {
-                        onSendMessage(trimmed)
+                        onSendMessage(trimmed, selectedRecipientId, selectedRecipientId == null)
                         outboundMessage = ""
                     }
                 },
@@ -2341,6 +2430,52 @@ private class BackendClient(baseUrl: String, private val apiKey: String) {
             .post(body.toString().toRequestBody(json))
             .build()
         http.newCall(req).execute().use { requireSuccess(it) }
+    }
+
+    fun sendMessageFromAdmin(adminUserId: Int, message: String, recipientUserId: Int?, sendToAll: Boolean): Int {
+        val body = JSONObject()
+            .put("admin_user_id", adminUserId)
+            .put("message", message)
+            .put("send_to_all", sendToAll)
+            .apply { recipientUserId?.let { put("recipient_user_id", it) } }
+        val req = Request.Builder()
+            .url("$base/messages/send")
+            .withAuth()
+            .post(body.toString().toRequestBody(json))
+            .build()
+        http.newCall(req).execute().use { res ->
+            val payload = JSONObject(requireSuccess(res))
+            return payload.optInt("sent_count", 0)
+        }
+    }
+
+    fun listMessageRecipients(): List<InboxRecipient> {
+        val req = Request.Builder()
+            .url("$base/users")
+            .withAuth()
+            .get()
+            .build()
+        http.newCall(req).execute().use { res ->
+            val body = requireSuccess(res)
+            val usersJson = JSONObject(body).optJSONArray("users")
+            return buildList {
+                if (usersJson != null) {
+                    for (i in 0 until usersJson.length()) {
+                        val item = usersJson.optJSONObject(i) ?: continue
+                        val isActive = item.optBoolean("is_active", true)
+                        val role = item.optString("role").lowercase()
+                        val userId = item.optInt("user_id", 0)
+                        if (!isActive || role == "admin" || userId <= 0) continue
+                        add(
+                            InboxRecipient(
+                                userId = userId,
+                                label = "${item.optString("name")} (${item.optString("role")})",
+                            )
+                        )
+                    }
+                }
+            }.sortedBy { it.label.lowercase() }
+        }
     }
 
     fun messageInbox(userId: Int): MessageInboxResponse {
