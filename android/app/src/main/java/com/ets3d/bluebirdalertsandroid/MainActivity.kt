@@ -390,6 +390,24 @@ class MainViewModel : ViewModel() {
         }
     }
 
+    fun requestQuietPeriod(ctx: Context, reason: String?) {
+        val userId = getUserId(ctx).toIntOrNull()
+        if (userId == null) {
+            _state.update { it.copy(errorMsg = "You must be signed in to request a quiet period.") }
+            return
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            _state.update { it.copy(isBusy = true, errorMsg = null) }
+            runCatching { client!!.requestQuietPeriod(userId = userId, reason = reason) }
+                .onSuccess {
+                    _state.update { it.copy(isBusy = false, successMsg = "Quiet period request sent to admins.") }
+                }
+                .onFailure { e ->
+                    _state.update { it.copy(isBusy = false, errorMsg = e.message ?: "Failed to request quiet period.") }
+                }
+        }
+    }
+
     fun clearMessages() = _state.update { it.copy(successMsg = null, errorMsg = null) }
 }
 
@@ -790,6 +808,7 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
     var showMessageAdminDialog by remember { mutableStateOf(false) }
     var showSettingsScreen by remember { mutableStateOf(false) }
     var pendingSafetyAction by remember { mutableStateOf<SafetyAction?>(null) }
+    var showQuietRequestOverlay by remember { mutableStateOf(false) }
     var replyTarget by remember { mutableStateOf<AdminInboxMessage?>(null) }
     val userName = remember { getUserName(ctx) }
     val userRole = remember { getUserRole(ctx) }
@@ -980,6 +999,16 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                             Text("Message Admin", fontWeight = FontWeight.SemiBold)
                         }
 
+                        OutlinedButton(
+                            onClick = { showQuietRequestOverlay = true },
+                            modifier = Modifier.fillMaxWidth().height(52.dp),
+                            shape = RoundedCornerShape(14.dp),
+                            enabled = !state.isBusy,
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFF7C3AED)),
+                        ) {
+                            Text("Request Quiet Period", fontWeight = FontWeight.SemiBold)
+                        }
+
                         Text(
                             "Version ${BuildConfig.VERSION_NAME}  ·  ${BuildConfig.BACKEND_BASE_URL}",
                             fontSize = 11.sp,
@@ -1001,6 +1030,16 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
             onInitiate = {
                 pendingSafetyAction = null
                 vm.activateAlarm(ctx, action.message)
+            },
+        )
+    }
+    if (showQuietRequestOverlay) {
+        QuietPeriodRequestOverlay(
+            isBusy = state.isBusy,
+            onCancel = { showQuietRequestOverlay = false },
+            onConfirm = { reason ->
+                showQuietRequestOverlay = false
+                vm.requestQuietPeriod(ctx, reason)
             },
         )
     }
@@ -1351,6 +1390,128 @@ private fun ActionInitiateOverlay(
                     )
                 }
             }
+            Spacer(modifier = Modifier.weight(1f))
+            Surface(
+                shape = CircleShape,
+                color = Color(0xCC9CA3AF),
+                modifier = Modifier.size(68.dp),
+            ) {
+                Button(
+                    onClick = onCancel,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color.Transparent,
+                        contentColor = Color.White,
+                    ),
+                    modifier = Modifier.fillMaxSize(),
+                ) {
+                    Text("✕", fontSize = 26.sp, fontWeight = FontWeight.Bold)
+                }
+            }
+            Text(
+                "Cancel",
+                color = Color.White,
+                fontSize = 14.sp,
+                modifier = Modifier.padding(top = 6.dp),
+            )
+        }
+    }
+}
+
+@Composable
+private fun QuietPeriodRequestOverlay(
+    isBusy: Boolean,
+    onCancel: () -> Unit,
+    onConfirm: (String?) -> Unit,
+) {
+    var slideValue by remember { mutableStateOf(0f) }
+    var reason by remember { mutableStateOf("") }
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color(0xCC0B1220))
+            .navigationBarsPadding()
+            .statusBarsPadding(),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 24.dp, vertical = 20.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Text("BlueBird Alerts", color = Color(0xFFD4DCEE), fontSize = 16.sp, fontWeight = FontWeight.Bold)
+            Spacer(modifier = Modifier.height(24.dp))
+            Surface(
+                shape = CircleShape,
+                color = Color(0xFF7C3AED),
+                modifier = Modifier.size(86.dp),
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Text("\uD83D\uDD15", fontSize = 34.sp)
+                }
+            }
+            Spacer(modifier = Modifier.height(14.dp))
+            Text(
+                "REQUEST QUIET PERIOD",
+                color = Color.White,
+                fontWeight = FontWeight.ExtraBold,
+                fontSize = 24.sp,
+                textAlign = TextAlign.Center,
+            )
+            Spacer(modifier = Modifier.height(24.dp))
+            Surface(
+                shape = RoundedCornerShape(28.dp),
+                color = Color(0xFF5B616B),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
+                    Text(
+                        if (isBusy) "Submitting…" else "Slide to Confirm →",
+                        color = Color.White,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 16.sp,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Slider(
+                        value = slideValue,
+                        onValueChange = { slideValue = it },
+                        onValueChangeFinished = {
+                            if (!isBusy && slideValue >= 0.95f) {
+                                onConfirm(reason.trim().ifBlank { null })
+                            }
+                            slideValue = 0f
+                        },
+                        enabled = !isBusy,
+                        colors = SliderDefaults.colors(
+                            thumbColor = Color.White,
+                            activeTrackColor = Color(0xFF9AA0AA),
+                            inactiveTrackColor = Color(0xFF6D747F),
+                        ),
+                        valueRange = 0f..1f,
+                    )
+                }
+            }
+            Spacer(modifier = Modifier.height(16.dp))
+            OutlinedTextField(
+                value = reason,
+                onValueChange = { reason = it },
+                label = { Text("Reason (optional)", color = Color(0xFFCBD5E1)) },
+                placeholder = { Text("Wedding, funeral, testing context...", color = Color(0xFF94A3B8)) },
+                minLines = 2,
+                maxLines = 4,
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = Color(0xFF7C3AED),
+                    unfocusedBorderColor = Color(0xFF64748B),
+                    focusedTextColor = Color.White,
+                    unfocusedTextColor = Color.White,
+                    cursorColor = Color(0xFF7C3AED),
+                    focusedContainerColor = Color(0x33243355),
+                    unfocusedContainerColor = Color(0x22243355),
+                    focusedLabelColor = Color(0xFFE2E8F0),
+                    unfocusedLabelColor = Color(0xFFCBD5E1),
+                ),
+                modifier = Modifier.fillMaxWidth(),
+            )
             Spacer(modifier = Modifier.weight(1f))
             Surface(
                 shape = CircleShape,
@@ -1918,6 +2079,18 @@ private class BackendClient(baseUrl: String, private val apiKey: String) {
             .put("message", message)
         val req = Request.Builder()
             .url("$base/messages/reply")
+            .withAuth()
+            .post(body.toString().toRequestBody(json))
+            .build()
+        http.newCall(req).execute().use { requireSuccess(it) }
+    }
+
+    fun requestQuietPeriod(userId: Int, reason: String?) {
+        val body = JSONObject()
+            .put("user_id", userId)
+            .apply { reason?.let { put("reason", it) } }
+        val req = Request.Builder()
+            .url("$base/quiet-periods/request")
             .withAuth()
             .post(body.toString().toRequestBody(json))
             .build()

@@ -11,6 +11,8 @@ struct ContentView: View {
     @State private var isSendingAdminMessage: Bool = false
 
     private let api = APIClient(baseURL: Config.backendBaseURL)
+    // TODO(iOS parity): Add "Request Quiet Period" flow matching Android:
+    // large button -> dark slide-to-confirm overlay -> reason/context text input below slider.
 
     var body: some View {
         NavigationStack {

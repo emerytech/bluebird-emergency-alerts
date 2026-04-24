@@ -2122,6 +2122,32 @@ async def create_report(
     )
 
 
+@router.post("/quiet-periods/request", response_model=QuietPeriodSummary)
+async def request_quiet_period(
+    body: QuietPeriodRequestCreate,
+    request: Request,
+    _: None = Depends(require_api_key),
+) -> QuietPeriodSummary:
+    user = await _users(request).get_user(body.user_id)
+    if user is None or not user.is_active:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found or inactive")
+    record = await _quiet_periods(request).request_quiet_period(
+        user_id=body.user_id,
+        reason=body.reason,
+    )
+    return QuietPeriodSummary(
+        request_id=record.id,
+        user_id=record.user_id,
+        reason=record.reason,
+        status=record.status,
+        requested_at=record.requested_at,
+        approved_at=record.approved_at,
+        approved_by_user_id=record.approved_by_user_id,
+        approved_by_label=record.approved_by_label,
+        expires_at=record.expires_at,
+    )
+
+
 @router.post("/message-admin", response_model=AdminMessageResponse)
 async def message_admin(
     body: AdminMessageRequest,
