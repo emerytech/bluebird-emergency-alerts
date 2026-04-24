@@ -91,7 +91,6 @@ async def school_context_middleware(request, call_next):
     if not raw_segments:
         response = await call_next(request)
         return response
-
     school_slug = normalize_school_slug(raw_segments[0])
     school = request.app.state.tenant_manager.school_for_slug(school_slug)
     if school is None:
@@ -109,6 +108,5 @@ async def school_context_middleware(request, call_next):
     if location and location.startswith("/admin"):
         response.headers["location"] = f"{request.state.school_path_prefix}{location}"
     return response
-
 
 app.include_router(router)

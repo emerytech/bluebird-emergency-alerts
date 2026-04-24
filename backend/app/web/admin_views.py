@@ -292,15 +292,31 @@ def render_login_page(
     school_name: str = "School",
     school_slug: str = "default",
     school_path_prefix: str = "/default",
+    setup_pin_required: bool = False,
 ) -> str:
     heading = "Create the first BlueBird admin" if setup_mode else "Sign in to BlueBird Admin"
     button = "Create admin account" if setup_mode else "Sign in"
     action = f"{school_path_prefix}/admin/setup" if setup_mode else f"{school_path_prefix}/admin/login"
     helper = (
-        "This first account becomes the dashboard operator account. After that, you can create and edit the rest of the school users from inside the portal."
+        (
+            "This first account becomes the dashboard operator account. Enter the setup PIN from the platform admin, then create the first dashboard admin."
+            if setup_pin_required
+            else "This first account becomes the dashboard operator account. After that, you can create and edit the rest of the school users from inside the portal."
+        )
         if setup_mode
         else "Use your admin credentials to manage users, alarms, devices, and the audit trail."
     )
+    setup_tip = (
+        f'<div class="flash success">First-time setup for <strong>{escape(school_name)}</strong>. Create the first admin for this school at <code>{escape(school_path_prefix)}/admin</code>.{" A school setup PIN is required for this step." if setup_pin_required else ""}</div>'
+        if setup_mode
+        else ""
+    )
+    pin_field = """
+      <div class="field">
+        <label for="setup_pin">School setup PIN</label>
+        <input id="setup_pin" name="setup_pin" type="password" autocomplete="one-time-code" />
+      </div>
+    """ if setup_mode and setup_pin_required else ""
     extra_fields = """
       <div class="field">
         <label for="name">Full name</label>
@@ -339,10 +355,12 @@ def render_login_page(
         <h2>{escape(heading)}</h2>
         <p class="card-copy">{escape(helper)}</p>
       </div>
+      {setup_tip}
       {_render_flash(message, "success")}
       {_render_flash(error, "error")}
       <form method="post" action="{action}" class="stack">
         {extra_fields}
+        {pin_field}
         <div class="field">
           <label for="login_name">Username</label>
           <input id="login_name" name="login_name" autocomplete="username" />
@@ -380,7 +398,7 @@ def render_super_admin_login_page(*, message: Optional[str] = None, error: Optio
       </div>
       <div class="hero-metrics">
         <span class="metric-pill"><strong>School setup</strong> centralized</span>
-        <span class="metric-pill"><strong>Tenant routing</strong> subdomain based</span>
+        <span class="metric-pill"><strong>Tenant routing</strong> path based</span>
         <span class="metric-pill"><strong>Isolation</strong> per-school data</span>
       </div>
     </section>
@@ -414,15 +432,24 @@ def render_super_admin_login_page(*, message: Optional[str] = None, error: Optio
 def render_super_admin_page(
     *,
     base_domain: str,
-    schools: Sequence[SchoolRecord],
+    school_rows: Sequence[Mapping[str, object]],
     git_pull_configured: bool,
     flash_message: Optional[str] = None,
     flash_error: Optional[str] = None,
 ) -> str:
     rows = "".join(
-        f"<tr><td>{escape(item.name)}</td><td><code>{escape(item.slug)}</code></td><td><a href=\"https://{escape(base_domain)}/{escape(item.slug)}/admin\" target=\"_blank\">{escape(base_domain)}/{escape(item.slug)}/admin</a></td><td>{'Active' if item.is_active else 'Inactive'}</td></tr>"
-        for item in schools
-    ) or '<tr><td colspan="4" class="mini-copy">No schools yet.</td></tr>'
+        (
+            "<tr>"
+            f"<td>{escape(str(item['name']))}</td>"
+            f"<td><code>{escape(str(item['slug']))}</code></td>"
+            f"<td><a href=\"{escape(str(item['admin_url']))}\" target=\"_blank\">{escape(str(item['admin_url_label']))}</a>"
+            f"<div class=\"mini-copy\">Mobile/API base: <code>{escape(str(item['api_base_label']))}</code></div></td>"
+            f"<td>{escape(str(item['setup_status']))}<div class=\"mini-copy\">{escape(str(item['setup_hint']))}</div></td>"
+            f"<td>{'Active' if bool(item['is_active']) else 'Inactive'}</td>"
+            "</tr>"
+        )
+        for item in school_rows
+    ) or '<tr><td colspan="5" class="mini-copy">No schools yet.</td></tr>'
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -467,13 +494,13 @@ def render_super_admin_page(
             </div>
             <div class="status-row">
               <span class="status-pill ok"><strong>Base domain</strong>{escape(base_domain)}</span>
-              <span class="status-pill"><strong>Schools</strong>{len(schools)}</span>
+              <span class="status-pill"><strong>Schools</strong>{len(school_rows)}</span>
               <span class="status-pill {'ok' if git_pull_configured else 'danger'}"><strong>Git pull</strong>{'configured' if git_pull_configured else 'not configured'}</span>
             </div>
           </div>
           <table>
             <thead>
-              <tr><th>Name</th><th>Slug</th><th>Admin URL</th><th>Status</th></tr>
+              <tr><th>Name</th><th>Slug</th><th>School URLs</th><th>Setup</th><th>Status</th></tr>
             </thead>
             <tbody>{rows}</tbody>
           </table>
@@ -496,11 +523,42 @@ def render_super_admin_page(
                 <label>School slug</label>
                 <input name="slug" placeholder="nen" />
               </div>
+              <div class="field">
+                <label>First-admin setup PIN</label>
+                <input name="setup_pin" type="password" placeholder="Optional shared PIN" />
+              </div>
             </div>
             <div class="button-row">
               <button class="button button-primary" type="submit">Create school</button>
             </div>
           </form>
+          <p class="mini-copy" style="margin-top:14px;">New school URLs use the same domain with a school path, like <code>https://{escape(base_domain)}/school-slug/admin</code>.</p>
+        </section>
+        <section class="panel">
+          <div class="panel-header">
+            <div>
+              <p class="eyebrow">Onboarding</p>
+              <h2>School setup flow</h2>
+              <p class="card-copy">Use the same repeatable handoff for every new school so setup stays predictable.</p>
+            </div>
+          </div>
+          <div class="metrics-grid">
+            <article class="metric-card">
+              <div class="meta">1. Provision</div>
+              <div style="margin-top:8px; font-weight:700;">Create the school here</div>
+              <p class="mini-copy">Choose the display name and slug. That immediately reserves the path-based tenant.</p>
+            </article>
+            <article class="metric-card">
+              <div class="meta">2. Open portal</div>
+              <div style="margin-top:8px; font-weight:700;">Visit <code>/&lt;slug&gt;/admin</code></div>
+              <p class="mini-copy">If the school has no admin yet, the page switches into first-admin setup mode automatically.</p>
+            </article>
+            <article class="metric-card">
+              <div class="meta">3. Hand off</div>
+              <div style="margin-top:8px; font-weight:700;">Create first admin and sign in</div>
+              <p class="mini-copy">If you set a setup PIN, share it with the school contact. After the initial admin account exists, the same URL becomes the ongoing school dashboard login.</p>
+            </article>
+          </div>
         </section>
         <section class="panel" id="server-tools">
           <div class="panel-header">

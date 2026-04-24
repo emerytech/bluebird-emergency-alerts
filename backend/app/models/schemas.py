@@ -168,6 +168,8 @@ class PublicSchoolSummary(BaseModel):
     name: str
     slug: str
     path: str
+    api_base_url: Optional[str] = None
+    admin_url: Optional[str] = None
 
 
 class SchoolsCatalogResponse(BaseModel):

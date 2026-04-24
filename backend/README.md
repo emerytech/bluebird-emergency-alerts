@@ -44,13 +44,25 @@ curl -s http://127.0.0.1:8000/health
 Open the local operator dashboard:
 
 ```text
-http://127.0.0.1:8000/admin
+http://127.0.0.1:8000/default/admin
 ```
 
 The admin dashboard can now:
 - create local test users (`teacher` and `admin`)
 - activate an alarm
 - deactivate an alarm using an admin user id
+
+The platform also supports school-aware routing:
+- `http://127.0.0.1:8000/<school-slug>/admin` for path-based local access
+- `https://<your-base-domain>/<school-slug>/admin` for production access on the shared domain
+
+Super admin lives at:
+
+```text
+http://127.0.0.1:8000/super-admin/login
+```
+
+When provisioning a school from super admin, you can optionally set a first-admin setup PIN. If a PIN is set, the school must enter it at `/<school-slug>/admin` before the first dashboard admin account can be created.
 
 Android clients can poll `/alarm/status` and keep sounding a local alarm until the backend marks the alarm inactive.
 

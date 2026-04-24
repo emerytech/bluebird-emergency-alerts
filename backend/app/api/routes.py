@@ -191,12 +191,15 @@ async def health() -> dict:
 @router.get("/schools", response_model=SchoolsCatalogResponse)
 async def list_schools(request: Request) -> SchoolsCatalogResponse:
     schools = await _schools(request).list_schools()
+    base_domain = str(request.app.state.settings.BASE_DOMAIN).strip().lower()  # type: ignore[attr-defined]
     return SchoolsCatalogResponse(
         schools=[
             PublicSchoolSummary(
                 name=school.name,
                 slug=school.slug,
                 path=f"/{school.slug}",
+                api_base_url=f"https://{base_domain}/{school.slug}",
+                admin_url=f"https://{base_domain}/{school.slug}/admin",
             )
             for school in schools
             if school.is_active
@@ -392,6 +395,7 @@ async def admin_login_page(request: Request) -> HTMLResponse:
             school_name=request.state.school.name,
             school_slug=request.state.school.slug,
             school_path_prefix=_school_prefix(request),
+            setup_pin_required=bool(getattr(request.state.school, "setup_pin_required", False)),
         )
     )
 
@@ -400,6 +404,7 @@ async def admin_login_page(request: Request) -> HTMLResponse:
 async def admin_setup(
     request: Request,
     name: str = Form(...),
+    setup_pin: str = Form(default=""),
     login_name: str = Form(...),
     password: str = Form(...),
 ) -> RedirectResponse:
@@ -409,6 +414,14 @@ async def admin_setup(
     if not name.strip() or not login_name.strip() or not password.strip():
         _set_flash(request, error="Name, username, and password are required.")
         return RedirectResponse(url="/admin/login", status_code=status.HTTP_303_SEE_OTHER)
+    school = request.state.school  # type: ignore[attr-defined]
+    if getattr(school, "setup_pin_required", False):
+        if not setup_pin.strip():
+            _set_flash(request, error="School setup PIN is required for first-time admin setup.")
+            return RedirectResponse(url="/admin/login", status_code=status.HTTP_303_SEE_OTHER)
+        if not await _schools(request).verify_setup_pin(slug=school.slug, setup_pin=setup_pin):
+            _set_flash(request, error="Invalid school setup PIN.")
+            return RedirectResponse(url="/admin/login", status_code=status.HTTP_303_SEE_OTHER)
     await _users(request).create_user(
         name=name.strip(),
         role="admin",
@@ -540,10 +553,36 @@ async def super_admin_dashboard(request: Request) -> HTMLResponse:
         return RedirectResponse(url="/super-admin/change-password", status_code=status.HTTP_303_SEE_OTHER)
     flash_message, flash_error = _pop_flash(request)
     schools = await _schools(request).list_schools()
+    base_domain = str(request.app.state.settings.BASE_DOMAIN).strip().lower()  # type: ignore[attr-defined]
+    school_rows: list[dict[str, object]] = []
+    for school in schools:
+        school_prefix = f"/{school.slug}"
+        admin_count = await request.app.state.tenant_manager.get(school).user_store.count_dashboard_admins()  # type: ignore[attr-defined]
+        admin_url = f"https://{base_domain}{school_prefix}/admin"
+        school_rows.append(
+            {
+                "name": school.name,
+                "slug": school.slug,
+                "admin_url": admin_url,
+                "admin_url_label": f"{base_domain}{school_prefix}/admin",
+                "api_base_label": f"{base_domain}{school_prefix}",
+                "setup_status": "Ready" if admin_count > 0 else "Needs first admin",
+                "setup_hint": (
+                    "School dashboard login is active."
+                    if admin_count > 0
+                    else (
+                        "Open the admin URL and provide the school setup PIN."
+                        if school.setup_pin_required
+                        else "Open the admin URL to create the first school admin."
+                    )
+                ),
+                "is_active": school.is_active,
+            }
+        )
     return HTMLResponse(
         render_super_admin_page(
             base_domain=request.app.state.settings.BASE_DOMAIN,  # type: ignore[attr-defined]
-            schools=schools,
+            school_rows=school_rows,
             git_pull_configured=bool(request.app.state.settings.SERVER_GIT_PULL_COMMAND),  # type: ignore[attr-defined]
             flash_message=flash_message,
             flash_error=flash_error,
@@ -556,6 +595,7 @@ async def super_admin_create_school(
     request: Request,
     name: str = Form(...),
     slug: str = Form(...),
+    setup_pin: str = Form(default=""),
 ) -> RedirectResponse:
     _require_super_admin(request)
     from app.services.tenant_manager import normalize_school_slug
@@ -568,15 +608,27 @@ async def super_admin_create_school(
     if not normalized_slug:
         _set_flash(request, error="School slug is required.")
         return RedirectResponse(url="/super-admin#create-school", status_code=status.HTTP_303_SEE_OTHER)
+    normalized_pin = setup_pin.strip()
+    if normalized_pin and len(normalized_pin) < 4:
+        _set_flash(request, error="Setup PIN must be at least 4 characters.")
+        return RedirectResponse(url="/super-admin#create-school", status_code=status.HTTP_303_SEE_OTHER)
     try:
-        school = await _schools(request).create_school(slug=normalized_slug, name=normalized_name)
+        school = await _schools(request).create_school(
+            slug=normalized_slug,
+            name=normalized_name,
+            setup_pin=normalized_pin or None,
+        )
     except Exception as exc:
         _set_flash(request, error=f"Could not create school: {exc}")
         return RedirectResponse(url="/super-admin#create-school", status_code=status.HTTP_303_SEE_OTHER)
-    admin_url = f"https://{request.app.state.settings.BASE_DOMAIN}/{school.slug}/admin"  # type: ignore[attr-defined]
+    base_domain = str(request.app.state.settings.BASE_DOMAIN).strip().lower()  # type: ignore[attr-defined]
+    admin_url = f"https://{base_domain}/{school.slug}/admin"
     _set_flash(
         request,
-        message=f"Created school {school.name}. Admin URL: {admin_url}",
+        message=(
+            f"Created school {school.name}. School admin URL: {admin_url}."
+            + (" A setup PIN was saved for first-admin creation." if school.setup_pin_required else "")
+        ),
     )
     return RedirectResponse(url="/super-admin#schools", status_code=status.HTTP_303_SEE_OTHER)
 
