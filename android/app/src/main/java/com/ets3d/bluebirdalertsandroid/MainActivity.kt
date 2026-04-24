@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
@@ -30,7 +31,9 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
@@ -156,6 +159,13 @@ private data class SchoolOption(
     val slug: String,
     val path: String,
 )
+
+private enum class SchoolLoadState {
+    Loading,
+    Loaded,
+    Empty,
+    Failed,
+}
 
 data class BroadcastUpdate(
     val updateId: Int,
@@ -336,22 +346,64 @@ private fun App() {
 @Composable
 private fun LoginScreen(onDone: () -> Unit) {
     val ctx = LocalContext.current
+    val focusManager = LocalFocusManager.current
     var serverUrl by remember { mutableStateOf(getServerUrl(ctx)) }
     var schoolOptions by remember { mutableStateOf<List<SchoolOption>>(emptyList()) }
     var selectedSchoolSlug by remember { mutableStateOf(extractSchoolSlug(getServerUrl(ctx))) }
-    var schoolsLoading by remember { mutableStateOf(true) }
+    var schoolLoadState by remember { mutableStateOf(SchoolLoadState.Loading) }
     var schoolMenuExpanded by remember { mutableStateOf(false) }
     var username by remember { mutableStateOf(getLoginName(ctx)) }
     var password by remember { mutableStateOf("") }
     var showPassword by remember { mutableStateOf(false) }
     var isSubmitting by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
+    val scrollState = rememberScrollState()
+
+    val submitLogin: () -> Unit = {
+        val normalizedUsername = username.trim()
+        if (normalizedUsername.isBlank() || password.isBlank()) {
+            error = "Enter your username and password."
+        } else if (schoolOptions.isNotEmpty() && selectedSchoolSlug.isBlank()) {
+            error = "Select your school."
+        } else {
+            val normalizedServerUrl = normalizeServerUrl(serverUrl)
+            isSubmitting = true
+            error = null
+            focusManager.clearFocus()
+            val client = BackendClient(normalizedServerUrl, BuildConfig.BACKEND_API_KEY)
+            kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch {
+                runCatching { client.login(normalizedUsername, password) }
+                    .onSuccess { user ->
+                        prefs(ctx).edit()
+                            .putString(KEY_UID, user.userId.toString())
+                            .putString(KEY_NAME, user.name)
+                            .putString(KEY_ROLE, user.role)
+                            .putString(KEY_LOGIN, user.loginName)
+                            .putString(KEY_SERVER_URL, normalizedServerUrl)
+                            .putBoolean(KEY_CAN_DEACTIVATE, user.canDeactivateAlarm)
+                            .putBoolean(KEY_SETUP, true)
+                            .apply()
+                        kotlinx.coroutines.withContext(Dispatchers.Main) {
+                            isSubmitting = false
+                            onDone()
+                        }
+                    }
+                    .onFailure { e ->
+                        kotlinx.coroutines.withContext(Dispatchers.Main) {
+                            isSubmitting = false
+                            error = e.message ?: "Sign-in failed."
+                        }
+                    }
+            }
+        }
+    }
 
     LaunchedEffect(Unit) {
         val client = BackendClient(BuildConfig.BACKEND_BASE_URL, BuildConfig.BACKEND_API_KEY)
         runCatching { client.listSchools() }
             .onSuccess { schools ->
                 schoolOptions = schools
+                schoolLoadState = if (schools.isNotEmpty()) SchoolLoadState.Loaded else SchoolLoadState.Empty
                 if (schools.isNotEmpty()) {
                     val savedSlug = selectedSchoolSlug
                     val chosen = schools.firstOrNull { it.slug == savedSlug } ?: schools.first()
@@ -360,11 +412,11 @@ private fun LoginScreen(onDone: () -> Unit) {
                 }
             }
             .onFailure {
+                schoolLoadState = SchoolLoadState.Failed
                 if (selectedSchoolSlug.isNotBlank()) {
                     serverUrl = schoolBaseUrl(selectedSchoolSlug)
                 }
             }
-        schoolsLoading = false
     }
 
     Box(
@@ -377,8 +429,11 @@ private fun LoginScreen(onDone: () -> Unit) {
     ) {
         Column(
             modifier = Modifier
-                .fillMaxWidth()
-                .padding(32.dp),
+                .fillMaxSize()
+                .verticalScroll(scrollState)
+                .imePadding()
+                .navigationBarsPadding()
+                .padding(horizontal = 32.dp, vertical = 24.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(20.dp),
         ) {
@@ -493,6 +548,7 @@ private fun LoginScreen(onDone: () -> Unit) {
                 label = { Text("Username", color = TextMuted) },
                 placeholder = { Text("Enter your BlueBird username", color = TextMuted) },
                 singleLine = true,
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
                 colors = OutlinedTextFieldDefaults.colors(
                     focusedBorderColor = BluePrimary,
                     unfocusedBorderColor = Color(0xFF2A3F5F),
@@ -513,7 +569,8 @@ private fun LoginScreen(onDone: () -> Unit) {
                 placeholder = { Text("Enter your password", color = TextMuted) },
                 singleLine = true,
                 visualTransformation = if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done),
+                keyboardActions = KeyboardActions(onDone = { if (!isSubmitting) submitLogin() }),
                 trailingIcon = {
                     TextButton(onClick = { showPassword = !showPassword }) {
                         Text(if (showPassword) "Hide" else "Show", color = BlueLight, fontSize = 12.sp)
@@ -540,12 +597,16 @@ private fun LoginScreen(onDone: () -> Unit) {
             }
 
             Text(
-                if (schoolOptions.isNotEmpty())
-                    "Select your school, then sign in with the username and password created in the BlueBird admin dashboard."
-                else if (schoolsLoading)
-                    "Loading schools from BlueBird server…"
-                else
-                    "Could not load the school list. You can still enter a school code like nn, or a full school URL.",
+                when (schoolLoadState) {
+                    SchoolLoadState.Loaded ->
+                        "Select your school, then sign in with the username and password created in the BlueBird admin dashboard."
+                    SchoolLoadState.Loading ->
+                        "Loading schools from BlueBird server..."
+                    SchoolLoadState.Empty ->
+                        "No schools found on the backend yet. You can still enter a school code like nn, or a full school URL."
+                    SchoolLoadState.Failed ->
+                        "Could not reach the school list from the backend. You can still enter a school code like nn, or a full school URL."
+                },
                 fontSize = 13.sp,
                 color = TextMuted,
                 textAlign = TextAlign.Center,
@@ -553,45 +614,7 @@ private fun LoginScreen(onDone: () -> Unit) {
             )
 
             Button(
-                onClick = {
-                    val normalizedUsername = username.trim()
-                    if (normalizedUsername.isBlank() || password.isBlank()) {
-                        error = "Enter your username and password."
-                        return@Button
-                    }
-                    if (schoolOptions.isNotEmpty() && selectedSchoolSlug.isBlank()) {
-                        error = "Select your school."
-                        return@Button
-                    }
-                    val normalizedServerUrl = normalizeServerUrl(serverUrl)
-                    isSubmitting = true
-                    error = null
-                    val client = BackendClient(normalizedServerUrl, BuildConfig.BACKEND_API_KEY)
-                    kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch {
-                        runCatching { client.login(normalizedUsername, password) }
-                            .onSuccess { user ->
-                                prefs(ctx).edit()
-                                    .putString(KEY_UID, user.userId.toString())
-                                    .putString(KEY_NAME, user.name)
-                                    .putString(KEY_ROLE, user.role)
-                                    .putString(KEY_LOGIN, user.loginName)
-                                    .putString(KEY_SERVER_URL, normalizedServerUrl)
-                                    .putBoolean(KEY_CAN_DEACTIVATE, user.canDeactivateAlarm)
-                                    .putBoolean(KEY_SETUP, true)
-                                    .apply()
-                                kotlinx.coroutines.withContext(Dispatchers.Main) {
-                                    isSubmitting = false
-                                    onDone()
-                                }
-                            }
-                            .onFailure { e ->
-                                kotlinx.coroutines.withContext(Dispatchers.Main) {
-                                    isSubmitting = false
-                                    error = e.message ?: "Sign-in failed."
-                                }
-                            }
-                    }
-                },
+                onClick = submitLogin,
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(52.dp),
