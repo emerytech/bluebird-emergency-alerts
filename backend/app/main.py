@@ -15,7 +15,7 @@ from app.services.cloudflare_dns import CloudflareDNSClient
 from app.services.fcm import FCMClient
 from app.services.platform_admin_store import PlatformAdminStore
 from app.services.school_registry import SchoolRegistry
-from app.services.tenant_manager import TenantManager
+from app.services.tenant_manager import TenantManager, normalize_school_slug
 from app.services.twilio_sms import TwilioSMSClient
 
 
@@ -82,13 +82,32 @@ app.add_middleware(SessionMiddleware, secret_key=settings.SESSION_SECRET, same_s
 
 @app.middleware("http")
 async def school_context_middleware(request, call_next):
-    school = request.app.state.tenant_manager.school_for_host(request.headers.get("host", ""))
+    path = request.scope.get("path", "") or "/"
+    if path in {"/", "/health", "/docs", "/redoc", "/openapi.json"} or path.startswith("/super-admin"):
+        response = await call_next(request)
+        return response
+
+    raw_segments = [segment for segment in path.split("/") if segment]
+    if not raw_segments:
+        response = await call_next(request)
+        return response
+
+    school_slug = normalize_school_slug(raw_segments[0])
+    school = request.app.state.tenant_manager.school_for_slug(school_slug)
     if school is None:
-        return PlainTextResponse("Unknown school subdomain.", status_code=404)
+        return PlainTextResponse("Unknown school path.", status_code=404)
+
+    stripped_path = "/" + "/".join(raw_segments[1:]) if len(raw_segments) > 1 else "/"
+    request.scope["path"] = stripped_path
+    request.scope["raw_path"] = stripped_path.encode("utf-8")
+    request.state.school_path_prefix = f"/{school.slug}"
     request.state.school_slug = school.slug
     request.state.school = school
     request.state.tenant = request.app.state.tenant_manager.get(school)
     response = await call_next(request)
+    location = response.headers.get("location")
+    if location and location.startswith("/admin"):
+        response.headers["location"] = f"{request.state.school_path_prefix}{location}"
     return response
 
 

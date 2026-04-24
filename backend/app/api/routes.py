@@ -42,7 +42,6 @@ from app.services.alert_broadcaster import BroadcastPlan, AlertBroadcaster
 from app.services.alarm_store import AlarmStore
 from app.services.apns import APNsClient
 from app.services.alert_log import AlertLog
-from app.services.cloudflare_dns import CloudflareDNSClient, CloudflareDNSError
 from app.services.device_registry import DeviceRegistry
 from app.services.fcm import FCMClient
 from app.services.quiet_period_store import QuietPeriodStore
@@ -69,10 +68,6 @@ def _registry(req: Request) -> DeviceRegistry:
 
 def _apns(req: Request) -> APNsClient:
     return req.app.state.apns_client  # type: ignore[attr-defined]
-
-
-def _cloudflare_dns(req: Request) -> CloudflareDNSClient:
-    return req.app.state.cloudflare_dns  # type: ignore[attr-defined]
 
 def _alarm_store(req: Request) -> AlarmStore:
     return req.state.tenant.alarm_store  # type: ignore[attr-defined]
@@ -138,16 +133,25 @@ def _super_admin_id(request: Request) -> Optional[int]:
     return int(value) if isinstance(value, int) or isinstance(value, str) and str(value).isdigit() else None
 
 
+def _school_prefix(request: Request) -> str:
+    return str(getattr(request.state, "school_path_prefix", "") or "")
+
+
+def _school_url(request: Request, suffix: str) -> str:
+    normalized_suffix = suffix if suffix.startswith("/") else f"/{suffix}"
+    return f"{_school_prefix(request)}{normalized_suffix}"
+
+
 async def _require_dashboard_admin(request: Request) -> UserStore:
     user_id = _session_user_id(request)
     if user_id is None:
-        raise HTTPException(status_code=status.HTTP_303_SEE_OTHER, headers={"Location": "/admin/login"})
+        raise HTTPException(status_code=status.HTTP_303_SEE_OTHER, headers={"Location": _school_url(request, "/admin/login")})
     user = await _users(request).get_user(user_id)
     if user is None or not user.is_active or user.role != "admin" or not user.can_login:
         request.session.clear()
-        raise HTTPException(status_code=status.HTTP_303_SEE_OTHER, headers={"Location": "/admin/login"})
+        raise HTTPException(status_code=status.HTTP_303_SEE_OTHER, headers={"Location": _school_url(request, "/admin/login")})
     if user.must_change_password:
-        raise HTTPException(status_code=status.HTTP_303_SEE_OTHER, headers={"Location": "/admin/change-password"})
+        raise HTTPException(status_code=status.HTTP_303_SEE_OTHER, headers={"Location": _school_url(request, "/admin/change-password")})
     request.state.admin_user = user
     return _users(request)
 
@@ -170,8 +174,11 @@ async def _require_admin_user(users: UserStore, user_id: Optional[int]) -> int:
 
 
 @router.get("/", include_in_schema=False)
-async def root() -> RedirectResponse:
-    return RedirectResponse(url="/admin", status_code=status.HTTP_303_SEE_OTHER)
+async def root(request: Request) -> RedirectResponse:
+    school_prefix = _school_prefix(request)
+    if school_prefix:
+        return RedirectResponse(url=_school_url(request, "/admin/login"), status_code=status.HTTP_303_SEE_OTHER)
+    return RedirectResponse(url="/super-admin/login", status_code=status.HTTP_303_SEE_OTHER)
 
 
 @router.get("/health")
@@ -333,6 +340,7 @@ async def admin_dashboard(request: Request) -> HTMLResponse:
     html = render_admin_page(
         school_name=request.state.school.name,
         school_slug=request.state.school.slug,
+        school_path_prefix=_school_prefix(request),
         current_user=request.state.admin_user,  # type: ignore[attr-defined]
         alerts=alerts,
         devices=devices,
@@ -365,6 +373,7 @@ async def admin_login_page(request: Request) -> HTMLResponse:
             setup_mode=setup_mode,
             school_name=request.state.school.name,
             school_slug=request.state.school.slug,
+            school_path_prefix=_school_prefix(request),
         )
     )
 
@@ -518,7 +527,6 @@ async def super_admin_dashboard(request: Request) -> HTMLResponse:
             base_domain=request.app.state.settings.BASE_DOMAIN,  # type: ignore[attr-defined]
             schools=schools,
             git_pull_configured=bool(request.app.state.settings.SERVER_GIT_PULL_COMMAND),  # type: ignore[attr-defined]
-            cloudflare_dns_configured=bool(request.app.state.settings.cloudflare_dns_is_configured()),  # type: ignore[attr-defined]
             flash_message=flash_message,
             flash_error=flash_error,
         )
@@ -547,35 +555,10 @@ async def super_admin_create_school(
     except Exception as exc:
         _set_flash(request, error=f"Could not create school: {exc}")
         return RedirectResponse(url="/super-admin#create-school", status_code=status.HTTP_303_SEE_OTHER)
-    dns_client = _cloudflare_dns(request)
-    admin_url = f"https://{school.slug}.{request.app.state.settings.BASE_DOMAIN}/admin"  # type: ignore[attr-defined]
-    if not dns_client.is_configured():
-        _set_flash(
-            request,
-            message=(
-                f"Created school {school.name}. Admin URL: {admin_url}. "
-                "Cloudflare DNS automation is not configured yet, so create the DNS record manually."
-            ),
-        )
-        return RedirectResponse(url="/super-admin#schools", status_code=status.HTTP_303_SEE_OTHER)
-    try:
-        dns_result = await dns_client.create_or_update_school_dns(school.slug)
-    except CloudflareDNSError as exc:
-        _set_flash(
-            request,
-            error=(
-                f"Created school {school.name}. Admin URL: {admin_url}. "
-                f"Cloudflare DNS could not be provisioned: {exc}"
-            ),
-        )
-        return RedirectResponse(url="/super-admin#schools", status_code=status.HTTP_303_SEE_OTHER)
-    dns_action = "created" if dns_result.created else "updated"
+    admin_url = f"https://{request.app.state.settings.BASE_DOMAIN}/{school.slug}/admin"  # type: ignore[attr-defined]
     _set_flash(
         request,
-        message=(
-            f"Created school {school.name}. Admin URL: {admin_url}. "
-            f"Cloudflare DNS {dns_action} for {dns_result.hostname}."
-        ),
+        message=f"Created school {school.name}. Admin URL: {admin_url}",
     )
     return RedirectResponse(url="/super-admin#schools", status_code=status.HTTP_303_SEE_OTHER)
 
@@ -633,7 +616,14 @@ async def change_password_page(request: Request) -> HTMLResponse:
     if not user.must_change_password:
         return RedirectResponse(url="/admin", status_code=status.HTTP_303_SEE_OTHER)
     flash_message, flash_error = _pop_flash(request)
-    return HTMLResponse(render_change_password_page(user_name=user.name, error=flash_error))
+    return HTMLResponse(
+        render_change_password_page(
+            user_name=user.name,
+            message=flash_message,
+            error=flash_error,
+            action=_school_url(request, "/admin/change-password"),
+        )
+    )
 
 
 @router.post("/admin/change-password", include_in_schema=False)

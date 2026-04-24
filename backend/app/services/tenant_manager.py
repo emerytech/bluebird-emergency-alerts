@@ -27,23 +27,6 @@ def normalize_school_slug(value: str) -> str:
     return cleaned or "default"
 
 
-def resolve_school_slug(host: str, settings: Settings) -> str:
-    hostname = (host or "").split(":", 1)[0].strip().lower()
-    if not hostname or hostname in {"localhost", "127.0.0.1"}:
-        return settings.DEFAULT_SCHOOL_SLUG
-    if hostname.replace(".", "").isdigit():
-        return settings.DEFAULT_SCHOOL_SLUG
-
-    base_domain = settings.BASE_DOMAIN.strip().lower()
-    if base_domain and hostname == base_domain:
-        return settings.DEFAULT_SCHOOL_SLUG
-    if base_domain and hostname.endswith(f".{base_domain}"):
-        prefix = hostname[: -(len(base_domain) + 1)]
-        return normalize_school_slug(prefix)
-
-    return settings.DEFAULT_SCHOOL_SLUG
-
-
 @dataclass(frozen=True)
 class TenantContext:
     school: SchoolRecord
@@ -87,8 +70,8 @@ class TenantManager:
         os.makedirs(schools_dir, exist_ok=True)
         return os.path.join(schools_dir, f"{normalized}.db")
 
-    def school_for_host(self, host: str) -> SchoolRecord | None:
-        slug = resolve_school_slug(host, self._settings)
+    def school_for_slug(self, slug: str) -> SchoolRecord | None:
+        slug = normalize_school_slug(slug)
         school = self._school_registry._get_by_slug_sync(slug)
         if school is not None and school.is_active:
             return school

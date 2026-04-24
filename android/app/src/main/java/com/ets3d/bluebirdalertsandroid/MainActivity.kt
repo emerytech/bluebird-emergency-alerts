@@ -89,6 +89,8 @@ private fun normalizeServerUrl(value: String): String {
     val trimmed = value.trim().removeSuffix("/")
     if (trimmed.isBlank()) return BuildConfig.BACKEND_BASE_URL
     if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) return trimmed
+    if (!trimmed.contains(".") && !trimmed.contains("/")) return "${BuildConfig.BACKEND_BASE_URL}/${trimmed.lowercase()}"
+    if (trimmed.startsWith("/")) return BuildConfig.BACKEND_BASE_URL + trimmed
     return "https://$trimmed"
 }
 private fun currentDeviceName(): String {
@@ -374,8 +376,8 @@ private fun LoginScreen(onDone: () -> Unit) {
                     serverUrl = it
                     error = null
                 },
-                label = { Text("School domain", color = TextMuted) },
-                placeholder = { Text("nen.bluebird.ets3d.com", color = TextMuted) },
+                label = { Text("School code or URL", color = TextMuted) },
+                placeholder = { Text("nn", color = TextMuted) },
                 singleLine = true,
                 colors = OutlinedTextFieldDefaults.colors(
                     focusedBorderColor = BluePrimary,
@@ -443,7 +445,7 @@ private fun LoginScreen(onDone: () -> Unit) {
             }
 
             Text(
-                "Sign in with the username and password created in the BlueBird admin dashboard.",
+                "Sign in with the username and password created in the BlueBird admin dashboard. Enter a school code like nn, or a full school URL if needed.",
                 fontSize = 13.sp,
                 color = TextMuted,
                 textAlign = TextAlign.Center,

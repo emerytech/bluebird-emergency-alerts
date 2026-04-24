@@ -291,10 +291,11 @@ def render_login_page(
     setup_mode: bool,
     school_name: str = "School",
     school_slug: str = "default",
+    school_path_prefix: str = "/default",
 ) -> str:
     heading = "Create the first BlueBird admin" if setup_mode else "Sign in to BlueBird Admin"
     button = "Create admin account" if setup_mode else "Sign in"
-    action = "/admin/setup" if setup_mode else "/admin/login"
+    action = f"{school_path_prefix}/admin/setup" if setup_mode else f"{school_path_prefix}/admin/login"
     helper = (
         "This first account becomes the dashboard operator account. After that, you can create and edit the rest of the school users from inside the portal."
         if setup_mode
@@ -415,12 +416,11 @@ def render_super_admin_page(
     base_domain: str,
     schools: Sequence[SchoolRecord],
     git_pull_configured: bool,
-    cloudflare_dns_configured: bool,
     flash_message: Optional[str] = None,
     flash_error: Optional[str] = None,
 ) -> str:
     rows = "".join(
-        f"<tr><td>{escape(item.name)}</td><td><code>{escape(item.slug)}</code></td><td><a href=\"https://{escape(item.slug)}.{escape(base_domain)}/admin\" target=\"_blank\">{escape(item.slug)}.{escape(base_domain)}</a></td><td>{'Active' if item.is_active else 'Inactive'}</td></tr>"
+        f"<tr><td>{escape(item.name)}</td><td><code>{escape(item.slug)}</code></td><td><a href=\"https://{escape(base_domain)}/{escape(item.slug)}/admin\" target=\"_blank\">{escape(base_domain)}/{escape(item.slug)}/admin</a></td><td>{'Active' if item.is_active else 'Inactive'}</td></tr>"
         for item in schools
     ) or '<tr><td colspan="4" class="mini-copy">No schools yet.</td></tr>'
     return f"""<!DOCTYPE html>
@@ -463,12 +463,11 @@ def render_super_admin_page(
             <div>
               <p class="eyebrow">Tenant Registry</p>
               <h1>Schools</h1>
-              <p class="hero-copy">Each school gets its own subdomain and isolated database. School admins still manage their own users from their tenant dashboard.</p>
+              <p class="hero-copy">Each school gets its own path and isolated database. School admins still manage their own users from their tenant dashboard.</p>
             </div>
             <div class="status-row">
               <span class="status-pill ok"><strong>Base domain</strong>{escape(base_domain)}</span>
               <span class="status-pill"><strong>Schools</strong>{len(schools)}</span>
-              <span class="status-pill {'ok' if cloudflare_dns_configured else 'danger'}"><strong>Cloudflare DNS</strong>{'configured' if cloudflare_dns_configured else 'not configured'}</span>
               <span class="status-pill {'ok' if git_pull_configured else 'danger'}"><strong>Git pull</strong>{'configured' if git_pull_configured else 'not configured'}</span>
             </div>
           </div>
@@ -484,7 +483,7 @@ def render_super_admin_page(
             <div>
               <p class="eyebrow">Provisioning</p>
               <h2>Create a new school</h2>
-              <p class="card-copy">This creates the school registry entry and, when configured, also creates the Cloudflare DNS record for that school's subdomain. The first school admin is still created from that school's own admin portal.</p>
+              <p class="card-copy">This creates the school registry entry and path-based tenant. The first school admin is still created from that school's own admin portal.</p>
             </div>
           </div>
           <form method="post" action="/super-admin/schools/create" class="stack">
@@ -553,10 +552,11 @@ def _render_alert_rows(alerts: Sequence[AlertRecord]) -> str:
     return "".join(rows)
 
 
-def _render_device_rows(devices: Sequence[RegisteredDevice], users: Sequence[UserRecord]) -> str:
+def _render_device_rows(devices: Sequence[RegisteredDevice], users: Sequence[UserRecord], school_path_prefix: str) -> str:
     if not devices:
         return '<tr><td colspan="8" class="mini-copy">No devices registered yet.</td></tr>'
     user_lookup = {user.id: user for user in users}
+    prefix = escape(school_path_prefix)
     rows = []
     for index, device in enumerate(devices, start=1):
         linked_user = user_lookup.get(device.user_id) if device.user_id is not None else None
@@ -582,7 +582,7 @@ def _render_device_rows(devices: Sequence[RegisteredDevice], users: Sequence[Use
             f"<td>{escape(first_owner)}</td>"
             f"<td><code>...{escape(device.token[-12:])}</code></td>"
             "<td>"
-            f"<form method=\"post\" action=\"/admin/devices/delete\" onsubmit=\"return confirm('Delete this registered device token?');\">"
+            f"<form method=\"post\" action=\"{prefix}/admin/devices/delete\" onsubmit=\"return confirm('Delete this registered device token?');\">"
             f"<input type=\"hidden\" name=\"token\" value=\"{escape(device.token)}\" />"
             f"<input type=\"hidden\" name=\"push_provider\" value=\"{escape(device.push_provider)}\" />"
             "<button class=\"button button-danger-outline\" type=\"submit\">Delete</button>"
@@ -593,10 +593,11 @@ def _render_device_rows(devices: Sequence[RegisteredDevice], users: Sequence[Use
     return "".join(rows)
 
 
-def _render_user_cards(users: Sequence[UserRecord]) -> str:
+def _render_user_cards(users: Sequence[UserRecord], school_path_prefix: str) -> str:
     if not users:
         return '<div class="mini-copy">No users yet.</div>'
     cards = []
+    prefix = escape(school_path_prefix)
     for user in users:
         checked_active = "checked" if user.is_active else ""
         checked_clear_login = ""
@@ -606,7 +607,7 @@ def _render_user_cards(users: Sequence[UserRecord]) -> str:
         cards.append(
             f"""
             <article class="user-card">
-              <form method="post" action="/admin/users/{user.id}/update" class="stack">
+              <form method="post" action="{prefix}/admin/users/{user.id}/update" class="stack">
                 <div class="panel-header">
                   <div>
                     <h3>{escape(user.name)}</h3>
@@ -652,7 +653,7 @@ def _render_user_cards(users: Sequence[UserRecord]) -> str:
                 </div>
                 <p class="mini-copy">Dashboard login: <strong>{'enabled' if user.can_login else 'disabled'}</strong> • last login: {last_login}</p>
               </form>
-              <form method="post" action="/admin/users/{user.id}/delete" onsubmit="return confirm('Delete {escape(user.name)}? This cannot be undone.');">
+              <form method="post" action="{prefix}/admin/users/{user.id}/delete" onsubmit="return confirm('Delete {escape(user.name)}? This cannot be undone.');">
                 <div class="button-row">
                   <button class="button button-danger-outline" type="submit">Delete user</button>
                 </div>
@@ -721,6 +722,7 @@ def render_admin_page(
     *,
     school_name: str,
     school_slug: str,
+    school_path_prefix: str,
     current_user: UserRecord,
     users: Sequence[UserRecord],
     alerts: Sequence[AlertRecord],
@@ -735,6 +737,7 @@ def render_admin_page(
     flash_message: Optional[str] = None,
     flash_error: Optional[str] = None,
 ) -> str:
+    prefix = escape(school_path_prefix)
     role_counts = Counter(user.role for user in users)
     platform_counts = Counter(device.platform for device in devices)
     provider_counts = Counter(device.push_provider for device in devices)
@@ -771,7 +774,7 @@ def render_admin_page(
             <a class="nav-item" href="#devices">Devices</a>
             <a class="nav-item" href="#server">Server</a>
           </nav>
-          <form method="post" action="/admin/logout">
+          <form method="post" action="{prefix}/admin/logout">
             <button class="button button-secondary" type="submit">Log out</button>
           </form>
         </section>
@@ -819,7 +822,7 @@ def render_admin_page(
                 <p class="card-copy">Dashboard actions are attributed to your logged-in admin account automatically.</p>
               </div>
             </div>
-            <form method="post" action="/admin/alarm/activate" class="stack">
+            <form method="post" action="{prefix}/admin/alarm/activate" class="stack">
               <div class="field">
                 <label for="alarm_message">Alarm message</label>
                 <textarea id="alarm_message" name="message">{escape(alarm_state.message or 'Emergency alert. Please follow school procedures.')}</textarea>
@@ -828,7 +831,7 @@ def render_admin_page(
                 <button class="button button-danger" type="submit">Activate alarm</button>
               </div>
             </form>
-            <form method="post" action="/admin/alarm/deactivate" class="stack" style="margin-top:14px;">
+            <form method="post" action="{prefix}/admin/alarm/deactivate" class="stack" style="margin-top:14px;">
               <div class="button-row">
                 <button class="button button-secondary" type="submit">Deactivate alarm</button>
               </div>
@@ -844,7 +847,7 @@ def render_admin_page(
                 <p class="card-copy">Create standard users or new admins. Add a username and password if the account should be able to sign in.</p>
               </div>
             </div>
-            <form method="post" action="/admin/users/create" class="stack">
+            <form method="post" action="{prefix}/admin/users/create" class="stack">
               <div class="form-grid">
                 <div class="field">
                   <label>Name</label>
@@ -889,7 +892,7 @@ def render_admin_page(
               </div>
             </div>
             <div class="user-grid">
-              {_render_user_cards(users)}
+              {_render_user_cards(users, school_path_prefix)}
             </div>
           </section>
 
@@ -901,7 +904,7 @@ def render_admin_page(
                 <p class="card-copy">Post short verified updates that all signed-in mobile users will see on their app status screen.</p>
               </div>
             </div>
-            <form method="post" action="/admin/broadcasts/create" class="stack">
+            <form method="post" action="{prefix}/admin/broadcasts/create" class="stack">
               <div class="field">
                 <label for="broadcast_message">Broadcast message</label>
                 <textarea id="broadcast_message" name="message" placeholder="Police on site. Stay barricaded until further notice."></textarea>
@@ -950,7 +953,7 @@ def render_admin_page(
                 <p class="card-copy">Use this for approved temporary exceptions like weddings or funerals. Quiet periods expire automatically after 24 hours.</p>
               </div>
             </div>
-            <form method="post" action="/admin/quiet-periods/grant" class="stack">
+            <form method="post" action="{prefix}/admin/quiet-periods/grant" class="stack">
               <div class="form-grid">
                 <div class="field">
                   <label>User</label>
@@ -1006,7 +1009,7 @@ def render_admin_page(
                 <tr><th>#</th><th>Device</th><th>Platform</th><th>Provider</th><th>Current user</th><th>First user</th><th>Token</th><th>Action</th></tr>
               </thead>
               <tbody>
-                {_render_device_rows(devices, users)}
+                {_render_device_rows(devices, users, school_path_prefix)}
               </tbody>
             </table>
           </section>
@@ -1040,7 +1043,7 @@ def render_admin_page(
             <p class="mini-copy" style="margin-bottom:14px;">
               {'Uses <code>SERVER_RESTART_COMMAND</code> env var.' if server_info.get("restart_configured") == "yes" else 'No <code>SERVER_RESTART_COMMAND</code> set — will self-restart the process.'}
             </p>
-            <form method="post" action="/admin/server/restart"
+            <form method="post" action="{prefix}/admin/server/restart"
                   onsubmit="return confirm('Restart the backend service now? The dashboard will be unavailable for a few seconds.');">
               <div class="button-row">
                 <button class="button button-danger" type="submit">Restart service</button>
