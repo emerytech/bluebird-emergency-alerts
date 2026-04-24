@@ -283,6 +283,16 @@ class QuietPeriodSummary(BaseModel):
     expires_at: Optional[str] = None
 
 
+class QuietPeriodStatusResponse(BaseModel):
+    user_id: int
+    status: Optional[str] = None
+    reason: Optional[str] = None
+    requested_at: Optional[str] = None
+    approved_at: Optional[str] = None
+    approved_by_label: Optional[str] = None
+    expires_at: Optional[str] = None
+
+
 class AdminBroadcastRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=240)
 

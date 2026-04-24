@@ -42,6 +42,7 @@ from app.models.schemas import (
     PanicResponse,
     PublicSchoolSummary,
     QuietPeriodRequestCreate,
+    QuietPeriodStatusResponse,
     QuietPeriodSummary,
     RegisterDeviceRequest,
     RegisterDeviceResponse,
@@ -1871,6 +1872,46 @@ async def admin_grant_quiet_period(
     return RedirectResponse(url="/admin#quiet-periods", status_code=status.HTTP_303_SEE_OTHER)
 
 
+@router.post("/admin/quiet-periods/{request_id}/approve", include_in_schema=False)
+async def admin_approve_quiet_period(
+    request: Request,
+    request_id: int,
+) -> RedirectResponse:
+    await _require_dashboard_admin(request)
+    record = await _quiet_periods(request).approve_request(
+        request_id=request_id,
+        admin_user_id=_session_user_id(request) or 0,
+        admin_label=_current_school_actor_label(request),
+    )
+    if record is None or record.status != "approved":
+        _set_flash(request, error="Quiet period request was not found or is no longer pending.")
+        return RedirectResponse(url="/admin#quiet-periods", status_code=status.HTTP_303_SEE_OTHER)
+    user = await _users(request).get_user(record.user_id)
+    label = user.name if user else f"User #{record.user_id}"
+    _set_flash(request, message=f"Approved quiet period request for {label}.")
+    return RedirectResponse(url="/admin#quiet-periods", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.post("/admin/quiet-periods/{request_id}/deny", include_in_schema=False)
+async def admin_deny_quiet_period(
+    request: Request,
+    request_id: int,
+) -> RedirectResponse:
+    await _require_dashboard_admin(request)
+    record = await _quiet_periods(request).deny_request(
+        request_id=request_id,
+        admin_user_id=_session_user_id(request) or 0,
+        admin_label=_current_school_actor_label(request),
+    )
+    if record is None or record.status != "denied":
+        _set_flash(request, error="Quiet period request was not found or is no longer pending.")
+        return RedirectResponse(url="/admin#quiet-periods", status_code=status.HTTP_303_SEE_OTHER)
+    user = await _users(request).get_user(record.user_id)
+    label = user.name if user else f"User #{record.user_id}"
+    _set_flash(request, message=f"Denied quiet period request for {label}.")
+    return RedirectResponse(url="/admin#quiet-periods", status_code=status.HTTP_303_SEE_OTHER)
+
+
 @router.post("/admin/quiet-periods/{request_id}/clear", include_in_schema=False)
 async def admin_clear_quiet_period(
     request: Request,
@@ -2143,6 +2184,29 @@ async def request_quiet_period(
         requested_at=record.requested_at,
         approved_at=record.approved_at,
         approved_by_user_id=record.approved_by_user_id,
+        approved_by_label=record.approved_by_label,
+        expires_at=record.expires_at,
+    )
+
+
+@router.get("/quiet-periods/status", response_model=QuietPeriodStatusResponse)
+async def quiet_period_status(
+    request: Request,
+    user_id: int = Query(..., ge=1),
+    _: None = Depends(require_api_key),
+) -> QuietPeriodStatusResponse:
+    user = await _users(request).get_user(user_id)
+    if user is None or not user.is_active:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found or inactive")
+    record = await _quiet_periods(request).latest_for_user(user_id=user_id)
+    if record is None:
+        return QuietPeriodStatusResponse(user_id=user_id)
+    return QuietPeriodStatusResponse(
+        user_id=user_id,
+        status=record.status,
+        reason=record.reason,
+        requested_at=record.requested_at,
+        approved_at=record.approved_at,
         approved_by_label=record.approved_by_label,
         expires_at=record.expires_at,
     )

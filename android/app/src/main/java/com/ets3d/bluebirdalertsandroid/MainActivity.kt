@@ -194,6 +194,15 @@ data class AdminInboxMessage(
     val responseByLabel: String? = null,
 )
 
+data class QuietPeriodMobileStatus(
+    val status: String? = null,
+    val reason: String? = null,
+    val requestedAt: String? = null,
+    val approvedAt: String? = null,
+    val approvedByLabel: String? = null,
+    val expiresAt: String? = null,
+)
+
 private data class SafetyAction(
     val key: String,
     val title: String,
@@ -257,6 +266,7 @@ data class UiState(
     val errorMsg: String?       = null,
     val adminInbox: List<AdminInboxMessage> = emptyList(),
     val unreadAdminMessages: Int = 0,
+    val quietPeriodStatus: QuietPeriodMobileStatus? = null,
 )
 
 // ── ViewModel ──────────────────────────────────────────────────────────────────
@@ -273,7 +283,7 @@ class MainViewModel : ViewModel() {
             apiKey  = BuildConfig.BACKEND_API_KEY,
         )
         registerPushToken(ctx)
-        startPolling()
+        startPolling(ctx)
     }
 
     private fun registerPushToken(ctx: Context) {
@@ -287,7 +297,8 @@ class MainViewModel : ViewModel() {
         }
     }
 
-    private fun startPolling() {
+    private fun startPolling(ctx: Context) {
+        val userId = getUserId(ctx).toIntOrNull()
         viewModelScope.launch(Dispatchers.IO) {
             while (isActive) {
                 runCatching { client!!.alarmStatus() }
@@ -297,6 +308,12 @@ class MainViewModel : ViewModel() {
                     .onFailure {
                         _state.update { it.copy(connected = false) }
                     }
+                if (userId != null) {
+                    runCatching { client!!.quietPeriodStatus(userId = userId) }
+                        .onSuccess { quiet ->
+                            _state.update { it.copy(quietPeriodStatus = quiet) }
+                        }
+                }
                 delay(4_000)
             }
         }
@@ -400,7 +417,14 @@ class MainViewModel : ViewModel() {
             _state.update { it.copy(isBusy = true, errorMsg = null) }
             runCatching { client!!.requestQuietPeriod(userId = userId, reason = reason) }
                 .onSuccess {
-                    _state.update { it.copy(isBusy = false, successMsg = "Quiet period request sent to admins.") }
+                    val quiet = runCatching { client!!.quietPeriodStatus(userId = userId) }.getOrNull()
+                    _state.update {
+                        it.copy(
+                            isBusy = false,
+                            successMsg = "Quiet period request sent to admins.",
+                            quietPeriodStatus = quiet ?: it.quietPeriodStatus,
+                        )
+                    }
                 }
                 .onFailure { e ->
                     _state.update { it.copy(isBusy = false, errorMsg = e.message ?: "Failed to request quiet period.") }
@@ -915,6 +939,9 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                     state.errorMsg?.let {
                         FlashBanner(it, isError = true)
                     }
+                    state.quietPeriodStatus?.let { quiet ->
+                        QuietPeriodStatusBanner(quiet)
+                    }
 
                     // ── Alarm banner ─────────────────────────────────────────
                     AlarmBanner(
@@ -1130,6 +1157,53 @@ private fun FlashBanner(message: String, isError: Boolean) {
             .padding(14.dp),
     ) {
         Text(message, color = fg, fontSize = 14.sp)
+    }
+}
+
+@Composable
+private fun QuietPeriodStatusBanner(status: QuietPeriodMobileStatus) {
+    val normalized = status.status?.lowercase().orEmpty()
+    if (normalized.isBlank()) return
+    val bg: Color
+    val border: Color
+    val fg: Color
+    val text: String
+    when (normalized) {
+        "approved" -> {
+            val until = status.expiresAt?.let { " until $it" } ?: ""
+            bg = Color(0xFFFEE2E2)
+            border = Color(0xFFFCA5A5)
+            fg = Color(0xFF991B1B)
+            text = "Quiet period ACTIVE$until"
+        }
+        "pending" -> {
+            bg = Color(0xFFEFF6FF)
+            border = Color(0xFF93C5FD)
+            fg = Color(0xFF1D4ED8)
+            text = "Quiet period request pending admin approval"
+        }
+        "denied" -> {
+            bg = Color(0xFFFFF7ED)
+            border = Color(0xFFFDBA74)
+            fg = Color(0xFF9A3412)
+            text = "Quiet period request denied"
+        }
+        else -> return
+    }
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 20.dp, vertical = 4.dp)
+            .background(bg, RoundedCornerShape(12.dp))
+            .border(1.dp, border, RoundedCornerShape(12.dp))
+            .padding(14.dp),
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(text, color = fg, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+            status.reason?.takeIf { it.isNotBlank() }?.let {
+                Text("Reason: $it", color = fg, fontSize = 12.sp)
+            }
+        }
     }
 }
 
@@ -2095,6 +2169,26 @@ private class BackendClient(baseUrl: String, private val apiKey: String) {
             .post(body.toString().toRequestBody(json))
             .build()
         http.newCall(req).execute().use { requireSuccess(it) }
+    }
+
+    fun quietPeriodStatus(userId: Int): QuietPeriodMobileStatus {
+        val req = Request.Builder()
+            .url("$base/quiet-periods/status?user_id=$userId")
+            .withAuth()
+            .get()
+            .build()
+        http.newCall(req).execute().use { res ->
+            val body = requireSuccess(res)
+            val j = JSONObject(body)
+            return QuietPeriodMobileStatus(
+                status = j.optString("status").ifBlank { null },
+                reason = j.optString("reason").ifBlank { null },
+                requestedAt = j.optString("requested_at").ifBlank { null },
+                approvedAt = j.optString("approved_at").ifBlank { null },
+                approvedByLabel = j.optString("approved_by_label").ifBlank { null },
+                expiresAt = j.optString("expires_at").ifBlank { null },
+            )
+        }
     }
 
     fun activateAlarm(message: String, userId: Int?): AlarmStatus {

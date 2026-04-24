@@ -446,21 +446,33 @@ def _render_admin_message_rows(messages: Sequence[AdminMessageRecord], school_pa
     return "".join(rows)
 
 
-def _render_quiet_period_rows(records: Sequence[QuietPeriodRecord], users: Sequence[UserRecord]) -> str:
+def _render_quiet_period_rows(records: Sequence[QuietPeriodRecord], users: Sequence[UserRecord], school_path_prefix: str) -> str:
     if not records:
         return '<tr><td colspan="7" class="mini-copy">No quiet periods yet.</td></tr>'
     user_names = {user.id: user.name for user in users}
+    prefix = escape(school_path_prefix)
     rows = []
     for item in records:
         approver = item.approved_by_label or (f"User #{item.approved_by_user_id}" if item.approved_by_user_id is not None else "—")
         action_html = "—"
         if item.status == "approved":
             action_html = f"""
-            <form method="post" action="/admin/quiet-periods/{item.id}/clear" onsubmit="return confirm('Remove this quiet period?');">
+            <form method="post" action="{prefix}/admin/quiet-periods/{item.id}/clear" onsubmit="return confirm('Remove this quiet period?');">
               <div class="button-row">
                 <button class="button button-danger-outline" type="submit">Remove</button>
               </div>
             </form>
+            """
+        elif item.status == "pending":
+            action_html = f"""
+            <div class="button-row">
+              <form method="post" action="{prefix}/admin/quiet-periods/{item.id}/approve">
+                <button class="button button-secondary" type="submit">Approve</button>
+              </form>
+              <form method="post" action="{prefix}/admin/quiet-periods/{item.id}/deny" onsubmit="return confirm('Deny this quiet period request?');">
+                <button class="button button-danger-outline" type="submit">Deny</button>
+              </form>
+            </div>
             """
         rows.append(
             f"<tr><td>{escape(user_names.get(item.user_id, f'User #{item.user_id}'))}</td><td>{escape(item.status)}</td><td>{escape(item.reason or '—')}</td><td>{escape(approver)}</td><td>{escape(item.requested_at)}</td><td>{escape(item.expires_at or '—')}</td><td>{action_html}</td></tr>"
@@ -1606,7 +1618,7 @@ def render_admin_page(
                 <tr><th>User</th><th>Status</th><th>Reason</th><th>Approved By</th><th>Requested</th><th>Expires</th><th>Action</th></tr>
               </thead>
               <tbody>
-                {_render_quiet_period_rows(quiet_periods, users)}
+                {_render_quiet_period_rows(quiet_periods, users, school_path_prefix)}
               </tbody>
             </table>
           </section>
