@@ -16,21 +16,28 @@ from app.services.user_store import UserRecord
 def _base_styles() -> str:
     return """
     :root {
-      --bg: #f0f4f8;
-      --bg-deep: #dce8f4;
-      --panel: rgba(255, 255, 255, 0.88);
-      --panel-strong: rgba(255, 255, 255, 0.97);
-      --border: rgba(15, 23, 42, 0.08);
-      --text: #0f172a;
-      --muted: #64748b;
-      --accent: #2563eb;
-      --accent-strong: #3b82f6;
-      --accent-soft: rgba(37, 99, 235, 0.16);
+      --bg: #eef5ff;
+      --bg-deep: #dce9ff;
+      --panel: rgba(255, 255, 255, 0.9);
+      --panel-strong: rgba(255, 255, 255, 0.98);
+      --border: rgba(18, 52, 120, 0.10);
+      --text: #10203f;
+      --muted: #5d7398;
+      --accent: #1b5fe4;
+      --accent-strong: #2f84ff;
+      --accent-soft: rgba(27, 95, 228, 0.14);
+      --accent-soft-strong: rgba(27, 95, 228, 0.22);
+      --nav-bg: linear-gradient(180deg, rgba(9, 32, 84, 0.98) 0%, rgba(7, 21, 54, 0.98) 100%);
+      --nav-border: rgba(255, 255, 255, 0.10);
+      --nav-text: rgba(248, 250, 252, 0.96);
+      --nav-muted: rgba(148, 163, 184, 0.82);
+      --brand-glow: rgba(47, 132, 255, 0.18);
+      --brand-glow-soft: rgba(27, 95, 228, 0.10);
       --success: #16a34a;
       --success-soft: rgba(22, 163, 74, 0.12);
       --danger: #dc2626;
       --danger-soft: rgba(220, 38, 38, 0.12);
-      --shadow: 0 12px 36px rgba(15, 23, 42, 0.10);
+      --shadow: 0 14px 36px rgba(22, 53, 117, 0.12);
       --radius: 24px;
       --radius-soft: 18px;
       --headline: "Avenir Next", "Segoe UI Variable Display", "SF Pro Display", "Trebuchet MS", sans-serif;
@@ -41,8 +48,9 @@ def _base_styles() -> str:
     body {
       min-height: 100vh;
       background:
-        radial-gradient(circle at top left, rgba(59, 130, 246, 0.12), transparent 24%),
-        radial-gradient(circle at 80% 10%, rgba(37, 99, 235, 0.08), transparent 18%),
+        radial-gradient(circle at top left, var(--brand-glow), transparent 26%),
+        radial-gradient(circle at 80% 10%, var(--brand-glow-soft), transparent 20%),
+        radial-gradient(circle at 50% 100%, rgba(47, 132, 255, 0.08), transparent 28%),
         linear-gradient(180deg, var(--bg) 0%, var(--bg-deep) 100%);
     }
     a { color: var(--accent); text-decoration: none; }
@@ -55,7 +63,7 @@ def _base_styles() -> str:
       align-items: stretch;
       padding: 24px;
     }
-    .hero-card, .panel, .login-panel {
+    .hero-card, .panel, .login-panel, .brand-block, .signal-card, .command-section {
       border: 1px solid var(--border);
       background: var(--panel);
       backdrop-filter: blur(14px);
@@ -69,8 +77,8 @@ def _base_styles() -> str:
       gap: 18px;
       align-content: space-between;
       background:
-        linear-gradient(180deg, rgba(255,255,255,0.98), rgba(248,251,255,0.92)),
-        linear-gradient(140deg, rgba(37, 99, 235, 0.06), rgba(59, 130, 246, 0.02));
+        linear-gradient(180deg, rgba(255,255,255,0.98), rgba(245,250,255,0.94)),
+        linear-gradient(140deg, rgba(27, 95, 228, 0.08), rgba(47, 132, 255, 0.03));
     }
     .eyebrow {
       margin: 0;
@@ -143,7 +151,7 @@ def _base_styles() -> str:
     .flash.success { border-color: rgba(22,163,74,0.2); background: rgba(240,253,244,0.96); color: #166534; }
     .app-shell {
       display: grid;
-      grid-template-columns: 290px minmax(0, 1fr);
+      grid-template-columns: 320px minmax(0, 1fr);
       gap: 18px;
       align-items: start;
     }
@@ -152,22 +160,92 @@ def _base_styles() -> str:
       position: sticky;
       top: 24px;
     }
-    .brand-card, .panel { padding: 22px; }
+    .nav-panel {
+      padding: 22px;
+      border-radius: var(--radius);
+      border: 1px solid var(--nav-border);
+      background:
+        radial-gradient(circle at top left, var(--brand-glow), transparent 22%),
+        var(--nav-bg);
+      color: var(--nav-text);
+      box-shadow: var(--shadow);
+    }
+    .brand-card, .panel, .command-section { padding: 22px; }
+    .brand-block {
+      display: flex;
+      gap: 16px;
+      padding: 18px;
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+    }
+    .brand-mark {
+      width: 58px;
+      height: 58px;
+      border-radius: 18px;
+      display: grid;
+      place-items: center;
+      font-family: var(--headline);
+      font-weight: 800;
+      color: white;
+      background: linear-gradient(145deg, var(--accent-strong), var(--accent));
+      box-shadow: 0 10px 24px rgba(27, 95, 228, 0.32);
+      flex: 0 0 auto;
+    }
+    .brand-text h1, .brand-text h2, .brand-text h3, .brand-text p,
+    .signal-card h1, .signal-card h2, .signal-card h3, .signal-card p, .signal-card span,
+    .nav-panel .nav-label, .nav-panel .eyebrow {
+      color: var(--nav-text);
+    }
+    .nav-panel .hero-copy, .nav-panel .card-copy, .nav-panel .mini-copy, .nav-panel .signal-copy {
+      color: var(--nav-muted);
+    }
+    .nav-label {
+      margin: 0 0 8px;
+      text-transform: uppercase;
+      letter-spacing: 0.18em;
+      font-size: 0.7rem;
+      color: var(--accent-strong);
+    }
+    .nav-group { display: grid; gap: 10px; }
     .nav-list { display: grid; gap: 10px; margin-top: 16px; }
     .nav-item {
       display: block;
-      padding: 12px 14px;
-      border-radius: 14px;
-      color: var(--text);
-      background: rgba(255,255,255,0.72);
-      border: 1px solid var(--border);
+      padding: 14px 16px;
+      border-radius: 16px;
+      color: var(--nav-text);
+      background: rgba(255,255,255,0.04);
+      border: 1px solid rgba(255,255,255,0.08);
+      transition: transform 180ms ease, border-color 180ms ease, background 180ms ease;
+    }
+    .nav-item:hover {
+      transform: translateX(4px);
+      border-color: rgba(59, 130, 246, 0.42);
+      background: var(--accent-soft-strong);
+    }
+    .signal-card {
+      display: grid;
+      gap: 14px;
+      padding: 18px;
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+    }
+    .signal-card .button-secondary, .signal-card .button {
+      background: rgba(255,255,255,0.08);
+      color: var(--nav-text);
+      border: 1px solid rgba(255,255,255,0.08);
+    }
+    .workspace { display: grid; gap: 18px; }
+    .command-section {
+      background:
+        linear-gradient(135deg, rgba(27, 95, 228, 0.06), transparent 42%),
+        var(--panel);
     }
     .hero-band {
-      display: flex;
-      justify-content: space-between;
-      gap: 16px;
-      align-items: flex-start;
+      background:
+        linear-gradient(135deg, rgba(27, 95, 228, 0.14), transparent 42%),
+        var(--panel-strong);
     }
+    .hero-band { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; }
     .grid {
       display: grid;
       gap: 18px;
@@ -190,6 +268,7 @@ def _base_styles() -> str:
       background: rgba(255,255,255,0.92);
       padding: 16px;
     }
+    .metric-card strong, .user-card strong { color: var(--text); }
     .metric-value { font-size: 2rem; font-weight: 800; margin-top: 8px; }
     .panel-header {
       display: flex;
@@ -235,6 +314,7 @@ def _base_styles() -> str:
       border-radius: 8px;
     }
     .mini-copy { color: var(--muted); font-size: 0.88rem; line-height: 1.45; }
+    .shell-actions { display: grid; gap: 12px; }
     @media (max-width: 1100px) {
       .app-shell, .login-shell { grid-template-columns: 1fr; }
       .sidebar { position: static; }
@@ -334,14 +414,17 @@ def render_login_page(
 <body>
   <main class="login-shell">
     <section class="hero-card">
-      <div class="stack">
+      <div class="brand-block">
+        <div class="brand-mark">BB</div>
+        <div class="stack brand-text">
         <p class="eyebrow">School Safety Command Deck</p>
         <h1>BlueBird Alerts admin portal</h1>
         <p class="hero-copy">
           A calm command surface for alarm activation, account management, recent alert review, and device readiness.
-          This version reuses the same visual language as your accounting app, just tuned for emergency operations instead of finance.
+          The visual system is intentionally neutral so it can be tuned later to match a school's mascot, colors, or district identity.
         </p>
         <p class="mini-copy">School: <strong>{escape(school_name)}</strong> ({escape(school_slug)})</p>
+        </div>
       </div>
       <div class="hero-metrics">
         <span class="metric-pill"><strong>Admin login</strong> session-based</span>
@@ -391,10 +474,13 @@ def render_super_admin_login_page(*, message: Optional[str] = None, error: Optio
 <body>
   <main class="login-shell">
     <section class="hero-card">
-      <div class="stack">
+      <div class="brand-block">
+        <div class="brand-mark">BB</div>
+        <div class="stack brand-text">
         <p class="eyebrow">Platform Control</p>
         <h1>BlueBird super admin</h1>
         <p class="hero-copy">Provision schools, hand out school-specific admin URLs, and keep the multi-school platform organized from one place.</p>
+        </div>
       </div>
       <div class="hero-metrics">
         <span class="metric-pill"><strong>School setup</strong> centralized</span>
@@ -461,31 +547,38 @@ def render_super_admin_page(
 <body>
   <main class="page-shell">
     <div class="app-shell">
-      <aside class="sidebar">
-        <section class="brand-card hero-card">
-          <div class="stack">
+      <aside class="sidebar nav-panel">
+        <section class="brand-block">
+          <div class="brand-mark">BB</div>
+          <div class="stack brand-text">
             <p class="eyebrow">BlueBird Platform</p>
             <h2>Super admin</h2>
             <p class="hero-copy">Manage school provisioning across <strong>{escape(base_domain)}</strong>.</p>
           </div>
+        </section>
+        <section class="signal-card">
+          <div class="nav-group">
+            <p class="nav-label">Control</p>
           <nav class="nav-list">
             <a class="nav-item" href="#schools">Schools</a>
             <a class="nav-item" href="#create-school">Create school</a>
             <a class="nav-item" href="/super-admin/change-password">Change password</a>
             <a class="nav-item" href="#server-tools">Server tools</a>
           </nav>
-          <div class="button-row">
-            <a class="button button-secondary" href="/super-admin/change-password">Change Password</a>
           </div>
-          <form method="post" action="/super-admin/logout">
-            <button class="button button-secondary" type="submit">Log out</button>
-          </form>
+          <div class="shell-actions">
+            <p class="signal-copy">Provision schools, manage first-admin setup PINs, and keep onboarding clean from one shared platform console.</p>
+            <a class="button button-secondary" href="/super-admin/change-password">Change Password</a>
+            <form method="post" action="/super-admin/logout">
+              <button class="button button-secondary" type="submit">Log out</button>
+            </form>
+          </div>
         </section>
       </aside>
-      <section class="content-stack">
+      <section class="content-stack workspace">
         {_render_flash(flash_message, "success")}
         {_render_flash(flash_error, "error")}
-        <section class="panel" id="schools">
+        <section class="panel command-section" id="schools">
           <div class="panel-header hero-band">
             <div>
               <p class="eyebrow">Tenant Registry</p>
@@ -505,7 +598,7 @@ def render_super_admin_page(
             <tbody>{rows}</tbody>
           </table>
         </section>
-        <section class="panel" id="create-school">
+        <section class="panel command-section" id="create-school">
           <div class="panel-header">
             <div>
               <p class="eyebrow">Provisioning</p>
@@ -534,7 +627,7 @@ def render_super_admin_page(
           </form>
           <p class="mini-copy" style="margin-top:14px;">New school URLs use the same domain with a school path, like <code>https://{escape(base_domain)}/school-slug/admin</code>.</p>
         </section>
-        <section class="panel">
+        <section class="panel command-section">
           <div class="panel-header">
             <div>
               <p class="eyebrow">Onboarding</p>
@@ -565,7 +658,7 @@ def render_super_admin_page(
             </article>
           </div>
         </section>
-        <section class="panel" id="server-tools">
+        <section class="panel command-section" id="server-tools">
           <div class="panel-header">
             <div>
               <p class="eyebrow">Server Tools</p>
@@ -749,10 +842,13 @@ def render_change_password_page(
 <body>
   <main class="login-shell">
     <section class="hero-card">
-      <div class="stack">
+      <div class="brand-block">
+        <div class="brand-mark">BB</div>
+        <div class="stack brand-text">
         <p class="eyebrow">{escape(eyebrow)}</p>
         <h1>{escape(heading)}</h1>
         <p class="hero-copy">{escape(helper)}</p>
+        </div>
       </div>
     </section>
     <section class="login-panel">
@@ -819,14 +915,19 @@ def render_admin_page(
 <body>
   <main class="page-shell">
     <div class="app-shell">
-      <aside class="sidebar">
-        <section class="brand-card hero-card">
-          <div class="stack">
+      <aside class="sidebar nav-panel">
+        <section class="brand-block">
+          <div class="brand-mark">BB</div>
+          <div class="stack brand-text">
             <p class="eyebrow">BlueBird Alerts</p>
             <h2>Safety operations</h2>
             <p class="hero-copy">Signed in as <strong>{escape(current_user.name)}</strong> ({escape(current_user.login_name or 'admin')}).</p>
             <p class="mini-copy">School: <strong>{escape(school_name)}</strong> ({escape(school_slug)})</p>
           </div>
+        </section>
+        <section class="signal-card">
+          <div class="nav-group">
+            <p class="nav-label">Command Deck</p>
           <nav class="nav-list">
             <a class="nav-item" href="#overview">Overview</a>
             <a class="nav-item" href="#users">Users</a>
@@ -837,17 +938,21 @@ def render_admin_page(
             <a class="nav-item" href="#devices">Devices</a>
             <a class="nav-item" href="#server">Server</a>
           </nav>
-          <form method="post" action="{prefix}/admin/logout">
+          </div>
+          <div class="shell-actions">
+            <p class="signal-copy">Manage people, alerts, readiness, and response from one school operations console.</p>
+            <form method="post" action="{prefix}/admin/logout">
             <button class="button button-secondary" type="submit">Log out</button>
           </form>
+          </div>
         </section>
       </aside>
 
-      <section class="content-stack">
+      <section class="content-stack workspace">
         {_render_flash(flash_message, "success")}
         {_render_flash(flash_error, "error")}
 
-        <section class="panel" id="overview">
+        <section class="panel command-section" id="overview">
           <div class="panel-header hero-band">
             <div>
               <p class="eyebrow">Command Deck</p>
@@ -877,7 +982,7 @@ def render_admin_page(
         </section>
 
         <section class="grid">
-          <section class="panel span-5" id="alarm">
+          <section class="panel command-section span-5" id="alarm">
             <div class="panel-header">
               <div>
                 <p class="eyebrow">Alarm Control</p>
@@ -902,7 +1007,7 @@ def render_admin_page(
             <p class="mini-copy">Activated at: {escape(alarm_state.activated_at or 'Never')} • Deactivated at: {escape(alarm_state.deactivated_at or 'Not yet')}</p>
           </section>
 
-          <section class="panel span-7" id="users">
+          <section class="panel command-section span-7" id="users">
             <div class="panel-header">
               <div>
                 <p class="eyebrow">Accounts</p>
@@ -946,7 +1051,7 @@ def render_admin_page(
             </form>
           </section>
 
-          <section class="panel span-12">
+          <section class="panel command-section span-12">
             <div class="panel-header">
               <div>
                 <p class="eyebrow">Account Editor</p>
@@ -959,7 +1064,7 @@ def render_admin_page(
             </div>
           </section>
 
-          <section class="panel span-5" id="reports">
+          <section class="panel command-section span-5" id="reports">
             <div class="panel-header">
               <div>
                 <p class="eyebrow">Admin Broadcasts</p>
@@ -990,7 +1095,7 @@ def render_admin_page(
             </table>
           </section>
 
-          <section class="panel span-7">
+          <section class="panel command-section span-7">
             <div class="panel-header">
               <div>
                 <p class="eyebrow">Structured Reports</p>
@@ -1008,7 +1113,7 @@ def render_admin_page(
             </table>
           </section>
 
-          <section class="panel span-12" id="quiet-periods">
+          <section class="panel command-section span-12" id="quiet-periods">
             <div class="panel-header">
               <div>
                 <p class="eyebrow">Quiet Periods</p>
