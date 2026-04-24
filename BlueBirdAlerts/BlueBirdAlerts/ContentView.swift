@@ -1,16 +1,20 @@
 import SwiftUI
 import LocalAuthentication
 import UIKit
+import QuartzCore
+import AVFoundation
+import Foundation
+import Combine
 
-private let appBg = Color(red: 0.93, green: 0.96, blue: 1.0)
-private let appBgDeep = Color(red: 0.86, green: 0.91, blue: 1.0)
-private let surfaceMain = Color.white
-private let textPrimary = Color(red: 0.06, green: 0.13, blue: 0.25)
-private let textMuted = Color(red: 0.27, green: 0.34, blue: 0.48)
-private let bluePrimary = Color(red: 0.11, green: 0.37, blue: 0.89)
-private let fieldDarkBg = Color(red: 0.22, green: 0.25, blue: 0.31)
-private let fieldDarkBorder = Color.white.opacity(0.12)
-private let placeholderMuted = Color(red: 0.62, green: 0.67, blue: 0.76)
+private let appBg = DSColor.background
+private let appBgDeep = DSColor.backgroundDeep
+private let surfaceMain = DSColor.card
+private let textPrimary = DSColor.textPrimary
+private let textMuted = DSColor.textSecondary
+private let bluePrimary = DSColor.primary
+private let fieldDarkBg = DSColor.inputBackground
+private let fieldDarkBorder = DSColor.border
+private let placeholderMuted = DSColor.textSecondary.opacity(0.78)
 
 private struct PressableScaleButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
@@ -28,13 +32,292 @@ private struct SafetyActionItem: Identifiable {
     let message: String
 }
 
+private enum HoldActivationState {
+    case idle
+    case holding
+    case triggered
+    case canceled
+}
+
+@MainActor
+private final class AlertController: ObservableObject {
+    @Published var holdProgress: Double = 0
+    @Published var holdState: HoldActivationState = .idle
+
+    private var holdTask: Task<Void, Never>?
+    private var hapticTask: Task<Void, Never>?
+    private var didTrigger = false
+    private static var audioPlayer: AVAudioPlayer?
+
+    func beginHold(duration: Double = 3.0) {
+        guard holdState != .holding, !didTrigger else { return }
+        print("Press detected")
+        print("Hold started")
+        holdState = .holding
+        holdProgress = 0
+        didTrigger = false
+        fireTouchDownHaptic()
+        startHapticLoop()
+        holdTask?.cancel()
+        holdTask = Task {
+            let start = CACurrentMediaTime()
+            var lastLoggedStep = -1
+            while !Task.isCancelled, !didTrigger {
+                let elapsed = CACurrentMediaTime() - start
+                let progress = min(1.0, elapsed / duration)
+                holdProgress = progress
+                let progressStep = Int(progress * 10)
+                if progressStep != lastLoggedStep {
+                    lastLoggedStep = progressStep
+                    print("Progress value: \(String(format: "%.2f", progress))")
+                }
+                try? await Task.sleep(nanoseconds: 16_666_667)
+            }
+        }
+    }
+
+    func completeHold(onActivate: @escaping () -> Void) {
+        guard holdState == .holding, !didTrigger else { return }
+        didTrigger = true
+        holdProgress = 1.0
+        holdState = .triggered
+        holdTask?.cancel()
+        holdTask = nil
+        stopHapticLoop()
+        fireCompletionHaptic()
+        print("Hold completed; triggering alert")
+        onActivate()
+    }
+
+    func cancelHold() {
+        guard holdState == .holding, !didTrigger else { return }
+        holdTask?.cancel()
+        holdTask = nil
+        stopHapticLoop()
+        fireCancelHaptic()
+        print("Hold cancelled")
+        holdState = .canceled
+        withAnimation(.easeOut(duration: 0.18)) {
+            holdProgress = 0
+        }
+        Task {
+            try? await Task.sleep(nanoseconds: 180_000_000)
+            if !didTrigger {
+                holdState = .idle
+            }
+        }
+    }
+
+    func resetHoldState() {
+        holdTask?.cancel()
+        holdTask = nil
+        stopHapticLoop()
+        holdProgress = 0
+        didTrigger = false
+        holdState = .idle
+    }
+
+    func startAlarmAudio() {
+        if Self.audioPlayer?.isPlaying == true {
+            print("Audio already playing")
+            return
+        }
+        guard let fileURL = Bundle.main.url(forResource: "bluebird-alarm-asset", withExtension: "mp3") else {
+            print("Audio failed: bluebird-alarm-asset.mp3 not found in app bundle")
+            return
+        }
+        print("Alarm file URL: \(fileURL)")
+        do {
+            let session = AVAudioSession.sharedInstance()
+            try session.setCategory(.playback, mode: .default, options: [.duckOthers])
+            try session.setActive(true)
+            let player = try AVAudioPlayer(contentsOf: fileURL)
+            player.numberOfLoops = -1
+            player.prepareToPlay()
+            if player.play() {
+                Self.audioPlayer = player
+                print("Audio started")
+            } else {
+                print("Audio failed: AVAudioPlayer returned play() == false")
+            }
+        } catch {
+            print("Audio failed: \(error.localizedDescription)")
+        }
+    }
+
+    func stopAlarmAudio() {
+        if let player = Self.audioPlayer {
+            if player.isPlaying {
+                player.stop()
+            }
+            player.currentTime = 0
+            print("Audio stopped")
+        }
+        Self.audioPlayer = nil
+        do {
+            try AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
+        } catch {
+            print("Audio session deactivate error: \(error.localizedDescription)")
+        }
+    }
+
+    private func startHapticLoop() {
+        hapticTask?.cancel()
+        hapticTask = Task {
+            while !Task.isCancelled, !didTrigger, holdState == .holding {
+                let isNearComplete = holdProgress >= 0.8
+                fireProgressHaptic(strong: isNearComplete)
+                print("Haptics firing (strong=\(isNearComplete))")
+                try? await Task.sleep(nanoseconds: 800_000_000)
+            }
+        }
+    }
+
+    private func stopHapticLoop() {
+        hapticTask?.cancel()
+        hapticTask = nil
+    }
+
+    private func fireTouchDownHaptic() {
+        let generator = UIImpactFeedbackGenerator(style: .light)
+        generator.prepare()
+        generator.impactOccurred(intensity: 0.5)
+    }
+
+    private func fireProgressHaptic(strong: Bool) {
+        let generator = UIImpactFeedbackGenerator(style: strong ? .medium : .soft)
+        generator.prepare()
+        generator.impactOccurred(intensity: strong ? 0.78 : 0.5)
+    }
+
+    private func fireCompletionHaptic() {
+        let generator = UINotificationFeedbackGenerator()
+        generator.prepare()
+        generator.notificationOccurred(.success)
+    }
+
+    private func fireCancelHaptic() {
+        let generator = UIImpactFeedbackGenerator(style: .soft)
+        generator.prepare()
+        generator.impactOccurred(intensity: 0.42)
+    }
+}
+
+private struct SafetyHoldButton: View {
+    let action: SafetyActionItem
+    let titleColor: Color
+    let isEnabled: Bool
+    let onHoldVisual: (Bool, Double, Color) -> Void
+    let onActivate: () -> Void
+
+    @StateObject private var controller = AlertController()
+
+    private var holdText: String {
+        switch holdState {
+        case .idle:
+            return "Hold to Activate"
+        case .holding:
+            return "Keep Holding…"
+        case .triggered:
+            return "Activating…"
+        case .canceled:
+            return "Release to Cancel"
+        }
+    }
+
+    private var holdScale: CGFloat {
+        switch holdState {
+        case .idle, .canceled:
+            return 1.0
+        case .triggered:
+            return 1.12
+        case .holding:
+            return CGFloat(0.97 + holdProgress * 0.11)
+        }
+    }
+
+    private var holdProgress: Double { controller.holdProgress }
+    private var holdState: HoldActivationState { controller.holdState }
+
+    var body: some View {
+        VStack(spacing: 6) {
+            ZStack {
+                Circle()
+                    .stroke(Color.white.opacity(0.24), lineWidth: 10)
+                Circle()
+                    .trim(from: 0, to: holdProgress)
+                    .stroke(
+                        holdProgress < 0.55 ? Color.white : (holdProgress < 0.8 ? DSColor.warning : DSColor.danger),
+                        style: StrokeStyle(lineWidth: 10, lineCap: .round, lineJoin: .round)
+                    )
+                    .shadow(color: Color.white.opacity(0.5), radius: 4, x: 0, y: 0)
+                    .rotationEffect(.degrees(-90))
+                    .animation(.linear(duration: 0.05), value: holdProgress)
+
+                Circle()
+                    .fill(action.color)
+                    .overlay {
+                        Image(systemName: action.icon)
+                            .foregroundStyle(.white)
+                            .font(.system(size: 30, weight: .bold))
+                    }
+                    .scaleEffect(holdScale)
+                    .shadow(color: action.color.opacity(0.1 + holdProgress * 0.24), radius: 18, x: 0, y: 0)
+                    .animation(.easeOut(duration: 0.16), value: holdScale)
+            }
+            .frame(width: 122, height: 122)
+            .contentShape(Circle())
+            .simultaneousGesture(
+                LongPressGesture(minimumDuration: 3.0, maximumDistance: 44)
+                    .onEnded { _ in
+                        controller.completeHold {
+                            onHoldVisual(false, 0, action.color)
+                            onActivate()
+                        }
+                    }
+            )
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { _ in
+                        guard isEnabled else { return }
+                        controller.beginHold(duration: 3.0)
+                    }
+                    .onEnded { _ in
+                        controller.cancelHold()
+                        onHoldVisual(false, 0, action.color)
+                    }
+            )
+            .opacity(isEnabled ? 1 : 0.5)
+
+            Text(action.title)
+                .font(.headline.weight(.bold))
+                .foregroundStyle(titleColor)
+                .multilineTextAlignment(.center)
+            Text(holdText)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(Color.white.opacity(0.88))
+            Text("~3s")
+                .font(.caption2)
+                .foregroundStyle(Color.white.opacity(0.62))
+        }
+        .frame(maxWidth: .infinity)
+        .onChange(of: controller.holdProgress) { _, progress in
+            onHoldVisual(holdState == .holding, progress, action.color)
+        }
+        .onDisappear {
+            controller.resetHoldState()
+            onHoldVisual(false, 0, action.color)
+        }
+    }
+}
+
 private func buildSafetyActions(featureLabels: [String: String]) -> [SafetyActionItem] {
     [
-        .init(id: "secure", title: AppLabels.labelForFeatureKey(AppLabels.keySecure, overrides: featureLabels).uppercased(), icon: "hand.raised.fill", color: Color(red: 0.23, green: 0.66, blue: 0.95), message: "SECURE emergency initiated. Follow school secure procedures."),
-        .init(id: "lockdown", title: AppLabels.labelForFeatureKey(AppLabels.keyLockdown, overrides: featureLabels).uppercased(), icon: "lock.fill", color: Color(red: 0.94, green: 0.27, blue: 0.27), message: "LOCKDOWN emergency initiated. Follow lockdown procedures immediately."),
-        .init(id: "evacuation", title: AppLabels.labelForFeatureKey(AppLabels.keyEvacuation, overrides: featureLabels).uppercased(), icon: "figure.walk.motion", color: Color(red: 0.52, green: 0.80, blue: 0.09), message: "EVACUATE emergency initiated. Move to evacuation locations now."),
-        .init(id: "shelter", title: AppLabels.labelForFeatureKey(AppLabels.keyShelter, overrides: featureLabels).uppercased(), icon: "house.fill", color: Color(red: 0.96, green: 0.62, blue: 0.12), message: "SHELTER emergency initiated. Move into shelter protocol."),
-        .init(id: "hold", title: "HOLD", icon: "pause.fill", color: Color(red: 0.58, green: 0.20, blue: 0.92), message: "HOLD emergency initiated. Keep current position until cleared."),
+        .init(id: "secure", title: AppLabels.labelForFeatureKey(AppLabels.keySecure, overrides: featureLabels).uppercased(), icon: "hand.raised.fill", color: DSColor.info, message: "SECURE emergency initiated. Follow school secure procedures."),
+        .init(id: "lockdown", title: AppLabels.labelForFeatureKey(AppLabels.keyLockdown, overrides: featureLabels).uppercased(), icon: "lock.fill", color: DSColor.danger, message: "LOCKDOWN emergency initiated. Follow lockdown procedures immediately."),
+        .init(id: "evacuation", title: AppLabels.labelForFeatureKey(AppLabels.keyEvacuation, overrides: featureLabels).uppercased(), icon: "figure.walk.motion", color: DSColor.success, message: "EVACUATE emergency initiated. Move to evacuation locations now."),
+        .init(id: "shelter", title: AppLabels.labelForFeatureKey(AppLabels.keyShelter, overrides: featureLabels).uppercased(), icon: "house.fill", color: DSColor.warning, message: "SHELTER emergency initiated. Move into shelter protocol."),
+        .init(id: "hold", title: "HOLD", icon: "pause.fill", color: DSColor.quietAccent, message: "HOLD emergency initiated. Keep current position until cleared."),
     ]
 }
 private let teamAssistTypes = [
@@ -47,6 +330,7 @@ private let teamAssistTypes = [
 
 struct ContentView: View {
     @EnvironmentObject private var appState: AppState
+    @StateObject private var alertController = AlertController()
     @State private var message = "Emergency alert. Please follow school procedures."
     @State private var isSending = false
     @State private var isRegistering = false
@@ -55,11 +339,11 @@ struct ContentView: View {
     @State private var activeTeamAssists: [TeamAssistSummary] = []
     @State private var alarmIsActive = false
     @State private var alarmMessage: String?
+    @State private var alarmIsTraining = false
+    @State private var alarmTrainingLabel: String?
     @State private var isRefreshingIncidentFeed = false
     @State private var isUpdatingAlarm = false
     @State private var showDeactivateAlarmConfirm = false
-    @State private var pendingAction: SafetyActionItem?
-    @State private var slideValue: Double = 0
     @State private var adminOutboundMessage = ""
     @State private var adminRecipients: [MessageRecipient] = []
     @State private var selectedRecipientIDs: Set<Int> = []
@@ -71,6 +355,8 @@ struct ContentView: View {
     @State private var showMessagingCenter = false
     @State private var showQuietPeriodCenter = false
     @State private var quietPeriodReason = ""
+    @State private var trainingModeEnabled = false
+    @State private var trainingLabel = "This is a drill"
     @State private var isSubmittingQuickAction = false
     @State private var teamAssistForwardRecipients: [MessageRecipient] = []
     @State private var forwardingTeamAssist: TeamAssistSummary?
@@ -80,6 +366,9 @@ struct ContentView: View {
     @State private var adminQuietPeriodRequests: [QuietPeriodAdminRequest] = []
     @State private var isUpdatingQuietPeriodRequests = false
     @State private var featureLabels: [String: String] = AppLabels.defaultFeatureLabels
+    @State private var holdFlashActive = false
+    @State private var holdFlashProgress: Double = 0
+    @State private var holdFlashColor: Color = DSColor.danger
 
     private var api: APIClient {
         APIClient(baseURL: appState.serverURL, apiKey: Config.backendApiKey)
@@ -132,6 +421,14 @@ struct ContentView: View {
                         if let error = appState.lastError, !error.isEmpty {
                             flashBanner(message: error, isError: true)
                         }
+                        if alarmIsActive, alarmIsTraining {
+                            let trainingBannerLabel = alarmTrainingLabel?.trimmingCharacters(in: .whitespacesAndNewlines)
+                            let trainingText = (trainingBannerLabel?.isEmpty == false) ? (trainingBannerLabel ?? "This is a drill") : "This is a drill"
+                            flashBanner(
+                                message: "TRAINING DRILL: \(trainingText)",
+                                isError: false
+                            )
+                        }
                         incidentsCard
                         safetyGrid
                         dashboardTabsCard
@@ -140,6 +437,20 @@ struct ContentView: View {
                     }
                     .padding(.horizontal, 16)
                     .padding(.vertical, 14)
+                }
+
+                if holdFlashActive {
+                    TimelineView(.animation(minimumInterval: 0.05)) { timeline in
+                        let t = timeline.date.timeIntervalSinceReferenceDate
+                        let wave = (sin(t * Double.pi * 2 * 1.6) + 1) / 2
+                        let base = 0.035 + holdFlashProgress * 0.09
+                        let pulse = (0.03 + holdFlashProgress * 0.07) * wave
+                        Rectangle()
+                            .fill(holdFlashColor)
+                            .opacity(min(0.22, base + pulse))
+                            .ignoresSafeArea()
+                    }
+                    .allowsHitTesting(false)
                 }
             }
             .simultaneousGesture(
@@ -265,11 +576,6 @@ struct ContentView: View {
                 }
             }
         }
-        .overlay {
-            if let action = pendingAction {
-                actionConfirmOverlay(action: action)
-            }
-        }
         .onReceive(NotificationCenter.default.publisher(for: .deviceTokenUpdated)) { note in
             guard let token = note.userInfo?["token"] as? String else { return }
             appState.deviceToken = token
@@ -278,6 +584,16 @@ struct ContentView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .deviceTokenUpdateFailed)) { note in
             appState.lastError = note.userInfo?["error"] as? String
+        }
+        .onChange(of: alarmIsActive) { _, isActive in
+            if isActive {
+                alertController.startAlarmAudio()
+            } else {
+                alertController.stopAlarmAudio()
+            }
+        }
+        .onDisappear {
+            alertController.stopAlarmAudio()
         }
     }
 
@@ -329,17 +645,29 @@ struct ContentView: View {
                 if appState.canDeactivateAlarm {
                     HStack(spacing: 8) {
                         Circle()
-                            .fill(alarmIsActive ? Color.red : Color.gray.opacity(0.6))
+                            .fill(
+                                alarmIsActive
+                                    ? (alarmIsTraining ? DSColor.warning : DSColor.danger)
+                                    : DSColor.textSecondary.opacity(0.6)
+                            )
                             .frame(width: 9, height: 9)
-                        Text(alarmIsActive ? "Alarm Active" : "No Active Alarm")
+                        Text(
+                            alarmIsActive
+                                ? (alarmIsTraining ? "Training Drill Active" : "Alarm Active")
+                                : "No Active Alarm"
+                        )
                             .font(.caption.weight(.semibold))
-                            .foregroundStyle(alarmIsActive ? Color(red: 0.62, green: 0.12, blue: 0.12) : textMuted)
+                            .foregroundStyle(
+                                alarmIsActive
+                                    ? (alarmIsTraining ? DSColor.warning : DSColor.danger)
+                                    : textMuted
+                            )
                     }
                     .padding(.horizontal, 12)
                     .padding(.vertical, 8)
                     .background(
                         Capsule(style: .continuous)
-                            .fill(alarmIsActive ? Color(red: 1.0, green: 0.93, blue: 0.93) : Color.gray.opacity(0.12))
+                            .fill(alarmIsActive ? DSColor.danger.opacity(0.14) : DSColor.border.opacity(0.32))
                     )
 
                     Button {
@@ -348,25 +676,32 @@ struct ContentView: View {
                         HStack(spacing: 8) {
                             Image(systemName: "bell.slash.fill")
                                 .font(.subheadline.weight(.bold))
-                            Text(isUpdatingAlarm ? "Disabling Alarm…" : "Disable Alarm")
+                            Text(isUpdatingAlarm ? "Disabling Alarm…" : (alarmIsTraining ? "End Training Alert" : "Disable Alarm"))
                                 .font(.subheadline.weight(.bold))
                         }
                         .foregroundStyle(.white)
                         .frame(maxWidth: .infinity, minHeight: 50)
                         .background(
                             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                .fill(alarmIsActive ? Color(red: 0.72, green: 0.11, blue: 0.11) : Color.gray.opacity(0.45))
+                                .fill(alarmIsActive ? DSColor.danger : DSColor.textSecondary.opacity(0.5))
                         )
                     }
                     .buttonStyle(PressableScaleButtonStyle())
-                    .shadow(color: alarmIsActive ? Color.red.opacity(0.22) : .clear, radius: 8, x: 0, y: 3)
+                    .shadow(color: alarmIsActive ? DSColor.danger.opacity(0.22) : .clear, radius: 8, x: 0, y: 3)
                     .disabled(isUpdatingAlarm || !alarmIsActive)
 
-                    if let alarmMessage, alarmIsActive, !alarmMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        Text(alarmMessage)
-                            .font(.caption)
-                            .foregroundStyle(textMuted)
-                            .lineLimit(2)
+                    if alarmIsActive {
+                        if let label = alarmTrainingLabel, alarmIsTraining, !label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            Text("Training: \(label)")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(DSColor.warning)
+                        }
+                        if let alarmMessage, !alarmMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            Text(alarmMessage)
+                                .font(.caption)
+                                .foregroundStyle(textMuted)
+                                .lineLimit(2)
+                        }
                     }
                     Divider()
                 }
@@ -388,7 +723,7 @@ struct ContentView: View {
 
                 Text(activeRequestHelpLabel)
                     .font(.subheadline.weight(.bold))
-                    .foregroundStyle(Color(red: 0.06, green: 0.46, blue: 0.43))
+                    .foregroundStyle(DSColor.success)
                 if activeTeamAssists.isEmpty {
                     Text(noActiveRequestHelpLabel)
                         .font(.subheadline)
@@ -449,10 +784,10 @@ struct ContentView: View {
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(.white)
                         .frame(maxWidth: .infinity, minHeight: 46)
-                        .background(Color(red: 0.56, green: 0.23, blue: 0.92))
+                        .background(DSColor.quietAccent)
                         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                     }
-                    .shadow(color: Color(red: 0.56, green: 0.23, blue: 0.92).opacity(0.16), radius: 8, x: 0, y: 3)
+                    .shadow(color: DSColor.quietAccent.opacity(0.16), radius: 8, x: 0, y: 3)
                     .buttonStyle(PressableScaleButtonStyle())
                 }
             }
@@ -499,10 +834,10 @@ struct ContentView: View {
                     }
                     .padding(.horizontal, 14)
                     .padding(.vertical, 12)
-                    .background(Color.white)
+                    .background(DSColor.card)
                     .overlay(
                         RoundedRectangle(cornerRadius: 12)
-                            .stroke(Color.black.opacity(0.1), lineWidth: 1)
+                            .stroke(DSColor.border, lineWidth: 1)
                     )
                     .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                 }
@@ -514,7 +849,7 @@ struct ContentView: View {
                         .foregroundStyle(textMuted)
                     Text(adminOutboundMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Type a message to preview." : adminOutboundMessage)
                         .font(.subheadline)
-                        .foregroundStyle(Color(red: 0.93, green: 0.95, blue: 0.98))
+                        .foregroundStyle(DSColor.background)
                         .lineSpacing(2)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal, 14)
@@ -579,7 +914,7 @@ struct ContentView: View {
                                         .foregroundStyle(.white)
                                         .padding(.horizontal, 12)
                                         .padding(.vertical, 8)
-                                        .background(Color(red: 0.10, green: 0.40, blue: 0.20))
+                                        .background(DSColor.success)
                                         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                                 }
                                 .disabled(isUpdatingQuietPeriodRequests || item.status.lowercased() != "pending")
@@ -592,7 +927,7 @@ struct ContentView: View {
                                         .foregroundStyle(.white)
                                         .padding(.horizontal, 12)
                                         .padding(.vertical, 8)
-                                        .background(Color(red: 0.72, green: 0.11, blue: 0.11))
+                                        .background(DSColor.danger)
                                         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                                 }
                                 .disabled(isUpdatingQuietPeriodRequests || item.status.lowercased() != "pending")
@@ -600,7 +935,7 @@ struct ContentView: View {
                         }
                         .padding(10)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color(red: 0.97, green: 0.98, blue: 1.0))
+                        .background(DSColor.background)
                         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                     }
                 }
@@ -611,6 +946,33 @@ struct ContentView: View {
     private var customPanicCard: some View {
         card {
             VStack(spacing: 14) {
+                if isAdminSession {
+                    HStack(spacing: 10) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Training Mode")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(textPrimary)
+                            Text("Drill-only alert. No live push or SMS.")
+                                .font(.caption)
+                                .foregroundStyle(textMuted)
+                        }
+                        Spacer()
+                        Toggle("", isOn: $trainingModeEnabled)
+                            .labelsHidden()
+                    }
+                    if trainingModeEnabled {
+                        TextField("", text: $trainingLabel, prompt: Text("Training label (e.g., This is a drill)").foregroundStyle(placeholderMuted))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 10)
+                            .background(fieldDarkBg)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                    .stroke(fieldDarkBorder, lineWidth: 1)
+                            )
+                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    }
+                }
                 TextField("", text: $message, prompt: Text("Custom emergency message").foregroundStyle(placeholderMuted), axis: .vertical)
                     .foregroundStyle(.white)
                     .padding(.horizontal, 14)
@@ -626,12 +988,16 @@ struct ContentView: View {
                 Button {
                     Task { await authenticateThenSendPanic() }
                 } label: {
-                    Text(isSending ? "Sending..." : "Send Custom Panic")
+                    Text(
+                        isSending
+                            ? "Sending..."
+                            : (trainingModeEnabled && isAdminSession ? "Start Training Alert" : "Send Custom Panic")
+                    )
                         .foregroundStyle(.white)
                         .frame(maxWidth: .infinity, minHeight: 46)
                         .background(
                             LinearGradient(
-                                colors: [Color(red: 0.93, green: 0.25, blue: 0.25), Color(red: 0.80, green: 0.13, blue: 0.13)],
+                                colors: [DSColor.danger.opacity(0.86), DSColor.danger],
                                 startPoint: .top,
                                 endPoint: .bottom
                             )
@@ -639,7 +1005,7 @@ struct ContentView: View {
                         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                 }
                 .buttonStyle(PressableScaleButtonStyle())
-                .shadow(color: Color.red.opacity(0.24), radius: 8, x: 0, y: 3)
+                .shadow(color: DSColor.danger.opacity(0.24), radius: 8, x: 0, y: 3)
                 .disabled(isSending || message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }
@@ -751,143 +1117,31 @@ struct ContentView: View {
     }
 
     private func safetyActionButton(action: SafetyActionItem) -> some View {
-        Button {
-            pendingAction = action
-            slideValue = 0
-        } label: {
-            VStack(spacing: 8) {
-                ZStack {
-                    Circle().fill(action.color)
-                    Image(systemName: action.icon)
-                        .foregroundStyle(.white)
-                        .font(.system(size: 30, weight: .bold))
-                }
-                .frame(width: 122, height: 122)
-                Text(action.title)
-                    .font(.headline.weight(.bold))
-                    .foregroundStyle(textPrimary)
-            }
-            .frame(maxWidth: .infinity)
-        }
-        .buttonStyle(.plain)
-    }
-
-    private func actionConfirmOverlay(action: SafetyActionItem) -> some View {
-        ZStack {
-            Color.black.opacity(0.68).ignoresSafeArea()
-            VStack(spacing: 18) {
-                Spacer()
-                Circle()
-                    .fill(action.color)
-                    .frame(width: 92, height: 92)
-                    .overlay {
-                        Image(systemName: action.icon)
-                            .foregroundStyle(.white)
-                            .font(.system(size: 34, weight: .bold))
-                    }
-                Text("\(action.title) EMERGENCY")
-                    .font(.title3.weight(.heavy))
-                    .foregroundStyle(.white)
-
-                VStack(spacing: 8) {
-                    slideToInitiateControl(action: action)
-                }
-                .padding(14)
-                .background(Color.white.opacity(0.2))
-                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                .padding(.horizontal, 18)
-
-                Button {
-                    pendingAction = nil
-                    slideValue = 0
-                } label: {
-                    VStack(spacing: 4) {
-                        ZStack {
-                            Circle().fill(Color.white.opacity(0.25))
-                            Image(systemName: "xmark")
-                                .font(.title2.weight(.bold))
-                                .foregroundStyle(.white)
-                        }
-                        .frame(width: 66, height: 66)
-                        Text("Cancel")
-                            .font(.subheadline)
-                            .foregroundStyle(.white)
-                    }
-                }
-                .buttonStyle(.plain)
-                Spacer()
-            }
-            .padding(.horizontal, 22)
+        SafetyHoldButton(
+            action: action,
+            titleColor: textPrimary,
+            isEnabled: !isSending && !isUpdatingAlarm,
+            onHoldVisual: updateHoldFlash
+        ) {
+            guard !isSending else { return }
+            message = action.message
+            Task { await authenticateThenSendPanic() }
         }
     }
 
-    private func initiateAction(_ action: SafetyActionItem) async {
-        pendingAction = nil
-        slideValue = 0
-        message = action.message
-        await authenticateThenSendPanic()
-    }
-
-    private func slideToInitiateControl(action: SafetyActionItem) -> some View {
-        GeometryReader { geo in
-            let knobSize: CGFloat = 56
-            let horizontalInset: CGFloat = 6
-            let maxOffset = max(0, geo.size.width - knobSize - horizontalInset * 2)
-
-            ZStack(alignment: .leading) {
-                Capsule()
-                    .fill(Color.white.opacity(0.22))
-
-                Text("Slide to Initiate")
-                    .font(.headline.weight(.semibold))
-                    .foregroundStyle(.white.opacity(0.95))
-                    .frame(maxWidth: .infinity)
-                    .padding(.leading, 34)
-                    .padding(.trailing, 12)
-
-                Circle()
-                    .fill(.white)
-                    .overlay {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .foregroundStyle(Color(red: 0.86, green: 0.26, blue: 0.22))
-                            .font(.system(size: 24, weight: .bold))
-                    }
-                    .frame(width: knobSize, height: knobSize)
-                    .offset(x: horizontalInset + CGFloat(slideValue) * maxOffset)
-                    .gesture(
-                        DragGesture(minimumDistance: 0)
-                            .onChanged { value in
-                                let proposed = value.location.x - (knobSize / 2) - horizontalInset
-                                let clamped = min(max(0, proposed), maxOffset)
-                                guard maxOffset > 0 else {
-                                    slideValue = 0
-                                    return
-                                }
-                                slideValue = Double(clamped / maxOffset)
-                            }
-                            .onEnded { _ in
-                                if slideValue >= 0.92 {
-                                    Task { await initiateAction(action) }
-                                } else {
-                                    withAnimation(.easeOut(duration: 0.18)) {
-                                        slideValue = 0
-                                    }
-                                }
-                            }
-                    )
-            }
-            .frame(height: 68)
-        }
-        .frame(height: 68)
+    private func updateHoldFlash(isActive: Bool, progress: Double, color: Color) {
+        holdFlashActive = isActive
+        holdFlashProgress = max(0, min(1, progress))
+        holdFlashColor = color
     }
 
     private func flashBanner(message: String, isError: Bool) -> some View {
         Text(message)
             .font(.subheadline)
-            .foregroundStyle(isError ? Color(red: 0.72, green: 0.08, blue: 0.08) : Color(red: 0.09, green: 0.42, blue: 0.20))
+            .foregroundStyle(isError ? DSColor.danger : DSColor.success)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(12)
-            .background(isError ? Color(red: 1.0, green: 0.91, blue: 0.91) : Color(red: 0.92, green: 0.97, blue: 0.92))
+            .background(isError ? DSColor.danger.opacity(0.16) : DSColor.success.opacity(0.16))
             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
@@ -944,7 +1198,7 @@ struct ContentView: View {
                                 .font(.caption.weight(.semibold))
                                 .padding(.horizontal, 12)
                                 .padding(.vertical, 7)
-                                .background(item.cancelAdminConfirmed ? Color.green.opacity(0.15) : Color.red.opacity(0.14))
+                                .background(item.cancelAdminConfirmed ? DSColor.success.opacity(0.15) : DSColor.danger.opacity(0.14))
                                 .clipShape(Capsule())
                         }
                         .disabled(isUpdatingTeamAssist || item.cancelAdminConfirmed)
@@ -958,7 +1212,7 @@ struct ContentView: View {
                         .font(.caption.weight(.semibold))
                         .padding(.horizontal, 12)
                         .padding(.vertical, 7)
-                        .background(item.cancelRequesterConfirmed ? Color.green.opacity(0.15) : Color.orange.opacity(0.14))
+                        .background(item.cancelRequesterConfirmed ? DSColor.success.opacity(0.15) : DSColor.warning.opacity(0.14))
                         .clipShape(Capsule())
                 }
                 .disabled(isUpdatingTeamAssist || item.cancelRequesterConfirmed)
@@ -986,9 +1240,9 @@ struct ContentView: View {
     }
 
     private var backendStatusColor: Color {
-        if appState.backendReachable == true { return .green }
-        if appState.backendReachable == false { return .red }
-        return .gray
+        if appState.backendReachable == true { return DSColor.success }
+        if appState.backendReachable == false { return DSColor.danger }
+        return DSColor.textSecondary
     }
 
     private var localTestToken: String {
@@ -1025,6 +1279,8 @@ struct ContentView: View {
             activeTeamAssists = teamAssists.teamAssists
             alarmIsActive = alarm.isActive
             alarmMessage = alarm.message
+            alarmIsTraining = alarm.isTraining
+            alarmTrainingLabel = alarm.trainingLabel
             syncAdminRequestHelpPrompt()
             appState.lastError = nil
             appState.backendReachable = true
@@ -1066,10 +1322,23 @@ struct ContentView: View {
         defer { isSending = false }
 
         do {
-            let response = try await api.panic(message: trimmed)
+            let response = try await api.panic(
+                message: trimmed,
+                isTraining: isAdminSession && trainingModeEnabled,
+                trainingLabel: isAdminSession && trainingModeEnabled ? trainingLabel : nil
+            )
+            alarmIsActive = true
+            alarmMessage = trimmed
+            alarmIsTraining = isAdminSession && trainingModeEnabled
+            alarmTrainingLabel = alarmIsTraining ? trainingLabel : nil
             appState.registeredDeviceCount = response.deviceCount
-            appState.lastStatus = "Alert #\(response.alertId): attempted \(response.attempted), ok \(response.succeeded), failed \(response.failed)"
-            appState.lastError = response.apnsConfigured ? nil : "Backend accepted the alert, but APNs is not configured yet."
+            if isAdminSession && trainingModeEnabled {
+                appState.lastStatus = "Training alert #\(response.alertId) started. Local recipients: \(response.attempted)."
+                appState.lastError = nil
+            } else {
+                appState.lastStatus = "Alert #\(response.alertId): attempted \(response.attempted), ok \(response.succeeded), failed \(response.failed)"
+                appState.lastError = response.apnsConfigured ? nil : "Backend accepted the alert, but APNs is not configured yet."
+            }
         } catch {
             appState.lastError = "Panic failed: \(error.localizedDescription)"
         }
@@ -1106,6 +1375,8 @@ struct ContentView: View {
             let response = try await api.deactivateAlarm(adminUserID: adminUserID)
             alarmIsActive = response.isActive
             alarmMessage = response.message
+            alarmIsTraining = response.isTraining
+            alarmTrainingLabel = response.trainingLabel
             appState.lastStatus = response.isActive ? "Alarm remains active." : "Alarm disabled."
             appState.lastError = nil
             await refreshIncidentFeed()
@@ -1534,7 +1805,7 @@ private struct AdminRequestHelpPromptSheet: View {
                         .disabled(isBusy)
                     Button("Responding") { onResponding() }
                         .buttonStyle(.borderedProminent)
-                        .tint(Color(red: 0.06, green: 0.46, blue: 0.43))
+                        .tint(DSColor.success)
                         .disabled(isBusy)
                 }
                 .padding(.top, 4)
@@ -1605,62 +1876,92 @@ private struct SettingsView: View {
     @State private var isTestingBackend = false
     @State private var isRegistering = false
     @State private var isLoadingDebugData = false
+    @AppStorage(DSThemePreference.storageKey) private var themeModeRaw = DSThemeMode.system.rawValue
 
     private var api: APIClient {
         APIClient(baseURL: appState.serverURL, apiKey: Config.backendApiKey)
     }
 
     var body: some View {
-        List {
-            Section("Account") {
-                Text("BlueBird Alerts")
-                if !appState.loginName.isEmpty {
-                    Text("Login: \(appState.loginName)")
-                }
-                Text("Role: \(appState.userRole.capitalized)")
-                Text("Server: \(appState.serverURL.absoluteString)")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                if !appState.initialDeviceAuthUserName.isEmpty {
-                    Text("Initial device auth: \(appState.initialDeviceAuthUserName)")
+        ZStack {
+            LinearGradient(colors: [DSColor.background, DSColor.backgroundDeep], startPoint: .top, endPoint: .bottom)
+                .ignoresSafeArea()
+
+            List {
+                Section("Account") {
+                    Text("BlueBird Alerts")
+                        .foregroundStyle(DSColor.textPrimary)
+                    if !appState.loginName.isEmpty {
+                        Text("Login: \(appState.loginName)")
+                            .foregroundStyle(DSColor.textPrimary)
+                    }
+                    Text("Role: \(appState.userRole.capitalized)")
+                        .foregroundStyle(DSColor.textPrimary)
+                    Text("Server: \(appState.serverURL.absoluteString)")
                         .font(.footnote)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(DSColor.textSecondary)
+                    if !appState.initialDeviceAuthUserName.isEmpty {
+                        Text("Initial device auth: \(appState.initialDeviceAuthUserName)")
+                            .font(.footnote)
+                            .foregroundStyle(DSColor.textSecondary)
+                    }
                 }
-            }
-            Section("Security") {
-                Toggle("Biometrics Allowed", isOn: $appState.biometricsAllowed)
-                Text("Require Face ID / Touch ID before sending emergency alerts.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            }
-            Section("Diagnostics (Temporary)") {
-                Button(isTestingBackend ? "Testing..." : "Test Backend") {
-                    Task { await testBackend() }
-                }
-                .disabled(isTestingBackend)
+                .listRowBackground(DSColor.card)
 
-                Button(isLoadingDebugData ? "Refreshing..." : "Load Debug Data") {
-                    Task { await loadDebugData() }
+                Section("Appearance") {
+                    Picker("Theme", selection: $themeModeRaw) {
+                        ForEach(DSThemeMode.allCases, id: \.rawValue) { mode in
+                            Text(mode.rawValue.capitalized).tag(mode.rawValue)
+                        }
+                    }
+                    .tint(DSColor.primary)
                 }
-                .disabled(isLoadingDebugData)
+                .listRowBackground(DSColor.card)
 
-                if appState.deviceToken != nil {
-                    Button(isRegistering ? "Registering..." : "Register Device") {
-                        Task { await retryRegisterDevice() }
+                Section("Security") {
+                    Toggle("Biometrics Allowed", isOn: $appState.biometricsAllowed)
+                        .tint(DSColor.primary)
+                    Text("Require Face ID / Touch ID before sending emergency alerts.")
+                        .font(.footnote)
+                        .foregroundStyle(DSColor.textSecondary)
+                }
+                .listRowBackground(DSColor.card)
+
+                Section("Diagnostics (Temporary)") {
+                    Button(isTestingBackend ? "Testing..." : "Test Backend") {
+                        Task { await testBackend() }
+                    }
+                    .disabled(isTestingBackend)
+
+                    Button(isLoadingDebugData ? "Refreshing..." : "Load Debug Data") {
+                        Task { await loadDebugData() }
+                    }
+                    .disabled(isLoadingDebugData)
+
+                    if appState.deviceToken != nil {
+                        Button(isRegistering ? "Registering..." : "Register Device") {
+                            Task { await retryRegisterDevice() }
+                        }
+                        .disabled(isRegistering)
+                    }
+
+                    Button(isRegistering ? "Registering..." : localTestButtonTitle) {
+                        Task { await useLocalTestDevice() }
                     }
                     .disabled(isRegistering)
                 }
+                .listRowBackground(DSColor.card)
 
-                Button(isRegistering ? "Registering..." : localTestButtonTitle) {
-                    Task { await useLocalTestDevice() }
+                Section {
+                    Button("Log Out", role: .destructive) {
+                        appState.logout()
+                    }
                 }
-                .disabled(isRegistering)
+                .listRowBackground(DSColor.card)
             }
-            Section {
-                Button("Log Out", role: .destructive) {
-                    appState.logout()
-                }
-            }
+            .listStyle(.insetGrouped)
+            .scrollContentBackground(.hidden)
+            .tint(DSColor.primary)
         }
         .navigationTitle("Settings")
         .navigationBarTitleDisplayMode(.inline)
