@@ -7,6 +7,7 @@ from typing import Mapping, Optional, Sequence
 from app.services.alert_log import AlertRecord
 from app.services.alarm_store import AlarmStateRecord
 from app.services.device_registry import RegisteredDevice
+from app.services.incident_store import TeamAssistRecord
 from app.services.quiet_period_store import QuietPeriodRecord
 from app.services.report_store import AdminMessageRecord, BroadcastUpdateRecord, ReportRecord
 from app.services.school_registry import SchoolRecord
@@ -495,6 +496,44 @@ def _render_quiet_period_rows(
             action_html = '<span class="mini-copy">History</span>'
         rows.append(
             f"<tr><td>{escape(user_names.get(item.user_id, f'User #{item.user_id}'))}</td><td>{escape(item.status)}</td><td>{escape(item.reason or '—')}</td><td>{escape(approver)}</td><td>{escape(item.requested_at)}</td><td>{escape(item.expires_at or '—')}</td><td>{action_html}</td></tr>"
+        )
+    return "".join(rows)
+
+
+def _render_request_help_rows(
+    records: Sequence[TeamAssistRecord],
+    users: Sequence[UserRecord],
+    school_path_prefix: str,
+    *,
+    include_actions: bool = True,
+) -> str:
+    if not records:
+        return '<tr><td colspan="7" class="mini-copy">No active help requests.</td></tr>'
+    user_names = {user.id: user.name for user in users}
+    prefix = escape(school_path_prefix)
+    rows = []
+    for item in records:
+        created_by = user_names.get(item.created_by, f"User #{item.created_by}")
+        handled_by = item.acted_by_label or (f"User #{item.acted_by_user_id}" if item.acted_by_user_id is not None else "—")
+        action_html = "—"
+        if include_actions:
+            action_html = f"""
+            <div class="button-row">
+              <form method="post" action="{prefix}/admin/request-help/{item.id}/clear" onsubmit="return confirm('Clear this help request now? This does not require requester confirmation.');">
+                <button class="button button-danger-outline" type="submit">Clear Request</button>
+              </form>
+            </div>
+            """
+        rows.append(
+            "<tr>"
+            f"<td>{item.id}</td>"
+            f"<td>{escape(item.created_at)}</td>"
+            f"<td>{escape(item.type)}</td>"
+            f"<td>{escape(created_by)}</td>"
+            f"<td>{escape(item.status)}</td>"
+            f"<td>{escape(handled_by)}</td>"
+            f"<td>{action_html}</td>"
+            "</tr>"
         )
     return "".join(rows)
 
@@ -1241,6 +1280,7 @@ def render_admin_page(
     broadcasts: Sequence[BroadcastUpdateRecord],
     admin_messages: Sequence[AdminMessageRecord],
     unread_admin_messages: int,
+    request_help_active: Sequence[TeamAssistRecord],
     quiet_periods_active: Sequence[QuietPeriodRecord],
     quiet_periods_history: Sequence[QuietPeriodRecord],
     quiet_periods_hidden_count: int,
@@ -1434,6 +1474,7 @@ def render_admin_page(
             <article class="metric-card"><div class="meta">Recent alerts</div><div class="metric-value">{len(alerts)}</div></article>
             <article class="metric-card"><div class="meta">User reports</div><div class="metric-value">{len(reports)}</div></article>
             <article class="metric-card"><div class="meta">Open messages</div><div class="metric-value">{unread_admin_messages}</div></article>
+            <article class="metric-card"><div class="meta">Active help requests</div><div class="metric-value">{len(request_help_active)}</div></article>
             <article class="metric-card"><div class="meta">Quiet period requests</div><div class="metric-value">{len(quiet_periods_active)}</div></article>
           </div>
           <div class="status-row" style="margin-top:16px;">
@@ -1619,6 +1660,24 @@ def render_admin_page(
               </thead>
               <tbody>
                 {_render_admin_message_rows(admin_messages, school_path_prefix)}
+              </tbody>
+            </table>
+          </section>
+
+          <section class="panel command-section span-12" id="request-help"{_section_style("dashboard")}>
+            <div class="panel-header">
+              <div>
+                <p class="eyebrow">Request Help</p>
+                <h2>Active help requests</h2>
+                <p class="card-copy">Admins can clear help requests directly from the console. This clear action does not require two-person cancellation consent.</p>
+              </div>
+            </div>
+            <table>
+              <thead>
+                <tr><th>ID</th><th>Created</th><th>Type</th><th>Requested by</th><th>Status</th><th>Handled by</th><th>Action</th></tr>
+              </thead>
+              <tbody>
+                {_render_request_help_rows(request_help_active, users, school_path_prefix)}
               </tbody>
             </table>
           </section>

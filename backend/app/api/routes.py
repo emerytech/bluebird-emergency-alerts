@@ -868,6 +868,7 @@ async def admin_dashboard(
     broadcasts = await _reports(request).list_broadcast_updates(limit=10)
     admin_messages = await _reports(request).list_admin_messages(limit=40)
     unread_admin_messages = sum(1 for item in admin_messages if item.status == "open")
+    request_help_active = await _incident_store(request).list_active_team_assists(limit=50)
     quiet_periods_all = await _quiet_periods(request).list_recent(limit=200)
     hidden_ids = _quiet_hidden_ids(request)
     quiet_periods_active = [
@@ -890,6 +891,7 @@ async def admin_dashboard(
         broadcasts=broadcasts,
         admin_messages=admin_messages,
         unread_admin_messages=unread_admin_messages,
+        request_help_active=request_help_active,
         quiet_periods_active=quiet_periods_active,
         quiet_periods_history=quiet_periods_history,
         quiet_periods_hidden_count=len(hidden_ids),
@@ -2008,6 +2010,50 @@ async def admin_reply_message(
         return RedirectResponse(url="/admin#messages", status_code=status.HTTP_303_SEE_OTHER)
     _set_flash(request, message="Reply sent to user message.")
     return RedirectResponse(url="/admin#messages", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.post("/admin/request-help/{team_assist_id}/clear", include_in_schema=False)
+async def admin_clear_request_help(
+    request: Request,
+    team_assist_id: int,
+) -> RedirectResponse:
+    await _require_dashboard_admin(request)
+    existing = await _incident_store(request).get_team_assist(team_assist_id)
+    if existing is None:
+        _set_flash(request, error="Help request was not found.")
+        return RedirectResponse(url="/admin#request-help", status_code=status.HTTP_303_SEE_OTHER)
+    if existing.status in {"resolved", "cancelled"}:
+        _set_flash(request, message="Help request is already cleared.")
+        return RedirectResponse(url="/admin#request-help", status_code=status.HTTP_303_SEE_OTHER)
+
+    actor_user_id = _session_user_id(request) or 0
+    actor_label = _current_school_actor_label(request)
+    updated = await _incident_store(request).update_team_assist_action(
+        team_assist_id=team_assist_id,
+        status="resolved",
+        acted_by_user_id=actor_user_id,
+        acted_by_label=actor_label,
+        forward_to_user_id=None,
+        forward_to_label=None,
+    )
+    if updated is None:
+        _set_flash(request, error="Help request was not found.")
+        return RedirectResponse(url="/admin#request-help", status_code=status.HTTP_303_SEE_OTHER)
+
+    await _incident_store(request).create_notification_log(
+        user_id=updated.created_by,
+        type_value="team_assist_action",
+        payload={
+            "team_assist_id": updated.id,
+            "action": "admin_clear",
+            "status": updated.status,
+            "acted_by_user_id": actor_user_id,
+            "acted_by_label": actor_label,
+            "requires_two_person_cancel": False,
+        },
+    )
+    _set_flash(request, message="Help request cleared by admin.")
+    return RedirectResponse(url="/admin#request-help", status_code=status.HTTP_303_SEE_OTHER)
 
 
 @router.post("/admin/quiet-periods/grant", include_in_schema=False)

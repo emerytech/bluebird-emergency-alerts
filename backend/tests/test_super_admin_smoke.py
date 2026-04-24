@@ -364,3 +364,48 @@ def test_admin_can_send_message_to_single_user_or_all_users(client: TestClient, 
     )
     assert any(item["message"] == "All users note" for item in inbox_one_after.json()["messages"])
     assert any(item["message"] == "All users note" for item in inbox_two_after.json()["messages"])
+
+
+def test_admin_console_can_clear_request_help_without_dual_consent(client: TestClient, login_super_admin) -> None:
+    login_super_admin()
+    _create_school(client, name="Request Help Console", slug="request-help-console")
+    _enter_school(client, "request-help-console")
+
+    create_teacher = client.post(
+        "/request-help-console/admin/users/create",
+        data={
+            "name": "Jordan Teacher",
+            "role": "teacher",
+            "phone_e164": "",
+            "login_name": "",
+            "password": "",
+        },
+        follow_redirects=False,
+    )
+    assert create_teacher.status_code == 303
+
+    school = client.app.state.tenant_manager.school_for_slug("request-help-console")
+    assert school is not None
+    tenant = client.app.state.tenant_manager.get(school)
+    users = asyncio.run(tenant.user_store.list_users())
+    teacher = next(u for u in users if u.name == "Jordan Teacher")
+
+    created = client.post(
+        "/request-help-console/team-assist/create",
+        json={"type": "medical", "user_id": teacher.id, "assigned_team_ids": []},
+        headers={"X-API-Key": "test-api-key"},
+    )
+    assert created.status_code == 200
+    request_help_id = int(created.json()["id"])
+
+    active_before = client.get("/request-help-console/team-assist/active", headers={"X-API-Key": "test-api-key"})
+    assert active_before.status_code == 200
+    assert any(item["id"] == request_help_id for item in active_before.json()["team_assists"])
+
+    cleared = client.post(f"/request-help-console/admin/request-help/{request_help_id}/clear", follow_redirects=False)
+    assert cleared.status_code == 303
+    assert cleared.headers.get("location") == "/request-help-console/admin#request-help"
+
+    active_after = client.get("/request-help-console/team-assist/active", headers={"X-API-Key": "test-api-key"})
+    assert active_after.status_code == 200
+    assert all(item["id"] != request_help_id for item in active_after.json()["team_assists"])
