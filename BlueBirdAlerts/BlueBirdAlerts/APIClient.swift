@@ -78,7 +78,7 @@ struct APIClient {
         return try JSONDecoder().decode(IncidentListResponse.self, from: data)
     }
 
-    func activeTeamAssists() async throws -> TeamAssistListResponse {
+    func activeRequestHelp() async throws -> TeamAssistListResponse {
         let url = baseURL.appendingPathComponent("team-assist/active")
         var request = URLRequest(url: url)
         withAPIKey(&request)
@@ -87,7 +87,11 @@ struct APIClient {
         return try JSONDecoder().decode(TeamAssistListResponse.self, from: data)
     }
 
-    func createTeamAssist(userID: Int, type: String) async throws -> TeamAssistSummary {
+    func activeTeamAssists() async throws -> TeamAssistListResponse {
+        try await activeRequestHelp()
+    }
+
+    func createRequestHelp(userID: Int, type: String) async throws -> TeamAssistSummary {
         let url = baseURL.appendingPathComponent("team-assist/create")
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -99,7 +103,11 @@ struct APIClient {
         return try JSONDecoder().decode(TeamAssistSummary.self, from: data)
     }
 
-    func updateTeamAssist(
+    func createTeamAssist(userID: Int, type: String) async throws -> TeamAssistSummary {
+        try await createRequestHelp(userID: userID, type: type)
+    }
+
+    func updateRequestHelp(
         teamAssistID: Int,
         actorUserID: Int,
         action: String,
@@ -118,7 +126,21 @@ struct APIClient {
         return try JSONDecoder().decode(TeamAssistSummary.self, from: data)
     }
 
-    func confirmTeamAssistCancel(teamAssistID: Int, actorUserID: Int) async throws -> TeamAssistSummary {
+    func updateTeamAssist(
+        teamAssistID: Int,
+        actorUserID: Int,
+        action: String,
+        forwardToUserID: Int? = nil
+    ) async throws -> TeamAssistSummary {
+        try await updateRequestHelp(
+            teamAssistID: teamAssistID,
+            actorUserID: actorUserID,
+            action: action,
+            forwardToUserID: forwardToUserID
+        )
+    }
+
+    func confirmRequestHelpCancel(teamAssistID: Int, actorUserID: Int) async throws -> TeamAssistSummary {
         let url = baseURL.appendingPathComponent("team-assist/\(teamAssistID)/cancel-confirm")
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -128,6 +150,10 @@ struct APIClient {
         let (data, response) = try await URLSession.shared.data(for: request)
         try requireSuccess(response: response, data: data)
         return try JSONDecoder().decode(TeamAssistSummary.self, from: data)
+    }
+
+    func confirmTeamAssistCancel(teamAssistID: Int, actorUserID: Int) async throws -> TeamAssistSummary {
+        try await confirmRequestHelpCancel(teamAssistID: teamAssistID, actorUserID: actorUserID)
     }
 
     func requestQuietPeriod(userID: Int, reason: String?) async throws -> QuietPeriodRequestResponse {

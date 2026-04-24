@@ -399,7 +399,7 @@ class MainViewModel : ViewModel() {
             .onSuccess { incidents ->
                 _state.update { it.copy(activeIncidents = incidents) }
             }
-        runCatching { client!!.activeTeamAssists() }
+        runCatching { client!!.activeRequestHelp() }
             .onSuccess { teamAssists ->
                 _state.update { it.copy(activeTeamAssists = teamAssists) }
             }
@@ -570,7 +570,7 @@ class MainViewModel : ViewModel() {
         }
     }
 
-    fun createTeamAssist(ctx: Context, type: String) {
+    fun requestHelp(ctx: Context, type: String) {
         val userId = getUserId(ctx).toIntOrNull()
         if (userId == null) {
             _state.update { it.copy(errorMsg = "You must be signed in to request help.") }
@@ -578,9 +578,9 @@ class MainViewModel : ViewModel() {
         }
         viewModelScope.launch(Dispatchers.IO) {
             _state.update { it.copy(isBusy = true, errorMsg = null) }
-            runCatching { client!!.createTeamAssist(userId = userId, type = type) }
+            runCatching { client!!.createRequestHelp(userId = userId, type = type) }
                 .onSuccess {
-                    val activeTeamAssists = runCatching { client!!.activeTeamAssists() }.getOrDefault(_state.value.activeTeamAssists)
+                    val activeTeamAssists = runCatching { client!!.activeRequestHelp() }.getOrDefault(_state.value.activeTeamAssists)
                     _state.update {
                         it.copy(
                             isBusy = false,
@@ -595,7 +595,11 @@ class MainViewModel : ViewModel() {
         }
     }
 
-    fun updateTeamAssistAction(ctx: Context, teamAssistId: Int, action: String, forwardToUserId: Int? = null) {
+    fun createTeamAssist(ctx: Context, type: String) {
+        requestHelp(ctx = ctx, type = type)
+    }
+
+    fun updateRequestHelpAction(ctx: Context, teamAssistId: Int, action: String, forwardToUserId: Int? = null) {
         val actorUserId = getUserId(ctx).toIntOrNull()
         if (actorUserId == null) {
             _state.update { it.copy(errorMsg = "Admin sign-in is required.") }
@@ -604,7 +608,7 @@ class MainViewModel : ViewModel() {
         viewModelScope.launch(Dispatchers.IO) {
             _state.update { it.copy(isBusy = true, errorMsg = null) }
             runCatching {
-                client!!.updateTeamAssistAction(
+                client!!.updateRequestHelpAction(
                     teamAssistId = teamAssistId,
                     actorUserId = actorUserId,
                     action = action,
@@ -612,7 +616,7 @@ class MainViewModel : ViewModel() {
                 )
             }
                 .onSuccess { _ ->
-                    val activeTeamAssists = runCatching { client!!.activeTeamAssists() }.getOrDefault(_state.value.activeTeamAssists)
+                    val activeTeamAssists = runCatching { client!!.activeRequestHelp() }.getOrDefault(_state.value.activeTeamAssists)
                     _state.update {
                         it.copy(
                             isBusy = false,
@@ -627,7 +631,16 @@ class MainViewModel : ViewModel() {
         }
     }
 
-    fun confirmTeamAssistCancel(ctx: Context, teamAssistId: Int) {
+    fun updateTeamAssistAction(ctx: Context, teamAssistId: Int, action: String, forwardToUserId: Int? = null) {
+        updateRequestHelpAction(
+            ctx = ctx,
+            teamAssistId = teamAssistId,
+            action = action,
+            forwardToUserId = forwardToUserId,
+        )
+    }
+
+    fun confirmRequestHelpCancel(ctx: Context, teamAssistId: Int) {
         val actorUserId = getUserId(ctx).toIntOrNull()
         if (actorUserId == null) {
             _state.update { it.copy(errorMsg = "Sign-in is required.") }
@@ -635,9 +648,9 @@ class MainViewModel : ViewModel() {
         }
         viewModelScope.launch(Dispatchers.IO) {
             _state.update { it.copy(isBusy = true, errorMsg = null) }
-            runCatching { client!!.confirmTeamAssistCancel(teamAssistId = teamAssistId, actorUserId = actorUserId) }
+            runCatching { client!!.confirmRequestHelpCancel(teamAssistId = teamAssistId, actorUserId = actorUserId) }
                 .onSuccess { updated ->
-                    val activeTeamAssists = runCatching { client!!.activeTeamAssists() }.getOrDefault(_state.value.activeTeamAssists)
+                    val activeTeamAssists = runCatching { client!!.activeRequestHelp() }.getOrDefault(_state.value.activeTeamAssists)
                     _state.update {
                         it.copy(
                             isBusy = false,
@@ -654,6 +667,10 @@ class MainViewModel : ViewModel() {
                     _state.update { it.copy(isBusy = false, errorMsg = e.message ?: "Failed to confirm request-help cancellation.") }
                 }
         }
+    }
+
+    fun confirmTeamAssistCancel(ctx: Context, teamAssistId: Int) {
+        confirmRequestHelpCancel(ctx = ctx, teamAssistId = teamAssistId)
     }
 
     fun deleteQuietPeriodRequest(ctx: Context) {
@@ -1305,7 +1322,7 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                         onRefresh = { vm.refreshIncidentFeeds() },
                         onTeamAssistAction = { teamAssistId, action, forwardToUserId ->
                             runProtectedAction(true) {
-                                vm.updateTeamAssistAction(
+                                vm.updateRequestHelpAction(
                                     ctx = ctx,
                                     teamAssistId = teamAssistId,
                                     action = action,
@@ -1315,7 +1332,7 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                         },
                         onTeamAssistCancelConfirm = { teamAssistId ->
                             runProtectedAction(true) {
-                                vm.confirmTeamAssistCancel(ctx = ctx, teamAssistId = teamAssistId)
+                                vm.confirmRequestHelpCancel(ctx = ctx, teamAssistId = teamAssistId)
                             }
                         },
                         modifier = Modifier
@@ -1490,7 +1507,7 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
             onDismiss = { showTeamAssistDialog = false },
             onConfirm = { type ->
                 showTeamAssistDialog = false
-                vm.createTeamAssist(ctx, type)
+                vm.requestHelp(ctx, type)
             },
         )
     }
@@ -3240,7 +3257,7 @@ private class BackendClient(baseUrl: String, private val apiKey: String) {
         }
     }
 
-    fun createTeamAssist(userId: Int, type: String): TeamAssistFeedItem {
+    fun createRequestHelp(userId: Int, type: String): TeamAssistFeedItem {
         val body = JSONObject()
             .put("user_id", userId)
             .put("type", type)
@@ -3267,7 +3284,11 @@ private class BackendClient(baseUrl: String, private val apiKey: String) {
         }
     }
 
-    fun updateTeamAssistAction(teamAssistId: Int, actorUserId: Int, action: String, forwardToUserId: Int? = null): TeamAssistFeedItem {
+    fun createTeamAssist(userId: Int, type: String): TeamAssistFeedItem {
+        return createRequestHelp(userId = userId, type = type)
+    }
+
+    fun updateRequestHelpAction(teamAssistId: Int, actorUserId: Int, action: String, forwardToUserId: Int? = null): TeamAssistFeedItem {
         val body = JSONObject()
             .put("user_id", actorUserId)
             .put("action", action)
@@ -3296,7 +3317,16 @@ private class BackendClient(baseUrl: String, private val apiKey: String) {
         }
     }
 
-    fun confirmTeamAssistCancel(teamAssistId: Int, actorUserId: Int): TeamAssistFeedItem {
+    fun updateTeamAssistAction(teamAssistId: Int, actorUserId: Int, action: String, forwardToUserId: Int? = null): TeamAssistFeedItem {
+        return updateRequestHelpAction(
+            teamAssistId = teamAssistId,
+            actorUserId = actorUserId,
+            action = action,
+            forwardToUserId = forwardToUserId,
+        )
+    }
+
+    fun confirmRequestHelpCancel(teamAssistId: Int, actorUserId: Int): TeamAssistFeedItem {
         val body = JSONObject().put("user_id", actorUserId)
         val req = Request.Builder()
             .url("$base/team-assist/$teamAssistId/cancel-confirm")
@@ -3320,7 +3350,11 @@ private class BackendClient(baseUrl: String, private val apiKey: String) {
         }
     }
 
-    fun activeTeamAssists(): List<TeamAssistFeedItem> {
+    fun confirmTeamAssistCancel(teamAssistId: Int, actorUserId: Int): TeamAssistFeedItem {
+        return confirmRequestHelpCancel(teamAssistId = teamAssistId, actorUserId = actorUserId)
+    }
+
+    fun activeRequestHelp(): List<TeamAssistFeedItem> {
         val req = Request.Builder()
             .url("$base/team-assist/active")
             .withAuth()
@@ -3351,6 +3385,10 @@ private class BackendClient(baseUrl: String, private val apiKey: String) {
                 }
             }
         }
+    }
+
+    fun activeTeamAssists(): List<TeamAssistFeedItem> {
+        return activeRequestHelp()
     }
 
     fun activeIncidents(): List<IncidentFeedItem> {

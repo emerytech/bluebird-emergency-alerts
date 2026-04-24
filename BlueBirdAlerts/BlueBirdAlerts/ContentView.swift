@@ -732,7 +732,7 @@ struct ContentView: View {
 
         do {
             async let incidentsResponse = api.activeIncidents()
-            async let teamAssistResponse = api.activeTeamAssists()
+            async let teamAssistResponse = api.activeRequestHelp()
             let (incidents, teamAssists) = try await (incidentsResponse, teamAssistResponse)
             activeIncidents = incidents.incidents
             activeTeamAssists = teamAssists.teamAssists
@@ -876,7 +876,7 @@ struct ContentView: View {
         isSubmittingQuickAction = true
         defer { isSubmittingQuickAction = false }
         do {
-            _ = try await api.createTeamAssist(userID: userID, type: type)
+            _ = try await api.createRequestHelp(userID: userID, type: type)
             appState.lastError = nil
             appState.lastStatus = "Request help sent."
             await refreshIncidentFeed()
@@ -893,7 +893,7 @@ struct ContentView: View {
         isUpdatingTeamAssist = true
         defer { isUpdatingTeamAssist = false }
         do {
-            _ = try await api.updateTeamAssist(teamAssistID: item.id, actorUserID: userID, action: action)
+            _ = try await api.updateRequestHelp(teamAssistID: item.id, actorUserID: userID, action: action)
             appState.lastError = nil
             appState.lastStatus = "Request help marked \(action) by \(appState.userName)."
             await refreshIncidentFeed()
@@ -910,7 +910,7 @@ struct ContentView: View {
         isUpdatingTeamAssist = true
         defer { isUpdatingTeamAssist = false }
         do {
-            let updated = try await api.confirmTeamAssistCancel(teamAssistID: item.id, actorUserID: userID)
+            let updated = try await api.confirmRequestHelpCancel(teamAssistID: item.id, actorUserID: userID)
             appState.lastError = nil
             if updated.status == "cancelled" {
                 appState.lastStatus = "Request help cancelled after dual confirmation."
@@ -931,7 +931,7 @@ struct ContentView: View {
         isUpdatingTeamAssist = true
         defer { isUpdatingTeamAssist = false }
         do {
-            _ = try await api.updateTeamAssist(
+            _ = try await api.updateRequestHelp(
                 teamAssistID: item.id,
                 actorUserID: userID,
                 action: "forward",
