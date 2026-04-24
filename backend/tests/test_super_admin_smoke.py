@@ -292,7 +292,7 @@ def test_user_can_delete_own_quiet_period_request(client: TestClient, login_supe
         "/westfield/admin/users/create",
         data={
             "name": "Jamie Teacher",
-            "role": "teacher",
+            "role": "law_enforcement",
             "phone_e164": "",
             "login_name": "",
             "password": "",

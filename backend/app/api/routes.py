@@ -2970,7 +2970,11 @@ async def team_assist_cancel_confirm(
     _: None = Depends(require_api_key),
 ) -> TeamAssistSummary:
     users = _users(request)
-    actor_id = await _require_active_user_with_permission(users, body.user_id, permission=PERM_REQUEST_HELP)
+    actor_id = await _require_active_user_with_any_permission(
+        users,
+        body.user_id,
+        permissions={PERM_REQUEST_HELP, PERM_TRIGGER_OWN_TENANT_ALERTS, PERM_MANAGE_ASSIGNED_TENANT_INCIDENTS},
+    )
     actor = await users.get_user(actor_id)
     if actor is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Acting user not found")
