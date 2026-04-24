@@ -35,6 +35,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -735,6 +736,7 @@ private fun App() {
 private fun LoginScreen(onDone: () -> Unit) {
     val ctx = LocalContext.current
     val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
     var serverUrl by remember { mutableStateOf(getServerUrl(ctx)) }
     var schoolOptions by remember { mutableStateOf<List<SchoolOption>>(emptyList()) }
     var selectedSchoolSlug by remember { mutableStateOf(extractSchoolSlug(getServerUrl(ctx))) }
@@ -810,6 +812,7 @@ private fun LoginScreen(onDone: () -> Unit) {
     Box(
         modifier = Modifier
             .fillMaxSize()
+            .dismissKeyboardOnTap(focusManager, keyboardController)
             .background(
                 Brush.verticalGradient(listOf(AppBg, AppBgDeep))
             ),
@@ -1038,6 +1041,8 @@ private fun LoginScreen(onDone: () -> Unit) {
 @OptIn(ExperimentalMaterial3Api::class)
 private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
     val ctx = LocalContext.current
+    val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
     val state by vm.state.collectAsState()
     var showDeactivateDialog by remember { mutableStateOf(false) }
     var showReportDialog by remember { mutableStateOf(false) }
@@ -1133,6 +1138,7 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
+                .dismissKeyboardOnTap(focusManager, keyboardController)
                 .background(Brush.verticalGradient(listOf(AppBg, AppBgDeep))),
         ) {
             if (showSettingsScreen) {
