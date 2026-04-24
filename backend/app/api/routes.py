@@ -191,6 +191,10 @@ def _school_theme(school) -> dict[str, str]:
     }
 
 
+def _super_admin_school_access_here(request: Request) -> bool:
+    return _super_admin_ok(request) and _super_admin_school_slug(request) == str(getattr(request.state.school, "slug", "") or "")
+
+
 def _client_fingerprint(request: Request) -> str:
     user_agent = request.headers.get("user-agent", "").strip()
     return hashlib.sha256(user_agent.encode("utf-8")).hexdigest()
@@ -548,9 +552,7 @@ def _build_server_info(request: Request) -> dict:
 
 @router.get("/admin", response_class=HTMLResponse, include_in_schema=False)
 async def admin_dashboard(request: Request) -> HTMLResponse:
-    if _session_user_id(request) is None and not (
-        _super_admin_ok(request) and _super_admin_school_slug(request) == str(request.state.school.slug)
-    ):
+    if _session_user_id(request) is None and not _super_admin_school_access_here(request):
         return RedirectResponse(url="/admin/login", status_code=status.HTTP_303_SEE_OTHER)
     await _require_dashboard_admin(request)
     devices = await _registry(request).list_devices()
@@ -602,7 +604,7 @@ async def admin_dashboard(request: Request) -> HTMLResponse:
 
 @router.get("/admin/login", response_class=HTMLResponse, include_in_schema=False)
 async def admin_login_page(request: Request) -> HTMLResponse:
-    if _super_admin_ok(request) and _super_admin_school_slug(request) == str(request.state.school.slug):
+    if _super_admin_school_access_here(request):
         return RedirectResponse(url="/admin", status_code=status.HTTP_303_SEE_OTHER)
     if _session_user_id(request) is not None:
         user = await _users(request).get_user(_session_user_id(request) or 0)
@@ -758,6 +760,8 @@ async def admin_logout(request: Request) -> RedirectResponse:
 
 @router.get("/admin/totp/status")
 async def admin_totp_status(request: Request) -> dict[str, object]:
+    if _super_admin_school_access_here(request):
+        return {"ok": False, "error": "School-admin 2FA settings are not available during super admin access."}
     await _require_dashboard_admin(request)
     user = request.state.admin_user  # type: ignore[attr-defined]
     return {"ok": True, "enabled": bool(getattr(user, "totp_enabled", False))}
@@ -765,6 +769,8 @@ async def admin_totp_status(request: Request) -> dict[str, object]:
 
 @router.post("/admin/totp/setup")
 async def admin_totp_setup(request: Request) -> dict[str, object]:
+    if _super_admin_school_access_here(request):
+        return {"ok": False, "error": "School-admin 2FA settings are not available during super admin access."}
     await _require_dashboard_admin(request)
     user = request.state.admin_user  # type: ignore[attr-defined]
     if bool(getattr(user, "totp_enabled", False)):
@@ -778,6 +784,9 @@ async def admin_totp_setup(request: Request) -> dict[str, object]:
 
 @router.post("/admin/totp/setup-form", include_in_schema=False)
 async def admin_totp_setup_form(request: Request) -> RedirectResponse:
+    if _super_admin_school_access_here(request):
+        _set_flash(request, error="School-admin 2FA settings are not available during super admin access.")
+        return RedirectResponse(url=_school_url(request, "/admin#security"), status_code=status.HTTP_303_SEE_OTHER)
     await _require_dashboard_admin(request)
     user = request.state.admin_user  # type: ignore[attr-defined]
     if bool(getattr(user, "totp_enabled", False)):
@@ -793,6 +802,8 @@ async def admin_totp_enable(
     request: Request,
     code: str = Form(...),
 ) -> dict[str, object]:
+    if _super_admin_school_access_here(request):
+        return {"ok": False, "error": "School-admin 2FA settings are not available during super admin access."}
     await _require_dashboard_admin(request)
     user = request.state.admin_user  # type: ignore[attr-defined]
     secret = str(request.session.get("admin_totp_setup_secret", "") or "").strip()
@@ -810,6 +821,9 @@ async def admin_totp_enable_form(
     request: Request,
     code: str = Form(default=""),
 ) -> RedirectResponse:
+    if _super_admin_school_access_here(request):
+        _set_flash(request, error="School-admin 2FA settings are not available during super admin access.")
+        return RedirectResponse(url=_school_url(request, "/admin#security"), status_code=status.HTTP_303_SEE_OTHER)
     await _require_dashboard_admin(request)
     user = request.state.admin_user  # type: ignore[attr-defined]
     secret = str(request.session.get("admin_totp_setup_secret", "") or "").strip()
@@ -833,6 +847,8 @@ async def admin_totp_disable(
     request: Request,
     current_password: str = Form(...),
 ) -> dict[str, object]:
+    if _super_admin_school_access_here(request):
+        return {"ok": False, "error": "School-admin 2FA settings are not available during super admin access."}
     await _require_dashboard_admin(request)
     user = request.state.admin_user  # type: ignore[attr-defined]
     if not await _users(request).verify_current_password(user.id, current_password):
@@ -847,6 +863,9 @@ async def admin_totp_disable_form(
     request: Request,
     current_password: str = Form(default=""),
 ) -> RedirectResponse:
+    if _super_admin_school_access_here(request):
+        _set_flash(request, error="School-admin 2FA settings are not available during super admin access.")
+        return RedirectResponse(url=_school_url(request, "/admin#security"), status_code=status.HTTP_303_SEE_OTHER)
     await _require_dashboard_admin(request)
     user = request.state.admin_user  # type: ignore[attr-defined]
     if not current_password.strip():
@@ -969,6 +988,7 @@ async def super_admin_totp_submit(
 async def super_admin_logout(request: Request) -> RedirectResponse:
     request.session.pop("super_admin_id", None)
     _clear_pending_super_admin(request)
+    _clear_super_admin_school_scope(request)
     response = RedirectResponse(url="/super-admin/login", status_code=status.HTTP_303_SEE_OTHER)
     _clear_super_admin_trust_cookie(request, response)
     return response
@@ -1458,6 +1478,9 @@ async def server_restart(request: Request, background_tasks: BackgroundTasks) ->
 
 @router.get("/admin/change-password", response_class=HTMLResponse, include_in_schema=False)
 async def change_password_page(request: Request) -> HTMLResponse:
+    if _super_admin_school_access_here(request):
+        _set_flash(request, error="School-admin password changes are not available during super admin access.")
+        return RedirectResponse(url=_school_url(request, "/admin#security"), status_code=status.HTTP_303_SEE_OTHER)
     user_id = _session_user_id(request)
     if user_id is None:
         return RedirectResponse(url="/admin/login", status_code=status.HTTP_303_SEE_OTHER)
@@ -1485,6 +1508,9 @@ async def change_password_submit(
     new_password: str = Form(...),
     confirm_password: str = Form(...),
 ) -> RedirectResponse:
+    if _super_admin_school_access_here(request):
+        _set_flash(request, error="School-admin password changes are not available during super admin access.")
+        return RedirectResponse(url=_school_url(request, "/admin#security"), status_code=status.HTTP_303_SEE_OTHER)
     user_id = _session_user_id(request)
     if user_id is None:
         return RedirectResponse(url="/admin/login", status_code=status.HTTP_303_SEE_OTHER)
