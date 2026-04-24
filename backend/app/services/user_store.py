@@ -23,6 +23,7 @@ class UserRecord:
     can_login: bool
     last_login_at: Optional[str]
     must_change_password: bool = False
+    totp_enabled: bool = False
 
 
 class UserStore:
@@ -80,6 +81,8 @@ class UserStore:
             conn.execute("ALTER TABLE users ADD COLUMN last_login_at TEXT NULL;")
         if "must_change_password" not in cols:
             conn.execute("ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0;")
+        if "totp_secret" not in cols:
+            conn.execute("ALTER TABLE users ADD COLUMN totp_secret TEXT NULL;")
 
     def _create_user_sync(
         self,
@@ -134,7 +137,7 @@ class UserStore:
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT id, created_at, name, role, phone_e164, is_active, login_name, password_hash, last_login_at, must_change_password
+                SELECT id, created_at, name, role, phone_e164, is_active, login_name, password_hash, last_login_at, must_change_password, totp_secret
                 FROM users
                 ORDER BY id ASC;
                 """
@@ -152,6 +155,7 @@ class UserStore:
                 can_login=bool(row[6]) and bool(row[7]),
                 last_login_at=str(row[8]) if row[8] is not None else None,
                 must_change_password=bool(int(row[9])) if row[9] is not None else False,
+                totp_enabled=bool(row[10]),
             )
             for row in rows
         ]
@@ -223,7 +227,7 @@ class UserStore:
         with self._connect() as conn:
             row = conn.execute(
                 """
-                SELECT id, created_at, name, role, phone_e164, is_active, login_name, password_hash, last_login_at, must_change_password
+                SELECT id, created_at, name, role, phone_e164, is_active, login_name, password_hash, last_login_at, must_change_password, totp_secret
                 FROM users
                 WHERE id = ?
                 LIMIT 1;
@@ -243,6 +247,7 @@ class UserStore:
             can_login=bool(row[6]) and bool(row[7]),
             last_login_at=str(row[8]) if row[8] is not None else None,
             must_change_password=bool(int(row[9])) if row[9] is not None else False,
+            totp_enabled=bool(row[10]),
         )
 
     async def get_user(self, user_id: int) -> Optional[UserRecord]:
@@ -373,7 +378,7 @@ class UserStore:
         with self._connect() as conn:
             row = conn.execute(
                 """
-                SELECT id, created_at, name, role, phone_e164, is_active, login_name, password_salt, password_hash, last_login_at, must_change_password
+                SELECT id, created_at, name, role, phone_e164, is_active, login_name, password_salt, password_hash, last_login_at, must_change_password, totp_secret
                 FROM users
                 WHERE login_name = ?
                 LIMIT 1;
@@ -401,6 +406,7 @@ class UserStore:
             can_login=True,
             last_login_at=str(row[9]) if row[9] is not None else None,
             must_change_password=bool(int(row[10])) if row[10] is not None else False,
+            totp_enabled=bool(row[11]),
         )
 
     async def authenticate_user(self, login_name: str, password: str) -> Optional[UserRecord]:
@@ -442,3 +448,43 @@ class UserStore:
     async def change_password(self, user_id: int, new_password: str) -> None:
         password_salt, password_hash = hash_password(new_password)
         await anyio.to_thread.run_sync(self._change_password_sync, int(user_id), password_salt, password_hash)
+
+    def _get_totp_secret_sync(self, user_id: int) -> Optional[str]:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT totp_secret FROM users WHERE id = ? LIMIT 1;",
+                (int(user_id),),
+            ).fetchone()
+        if row is None or row[0] is None:
+            return None
+        return str(row[0])
+
+    async def get_totp_secret(self, user_id: int) -> Optional[str]:
+        return await anyio.to_thread.run_sync(self._get_totp_secret_sync, int(user_id))
+
+    def _set_totp_secret_sync(self, user_id: int, secret: Optional[str]) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE users SET totp_secret = ? WHERE id = ?;",
+                (secret, int(user_id)),
+            )
+
+    async def set_totp_secret(self, user_id: int, secret: Optional[str]) -> None:
+        await anyio.to_thread.run_sync(self._set_totp_secret_sync, int(user_id), secret)
+
+    def _verify_current_password_sync(self, user_id: int, password: str) -> bool:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT password_salt, password_hash FROM users WHERE id = ? LIMIT 1;",
+                (int(user_id),),
+            ).fetchone()
+        if row is None:
+            return False
+        password_salt = str(row[0]) if row[0] is not None else ""
+        password_hash = str(row[1]) if row[1] is not None else ""
+        if not password_salt or not password_hash:
+            return False
+        return verify_password(password, salt_hex=password_salt, digest_hex=password_hash)
+
+    async def verify_current_password(self, user_id: int, password: str) -> bool:
+        return await anyio.to_thread.run_sync(self._verify_current_password_sync, int(user_id), password)

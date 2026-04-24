@@ -553,6 +553,64 @@ def render_super_admin_login_page(*, message: Optional[str] = None, error: Optio
 </html>"""
 
 
+def render_totp_page(
+    *,
+    action: str,
+    cancel_action: str,
+    title: str,
+    eyebrow: str,
+    heading: str,
+    helper: str,
+    user_label: str,
+    message: Optional[str] = None,
+    error: Optional[str] = None,
+    theme: Optional[Mapping[str, str]] = None,
+) -> str:
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{escape(title)}</title>
+  {_favicon_tags()}
+  <style>{_base_styles(theme)}</style>
+</head>
+<body>
+  <main class="login-shell">
+    <section class="hero-card">
+      <div class="brand-block">
+        {_brand_mark()}
+        <div class="stack brand-text">
+        <p class="eyebrow">{escape(eyebrow)}</p>
+        <h1>{escape(heading)}</h1>
+        <p class="hero-copy">{escape(helper)}</p>
+        </div>
+      </div>
+    </section>
+    <section class="login-panel">
+      <div class="stack">
+        <p class="eyebrow">Two-Factor Authentication</p>
+        <h2>Enter your 6-digit code</h2>
+        <p class="card-copy">Account: <strong>{escape(user_label)}</strong></p>
+      </div>
+      {_render_flash(message, "success")}
+      {_render_flash(error, "error")}
+      <form method="post" action="{action}" class="stack">
+        <div class="field">
+          <label for="code">Authenticator code</label>
+          <input id="code" name="code" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="one-time-code" />
+        </div>
+        <div class="button-row">
+          <button class="button button-primary" type="submit">Verify code</button>
+          <a class="button button-secondary" href="{cancel_action}">Cancel</a>
+        </div>
+      </form>
+    </section>
+  </main>
+</body>
+</html>"""
+
+
 def render_super_admin_page(
     *,
     base_domain: str,

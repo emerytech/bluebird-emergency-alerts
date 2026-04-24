@@ -51,6 +51,7 @@ from app.services.quiet_period_store import QuietPeriodStore
 from app.services.report_store import ReportStore
 from app.services.platform_admin_store import PlatformAdminStore
 from app.services.school_registry import SchoolRegistry
+from app.services.totp import generate_secret as generate_totp_secret, otpauth_uri, verify_code as verify_totp_code
 from app.services.user_store import UserStore
 from app.web.admin_views import (
     render_admin_page,
@@ -58,6 +59,7 @@ from app.web.admin_views import (
     render_login_page,
     render_super_admin_login_page,
     render_super_admin_page,
+    render_totp_page,
 )
 
 
@@ -111,6 +113,29 @@ def _session_user_id(request: Request) -> Optional[int]:
     return int(value) if isinstance(value, int) or isinstance(value, str) and str(value).isdigit() else None
 
 
+def _pending_admin_user_id(request: Request) -> Optional[int]:
+    value = request.session.get("pending_admin_user_id")
+    return int(value) if isinstance(value, int) or isinstance(value, str) and str(value).isdigit() else None
+
+
+def _super_admin_id(request: Request) -> Optional[int]:
+    value = request.session.get("super_admin_id")
+    return int(value) if isinstance(value, int) or isinstance(value, str) and str(value).isdigit() else None
+
+
+def _pending_super_admin_id(request: Request) -> Optional[int]:
+    value = request.session.get("pending_super_admin_id")
+    return int(value) if isinstance(value, int) or isinstance(value, str) and str(value).isdigit() else None
+
+
+def _clear_pending_admin(request: Request) -> None:
+    request.session.pop("pending_admin_user_id", None)
+
+
+def _clear_pending_super_admin(request: Request) -> None:
+    request.session.pop("pending_super_admin_id", None)
+
+
 def _set_flash(request: Request, *, message: Optional[str] = None, error: Optional[str] = None) -> None:
     request.session["admin_flash_message"] = message or ""
     request.session["admin_flash_error"] = error or ""
@@ -129,11 +154,6 @@ def _super_admin_ok(request: Request) -> bool:
 def _require_super_admin(request: Request) -> None:
     if not _super_admin_ok(request):
         raise HTTPException(status_code=status.HTTP_303_SEE_OTHER, headers={"Location": "/super-admin/login"})
-
-
-def _super_admin_id(request: Request) -> Optional[int]:
-    value = request.session.get("super_admin_id")
-    return int(value) if isinstance(value, int) or isinstance(value, str) and str(value).isdigit() else None
 
 
 def _school_prefix(request: Request) -> str:
@@ -455,7 +475,59 @@ async def admin_login(
     if user is None:
         _set_flash(request, error="Invalid admin username or password.")
         return RedirectResponse(url="/admin/login", status_code=status.HTTP_303_SEE_OTHER)
+    if user.totp_enabled:
+        request.session["pending_admin_user_id"] = user.id
+        return RedirectResponse(url="/admin/totp", status_code=status.HTTP_303_SEE_OTHER)
     request.session["admin_user_id"] = user.id
+    _clear_pending_admin(request)
+    await _users(request).mark_login(user.id)
+    if user.must_change_password:
+        return RedirectResponse(url="/admin/change-password", status_code=status.HTTP_303_SEE_OTHER)
+    _set_flash(request, message=f"Welcome back, {user.name}.")
+    return RedirectResponse(url="/admin", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.get("/admin/totp", response_class=HTMLResponse, include_in_schema=False)
+async def admin_totp_page(request: Request) -> HTMLResponse:
+    pending_user_id = _pending_admin_user_id(request)
+    if pending_user_id is None:
+        return RedirectResponse(url="/admin/login", status_code=status.HTTP_303_SEE_OTHER)
+    user = await _users(request).get_user(pending_user_id)
+    if user is None or not user.is_active or user.role != "admin" or not user.totp_enabled:
+        _clear_pending_admin(request)
+        return RedirectResponse(url="/admin/login", status_code=status.HTTP_303_SEE_OTHER)
+    flash_message, flash_error = _pop_flash(request)
+    return HTMLResponse(
+        render_totp_page(
+            action=_school_url(request, "/admin/totp"),
+            cancel_action=_school_url(request, "/admin/login"),
+            title="BlueBird Admin 2FA",
+            eyebrow="School Safety Command Deck",
+            heading="Two-factor verification",
+            helper="Open your authenticator app and enter the current 6-digit code to finish signing in.",
+            user_label=user.login_name or user.name,
+            message=flash_message,
+            error=flash_error,
+            theme=_school_theme(request.state.school),
+        )
+    )
+
+
+@router.post("/admin/totp", include_in_schema=False)
+async def admin_totp_submit(
+    request: Request,
+    code: str = Form(...),
+) -> RedirectResponse:
+    pending_user_id = _pending_admin_user_id(request)
+    if pending_user_id is None:
+        return RedirectResponse(url="/admin/login", status_code=status.HTTP_303_SEE_OTHER)
+    user = await _users(request).get_user(pending_user_id)
+    secret = await _users(request).get_totp_secret(pending_user_id)
+    if user is None or secret is None or not verify_totp_code(secret, code):
+        _set_flash(request, error="Invalid authenticator code.")
+        return RedirectResponse(url="/admin/totp", status_code=status.HTTP_303_SEE_OTHER)
+    request.session["admin_user_id"] = user.id
+    _clear_pending_admin(request)
     await _users(request).mark_login(user.id)
     if user.must_change_password:
         return RedirectResponse(url="/admin/change-password", status_code=status.HTTP_303_SEE_OTHER)
@@ -467,6 +539,57 @@ async def admin_login(
 async def admin_logout(request: Request) -> RedirectResponse:
     request.session.clear()
     return RedirectResponse(url="/admin/login", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.get("/admin/totp/status")
+async def admin_totp_status(request: Request) -> dict[str, object]:
+    await _require_dashboard_admin(request)
+    user = request.state.admin_user  # type: ignore[attr-defined]
+    return {"ok": True, "enabled": bool(getattr(user, "totp_enabled", False))}
+
+
+@router.post("/admin/totp/setup")
+async def admin_totp_setup(request: Request) -> dict[str, object]:
+    await _require_dashboard_admin(request)
+    user = request.state.admin_user  # type: ignore[attr-defined]
+    if bool(getattr(user, "totp_enabled", False)):
+        return {"ok": False, "error": "Two-factor authentication is already enabled."}
+    secret = generate_totp_secret()
+    request.session["admin_totp_setup_secret"] = secret
+    label = user.login_name or user.name
+    issuer = f"BlueBird Alerts ({request.state.school.slug})"
+    return {"ok": True, "secret": secret, "otpauth_uri": otpauth_uri(secret, label, issuer=issuer)}
+
+
+@router.post("/admin/totp/enable")
+async def admin_totp_enable(
+    request: Request,
+    code: str = Form(...),
+) -> dict[str, object]:
+    await _require_dashboard_admin(request)
+    user = request.state.admin_user  # type: ignore[attr-defined]
+    secret = str(request.session.get("admin_totp_setup_secret", "") or "").strip()
+    if not secret:
+        return {"ok": False, "error": "Start TOTP setup first."}
+    if not verify_totp_code(secret, code):
+        return {"ok": False, "error": "Invalid authenticator code."}
+    await _users(request).set_totp_secret(user.id, secret)
+    request.session.pop("admin_totp_setup_secret", None)
+    return {"ok": True, "enabled": True}
+
+
+@router.post("/admin/totp/disable")
+async def admin_totp_disable(
+    request: Request,
+    current_password: str = Form(...),
+) -> dict[str, object]:
+    await _require_dashboard_admin(request)
+    user = request.state.admin_user  # type: ignore[attr-defined]
+    if not await _users(request).verify_current_password(user.id, current_password):
+        return {"ok": False, "error": "Current password is incorrect."}
+    await _users(request).set_totp_secret(user.id, None)
+    request.session.pop("admin_totp_setup_secret", None)
+    return {"ok": True, "enabled": False}
 
 
 @router.get("/super-admin/login", response_class=HTMLResponse, include_in_schema=False)
@@ -490,7 +613,59 @@ async def super_admin_login(
     if admin is None:
         _set_flash(request, error="Invalid super admin credentials.")
         return RedirectResponse(url="/super-admin/login", status_code=status.HTTP_303_SEE_OTHER)
+    if admin.totp_enabled:
+        request.session["pending_super_admin_id"] = admin.id
+        return RedirectResponse(url="/super-admin/totp", status_code=status.HTTP_303_SEE_OTHER)
     request.session["super_admin_id"] = admin.id
+    _clear_pending_super_admin(request)
+    await _platform_admins(request).mark_login(admin.id)
+    if admin.must_change_password:
+        _set_flash(request, message="Please change your temporary super admin password before continuing.")
+        return RedirectResponse(url="/super-admin/change-password", status_code=status.HTTP_303_SEE_OTHER)
+    _set_flash(request, message="Signed in to super admin.")
+    return RedirectResponse(url="/super-admin", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.get("/super-admin/totp", response_class=HTMLResponse, include_in_schema=False)
+async def super_admin_totp_page(request: Request) -> HTMLResponse:
+    pending_admin_id = _pending_super_admin_id(request)
+    if pending_admin_id is None:
+        return RedirectResponse(url="/super-admin/login", status_code=status.HTTP_303_SEE_OTHER)
+    admin = await _platform_admins(request).get_by_id(pending_admin_id)
+    if admin is None or not admin.totp_enabled:
+        _clear_pending_super_admin(request)
+        return RedirectResponse(url="/super-admin/login", status_code=status.HTTP_303_SEE_OTHER)
+    flash_message, flash_error = _pop_flash(request)
+    return HTMLResponse(
+        render_totp_page(
+            action="/super-admin/totp",
+            cancel_action="/super-admin/login",
+            title="BlueBird Super Admin 2FA",
+            eyebrow="Platform Control",
+            heading="Two-factor verification",
+            helper="Open your authenticator app and enter the current 6-digit code to finish signing in.",
+            user_label=admin.login_name,
+            message=flash_message,
+            error=flash_error,
+        )
+    )
+
+
+@router.post("/super-admin/totp", include_in_schema=False)
+async def super_admin_totp_submit(
+    request: Request,
+    code: str = Form(...),
+) -> RedirectResponse:
+    pending_admin_id = _pending_super_admin_id(request)
+    if pending_admin_id is None:
+        return RedirectResponse(url="/super-admin/login", status_code=status.HTTP_303_SEE_OTHER)
+    admin = await _platform_admins(request).get_by_id(pending_admin_id)
+    secret = await _platform_admins(request).get_totp_secret(pending_admin_id)
+    if admin is None or secret is None or not verify_totp_code(secret, code):
+        _set_flash(request, error="Invalid authenticator code.")
+        return RedirectResponse(url="/super-admin/totp", status_code=status.HTTP_303_SEE_OTHER)
+    request.session["super_admin_id"] = admin.id
+    _clear_pending_super_admin(request)
     await _platform_admins(request).mark_login(admin.id)
     if admin.must_change_password:
         _set_flash(request, message="Please change your temporary super admin password before continuing.")
@@ -502,7 +677,63 @@ async def super_admin_login(
 @router.post("/super-admin/logout", include_in_schema=False)
 async def super_admin_logout(request: Request) -> RedirectResponse:
     request.session.pop("super_admin_id", None)
+    _clear_pending_super_admin(request)
     return RedirectResponse(url="/super-admin/login", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.get("/super-admin/totp/status")
+async def super_admin_totp_status(request: Request) -> dict[str, object]:
+    _require_super_admin(request)
+    admin = await _platform_admins(request).get_by_id(_super_admin_id(request) or 0)
+    return {"ok": True, "enabled": bool(admin.totp_enabled) if admin else False}
+
+
+@router.post("/super-admin/totp/setup")
+async def super_admin_totp_setup(request: Request) -> dict[str, object]:
+    _require_super_admin(request)
+    admin = await _platform_admins(request).get_by_id(_super_admin_id(request) or 0)
+    if admin is None:
+        return {"ok": False, "error": "Super admin account not found."}
+    if admin.totp_enabled:
+        return {"ok": False, "error": "Two-factor authentication is already enabled."}
+    secret = generate_totp_secret()
+    request.session["super_admin_totp_setup_secret"] = secret
+    return {"ok": True, "secret": secret, "otpauth_uri": otpauth_uri(secret, admin.login_name, issuer="BlueBird Alerts")}
+
+
+@router.post("/super-admin/totp/enable")
+async def super_admin_totp_enable(
+    request: Request,
+    code: str = Form(...),
+) -> dict[str, object]:
+    _require_super_admin(request)
+    admin = await _platform_admins(request).get_by_id(_super_admin_id(request) or 0)
+    if admin is None:
+        return {"ok": False, "error": "Super admin account not found."}
+    secret = str(request.session.get("super_admin_totp_setup_secret", "") or "").strip()
+    if not secret:
+        return {"ok": False, "error": "Start TOTP setup first."}
+    if not verify_totp_code(secret, code):
+        return {"ok": False, "error": "Invalid authenticator code."}
+    await _platform_admins(request).set_totp_secret(admin.id, secret)
+    request.session.pop("super_admin_totp_setup_secret", None)
+    return {"ok": True, "enabled": True}
+
+
+@router.post("/super-admin/totp/disable")
+async def super_admin_totp_disable(
+    request: Request,
+    current_password: str = Form(...),
+) -> dict[str, object]:
+    _require_super_admin(request)
+    admin = await _platform_admins(request).get_by_id(_super_admin_id(request) or 0)
+    if admin is None:
+        return {"ok": False, "error": "Super admin account not found."}
+    if not await _platform_admins(request).verify_current_password(admin.id, current_password):
+        return {"ok": False, "error": "Current password is incorrect."}
+    await _platform_admins(request).set_totp_secret(admin.id, None)
+    request.session.pop("super_admin_totp_setup_secret", None)
+    return {"ok": True, "enabled": False}
 
 
 @router.get("/super-admin/change-password", response_class=HTMLResponse, include_in_schema=False)
