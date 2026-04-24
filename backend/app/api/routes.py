@@ -457,18 +457,21 @@ async def super_admin_change_password_page(request: Request) -> HTMLResponse:
     if admin is None:
         request.session.pop("super_admin_id", None)
         return RedirectResponse(url="/super-admin/login", status_code=status.HTTP_303_SEE_OTHER)
-    if not admin.must_change_password:
-        return RedirectResponse(url="/super-admin", status_code=status.HTTP_303_SEE_OTHER)
-    _, flash_error = _pop_flash(request)
+    flash_message, flash_error = _pop_flash(request)
     return HTMLResponse(
         render_change_password_page(
             user_name=admin.login_name,
+            message=flash_message,
             error=flash_error,
             action="/super-admin/change-password",
             title="Change Super Admin Password",
             eyebrow="BlueBird Platform",
-            heading="Password change required",
-            helper="Your super admin account is using a temporary bootstrap password. Choose a new one before continuing.",
+            heading="Password change required" if admin.must_change_password else "Update super admin password",
+            helper=(
+                "Your super admin account is using a temporary bootstrap password. Choose a new one before continuing."
+                if admin.must_change_password
+                else "Rotate your platform password here whenever you want to update super admin access."
+            ),
         )
     )
 
@@ -509,6 +512,7 @@ async def super_admin_dashboard(request: Request) -> HTMLResponse:
         render_super_admin_page(
             base_domain=request.app.state.settings.BASE_DOMAIN,  # type: ignore[attr-defined]
             schools=schools,
+            git_pull_configured=bool(request.app.state.settings.SERVER_GIT_PULL_COMMAND),  # type: ignore[attr-defined]
             flash_message=flash_message,
             flash_error=flash_error,
         )
@@ -542,6 +546,26 @@ async def super_admin_create_school(
         message=f"Created school {school.name}. Admin URL: https://{school.slug}.{request.app.state.settings.BASE_DOMAIN}/admin",  # type: ignore[attr-defined]
     )
     return RedirectResponse(url="/super-admin#schools", status_code=status.HTTP_303_SEE_OTHER)
+
+
+def _run_server_command(command: Optional[str]) -> None:
+    if command:
+        os.system(command)
+
+
+@router.post("/super-admin/server/pull-latest", include_in_schema=False)
+async def super_admin_pull_latest(
+    request: Request,
+    background_tasks: BackgroundTasks,
+) -> RedirectResponse:
+    _require_super_admin(request)
+    command = request.app.state.settings.SERVER_GIT_PULL_COMMAND  # type: ignore[attr-defined]
+    if not command:
+        _set_flash(request, error="SERVER_GIT_PULL_COMMAND is not configured on this server.")
+        return RedirectResponse(url="/super-admin#server-tools", status_code=status.HTTP_303_SEE_OTHER)
+    background_tasks.add_task(_run_server_command, command)
+    _set_flash(request, message="Server git pull started in the background.")
+    return RedirectResponse(url="/super-admin#server-tools", status_code=status.HTTP_303_SEE_OTHER)
 
 
 def _do_restart(command: Optional[str]) -> None:

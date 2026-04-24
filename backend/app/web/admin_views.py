@@ -414,6 +414,7 @@ def render_super_admin_page(
     *,
     base_domain: str,
     schools: Sequence[SchoolRecord],
+    git_pull_configured: bool,
     flash_message: Optional[str] = None,
     flash_error: Optional[str] = None,
 ) -> str:
@@ -442,7 +443,12 @@ def render_super_admin_page(
           <nav class="nav-list">
             <a class="nav-item" href="#schools">Schools</a>
             <a class="nav-item" href="#create-school">Create school</a>
+            <a class="nav-item" href="/super-admin/change-password">Change password</a>
+            <a class="nav-item" href="#server-tools">Server tools</a>
           </nav>
+          <div class="button-row">
+            <a class="button button-secondary" href="/super-admin/change-password">Change Password</a>
+          </div>
           <form method="post" action="/super-admin/logout">
             <button class="button button-secondary" type="submit">Log out</button>
           </form>
@@ -461,6 +467,7 @@ def render_super_admin_page(
             <div class="status-row">
               <span class="status-pill ok"><strong>Base domain</strong>{escape(base_domain)}</span>
               <span class="status-pill"><strong>Schools</strong>{len(schools)}</span>
+              <span class="status-pill {'ok' if git_pull_configured else 'danger'}"><strong>Git pull</strong>{'configured' if git_pull_configured else 'not configured'}</span>
             </div>
           </div>
           <table>
@@ -491,6 +498,24 @@ def render_super_admin_page(
             </div>
             <div class="button-row">
               <button class="button button-primary" type="submit">Create school</button>
+            </div>
+          </form>
+        </section>
+        <section class="panel" id="server-tools">
+          <div class="panel-header">
+            <div>
+              <p class="eyebrow">Server Tools</p>
+              <h2>Update backend from Git</h2>
+              <p class="card-copy">Pull the latest <code>main</code> branch on the server without opening a terminal. This only runs if a server-side pull command is configured.</p>
+            </div>
+          </div>
+          <p class="mini-copy" style="margin-bottom:14px;">
+            {'Configured and ready to run.' if git_pull_configured else 'Set <code>SERVER_GIT_PULL_COMMAND</code> in the backend environment to enable this action.'}
+          </p>
+          <form method="post" action="/super-admin/server/pull-latest"
+                onsubmit="return confirm('Pull the latest main branch on the server now?');">
+            <div class="button-row">
+              <button class="button button-primary" type="submit" {'disabled' if not git_pull_configured else ''}>Pull Latest Main</button>
             </div>
           </form>
         </section>

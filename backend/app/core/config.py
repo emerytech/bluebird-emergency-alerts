@@ -60,6 +60,7 @@ class Settings(BaseSettings):
 
     # Server management
     SERVER_RESTART_COMMAND: Optional[str] = None
+    SERVER_GIT_PULL_COMMAND: Optional[str] = None
 
     @property
     def apns_host(self) -> str:
