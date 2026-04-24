@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 
 from fastapi import FastAPI
 from fastapi.responses import PlainTextResponse
+from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
 from app.api.routes import router
@@ -78,6 +79,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 app.add_middleware(SessionMiddleware, secret_key=settings.SESSION_SECRET, same_site="lax", https_only=False)
+app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
 
 @app.middleware("http")

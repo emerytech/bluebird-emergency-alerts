@@ -13,6 +13,20 @@ from app.services.school_registry import SchoolRecord
 from app.services.user_store import UserRecord
 
 
+LOGO_PATH = "/static/bluebird-alert-logo.png"
+
+
+def _favicon_tags() -> str:
+    return (
+        f'<link rel="icon" type="image/png" href="{LOGO_PATH}" />'
+        f'<link rel="apple-touch-icon" href="{LOGO_PATH}" />'
+    )
+
+
+def _brand_mark() -> str:
+    return f'<div class="brand-mark"><img src="{LOGO_PATH}" alt="BlueBird Alerts logo" /></div>'
+
+
 def _theme_vars(theme: Optional[Mapping[str, str]] = None) -> str:
     resolved = {
         "accent": "#1b5fe4",
@@ -197,15 +211,20 @@ def _base_styles(theme: Optional[Mapping[str, str]] = None) -> str:
     .brand-mark {
       width: 58px;
       height: 58px;
-      border-radius: 18px;
+      border-radius: 16px;
       display: grid;
       place-items: center;
-      font-family: var(--headline);
-      font-weight: 800;
-      color: white;
-      background: linear-gradient(145deg, var(--accent-strong), var(--accent));
-      box-shadow: 0 10px 24px rgba(27, 95, 228, 0.32);
+      overflow: hidden;
+      background: rgba(255,255,255,0.12);
+      border: 1px solid rgba(255,255,255,0.20);
+      box-shadow: 0 10px 24px rgba(27, 95, 228, 0.18);
       flex: 0 0 auto;
+    }
+    .brand-mark img {
+      display: block;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
     }
     .brand-text h1, .brand-text h2, .brand-text h3, .brand-text p,
     .signal-card h1, .signal-card h2, .signal-card h3, .signal-card p, .signal-card span,
@@ -426,13 +445,14 @@ def render_login_page(
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>BlueBird Admin Login</title>
+  {_favicon_tags()}
   <style>{_base_styles(theme)}</style>
 </head>
 <body>
   <main class="login-shell">
     <section class="hero-card">
       <div class="brand-block">
-        <div class="brand-mark">BB</div>
+        {_brand_mark()}
         <div class="stack brand-text">
         <p class="eyebrow">School Safety Command Deck</p>
         <h1>BlueBird Alerts admin portal</h1>
@@ -486,13 +506,14 @@ def render_super_admin_login_page(*, message: Optional[str] = None, error: Optio
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>BlueBird Super Admin</title>
+  {_favicon_tags()}
   <style>{_base_styles()}</style>
 </head>
 <body>
   <main class="login-shell">
     <section class="hero-card">
       <div class="brand-block">
-        <div class="brand-mark">BB</div>
+        {_brand_mark()}
         <div class="stack brand-text">
         <p class="eyebrow">Platform Control</p>
         <h1>BlueBird super admin</h1>
@@ -560,6 +581,7 @@ def render_super_admin_page(
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>BlueBird Super Admin</title>
+  {_favicon_tags()}
   <style>{_base_styles()}</style>
 </head>
 <body>
@@ -567,7 +589,7 @@ def render_super_admin_page(
     <div class="app-shell">
       <aside class="sidebar nav-panel">
         <section class="brand-block">
-          <div class="brand-mark">BB</div>
+          {_brand_mark()}
           <div class="stack brand-text">
             <p class="eyebrow">BlueBird Platform</p>
             <h2>Super admin</h2>
@@ -881,13 +903,14 @@ def render_change_password_page(
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>{escape(title)}</title>
+  {_favicon_tags()}
   <style>{_base_styles(theme)}</style>
 </head>
 <body>
   <main class="login-shell">
     <section class="hero-card">
       <div class="brand-block">
-        <div class="brand-mark">BB</div>
+        {_brand_mark()}
         <div class="stack brand-text">
         <p class="eyebrow">{escape(eyebrow)}</p>
         <h1>{escape(heading)}</h1>
@@ -955,6 +978,7 @@ def render_admin_page(
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>BlueBird Admin</title>
+  {_favicon_tags()}
   <style>{_base_styles(theme)}</style>
 </head>
 <body>
@@ -962,7 +986,7 @@ def render_admin_page(
     <div class="app-shell">
       <aside class="sidebar nav-panel">
         <section class="brand-block">
-          <div class="brand-mark">BB</div>
+          {_brand_mark()}
           <div class="stack brand-text">
             <p class="eyebrow">BlueBird Alerts</p>
             <h2>Safety operations</h2>

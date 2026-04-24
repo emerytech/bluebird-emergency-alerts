@@ -15,6 +15,8 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -32,6 +34,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
@@ -60,14 +63,19 @@ import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
 // ── Brand colours ─────────────────────────────────────────────────────────────
-private val Navy        = Color(0xFF0B1A33)
-private val NavySurface = Color(0xFF122040)
-private val BluePrimary = Color(0xFF2563EB)
-private val BlueLight   = Color(0xFF3B82F6)
+private val AppBg       = Color(0xFFEEF5FF)
+private val AppBgDeep   = Color(0xFFDCE9FF)
+private val SurfaceMain = Color(0xFFFFFFFF)
+private val SurfaceSoft = Color(0xFFF6FAFF)
+private val BorderSoft  = Color(0x1A123478)
+private val BluePrimary = Color(0xFF1B5FE4)
+private val BlueLight   = Color(0xFF2F84FF)
+private val BlueDark    = Color(0xFF092054)
 private val AlarmRed    = Color(0xFFDC2626)
 private val AlarmGreen  = Color(0xFF16A34A)
-private val TextPri     = Color(0xFFFFFFFF)
-private val TextMuted   = Color(0xFF94A3B8)
+private val TextPri     = Color(0xFF10203F)
+private val TextMuted   = Color(0xFF5D7398)
+private val TextOnDark  = Color(0xFFF8FAFC)
 
 // ── Prefs ──────────────────────────────────────────────────────────────────────
 private const val PREFS      = "bluebird_prefs"
@@ -311,17 +319,35 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun BlueBirdTheme(content: @Composable () -> Unit) {
     MaterialTheme(
-        colorScheme = darkColorScheme(
+        colorScheme = lightColorScheme(
             primary   = BluePrimary,
-            background = Navy,
-            surface   = NavySurface,
-            onPrimary  = TextPri,
+            background = AppBg,
+            surface   = SurfaceMain,
+            onPrimary  = TextOnDark,
             onBackground = TextPri,
             onSurface  = TextPri,
             error      = AlarmRed,
         ),
         content = content,
     )
+}
+
+@Composable
+private fun BlueBirdLogo(modifier: Modifier = Modifier) {
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(20.dp),
+        color = SurfaceMain,
+        shadowElevation = 10.dp,
+    ) {
+        Image(
+            painter = painterResource(id = R.drawable.bluebird_alert_logo),
+            contentDescription = "BlueBird Alerts logo",
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(6.dp)
+        )
+    }
 }
 
 // ── Root ───────────────────────────────────────────────────────────────────────
@@ -423,7 +449,7 @@ private fun LoginScreen(onDone: () -> Unit) {
         modifier = Modifier
             .fillMaxSize()
             .background(
-                Brush.verticalGradient(listOf(Navy, Color(0xFF0D2347)))
+                Brush.verticalGradient(listOf(AppBg, AppBgDeep))
             ),
         contentAlignment = Alignment.Center,
     ) {
@@ -433,43 +459,54 @@ private fun LoginScreen(onDone: () -> Unit) {
                 .verticalScroll(scrollState)
                 .imePadding()
                 .navigationBarsPadding()
-                .padding(horizontal = 32.dp, vertical = 24.dp),
+                .padding(horizontal = 24.dp, vertical = 24.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(20.dp),
+            verticalArrangement = Arrangement.spacedBy(18.dp),
         ) {
-            Text(
-                "🐦",
-                fontSize = 64.sp,
-            )
-            Text(
-                "BlueBird Alerts",
-                fontSize = 28.sp,
-                fontWeight = FontWeight.Bold,
-                color = TextPri,
-            )
-            Text(
-                "School emergency alert system",
-                fontSize = 14.sp,
-                color = TextMuted,
-                textAlign = TextAlign.Center,
-            )
-
-            Spacer(Modifier.height(8.dp))
-
-            // Server URL (read-only)
             Surface(
-                shape = RoundedCornerShape(14.dp),
-                color = NavySurface,
+                shape = RoundedCornerShape(28.dp),
+                color = SurfaceMain,
+                shadowElevation = 8.dp,
                 modifier = Modifier.fillMaxWidth(),
             ) {
-                Column(Modifier.padding(16.dp)) {
-                    Text("School server", fontSize = 12.sp, color = TextMuted)
-                    Text(
-                        normalizeServerUrl(serverUrl),
-                        fontSize = 14.sp,
-                        color = BlueLight,
-                        fontWeight = FontWeight.Medium,
-                    )
+                Column(
+                    modifier = Modifier.padding(22.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(16.dp),
+                ) {
+                    BlueBirdLogo(modifier = Modifier.size(116.dp))
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Text(
+                            "BlueBird Alerts",
+                            fontSize = 28.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = TextPri,
+                        )
+                        Text(
+                            "Clear, fast emergency communication for school response.",
+                            fontSize = 14.sp,
+                            color = TextMuted,
+                            textAlign = TextAlign.Center,
+                        )
+                    }
+                    Surface(
+                        shape = RoundedCornerShape(18.dp),
+                        color = SurfaceSoft,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Column(Modifier.padding(16.dp)) {
+                            Text("School server", fontSize = 12.sp, color = TextMuted)
+                            Text(
+                                normalizeServerUrl(serverUrl),
+                                fontSize = 14.sp,
+                                color = BluePrimary,
+                                fontWeight = FontWeight.Medium,
+                            )
+                        }
+                    }
                 }
             }
 
@@ -488,10 +525,12 @@ private fun LoginScreen(onDone: () -> Unit) {
                         trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = schoolMenuExpanded) },
                         colors = OutlinedTextFieldDefaults.colors(
                             focusedBorderColor = BluePrimary,
-                            unfocusedBorderColor = Color(0xFF2A3F5F),
+                            unfocusedBorderColor = BorderSoft,
                             focusedTextColor = TextPri,
                             unfocusedTextColor = TextPri,
                             cursorColor = BluePrimary,
+                            focusedContainerColor = SurfaceMain,
+                            unfocusedContainerColor = SurfaceMain,
                         ),
                         modifier = Modifier.menuAnchor(MenuAnchorType.PrimaryNotEditable).fillMaxWidth(),
                     )
@@ -530,10 +569,12 @@ private fun LoginScreen(onDone: () -> Unit) {
                     singleLine = true,
                     colors = OutlinedTextFieldDefaults.colors(
                         focusedBorderColor = BluePrimary,
-                        unfocusedBorderColor = Color(0xFF2A3F5F),
+                        unfocusedBorderColor = BorderSoft,
                         focusedTextColor = TextPri,
                         unfocusedTextColor = TextPri,
                         cursorColor = BluePrimary,
+                        focusedContainerColor = SurfaceMain,
+                        unfocusedContainerColor = SurfaceMain,
                     ),
                     modifier = Modifier.fillMaxWidth(),
                 )
@@ -551,10 +592,12 @@ private fun LoginScreen(onDone: () -> Unit) {
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
                 colors = OutlinedTextFieldDefaults.colors(
                     focusedBorderColor = BluePrimary,
-                    unfocusedBorderColor = Color(0xFF2A3F5F),
+                    unfocusedBorderColor = BorderSoft,
                     focusedTextColor = TextPri,
                     unfocusedTextColor = TextPri,
                     cursorColor = BluePrimary,
+                    focusedContainerColor = SurfaceMain,
+                    unfocusedContainerColor = SurfaceMain,
                 ),
                 modifier = Modifier.fillMaxWidth(),
             )
@@ -578,10 +621,12 @@ private fun LoginScreen(onDone: () -> Unit) {
                 },
                 colors = OutlinedTextFieldDefaults.colors(
                     focusedBorderColor = BluePrimary,
-                    unfocusedBorderColor = Color(0xFF2A3F5F),
+                    unfocusedBorderColor = BorderSoft,
                     focusedTextColor = TextPri,
                     unfocusedTextColor = TextPri,
                     cursorColor = BluePrimary,
+                    focusedContainerColor = SurfaceMain,
+                    unfocusedContainerColor = SurfaceMain,
                 ),
                 modifier = Modifier.fillMaxWidth(),
             )
@@ -589,7 +634,7 @@ private fun LoginScreen(onDone: () -> Unit) {
             error?.let {
                 Text(
                     text = it,
-                    color = Color(0xFFFCA5A5),
+                    color = Color(0xFFB91C1C),
                     fontSize = 13.sp,
                     textAlign = TextAlign.Center,
                     modifier = Modifier.fillMaxWidth(),
@@ -656,33 +701,53 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Navy),
+            .background(Brush.verticalGradient(listOf(AppBg, AppBgDeep))),
     ) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState()),
         ) {
-            // ── Top bar ──────────────────────────────────────────────
-            Row(
+            Surface(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 20.dp, vertical = 16.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween,
+                color = SurfaceMain,
+                shape = RoundedCornerShape(24.dp),
+                shadowElevation = 6.dp,
             ) {
-                Column {
-                    Text("BlueBird Alerts", fontWeight = FontWeight.Bold, fontSize = 20.sp, color = TextPri)
-                    Text(
-                        if (userName.isNotBlank()) "$userName • ${userRole.replaceFirstChar { it.uppercase() }}" else "School Safety",
-                        fontSize = 12.sp,
-                        color = TextMuted,
-                    )
-                }
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    ConnectionDot(state.connected)
-                    TextButton(onClick = { showSettingsDialog = true }) {
-                        Text("⚙", fontSize = 20.sp, color = TextMuted)
+                Row(
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(14.dp),
+                    ) {
+                        BlueBirdLogo(modifier = Modifier.size(52.dp))
+                        Column {
+                            Text("BlueBird Alerts", fontWeight = FontWeight.Bold, fontSize = 20.sp, color = TextPri)
+                            Text(
+                                if (userName.isNotBlank()) "$userName • ${userRole.replaceFirstChar { it.uppercase() }}" else "School Safety",
+                                fontSize = 12.sp,
+                                color = TextMuted,
+                            )
+                        }
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        ConnectionDot(state.connected)
+                        OutlinedButton(
+                            onClick = { showSettingsDialog = true },
+                            shape = RoundedCornerShape(14.dp),
+                            colors = ButtonDefaults.outlinedButtonColors(
+                                contentColor = BlueDark,
+                                containerColor = SurfaceSoft,
+                            ),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, BorderSoft),
+                        ) {
+                            Text("Settings", fontWeight = FontWeight.SemiBold)
+                        }
                     }
                 }
             }
@@ -847,13 +912,14 @@ private fun ConnectionDot(connected: Boolean?) {
 
 @Composable
 private fun FlashBanner(message: String, isError: Boolean) {
-    val bg = if (isError) Color(0xFF450A0A) else Color(0xFF052E16)
-    val fg = if (isError) Color(0xFFFCA5A5) else Color(0xFF86EFAC)
+    val bg = if (isError) Color(0xFFFFE8E8) else Color(0xFFEAF8EF)
+    val fg = if (isError) Color(0xFFB91C1C) else Color(0xFF166534)
     Box(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 20.dp, vertical = 4.dp)
             .background(bg, RoundedCornerShape(12.dp))
+            .border(1.dp, if (isError) Color(0xFFF5B5B5) else Color(0xFFB7E4C7), RoundedCornerShape(12.dp))
             .padding(14.dp),
     ) {
         Text(message, color = fg, fontSize = 14.sp)
@@ -873,7 +939,7 @@ private fun AlarmBanner(alarm: AlarmStatus, modifier: Modifier = Modifier) {
         label = "pulseAlpha",
     )
 
-    val bg = if (alarm.isActive) AlarmRed else NavySurface
+    val bg = if (alarm.isActive) AlarmRed else SurfaceMain
 
     Surface(
         modifier = modifier.alpha(if (alarm.isActive) pulseAlpha else 1f),
@@ -895,7 +961,7 @@ private fun AlarmBanner(alarm: AlarmStatus, modifier: Modifier = Modifier) {
                         if (alarm.isActive) "ALARM ACTIVE" else "All Clear",
                         fontWeight = FontWeight.ExtraBold,
                         fontSize = 26.sp,
-                        color = TextPri,
+                        color = if (alarm.isActive) TextOnDark else TextPri,
                     )
                     Text(
                         if (alarm.isActive) "Emergency alert in progress" else "No active school alarm",
@@ -908,7 +974,7 @@ private fun AlarmBanner(alarm: AlarmStatus, modifier: Modifier = Modifier) {
             if (alarm.isActive) {
                 HorizontalDivider(color = Color(0x33FFFFFF), thickness = 1.dp)
                 alarm.message?.let {
-                    Text(it, fontSize = 16.sp, color = TextPri, fontWeight = FontWeight.Medium)
+                    Text(it, fontSize = 16.sp, color = TextOnDark, fontWeight = FontWeight.Medium)
                 }
                 alarm.activatedAt?.let {
                     Text("Activated: $it", fontSize = 12.sp, color = Color(0xFFFFCDD2))
@@ -926,7 +992,7 @@ private fun BroadcastsCard(broadcasts: List<BroadcastUpdate>, modifier: Modifier
     Surface(
         modifier = modifier,
         shape = RoundedCornerShape(20.dp),
-        color = NavySurface,
+        color = SurfaceMain,
         tonalElevation = 2.dp,
     ) {
         Column(
@@ -940,7 +1006,7 @@ private fun BroadcastsCard(broadcasts: List<BroadcastUpdate>, modifier: Modifier
                     Text(item.createdAt, color = TextMuted, fontSize = 11.sp)
                 }
                 if (item != broadcasts.take(3).last()) {
-                    HorizontalDivider(color = Color(0xFF2A3F5F))
+                    HorizontalDivider(color = BorderSoft)
                 }
             }
         }
@@ -953,7 +1019,7 @@ private fun ActivateDialog(isBusy: Boolean, onConfirm: (String) -> Unit, onDismi
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        containerColor = NavySurface,
+        containerColor = SurfaceMain,
         title = { Text("Activate school alarm?", color = TextPri, fontWeight = FontWeight.Bold) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -965,10 +1031,12 @@ private fun ActivateDialog(isBusy: Boolean, onConfirm: (String) -> Unit, onDismi
                     minLines = 3,
                     colors = OutlinedTextFieldDefaults.colors(
                         focusedBorderColor = AlarmRed,
-                        unfocusedBorderColor = Color(0xFF2A3F5F),
+                        unfocusedBorderColor = BorderSoft,
                         focusedTextColor = TextPri,
                         unfocusedTextColor = TextPri,
                         cursorColor = AlarmRed,
+                        focusedContainerColor = SurfaceSoft,
+                        unfocusedContainerColor = SurfaceSoft,
                     ),
                 )
             }
@@ -1007,7 +1075,7 @@ private fun ReportDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        containerColor = NavySurface,
+        containerColor = SurfaceMain,
         title = { Text("Send structured report", color = TextPri, fontWeight = FontWeight.Bold) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -1032,10 +1100,12 @@ private fun ReportDialog(
                     minLines = 2,
                     colors = OutlinedTextFieldDefaults.colors(
                         focusedBorderColor = BluePrimary,
-                        unfocusedBorderColor = Color(0xFF2A3F5F),
+                        unfocusedBorderColor = BorderSoft,
                         focusedTextColor = TextPri,
                         unfocusedTextColor = TextPri,
                         cursorColor = BluePrimary,
+                        focusedContainerColor = SurfaceSoft,
+                        unfocusedContainerColor = SurfaceSoft,
                     ),
                 )
             }
@@ -1057,7 +1127,7 @@ private fun ReportDialog(
 private fun ConfirmDialog(title: String, body: String, confirmLabel: String, onConfirm: () -> Unit, onDismiss: () -> Unit) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        containerColor = NavySurface,
+        containerColor = SurfaceMain,
         title = { Text(title, color = TextPri, fontWeight = FontWeight.Bold) },
         text = { Text(body, color = TextMuted) },
         confirmButton = {
@@ -1084,14 +1154,14 @@ private fun SettingsDialog(onDismiss: () -> Unit, onLogout: () -> Unit) {
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        containerColor = NavySurface,
+        containerColor = SurfaceMain,
         title = { Text("Settings", color = TextPri, fontWeight = FontWeight.Bold) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text("Signed in as", color = TextMuted, fontSize = 12.sp)
                 Text(userName.ifBlank { "BlueBird user" }, color = TextPri, fontWeight = FontWeight.Bold, fontSize = 18.sp)
                 Text("@${loginName.ifBlank { "unknown" }}", color = BlueLight, fontSize = 13.sp)
-                HorizontalDivider(color = Color(0xFF2A3F5F))
+                HorizontalDivider(color = BorderSoft)
                 Text("Role: ${userRole.replaceFirstChar { it.uppercase() }}", color = TextPri, fontSize = 14.sp)
                 Text("User ID: $userId", color = TextPri, fontSize = 14.sp)
                 Text("Server: ${BuildConfig.BACKEND_BASE_URL}", color = TextMuted, fontSize = 12.sp)
