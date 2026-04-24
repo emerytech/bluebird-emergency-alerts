@@ -1,4 +1,5 @@
 import SwiftUI
+import LocalAuthentication
 
 struct ContentView: View {
     @EnvironmentObject private var appState: AppState
@@ -8,6 +9,7 @@ struct ContentView: View {
     @State private var isTestingBackend = false
     @State private var isRegistering = false
     @State private var isLoadingDebugData = false
+    @State private var showSettings = false
 
     private let api = APIClient(baseURL: Config.backendBaseURL)
 
@@ -102,7 +104,7 @@ struct ContentView: View {
                     .alert("Send emergency alert?", isPresented: $showConfirm) {
                         Button("Cancel", role: .cancel) {}
                         Button("Send", role: .destructive) {
-                            Task { await sendPanic() }
+                            Task { await authenticateThenSendPanic() }
                         }
                     } message: {
                         Text(message)
@@ -130,6 +132,16 @@ struct ContentView: View {
                     }
                 }
                 .padding()
+            }
+            .navigationTitle("BlueBird Alerts")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Settings") { showSettings = true }
+                }
+            }
+            .navigationDestination(isPresented: $showSettings) {
+                SettingsView()
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: .deviceTokenUpdated)) { note in
@@ -287,5 +299,52 @@ struct ContentView: View {
         } catch {
             appState.lastError = "Panic failed: \(error.localizedDescription)"
         }
+    }
+
+    private func authenticateThenSendPanic() async {
+        guard await authenticateIfNeeded(reason: "Confirm emergency alert action.") else {
+            appState.lastError = "Biometric verification was canceled."
+            return
+        }
+        await sendPanic()
+    }
+
+    private func authenticateIfNeeded(reason: String) async -> Bool {
+        if !appState.biometricsAllowed { return true }
+        let context = LAContext()
+        var error: NSError?
+        let policy: LAPolicy = .deviceOwnerAuthentication
+        guard context.canEvaluatePolicy(policy, error: &error) else {
+            // Graceful fallback when biometrics/passcode auth is unavailable.
+            return true
+        }
+        return await withCheckedContinuation { continuation in
+            context.evaluatePolicy(policy, localizedReason: reason) { success, _ in
+                continuation.resume(returning: success)
+            }
+        }
+    }
+}
+
+private struct SettingsView: View {
+    @EnvironmentObject private var appState: AppState
+
+    var body: some View {
+        List {
+            Section("Account") {
+                Text("BlueBird Alerts")
+                Text("Server: \(Config.backendBaseURL.absoluteString)")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            Section("Security") {
+                Toggle("Biometrics Allowed", isOn: $appState.biometricsAllowed)
+                Text("Require Face ID / Touch ID before sending emergency alerts.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .navigationTitle("Settings")
+        .navigationBarTitleDisplayMode(.inline)
     }
 }

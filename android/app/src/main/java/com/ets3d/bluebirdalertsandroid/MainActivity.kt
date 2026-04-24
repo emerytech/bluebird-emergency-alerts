@@ -4,13 +4,14 @@ import android.Manifest
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
+import android.content.ContextWrapper
 import android.content.pm.PackageManager
 import android.media.AudioAttributes
 import android.media.MediaPlayer
 import android.media.RingtoneManager
 import android.os.Build
 import android.os.Bundle
-import androidx.activity.ComponentActivity
+import android.widget.Toast
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.*
@@ -43,10 +44,13 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
-import androidx.core.content.ContextCompat
+import androidx.biometric.BiometricManager
+import androidx.biometric.BiometricPrompt
+import androidx.fragment.app.FragmentActivity
 import com.google.firebase.messaging.FirebaseMessaging
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -90,6 +94,7 @@ private const val KEY_ROLE   = "user_role"
 private const val KEY_LOGIN  = "login_name"
 private const val KEY_CAN_DEACTIVATE = "can_deactivate"
 private const val KEY_SERVER_URL = "server_url"
+private const val KEY_BIOMETRICS_ALLOWED = "biometrics_allowed"
 internal const val NOTIF_CH   = "bluebird_alerts"
 
 private fun prefs(ctx: Context) = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -100,6 +105,16 @@ private fun getUserRole(ctx: Context) = prefs(ctx).getString(KEY_ROLE, "") ?: ""
 private fun getLoginName(ctx: Context) = prefs(ctx).getString(KEY_LOGIN, "") ?: ""
 private fun canDeactivateAlarm(ctx: Context) = prefs(ctx).getBoolean(KEY_CAN_DEACTIVATE, false)
 private fun getServerUrl(ctx: Context) = prefs(ctx).getString(KEY_SERVER_URL, "") ?: ""
+private fun biometricsAllowed(ctx: Context) = prefs(ctx).getBoolean(KEY_BIOMETRICS_ALLOWED, false)
+private fun setBiometricsAllowed(ctx: Context, allowed: Boolean) {
+    prefs(ctx).edit().putBoolean(KEY_BIOMETRICS_ALLOWED, allowed).apply()
+}
+
+private fun Context.findActivity(): FragmentActivity? = when (this) {
+    is FragmentActivity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
+}
 private fun extractSchoolSlug(value: String): String {
     val trimmed = value.trim().removeSuffix("/")
     if (trimmed.isBlank()) return ""
@@ -573,10 +588,56 @@ class MainViewModel : ViewModel() {
     }
 
     fun clearMessages() = _state.update { it.copy(successMsg = null, errorMsg = null) }
+
+    fun setErrorMessage(message: String) {
+        _state.update { it.copy(errorMsg = message) }
+    }
+}
+
+private object BiometricGate {
+    private const val AUTH_FLAGS = BiometricManager.Authenticators.BIOMETRIC_STRONG or
+        BiometricManager.Authenticators.DEVICE_CREDENTIAL
+
+    fun isAvailable(context: Context): Boolean {
+        val result = BiometricManager.from(context).canAuthenticate(AUTH_FLAGS)
+        return result == BiometricManager.BIOMETRIC_SUCCESS
+    }
+
+    fun authenticate(
+        activity: FragmentActivity,
+        title: String,
+        subtitle: String,
+        onResult: (Boolean) -> Unit,
+    ) {
+        val executor = ContextCompat.getMainExecutor(activity)
+        val prompt = BiometricPrompt(
+            activity,
+            executor,
+            object : BiometricPrompt.AuthenticationCallback() {
+                override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
+                    onResult(true)
+                }
+
+                override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
+                    onResult(false)
+                }
+
+                override fun onAuthenticationFailed() {
+                    // Wait for explicit success/error callback.
+                }
+            },
+        )
+        val promptInfo = BiometricPrompt.PromptInfo.Builder()
+            .setTitle(title)
+            .setSubtitle(subtitle)
+            .setAllowedAuthenticators(AUTH_FLAGS)
+            .build()
+        prompt.authenticate(promptInfo)
+    }
 }
 
 // ── Activity ───────────────────────────────────────────────────────────────────
-class MainActivity : ComponentActivity() {
+class MainActivity : FragmentActivity() {
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { _ -> }
@@ -981,6 +1042,32 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
     val userRole = remember { getUserRole(ctx) }
     val canDeactivate = remember { canDeactivateAlarm(ctx) }
     val isAdmin = remember(userRole) { userRole.equals("admin", ignoreCase = true) }
+    var biometricsEnabled by remember { mutableStateOf(biometricsAllowed(ctx)) }
+
+    val runProtectedAction: (Boolean, () -> Unit) -> Unit = { adminFeature, action ->
+        if (!biometricsEnabled) {
+            action()
+        } else {
+            val activity = ctx.findActivity()
+            if (activity == null || !BiometricGate.isAvailable(ctx)) {
+                // Graceful fallback: continue action when biometric is unavailable.
+                action()
+            } else {
+                val subtitle = if (adminFeature) "Confirm admin action" else "Confirm emergency action"
+                BiometricGate.authenticate(
+                    activity = activity,
+                    title = "BlueBird Alerts",
+                    subtitle = subtitle,
+                ) { ok ->
+                    if (ok) {
+                        action()
+                    } else {
+                        vm.setErrorMessage("Biometric verification was canceled.")
+                    }
+                }
+            }
+        }
+    }
 
     LaunchedEffect(Unit) { vm.init(ctx) }
     LaunchedEffect(isAdmin) {
@@ -1038,7 +1125,21 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                 .background(Brush.verticalGradient(listOf(AppBg, AppBgDeep))),
         ) {
             if (showSettingsScreen) {
-                SettingsScreen(onLogout = onLogout)
+                SettingsScreen(
+                    onLogout = onLogout,
+                    biometricsEnabled = biometricsEnabled,
+                    onBiometricsChanged = { enabled ->
+                        biometricsEnabled = enabled
+                        setBiometricsAllowed(ctx, enabled)
+                        if (enabled && !BiometricGate.isAvailable(ctx)) {
+                            Toast.makeText(
+                                ctx,
+                                "Biometrics unavailable on this device. Actions will fall back to standard confirmation.",
+                                Toast.LENGTH_LONG,
+                            ).show()
+                        }
+                    },
+                )
             } else {
                 Column(
                     modifier = Modifier
@@ -1125,12 +1226,14 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                             recipients = state.adminMessageRecipients,
                             isBusy = state.isBusy,
                             onSendMessage = { message, recipientUserIds, sendToAll ->
-                                vm.sendAdminMessageToUsers(
-                                    ctx = ctx,
-                                    message = message,
-                                    recipientUserIds = recipientUserIds,
-                                    sendToAll = sendToAll,
-                                )
+                                runProtectedAction(true) {
+                                    vm.sendAdminMessageToUsers(
+                                        ctx = ctx,
+                                        message = message,
+                                        recipientUserIds = recipientUserIds,
+                                        sendToAll = sendToAll,
+                                    )
+                                }
                             },
                             onReply = { replyTarget = it },
                             modifier = Modifier
@@ -1237,7 +1340,7 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
             onCancel = { pendingSafetyAction = null },
             onInitiate = {
                 pendingSafetyAction = null
-                vm.activateAlarm(ctx, action.message)
+                runProtectedAction(false) { vm.activateAlarm(ctx, action.message) }
             },
         )
     }
@@ -1257,7 +1360,7 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
             onCancel = { showQuietDeleteConfirmOverlay = false },
             onConfirm = {
                 showQuietDeleteConfirmOverlay = false
-                vm.deleteQuietPeriodRequest(ctx)
+                runProtectedAction(false) { vm.deleteQuietPeriodRequest(ctx) }
             },
         )
     }
@@ -1280,7 +1383,7 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
             confirmLabel = "Deactivate",
             onConfirm = {
                 showDeactivateDialog = false
-                vm.deactivateAlarm(ctx)
+                runProtectedAction(true) { vm.deactivateAlarm(ctx) }
             },
             onDismiss = { showDeactivateDialog = false },
         )
@@ -1314,7 +1417,7 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
             onDismiss = { replyTarget = null },
             onConfirm = { reply ->
                 replyTarget = null
-                vm.replyToAdminMessage(ctx, target.messageId, reply)
+                runProtectedAction(true) { vm.replyToAdminMessage(ctx, target.messageId, reply) }
             },
         )
     }
@@ -2472,7 +2575,11 @@ private fun ConfirmDialog(title: String, body: String, confirmLabel: String, onC
 }
 
 @Composable
-private fun SettingsScreen(onLogout: () -> Unit) {
+private fun SettingsScreen(
+    onLogout: () -> Unit,
+    biometricsEnabled: Boolean,
+    onBiometricsChanged: (Boolean) -> Unit,
+) {
     val ctx = LocalContext.current
     val userName = remember { getUserName(ctx) }
     val loginName = remember { getLoginName(ctx) }
@@ -2502,6 +2609,33 @@ private fun SettingsScreen(onLogout: () -> Unit) {
                 Text("Role: ${userRole.replaceFirstChar { it.uppercase() }}", color = TextPri, fontSize = 14.sp)
                 Text("User ID: $userId", color = TextPri, fontSize = 14.sp)
                 Text("Server: ${BuildConfig.BACKEND_BASE_URL}", color = TextMuted, fontSize = 12.sp)
+            }
+        }
+        Surface(
+            color = SurfaceMain,
+            shape = RoundedCornerShape(20.dp),
+            shadowElevation = 4.dp,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 18.dp, vertical = 14.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("Biometrics Allowed", color = TextPri, fontWeight = FontWeight.Bold)
+                    Text(
+                        "Require Face ID / fingerprint for emergency and admin actions.",
+                        color = TextMuted,
+                        fontSize = 12.sp,
+                    )
+                }
+                Switch(
+                    checked = biometricsEnabled,
+                    onCheckedChange = onBiometricsChanged,
+                )
             }
         }
         Button(
