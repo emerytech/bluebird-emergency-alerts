@@ -1020,17 +1020,15 @@ private fun LoginScreen(onDone: () -> Unit) {
                 modifier = Modifier.fillMaxWidth(),
             )
 
-            Button(
+            PrimaryButton(
+                text = if (isSubmitting) "Signing In…" else "Sign In",
                 onClick = submitLogin,
+                enabled = !isSubmitting,
+                isLoading = isSubmitting,
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(52.dp),
-                shape = RoundedCornerShape(14.dp),
-                enabled = !isSubmitting,
-                colors = ButtonDefaults.buttonColors(containerColor = BluePrimary, disabledContainerColor = Color(0xFF1D4ED8)),
-            ) {
-                Text(if (isSubmitting) "Signing In…" else "Sign In", fontSize = 16.sp, fontWeight = FontWeight.Bold)
-            }
+            )
         }
     }
 }

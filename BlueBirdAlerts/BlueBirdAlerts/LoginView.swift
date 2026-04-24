@@ -1,100 +1,163 @@
 import SwiftUI
+import UIKit
 
 struct LoginView: View {
     @EnvironmentObject private var appState: AppState
     @State private var schoolCode = ""
     @State private var username = ""
     @State private var password = ""
+    @State private var showPassword = false
     @State private var isSubmitting = false
     @State private var errorMessage: String?
     @State private var schoolOptions: [SchoolCatalogItem] = []
     @State private var schoolLoadHint = "Enter your school code (for example: nn) and sign in."
+    @State private var keyboardHeight: CGFloat = 0
+    @State private var animateIntro = false
 
     var body: some View {
         ZStack {
             LinearGradient(
-                colors: [Color(red: 0.93, green: 0.96, blue: 1.0), Color(red: 0.86, green: 0.91, blue: 1.0)],
+                colors: [DSColor.background, DSColor.backgroundDeep],
                 startPoint: .top,
                 endPoint: .bottom
             )
             .ignoresSafeArea()
 
             ScrollView {
-                VStack(spacing: 16) {
-                    VStack(spacing: 8) {
+                VStack(spacing: 22) {
+                    VStack(spacing: 6) {
                         Image("BlueBirdLogo")
                             .resizable()
                             .scaledToFit()
-                            .frame(width: 82, height: 82)
+                            .frame(width: 84, height: 84)
                         Text("BlueBird Alerts")
                             .font(.system(size: 32, weight: .bold))
+                            .foregroundStyle(DSColor.textPrimary)
+                            .shadow(color: .black.opacity(0.08), radius: 1.5, x: 0, y: 1)
                         Text("School safety login")
                             .font(.subheadline)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(DSColor.textSecondary)
                     }
-                    .padding(.top, 24)
+                    .padding(.top, 14)
+                    .opacity(animateIntro ? 1 : 0.0)
+                    .offset(y: animateIntro ? 0 : 5)
+                    .animation(.easeOut(duration: 0.28), value: animateIntro)
 
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text("School code or URL")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        TextField("nn", text: $schoolCode)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled(true)
-                            .textFieldStyle(.roundedBorder)
-                        if !schoolOptions.isEmpty {
-                            Menu("Pick from school list") {
-                                ForEach(schoolOptions) { school in
-                                    Button("\(school.name) (\(school.slug))") {
-                                        schoolCode = school.slug
+                    CardView {
+                        SectionContainer("School code or URL") {
+                            TextInput(
+                                text: $schoolCode,
+                                placeholder: "Enter school code or URL (e.g. nn)"
+                            )
+                            if !schoolOptions.isEmpty {
+                                Menu {
+                                    ForEach(schoolOptions) { school in
+                                        Button("\(school.name) (\(school.slug))") {
+                                            schoolCode = school.slug
+                                        }
                                     }
+                                } label: {
+                                    HStack(spacing: 8) {
+                                        Image(systemName: "building.2")
+                                        Text("Pick from school list")
+                                            .underline()
+                                        Spacer()
+                                        Image(systemName: "chevron.right")
+                                    }
+                                    .font(.footnote.weight(.semibold))
+                                    .foregroundStyle(Color(red: 0.10, green: 0.33, blue: 0.73))
+                                    .padding(.horizontal, 14)
+                                    .padding(.vertical, 12)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .background(Color(red: 0.93, green: 0.96, blue: 1.0))
+                                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                                 }
                             }
-                            .font(.footnote.weight(.semibold))
+                            Text(schoolLoadHint)
+                                .font(.footnote)
+                                .foregroundStyle(DSColor.textSecondary)
                         }
-                        Text(schoolLoadHint)
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
                     }
-                    .padding()
-                    .background(Color.white)
-                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
 
-                    VStack(spacing: 10) {
-                        TextField("Username", text: $username)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled(true)
-                            .textFieldStyle(.roundedBorder)
-                        SecureField("Password", text: $password)
-                            .textFieldStyle(.roundedBorder)
+                    CardView {
+                        SectionContainer("Credentials") {
+                            TextInput(text: $username, placeholder: "Username")
+                            passwordField
+                        }
                     }
-                    .padding()
-                    .background(Color.white)
-                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
 
                     if let errorMessage {
                         Text(errorMessage)
                             .font(.footnote)
-                            .foregroundStyle(.red)
+                            .foregroundStyle(Color(red: 0.68, green: 0.12, blue: 0.12))
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
 
-                    Button {
+                    PrimaryButton(
+                        isSubmitting ? "Signing In..." : "Sign In",
+                        isLoading: isSubmitting,
+                        isEnabled: !isSubmitting
+                    ) {
                         Task { await submitLogin() }
-                    } label: {
-                        Text(isSubmitting ? "Signing In..." : "Sign In")
-                            .frame(maxWidth: .infinity, minHeight: 52)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .tint(Color(red: 0.11, green: 0.37, blue: 0.89))
-                    .disabled(isSubmitting)
                 }
                 .padding(20)
+                .padding(.bottom, max(0, keyboardHeight - 44))
             }
+            .scrollDismissesKeyboard(.interactively)
         }
         .task {
             await loadSchools()
+            animateIntro = true
         }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { note in
+            guard let frame = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else { return }
+            withAnimation(.easeOut(duration: 0.22)) {
+                keyboardHeight = frame.height
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
+            withAnimation(.easeOut(duration: 0.22)) {
+                keyboardHeight = 0
+            }
+        }
+    }
+
+    private var passwordField: some View {
+        HStack(spacing: 10) {
+            Group {
+                if showPassword {
+                    TextField(
+                        "",
+                        text: $password,
+                        prompt: Text("Password").foregroundStyle(DSColor.textSecondary)
+                    )
+                } else {
+                    SecureField(
+                        "",
+                        text: $password,
+                        prompt: Text("Password").foregroundStyle(DSColor.textSecondary)
+                    )
+                }
+            }
+            .textInputAutocapitalization(.never)
+            .autocorrectionDisabled(true)
+            .foregroundStyle(.white)
+
+            Button(showPassword ? "Hide" : "Show") {
+                showPassword.toggle()
+            }
+            .font(.footnote.weight(.semibold))
+            .foregroundStyle(Color(red: 0.74, green: 0.83, blue: 1.0))
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .background(DSColor.inputBackground)
+        .overlay(
+            RoundedRectangle(cornerRadius: DSRadius.input, style: .continuous)
+                .stroke(DSColor.border, lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: DSRadius.input, style: .continuous))
     }
 
     private func loadSchools() async {

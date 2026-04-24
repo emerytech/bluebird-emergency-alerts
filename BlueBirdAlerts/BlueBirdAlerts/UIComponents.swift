@@ -116,6 +116,8 @@ struct TextInput: View {
             prompt: Text(placeholder).foregroundStyle(DSColor.textSecondary),
             axis: axis
         )
+        .textInputAutocapitalization(.never)
+        .autocorrectionDisabled(true)
         .foregroundStyle(.white)
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
