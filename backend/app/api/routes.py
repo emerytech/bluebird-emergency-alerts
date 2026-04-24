@@ -29,12 +29,14 @@ from app.models.schemas import (
     MobileLoginResponse,
     PanicRequest,
     PanicResponse,
+    PublicSchoolSummary,
     QuietPeriodRequestCreate,
     QuietPeriodSummary,
     RegisterDeviceRequest,
     RegisterDeviceResponse,
     ReportRequest,
     ReportResponse,
+    SchoolsCatalogResponse,
     UserSummary,
     UsersResponse,
 )
@@ -184,6 +186,22 @@ async def root(request: Request) -> RedirectResponse:
 @router.get("/health")
 async def health() -> dict:
     return {"ok": True}
+
+
+@router.get("/schools", response_model=SchoolsCatalogResponse)
+async def list_schools(request: Request) -> SchoolsCatalogResponse:
+    schools = await _schools(request).list_schools()
+    return SchoolsCatalogResponse(
+        schools=[
+            PublicSchoolSummary(
+                name=school.name,
+                slug=school.slug,
+                path=f"/{school.slug}",
+            )
+            for school in schools
+            if school.is_active
+        ]
+    )
 
 
 @router.post("/auth/login", response_model=MobileLoginResponse)

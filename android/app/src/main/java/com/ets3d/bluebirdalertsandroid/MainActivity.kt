@@ -85,11 +85,28 @@ private fun getUserRole(ctx: Context) = prefs(ctx).getString(KEY_ROLE, "") ?: ""
 private fun getLoginName(ctx: Context) = prefs(ctx).getString(KEY_LOGIN, "") ?: ""
 private fun canDeactivateAlarm(ctx: Context) = prefs(ctx).getBoolean(KEY_CAN_DEACTIVATE, false)
 private fun getServerUrl(ctx: Context) = prefs(ctx).getString(KEY_SERVER_URL, BuildConfig.BACKEND_BASE_URL) ?: BuildConfig.BACKEND_BASE_URL
+private fun extractSchoolSlug(value: String): String {
+    val trimmed = value.trim().removeSuffix("/")
+    if (trimmed.isBlank()) return ""
+    if (!trimmed.contains("://")) {
+        val parts = trimmed.split("/").filter { it.isNotBlank() }
+        return if (parts.size == 1 && !trimmed.contains(".")) parts.first().lowercase() else parts.lastOrNull()?.lowercase().orEmpty()
+    }
+    return runCatching {
+        val uri = java.net.URI(trimmed)
+        uri.path.trim('/').split("/").firstOrNull().orEmpty().lowercase()
+    }.getOrDefault("")
+}
+private fun schoolBaseUrl(slug: String): String {
+    val normalized = slug.trim().trim('/').lowercase()
+    if (normalized.isBlank()) return BuildConfig.BACKEND_BASE_URL
+    return "${BuildConfig.BACKEND_BASE_URL}/$normalized"
+}
 private fun normalizeServerUrl(value: String): String {
     val trimmed = value.trim().removeSuffix("/")
     if (trimmed.isBlank()) return BuildConfig.BACKEND_BASE_URL
     if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) return trimmed
-    if (!trimmed.contains(".") && !trimmed.contains("/")) return "${BuildConfig.BACKEND_BASE_URL}/${trimmed.lowercase()}"
+    if (!trimmed.contains(".") && !trimmed.contains("/")) return schoolBaseUrl(trimmed)
     if (trimmed.startsWith("/")) return BuildConfig.BACKEND_BASE_URL + trimmed
     return "https://$trimmed"
 }
@@ -132,6 +149,12 @@ private data class AuthUser(
     val loginName: String,
     val mustChangePassword: Boolean,
     val canDeactivateAlarm: Boolean,
+)
+
+private data class SchoolOption(
+    val name: String,
+    val slug: String,
+    val path: String,
 )
 
 data class BroadcastUpdate(
@@ -309,15 +332,40 @@ private fun App() {
 }
 
 // ── Login screen ───────────────────────────────────────────────────────────────
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun LoginScreen(onDone: () -> Unit) {
     val ctx = LocalContext.current
     var serverUrl by remember { mutableStateOf(getServerUrl(ctx)) }
+    var schoolOptions by remember { mutableStateOf<List<SchoolOption>>(emptyList()) }
+    var selectedSchoolSlug by remember { mutableStateOf(extractSchoolSlug(getServerUrl(ctx))) }
+    var schoolsLoading by remember { mutableStateOf(true) }
+    var schoolMenuExpanded by remember { mutableStateOf(false) }
     var username by remember { mutableStateOf(getLoginName(ctx)) }
     var password by remember { mutableStateOf("") }
     var showPassword by remember { mutableStateOf(false) }
     var isSubmitting by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(Unit) {
+        val client = BackendClient(BuildConfig.BACKEND_BASE_URL, BuildConfig.BACKEND_API_KEY)
+        runCatching { client.listSchools() }
+            .onSuccess { schools ->
+                schoolOptions = schools
+                if (schools.isNotEmpty()) {
+                    val savedSlug = selectedSchoolSlug
+                    val chosen = schools.firstOrNull { it.slug == savedSlug } ?: schools.first()
+                    selectedSchoolSlug = chosen.slug
+                    serverUrl = schoolBaseUrl(chosen.slug)
+                }
+            }
+            .onFailure {
+                if (selectedSchoolSlug.isNotBlank()) {
+                    serverUrl = schoolBaseUrl(selectedSchoolSlug)
+                }
+            }
+        schoolsLoading = false
+    }
 
     Box(
         modifier = Modifier
@@ -360,7 +408,7 @@ private fun LoginScreen(onDone: () -> Unit) {
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Column(Modifier.padding(16.dp)) {
-                    Text("Server", fontSize = 12.sp, color = TextMuted)
+                    Text("School server", fontSize = 12.sp, color = TextMuted)
                     Text(
                         normalizeServerUrl(serverUrl),
                         fontSize = 14.sp,
@@ -370,24 +418,71 @@ private fun LoginScreen(onDone: () -> Unit) {
                 }
             }
 
-            OutlinedTextField(
-                value = serverUrl,
-                onValueChange = {
-                    serverUrl = it
-                    error = null
-                },
-                label = { Text("School code or URL", color = TextMuted) },
-                placeholder = { Text("nn", color = TextMuted) },
-                singleLine = true,
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = BluePrimary,
-                    unfocusedBorderColor = Color(0xFF2A3F5F),
-                    focusedTextColor = TextPri,
-                    unfocusedTextColor = TextPri,
-                    cursorColor = BluePrimary,
-                ),
-                modifier = Modifier.fillMaxWidth(),
-            )
+            if (schoolOptions.isNotEmpty()) {
+                ExposedDropdownMenuBox(
+                    expanded = schoolMenuExpanded,
+                    onExpandedChange = { schoolMenuExpanded = !schoolMenuExpanded },
+                ) {
+                    val selectedSchoolName = schoolOptions.firstOrNull { it.slug == selectedSchoolSlug }?.name ?: ""
+                    OutlinedTextField(
+                        value = selectedSchoolName,
+                        onValueChange = {},
+                        readOnly = true,
+                        label = { Text("School", color = TextMuted) },
+                        placeholder = { Text("Select your school", color = TextMuted) },
+                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = schoolMenuExpanded) },
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = BluePrimary,
+                            unfocusedBorderColor = Color(0xFF2A3F5F),
+                            focusedTextColor = TextPri,
+                            unfocusedTextColor = TextPri,
+                            cursorColor = BluePrimary,
+                        ),
+                        modifier = Modifier.menuAnchor().fillMaxWidth(),
+                    )
+                    ExposedDropdownMenu(
+                        expanded = schoolMenuExpanded,
+                        onDismissRequest = { schoolMenuExpanded = false },
+                    ) {
+                        schoolOptions.forEach { school ->
+                            DropdownMenuItem(
+                                text = {
+                                    Column {
+                                        Text(school.name)
+                                        Text(school.slug, color = TextMuted, fontSize = 12.sp)
+                                    }
+                                },
+                                onClick = {
+                                    selectedSchoolSlug = school.slug
+                                    serverUrl = schoolBaseUrl(school.slug)
+                                    schoolMenuExpanded = false
+                                    error = null
+                                },
+                            )
+                        }
+                    }
+                }
+            } else {
+                OutlinedTextField(
+                    value = serverUrl,
+                    onValueChange = {
+                        serverUrl = it
+                        selectedSchoolSlug = extractSchoolSlug(it)
+                        error = null
+                    },
+                    label = { Text("School code or URL", color = TextMuted) },
+                    placeholder = { Text("nn", color = TextMuted) },
+                    singleLine = true,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = BluePrimary,
+                        unfocusedBorderColor = Color(0xFF2A3F5F),
+                        focusedTextColor = TextPri,
+                        unfocusedTextColor = TextPri,
+                        cursorColor = BluePrimary,
+                    ),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
 
             OutlinedTextField(
                 value = username,
@@ -445,7 +540,12 @@ private fun LoginScreen(onDone: () -> Unit) {
             }
 
             Text(
-                "Sign in with the username and password created in the BlueBird admin dashboard. Enter a school code like nn, or a full school URL if needed.",
+                if (schoolOptions.isNotEmpty())
+                    "Select your school, then sign in with the username and password created in the BlueBird admin dashboard."
+                else if (schoolsLoading)
+                    "Loading schools from BlueBird server…"
+                else
+                    "Could not load the school list. You can still enter a school code like nn, or a full school URL.",
                 fontSize = 13.sp,
                 color = TextMuted,
                 textAlign = TextAlign.Center,
@@ -457,6 +557,10 @@ private fun LoginScreen(onDone: () -> Unit) {
                     val normalizedUsername = username.trim()
                     if (normalizedUsername.isBlank() || password.isBlank()) {
                         error = "Enter your username and password."
+                        return@Button
+                    }
+                    if (schoolOptions.isNotEmpty() && selectedSchoolSlug.isBlank()) {
+                        error = "Select your school."
                         return@Button
                     }
                     val normalizedServerUrl = normalizeServerUrl(serverUrl)
@@ -1038,6 +1142,29 @@ private class BackendClient(baseUrl: String, private val apiKey: String) {
 
     private fun Request.Builder.withAuth() = apply {
         if (apiKey.isNotBlank()) header("X-API-Key", apiKey)
+    }
+
+    fun listSchools(): List<SchoolOption> {
+        val req = Request.Builder().url("${BuildConfig.BACKEND_BASE_URL}/schools").get().build()
+        http.newCall(req).execute().use { res ->
+            val bodyText = requireSuccess(res)
+            val json = JSONObject(bodyText)
+            val schoolsJson = json.optJSONArray("schools")
+            return buildList {
+                if (schoolsJson != null) {
+                    for (i in 0 until schoolsJson.length()) {
+                        val item = schoolsJson.optJSONObject(i) ?: continue
+                        add(
+                            SchoolOption(
+                                name = item.optString("name"),
+                                slug = item.optString("slug"),
+                                path = item.optString("path"),
+                            )
+                        )
+                    }
+                }
+            }
+        }
     }
 
     fun login(username: String, password: String): AuthUser {

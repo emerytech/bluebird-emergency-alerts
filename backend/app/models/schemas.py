@@ -164,6 +164,16 @@ class MobileLoginResponse(BaseModel):
     quiet_period_expires_at: Optional[str] = None
 
 
+class PublicSchoolSummary(BaseModel):
+    name: str
+    slug: str
+    path: str
+
+
+class SchoolsCatalogResponse(BaseModel):
+    schools: List[PublicSchoolSummary]
+
+
 class BroadcastUpdateSummary(BaseModel):
     update_id: int
     created_at: str
