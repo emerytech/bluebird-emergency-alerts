@@ -43,6 +43,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
@@ -1839,62 +1840,47 @@ private fun DashboardPanelTabsCard(
     ) {
         Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text("Dashboard", color = TextPri, fontWeight = FontWeight.Bold, fontSize = 16.sp)
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                 Button(
                     onClick = { onSelectPanel(DashboardPanel.Home) },
-                    modifier = Modifier.weight(1f).height(46.dp),
+                    modifier = Modifier.weight(1f).height(44.dp),
                     colors = ButtonDefaults.buttonColors(
                         containerColor = if (activePanel == DashboardPanel.Home) BlueDark else SurfaceSoft,
                         contentColor = if (activePanel == DashboardPanel.Home) Color.White else TextPri,
                     ),
                     shape = RoundedCornerShape(16.dp),
                 ) {
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Icon(
-                            painter = painterResource(android.R.drawable.ic_menu_view),
-                            contentDescription = null,
-                            modifier = Modifier.size(16.dp),
-                        )
-                        Text("Home", fontWeight = FontWeight.SemiBold)
-                    }
+                    Text("Home", fontWeight = FontWeight.SemiBold, fontSize = 13.sp, maxLines = 1)
                 }
 
                 Button(
                     onClick = { onSelectPanel(DashboardPanel.Messaging) },
-                    modifier = Modifier.weight(1f).height(46.dp),
+                    modifier = Modifier.weight(1f).height(44.dp),
                     colors = ButtonDefaults.buttonColors(
                         containerColor = if (activePanel == DashboardPanel.Messaging) BluePrimary else SurfaceSoft,
                         contentColor = if (activePanel == DashboardPanel.Messaging) Color.White else TextPri,
                     ),
                     shape = RoundedCornerShape(16.dp),
                 ) {
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Icon(
-                            painter = painterResource(android.R.drawable.ic_dialog_email),
-                            contentDescription = null,
-                            modifier = Modifier.size(16.dp),
-                        )
-                        Text("Messaging", fontWeight = FontWeight.SemiBold)
-                    }
+                    Text("Messaging", fontWeight = FontWeight.SemiBold, fontSize = 13.sp, maxLines = 1)
                 }
 
                 Button(
                     onClick = { onSelectPanel(DashboardPanel.QuietPeriod) },
-                    modifier = Modifier.weight(1f).height(46.dp),
+                    modifier = Modifier.weight(1f).height(44.dp),
                     colors = ButtonDefaults.buttonColors(
                         containerColor = if (activePanel == DashboardPanel.QuietPeriod) QuietPurple else QuietPurple.copy(alpha = 0.75f),
                         contentColor = Color.White,
                     ),
                     shape = RoundedCornerShape(16.dp),
                 ) {
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Icon(
-                            painter = painterResource(android.R.drawable.ic_lock_idle_alarm),
-                            contentDescription = null,
-                            modifier = Modifier.size(16.dp),
-                        )
-                        Text("Quiet Period", fontWeight = FontWeight.SemiBold)
-                    }
+                    Text(
+                        "Quiet Period",
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 12.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
                 }
             }
         }
@@ -2525,13 +2511,13 @@ private fun SafetyActionGrid(
         tonalElevation = 2.dp,
     ) {
         Column(
-            modifier = Modifier.padding(horizontal = 18.dp, vertical = 20.dp),
-            verticalArrangement = Arrangement.spacedBy(20.dp),
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
             for (row in actions.chunked(2)) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
                     row.forEach { action ->
                         SafetyActionButton(
@@ -2566,29 +2552,34 @@ private fun SafetyActionButton(
             contentColor = TextPri,
             disabledContentColor = TextMuted,
         ),
-        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp),
+        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 4.dp),
         modifier = modifier.fillMaxWidth(),
     ) {
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             Surface(
                 shape = CircleShape,
                 color = action.color,
-                modifier = Modifier.size(126.dp),
+                modifier = Modifier.size(106.dp),
             ) {
                 Box(contentAlignment = Alignment.Center) {
-                    Text(action.symbol, fontSize = 42.sp, color = Color.White)
+                    Text(action.symbol, fontSize = 34.sp, color = Color.White)
                 }
             }
             Text(
                 action.title,
                 fontWeight = FontWeight.ExtraBold,
                 color = TextPri,
-                fontSize = 18.sp,
+                fontSize = 15.sp,
                 textAlign = TextAlign.Center,
-                lineHeight = 20.sp,
+                lineHeight = 17.sp,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 34.dp),
             )
         }
     }
