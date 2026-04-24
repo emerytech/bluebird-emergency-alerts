@@ -61,8 +61,11 @@ struct ContentView: View {
     @State private var selectedRecipientIDs: Set<Int> = []
     @State private var showRecipientSheet = false
     @State private var isSendingAdminMessage = false
+    @State private var userMessageToAdmin = ""
+    @State private var isSendingUserMessage = false
     @State private var showTeamAssistPicker = false
-    @State private var showQuietPeriodSheet = false
+    @State private var showMessagingCenter = false
+    @State private var showQuietPeriodCenter = false
     @State private var quietPeriodReason = ""
     @State private var isSubmittingQuickAction = false
     @State private var teamAssistForwardRecipients: [MessageRecipient] = []
@@ -127,10 +130,7 @@ struct ContentView: View {
                         }
                         incidentsCard
                         safetyGrid
-                        if isAdminSession {
-                            adminMessageCard
-                            adminQuietPeriodRequestsCard
-                        }
+                        dashboardTabsCard
                         customPanicCard
                         supportActionsCard
                     }
@@ -153,6 +153,12 @@ struct ContentView: View {
             }
             .navigationDestination(isPresented: $showSettings) {
                 SettingsView()
+            }
+            .navigationDestination(isPresented: $showMessagingCenter) {
+                messagingCenterPage
+            }
+            .navigationDestination(isPresented: $showQuietPeriodCenter) {
+                quietPeriodCenterPage
             }
             .refreshable {
                 await refreshIncidentFeed()
@@ -208,37 +214,6 @@ struct ContentView: View {
                     }
                 }
                 Button("Cancel", role: .cancel) {}
-            }
-            .sheet(isPresented: $showQuietPeriodSheet) {
-                NavigationStack {
-                    CardView {
-                        SectionContainer("Request Quiet Period") {
-                            Text("Share optional context for approvers.")
-                                .font(.subheadline)
-                                .foregroundStyle(DSColor.textSecondary)
-                            TextInput(
-                                text: $quietPeriodReason,
-                                placeholder: "Reason (optional)",
-                                axis: .vertical
-                            )
-                            PrimaryButton(
-                                isSubmittingQuickAction ? "Submitting..." : "Submit Request",
-                                isLoading: isSubmittingQuickAction,
-                                isEnabled: !isSubmittingQuickAction
-                            ) {
-                                Task { await submitQuietPeriodRequest() }
-                            }
-                        }
-                    }
-                    .padding(DSSpacing.xl)
-                    .navigationTitle("Quiet Period")
-                    .navigationBarTitleDisplayMode(.inline)
-                    .toolbar {
-                        ToolbarItem(placement: .topBarTrailing) {
-                            Button("Close") { showQuietPeriodSheet = false }
-                        }
-                    }
-                }
             }
             .sheet(
                 isPresented: Binding(
@@ -380,6 +355,47 @@ struct ContentView: View {
                 }
                 safetyActionButton(action: safetyActions[4])
                     .frame(maxWidth: .infinity)
+            }
+        }
+    }
+
+    private var dashboardTabsCard: some View {
+        card {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Dashboard")
+                    .font(.headline)
+                    .foregroundStyle(textPrimary)
+                HStack(spacing: 10) {
+                    Button {
+                        showMessagingCenter = true
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "message.fill")
+                            Text("Messaging")
+                        }
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity, minHeight: 42)
+                        .background(bluePrimary)
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    }
+                    .buttonStyle(PressableScaleButtonStyle())
+
+                    Button {
+                        showQuietPeriodCenter = true
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "moon.zzz.fill")
+                            Text("Quiet Period")
+                        }
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity, minHeight: 42)
+                        .background(Color(red: 0.58, green: 0.20, blue: 0.92))
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    }
+                    .buttonStyle(PressableScaleButtonStyle())
+                }
             }
         }
     }
@@ -580,28 +596,97 @@ struct ContentView: View {
                 ) {
                     showTeamAssistPicker = true
                 }
-                Button {
-                    showQuietPeriodSheet = true
-                } label: {
-                    HStack {
-                        Text("Request Quiet Period")
-                            .font(DSTypography.button)
-                            .foregroundStyle(DSColor.textPrimary)
-                        Spacer()
-                        Image(systemName: "chevron.right")
+            }
+        }
+    }
+
+    private var messagingCenterPage: some View {
+        ScrollView {
+            VStack(spacing: 14) {
+                if isAdminSession {
+                    adminMessageCard
+                } else {
+                    userMessageCard
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 14)
+        }
+        .background(
+            LinearGradient(colors: [appBg, appBgDeep], startPoint: .top, endPoint: .bottom)
+                .ignoresSafeArea()
+        )
+        .navigationTitle("Messaging")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private var quietPeriodCenterPage: some View {
+        ScrollView {
+            VStack(spacing: 14) {
+                card {
+                    SectionContainer("Request Quiet Period") {
+                        Text("Share optional context for approvers.")
+                            .font(.subheadline)
                             .foregroundStyle(DSColor.textSecondary)
+                        TextInput(
+                            text: $quietPeriodReason,
+                            placeholder: "Reason (optional)",
+                            axis: .vertical
+                        )
+                        PrimaryButton(
+                            isSubmittingQuickAction ? "Submitting..." : "Submit Request",
+                            isLoading: isSubmittingQuickAction,
+                            isEnabled: !isSubmittingQuickAction
+                        ) {
+                            Task { await submitQuietPeriodRequest() }
+                        }
                     }
+                }
+                if isAdminSession {
+                    adminQuietPeriodRequestsCard
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 14)
+        }
+        .background(
+            LinearGradient(colors: [appBg, appBgDeep], startPoint: .top, endPoint: .bottom)
+                .ignoresSafeArea()
+        )
+        .navigationTitle("Quiet Period")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private var userMessageCard: some View {
+        card {
+            VStack(alignment: .leading, spacing: 14) {
+                Text("Message Admin")
+                    .font(.headline)
+                    .foregroundStyle(textPrimary)
+                TextField("", text: $userMessageToAdmin, prompt: Text("Message admins...").foregroundStyle(placeholderMuted), axis: .vertical)
+                    .foregroundStyle(.white)
                     .padding(.horizontal, 14)
-                    .frame(maxWidth: .infinity, minHeight: 46)
-                    .background(Color.white)
+                    .padding(.vertical, 12)
+                    .background(fieldDarkBg)
                     .overlay(
-                        RoundedRectangle(cornerRadius: DSRadius.button, style: .continuous)
-                            .stroke(Color.black.opacity(0.1), lineWidth: 1)
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .stroke(fieldDarkBorder, lineWidth: 1)
                     )
-                    .clipShape(RoundedRectangle(cornerRadius: DSRadius.button, style: .continuous))
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .lineLimit(2...4)
+                Button {
+                    Task { await sendMessageToAdminFromUser() }
+                } label: {
+                    Text(isSendingUserMessage ? "Sending..." : "Send Message")
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity, minHeight: 46)
+                        .background(
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .fill(bluePrimary.opacity(userMessageToAdmin.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0.55 : 1.0))
+                        )
                 }
                 .buttonStyle(PressableScaleButtonStyle())
-                .disabled(isSubmittingQuickAction)
+                .disabled(isSendingUserMessage || userMessageToAdmin.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }
     }
@@ -1065,6 +1150,21 @@ struct ContentView: View {
         }
     }
 
+    private func sendMessageToAdminFromUser() async {
+        let trimmed = userMessageToAdmin.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        isSendingUserMessage = true
+        defer { isSendingUserMessage = false }
+        do {
+            _ = try await api.messageAdmin(userID: appState.userID, message: trimmed)
+            userMessageToAdmin = ""
+            appState.lastError = nil
+            appState.lastStatus = "Message sent to admins."
+        } catch {
+            appState.lastError = "Send message failed: \(error.localizedDescription)"
+        }
+    }
+
     private func submitTeamAssist(type: String) async {
         guard let userID = appState.userID else {
             appState.lastError = "You must be signed in to request help."
@@ -1191,7 +1291,6 @@ struct ContentView: View {
                 reason: trimmed.isEmpty ? nil : trimmed
             )
             quietPeriodReason = ""
-            showQuietPeriodSheet = false
             appState.lastError = nil
             appState.lastStatus = "Quiet period request submitted."
         } catch {

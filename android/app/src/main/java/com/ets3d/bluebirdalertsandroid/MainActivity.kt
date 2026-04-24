@@ -258,7 +258,7 @@ data class AdminQuietPeriodRequest(
 private data class SafetyAction(
     val key: String,
     val title: String,
-    val emoji: String,
+    val iconRes: Int,
     val color: Color,
     val message: String,
 )
@@ -267,36 +267,36 @@ private fun buildSafetyActions(featureLabels: Map<String, String>): List<SafetyA
     SafetyAction(
         key = AppLabels.KEY_SECURE,
         title = AppLabels.labelForFeatureKey(AppLabels.KEY_SECURE, featureLabels).uppercase(),
-        emoji = "\uD83D\uDD10",
-        color = Color(0xFF3BA8F2),
+        iconRes = android.R.drawable.ic_menu_compass,
+        color = Color(0xFF5EA8F2),
         message = "SECURE emergency initiated. Follow school secure procedures.",
     ),
     SafetyAction(
         key = AppLabels.KEY_LOCKDOWN,
         title = AppLabels.labelForFeatureKey(AppLabels.KEY_LOCKDOWN, featureLabels).uppercase(),
-        emoji = "\uD83D\uDD12",
-        color = Color(0xFFEF4444),
+        iconRes = android.R.drawable.ic_lock_lock,
+        color = Color(0xFFE0524D),
         message = "LOCKDOWN emergency initiated. Follow lockdown procedures immediately.",
     ),
     SafetyAction(
         key = AppLabels.KEY_EVACUATION,
         title = AppLabels.labelForFeatureKey(AppLabels.KEY_EVACUATION, featureLabels).uppercase(),
-        emoji = "\uD83D\uDEB6",
-        color = Color(0xFF84CC16),
+        iconRes = android.R.drawable.ic_menu_directions,
+        color = Color(0xFF93CB43),
         message = "EVACUATE emergency initiated. Move to evacuation locations now.",
     ),
     SafetyAction(
         key = AppLabels.KEY_SHELTER,
         title = AppLabels.labelForFeatureKey(AppLabels.KEY_SHELTER, featureLabels).uppercase(),
-        emoji = "\uD83C\uDFE0",
-        color = Color(0xFFF59E0B),
+        iconRes = android.R.drawable.ic_menu_myplaces,
+        color = Color(0xFFE6A23C),
         message = "SHELTER emergency initiated. Move into shelter protocol.",
     ),
     SafetyAction(
         key = "hold",
         title = "HOLD",
-        emoji = "\u23F8",
-        color = Color(0xFF9333EA),
+        iconRes = android.R.drawable.ic_media_pause,
+        color = Color(0xFF8E3BEB),
         message = "HOLD emergency initiated. Keep current position until cleared.",
     ),
 )
@@ -1234,6 +1234,12 @@ private fun LoginScreen(onDone: () -> Unit) {
 }
 
 // ── Main screen ────────────────────────────────────────────────────────────────
+private enum class DashboardPanel {
+    Home,
+    Messaging,
+    QuietPeriod,
+}
+
 @Composable
 @OptIn(ExperimentalMaterial3Api::class)
 private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
@@ -1243,7 +1249,6 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
     val state by vm.state.collectAsState()
     var showDeactivateDialog by remember { mutableStateOf(false) }
     var showReportDialog by remember { mutableStateOf(false) }
-    var showMessageAdminDialog by remember { mutableStateOf(false) }
     var showSettingsScreen by remember { mutableStateOf(false) }
     var pendingSafetyAction by remember { mutableStateOf<SafetyAction?>(null) }
     var showQuietRequestOverlay by remember { mutableStateOf(false) }
@@ -1251,6 +1256,7 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
     var showTeamAssistDialog by remember { mutableStateOf(false) }
     var promptRequestHelpId by remember { mutableStateOf<Int?>(null) }
     var dismissedPromptRequestHelpId by remember { mutableStateOf<Int?>(null) }
+    var activePanel by remember { mutableStateOf(DashboardPanel.Home) }
     var replyTarget by remember { mutableStateOf<AdminInboxMessage?>(null) }
     var feedTab by remember { mutableStateOf(0) }
     val userName = remember { getUserName(ctx) }
@@ -1494,40 +1500,75 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                             .padding(horizontal = 20.dp, vertical = 8.dp),
                     )
 
-                    if (isAdmin) {
-                        AdminInboxCard(
-                            messages = state.adminInbox,
-                            unreadCount = state.unreadAdminMessages,
-                            recipients = state.adminMessageRecipients,
-                            isBusy = state.isBusy,
-                            onSendMessage = { message, recipientUserIds, sendToAll ->
-                                runProtectedAction(true) {
-                                    vm.sendAdminMessageToUsers(
-                                        ctx = ctx,
-                                        message = message,
-                                        recipientUserIds = recipientUserIds,
-                                        sendToAll = sendToAll,
-                                    )
-                                }
-                            },
-                            onReply = { replyTarget = it },
+                    DashboardPanelTabsCard(
+                        activePanel = activePanel,
+                        onSelectPanel = { activePanel = it },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 20.dp, vertical = 8.dp),
+                    )
+
+                    if (activePanel == DashboardPanel.Messaging) {
+                        if (isAdmin) {
+                            AdminInboxCard(
+                                messages = state.adminInbox,
+                                unreadCount = state.unreadAdminMessages,
+                                recipients = state.adminMessageRecipients,
+                                isBusy = state.isBusy,
+                                onSendMessage = { message, recipientUserIds, sendToAll ->
+                                    runProtectedAction(true) {
+                                        vm.sendAdminMessageToUsers(
+                                            ctx = ctx,
+                                            message = message,
+                                            recipientUserIds = recipientUserIds,
+                                            sendToAll = sendToAll,
+                                        )
+                                    }
+                                },
+                                onReply = { replyTarget = it },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 20.dp, vertical = 8.dp),
+                            )
+                        } else {
+                            UserMessageAdminCard(
+                                isBusy = state.isBusy,
+                                onSend = { message -> vm.sendAdminMessage(ctx, message) },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 20.dp, vertical = 8.dp),
+                            )
+                        }
+                    }
+
+                    if (activePanel == DashboardPanel.QuietPeriod) {
+                        OutlinedButton(
+                            onClick = { showQuietRequestOverlay = true },
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(horizontal = 20.dp, vertical = 8.dp),
-                        )
-                        AdminQuietPeriodRequestsCard(
-                            requests = state.adminQuietPeriodRequests,
-                            isBusy = state.isBusy,
-                            onApprove = { requestId ->
-                                runProtectedAction(true) { vm.approveQuietPeriodRequest(ctx, requestId) }
-                            },
-                            onDeny = { requestId ->
-                                runProtectedAction(true) { vm.denyQuietPeriodRequest(ctx, requestId) }
-                            },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 20.dp, vertical = 8.dp),
-                        )
+                                .padding(horizontal = 20.dp, vertical = 8.dp)
+                                .height(52.dp),
+                            shape = RoundedCornerShape(14.dp),
+                            enabled = !state.isBusy,
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFF7C3AED)),
+                        ) {
+                            Text("Request Quiet Period", fontWeight = FontWeight.SemiBold)
+                        }
+                        if (isAdmin) {
+                            AdminQuietPeriodRequestsCard(
+                                requests = state.adminQuietPeriodRequests,
+                                isBusy = state.isBusy,
+                                onApprove = { requestId ->
+                                    runProtectedAction(true) { vm.approveQuietPeriodRequest(ctx, requestId) }
+                                },
+                                onDeny = { requestId ->
+                                    runProtectedAction(true) { vm.denyQuietPeriodRequest(ctx, requestId) }
+                                },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 20.dp, vertical = 8.dp),
+                            )
+                        }
                     }
 
                     Spacer(Modifier.weight(1f))
@@ -1567,18 +1608,6 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                             }
                         }
 
-                        if (!isAdmin) {
-                            OutlinedButton(
-                                onClick = { showMessageAdminDialog = true },
-                                modifier = Modifier.fillMaxWidth().height(52.dp),
-                                shape = RoundedCornerShape(14.dp),
-                                enabled = !state.isBusy,
-                                colors = ButtonDefaults.outlinedButtonColors(contentColor = BlueDark),
-                            ) {
-                                Text("Message Admin", fontWeight = FontWeight.SemiBold)
-                            }
-                        }
-
                         OutlinedButton(
                             onClick = { showTeamAssistDialog = true },
                             modifier = Modifier.fillMaxWidth().height(52.dp),
@@ -1587,16 +1616,6 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                             colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFF0F766E)),
                         ) {
                             Text(requestHelpLabel, fontWeight = FontWeight.SemiBold)
-                        }
-
-                        OutlinedButton(
-                            onClick = { showQuietRequestOverlay = true },
-                            modifier = Modifier.fillMaxWidth().height(52.dp),
-                            shape = RoundedCornerShape(14.dp),
-                            enabled = !state.isBusy,
-                            colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFF7C3AED)),
-                        ) {
-                            Text("Request Quiet Period", fontWeight = FontWeight.SemiBold)
                         }
 
                         Text(
@@ -1751,16 +1770,6 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
         )
     }
 
-    if (showMessageAdminDialog) {
-        MessageAdminDialog(
-            isBusy = state.isBusy,
-            onConfirm = { message ->
-                showMessageAdminDialog = false
-                vm.sendAdminMessage(ctx, message)
-            },
-            onDismiss = { showMessageAdminDialog = false },
-        )
-    }
     replyTarget?.let { target ->
         AdminReplyDialog(
             target = target,
@@ -1812,6 +1821,104 @@ private fun FlashBanner(message: String, isError: Boolean) {
             .padding(14.dp),
     ) {
         Text(message, color = fg, fontSize = 14.sp)
+    }
+}
+
+@Composable
+private fun DashboardPanelTabsCard(
+    activePanel: DashboardPanel,
+    onSelectPanel: (DashboardPanel) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        modifier = modifier,
+        color = SurfaceMain,
+        shape = RoundedCornerShape(20.dp),
+        shadowElevation = 4.dp,
+    ) {
+        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("Dashboard", color = TextPri, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                Button(
+                    onClick = { onSelectPanel(DashboardPanel.Home) },
+                    modifier = Modifier.weight(1f).height(44.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (activePanel == DashboardPanel.Home) BlueDark else SurfaceSoft,
+                        contentColor = if (activePanel == DashboardPanel.Home) Color.White else TextPri,
+                    ),
+                    shape = RoundedCornerShape(12.dp),
+                ) { Text("Home", fontWeight = FontWeight.SemiBold) }
+
+                Button(
+                    onClick = { onSelectPanel(DashboardPanel.Messaging) },
+                    modifier = Modifier.weight(1f).height(44.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (activePanel == DashboardPanel.Messaging) BluePrimary else SurfaceSoft,
+                        contentColor = if (activePanel == DashboardPanel.Messaging) Color.White else TextPri,
+                    ),
+                    shape = RoundedCornerShape(12.dp),
+                ) { Text("Messaging", fontWeight = FontWeight.SemiBold) }
+
+                Button(
+                    onClick = { onSelectPanel(DashboardPanel.QuietPeriod) },
+                    modifier = Modifier.weight(1f).height(44.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (activePanel == DashboardPanel.QuietPeriod) Color(0xFF7A3FE0) else Color(0xFF965CF0),
+                        contentColor = Color.White,
+                    ),
+                    shape = RoundedCornerShape(12.dp),
+                ) { Text("Quiet Period", fontWeight = FontWeight.SemiBold) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun UserMessageAdminCard(
+    isBusy: Boolean,
+    onSend: (String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    var message by remember { mutableStateOf("") }
+    Surface(
+        modifier = modifier,
+        color = SurfaceMain,
+        shape = RoundedCornerShape(20.dp),
+        shadowElevation = 4.dp,
+    ) {
+        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text("Message Admin", color = TextPri, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+            OutlinedTextField(
+                value = message,
+                onValueChange = { message = it },
+                label = { Text("Message", color = TextMuted) },
+                placeholder = { Text("Need help in room 204", color = TextMuted) },
+                minLines = 2,
+                maxLines = 4,
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = BluePrimary,
+                    unfocusedBorderColor = BorderSoft,
+                    focusedTextColor = TextPri,
+                    unfocusedTextColor = TextPri,
+                    cursorColor = BluePrimary,
+                    focusedContainerColor = SurfaceSoft,
+                    unfocusedContainerColor = SurfaceSoft,
+                ),
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Button(
+                onClick = {
+                    onSend(message.trim())
+                    message = ""
+                },
+                enabled = !isBusy && message.isNotBlank(),
+                modifier = Modifier.fillMaxWidth().height(46.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = BluePrimary),
+                shape = RoundedCornerShape(12.dp),
+            ) {
+                Text("Send Message", fontWeight = FontWeight.SemiBold)
+            }
+        }
     }
 }
 
@@ -2390,19 +2497,13 @@ private fun SafetyActionGrid(
         tonalElevation = 2.dp,
     ) {
         Column(
-            modifier = Modifier.padding(18.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
+            modifier = Modifier.padding(horizontal = 18.dp, vertical = 20.dp),
+            verticalArrangement = Arrangement.spacedBy(20.dp),
         ) {
-            Text(
-                "Emergency Actions",
-                color = TextPri,
-                fontWeight = FontWeight.Bold,
-                fontSize = 18.sp,
-            )
             for (row in actions.chunked(2)) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(16.dp),
                 ) {
                     row.forEach { action ->
                         SafetyActionButton(
@@ -2428,45 +2529,44 @@ private fun SafetyActionButton(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    Surface(
-        modifier = modifier,
-        shape = RoundedCornerShape(18.dp),
-        color = SurfaceSoft,
-        tonalElevation = 0.dp,
+    Button(
+        onClick = onClick,
+        enabled = enabled,
+        colors = ButtonDefaults.buttonColors(
+            containerColor = Color.Transparent,
+            disabledContainerColor = Color.Transparent,
+            contentColor = TextPri,
+            disabledContentColor = TextMuted,
+        ),
+        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp),
+        modifier = modifier.fillMaxWidth(),
     ) {
-        Button(
-            onClick = onClick,
-            enabled = enabled,
-            colors = ButtonDefaults.buttonColors(
-                containerColor = Color.Transparent,
-                disabledContainerColor = Color.Transparent,
-                contentColor = TextPri,
-                disabledContentColor = TextMuted,
-            ),
-            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 12.dp),
-            modifier = Modifier.fillMaxWidth(),
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(8.dp),
+            Surface(
+                shape = CircleShape,
+                color = action.color,
+                modifier = Modifier.size(126.dp),
             ) {
-                Surface(
-                    shape = CircleShape,
-                    color = action.color,
-                    modifier = Modifier.size(64.dp),
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Text(action.emoji, fontSize = 28.sp)
-                    }
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        painter = painterResource(action.iconRes),
+                        contentDescription = action.title,
+                        tint = Color.White,
+                        modifier = Modifier.size(44.dp),
+                    )
                 }
-                Text(
-                    action.title,
-                    fontWeight = FontWeight.Bold,
-                    color = TextPri,
-                    fontSize = 13.sp,
-                    textAlign = TextAlign.Center,
-                )
             }
+            Text(
+                action.title,
+                fontWeight = FontWeight.ExtraBold,
+                color = TextPri,
+                fontSize = 18.sp,
+                textAlign = TextAlign.Center,
+                lineHeight = 20.sp,
+            )
         }
     }
 }
@@ -2501,7 +2601,12 @@ private fun ActionInitiateOverlay(
                 modifier = Modifier.size(86.dp),
             ) {
                 Box(contentAlignment = Alignment.Center) {
-                    Text(action.emoji, fontSize = 36.sp)
+                    Icon(
+                        painter = painterResource(action.iconRes),
+                        contentDescription = action.title,
+                        tint = Color.White,
+                        modifier = Modifier.size(38.dp),
+                    )
                 }
             }
             Spacer(modifier = Modifier.height(14.dp))
