@@ -640,24 +640,27 @@ def render_change_password_page(
     *,
     user_name: str,
     error: Optional[str] = None,
+    action: str = "/admin/change-password",
+    title: str = "Change Password — BlueBird Admin",
+    eyebrow: str = "BlueBird Alerts",
+    heading: str = "Password change required",
+    helper: str = "Your account was set up with a temporary password. Please choose a new password before continuing.",
 ) -> str:
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Change Password — BlueBird Admin</title>
+  <title>{escape(title)}</title>
   <style>{_base_styles()}</style>
 </head>
 <body>
   <main class="login-shell">
     <section class="hero-card">
       <div class="stack">
-        <p class="eyebrow">BlueBird Alerts</p>
-        <h1>Password change required</h1>
-        <p class="hero-copy">
-          Your account was set up with a temporary password. Please choose a new password before continuing.
-        </p>
+        <p class="eyebrow">{escape(eyebrow)}</p>
+        <h1>{escape(heading)}</h1>
+        <p class="hero-copy">{escape(helper)}</p>
       </div>
     </section>
     <section class="login-panel">
@@ -666,7 +669,7 @@ def render_change_password_page(
         <h2>Set a new password</h2>
       </div>
       {_render_flash(error, "error")}
-      <form method="post" action="/admin/change-password" class="stack">
+      <form method="post" action="{escape(action)}" class="stack">
         <div class="field">
           <label for="new_password">New password</label>
           <input id="new_password" name="new_password" type="password" autocomplete="new-password" />
@@ -873,6 +876,10 @@ def render_admin_page(
               <div class="field">
                 <label for="broadcast_message">Broadcast message</label>
                 <textarea id="broadcast_message" name="message" placeholder="Police on site. Stay barricaded until further notice."></textarea>
+              </div>
+              <div class="checkbox-row">
+                <input type="checkbox" name="send_push" value="1" id="send_push_broadcast" />
+                <label for="send_push_broadcast">Send this update as a push notification too</label>
               </div>
               <div class="button-row">
                 <button class="button button-primary" type="submit">Post update</button>

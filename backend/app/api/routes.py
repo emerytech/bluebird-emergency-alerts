@@ -6,7 +6,6 @@ import os
 import socket
 import sys
 import time
-import hmac
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -47,6 +46,7 @@ from app.services.device_registry import DeviceRegistry
 from app.services.fcm import FCMClient
 from app.services.quiet_period_store import QuietPeriodStore
 from app.services.report_store import ReportStore
+from app.services.platform_admin_store import PlatformAdminStore
 from app.services.school_registry import SchoolRegistry
 from app.services.user_store import UserStore
 from app.web.admin_views import (
@@ -99,6 +99,10 @@ def _schools(req: Request) -> SchoolRegistry:
     return req.app.state.school_registry  # type: ignore[attr-defined]
 
 
+def _platform_admins(req: Request) -> PlatformAdminStore:
+    return req.app.state.platform_admin_store  # type: ignore[attr-defined]
+
+
 def _session_user_id(request: Request) -> Optional[int]:
     value = request.session.get("admin_user_id")
     return int(value) if isinstance(value, int) or isinstance(value, str) and str(value).isdigit() else None
@@ -116,12 +120,17 @@ def _pop_flash(request: Request) -> tuple[Optional[str], Optional[str]]:
 
 
 def _super_admin_ok(request: Request) -> bool:
-    return bool(request.session.get("super_admin_ok"))
+    return bool(request.session.get("super_admin_id"))
 
 
 def _require_super_admin(request: Request) -> None:
     if not _super_admin_ok(request):
         raise HTTPException(status_code=status.HTTP_303_SEE_OTHER, headers={"Location": "/super-admin/login"})
+
+
+def _super_admin_id(request: Request) -> Optional[int]:
+    value = request.session.get("super_admin_id")
+    return int(value) if isinstance(value, int) or isinstance(value, str) and str(value).isdigit() else None
 
 
 async def _require_dashboard_admin(request: Request) -> UserStore:
@@ -406,6 +415,9 @@ async def admin_logout(request: Request) -> RedirectResponse:
 @router.get("/super-admin/login", response_class=HTMLResponse, include_in_schema=False)
 async def super_admin_login_page(request: Request) -> HTMLResponse:
     if _super_admin_ok(request):
+        admin = await _platform_admins(request).get_by_id(_super_admin_id(request) or 0)
+        if admin and admin.must_change_password:
+            return RedirectResponse(url="/super-admin/change-password", status_code=status.HTTP_303_SEE_OTHER)
         return RedirectResponse(url="/super-admin", status_code=status.HTTP_303_SEE_OTHER)
     flash_message, flash_error = _pop_flash(request)
     return HTMLResponse(render_super_admin_login_page(message=flash_message, error=flash_error))
@@ -417,26 +429,80 @@ async def super_admin_login(
     login_name: str = Form(...),
     password: str = Form(...),
 ) -> RedirectResponse:
-    settings = request.app.state.settings  # type: ignore[attr-defined]
-    ok_user = hmac.compare_digest(login_name.strip(), settings.SUPERADMIN_USERNAME)
-    ok_pass = hmac.compare_digest(password, settings.SUPERADMIN_PASSWORD)
-    if not (ok_user and ok_pass):
+    admin = await _platform_admins(request).authenticate(login_name.strip(), password)
+    if admin is None:
         _set_flash(request, error="Invalid super admin credentials.")
         return RedirectResponse(url="/super-admin/login", status_code=status.HTTP_303_SEE_OTHER)
-    request.session["super_admin_ok"] = True
+    request.session["super_admin_id"] = admin.id
+    await _platform_admins(request).mark_login(admin.id)
+    if admin.must_change_password:
+        _set_flash(request, message="Please change your temporary super admin password before continuing.")
+        return RedirectResponse(url="/super-admin/change-password", status_code=status.HTTP_303_SEE_OTHER)
     _set_flash(request, message="Signed in to super admin.")
     return RedirectResponse(url="/super-admin", status_code=status.HTTP_303_SEE_OTHER)
 
 
 @router.post("/super-admin/logout", include_in_schema=False)
 async def super_admin_logout(request: Request) -> RedirectResponse:
-    request.session.pop("super_admin_ok", None)
+    request.session.pop("super_admin_id", None)
     return RedirectResponse(url="/super-admin/login", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.get("/super-admin/change-password", response_class=HTMLResponse, include_in_schema=False)
+async def super_admin_change_password_page(request: Request) -> HTMLResponse:
+    admin_id = _super_admin_id(request)
+    if admin_id is None:
+        return RedirectResponse(url="/super-admin/login", status_code=status.HTTP_303_SEE_OTHER)
+    admin = await _platform_admins(request).get_by_id(admin_id)
+    if admin is None:
+        request.session.pop("super_admin_id", None)
+        return RedirectResponse(url="/super-admin/login", status_code=status.HTTP_303_SEE_OTHER)
+    if not admin.must_change_password:
+        return RedirectResponse(url="/super-admin", status_code=status.HTTP_303_SEE_OTHER)
+    _, flash_error = _pop_flash(request)
+    return HTMLResponse(
+        render_change_password_page(
+            user_name=admin.login_name,
+            error=flash_error,
+            action="/super-admin/change-password",
+            title="Change Super Admin Password",
+            eyebrow="BlueBird Platform",
+            heading="Password change required",
+            helper="Your super admin account is using a temporary bootstrap password. Choose a new one before continuing.",
+        )
+    )
+
+
+@router.post("/super-admin/change-password", include_in_schema=False)
+async def super_admin_change_password_submit(
+    request: Request,
+    new_password: str = Form(...),
+    confirm_password: str = Form(...),
+) -> RedirectResponse:
+    admin_id = _super_admin_id(request)
+    if admin_id is None:
+        return RedirectResponse(url="/super-admin/login", status_code=status.HTTP_303_SEE_OTHER)
+    admin = await _platform_admins(request).get_by_id(admin_id)
+    if admin is None:
+        request.session.pop("super_admin_id", None)
+        return RedirectResponse(url="/super-admin/login", status_code=status.HTTP_303_SEE_OTHER)
+    if new_password != confirm_password:
+        _set_flash(request, error="Passwords do not match.")
+        return RedirectResponse(url="/super-admin/change-password", status_code=status.HTTP_303_SEE_OTHER)
+    if len(new_password) < 8:
+        _set_flash(request, error="Password must be at least 8 characters.")
+        return RedirectResponse(url="/super-admin/change-password", status_code=status.HTTP_303_SEE_OTHER)
+    await _platform_admins(request).change_password(admin_id, new_password)
+    _set_flash(request, message="Super admin password updated.")
+    return RedirectResponse(url="/super-admin", status_code=status.HTTP_303_SEE_OTHER)
 
 
 @router.get("/super-admin", response_class=HTMLResponse, include_in_schema=False)
 async def super_admin_dashboard(request: Request) -> HTMLResponse:
     _require_super_admin(request)
+    admin = await _platform_admins(request).get_by_id(_super_admin_id(request) or 0)
+    if admin and admin.must_change_password:
+        return RedirectResponse(url="/super-admin/change-password", status_code=status.HTTP_303_SEE_OTHER)
     flash_message, flash_error = _pop_flash(request)
     schools = await _schools(request).list_schools()
     return HTMLResponse(
@@ -609,7 +675,9 @@ async def admin_deactivate_alarm(
 @router.post("/admin/broadcasts/create", include_in_schema=False)
 async def admin_create_broadcast(
     request: Request,
+    background_tasks: BackgroundTasks,
     message: str = Form(...),
+    send_push: Optional[str] = Form(default=None),
 ) -> RedirectResponse:
     await _require_dashboard_admin(request)
     normalized_message = message.strip()
@@ -620,7 +688,31 @@ async def admin_create_broadcast(
         admin_user_id=_session_user_id(request),
         message=normalized_message,
     )
-    _set_flash(request, message="Broadcast update posted.")
+    if send_push == "1":
+        admin_user_id = _session_user_id(request)
+        trigger_ip = request.client.host if request.client else None
+        trigger_user_agent = request.headers.get("user-agent")
+        alert_id = await _alert_log(request).log_alert(
+            normalized_message,
+            triggered_by_user_id=admin_user_id,
+            trigger_ip=trigger_ip,
+            trigger_user_agent=trigger_user_agent,
+        )
+        paused_user_ids = set(await _quiet_periods(request).active_user_ids())
+        apns_devices = await _registry(request).list_by_provider("apns")
+        fcm_devices = await _registry(request).list_by_provider("fcm")
+        apns_tokens = [device.token for device in apns_devices if device.user_id is None or device.user_id not in paused_user_ids]
+        fcm_tokens = [device.token for device in fcm_devices if device.user_id is None or device.user_id not in paused_user_ids]
+        plan = BroadcastPlan(apns_tokens=apns_tokens, fcm_tokens=fcm_tokens, sms_numbers=[])
+        background_tasks.add_task(
+            _broadcaster(request).broadcast_panic,
+            alert_id=alert_id,
+            message=normalized_message,
+            plan=plan,
+        )
+        _set_flash(request, message="Broadcast update posted and queued for push delivery.")
+    else:
+        _set_flash(request, message="Broadcast update posted.")
     return RedirectResponse(url="/admin#reports", status_code=status.HTTP_303_SEE_OTHER)
 
 

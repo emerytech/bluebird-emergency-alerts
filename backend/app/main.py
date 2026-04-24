@@ -12,6 +12,7 @@ from app.core.config import Settings
 from app.core.logging import configure_logging
 from app.services.apns import APNsClient
 from app.services.fcm import FCMClient
+from app.services.platform_admin_store import PlatformAdminStore
 from app.services.school_registry import SchoolRegistry
 from app.services.tenant_manager import TenantManager
 from app.services.twilio_sms import TwilioSMSClient
@@ -33,6 +34,11 @@ async def lifespan(app: FastAPI):
     await fcm_client.start()
     twilio_sms = TwilioSMSClient(settings)
     await twilio_sms.start()
+    platform_admin_store = PlatformAdminStore(settings.PLATFORM_DB_PATH)
+    await platform_admin_store.ensure_bootstrap(
+        login_name=settings.SUPERADMIN_USERNAME,
+        password=settings.SUPERADMIN_PASSWORD,
+    )
     school_registry = SchoolRegistry(settings.PLATFORM_DB_PATH)
     await school_registry.ensure_school(
         slug=settings.DEFAULT_SCHOOL_SLUG,
@@ -50,6 +56,7 @@ async def lifespan(app: FastAPI):
     app.state.apns_client = apns_client
     app.state.fcm_client = fcm_client
     app.state.twilio_sms = twilio_sms
+    app.state.platform_admin_store = platform_admin_store
     app.state.school_registry = school_registry
     app.state.tenant_manager = tenant_manager
 

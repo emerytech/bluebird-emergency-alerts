@@ -32,8 +32,8 @@ class Settings(BaseSettings):
     DEFAULT_SCHOOL_SLUG: str = "default"
     DEFAULT_SCHOOL_NAME: str = "Default School"
 
-    SUPERADMIN_USERNAME: str = "superadmin"
-    SUPERADMIN_PASSWORD: str = "change-me-now"
+    SUPERADMIN_USERNAME: str = "temery"
+    SUPERADMIN_PASSWORD: str = "Password@123"
 
     # APNs
     APNS_USE_SANDBOX: bool = True
