@@ -20,6 +20,7 @@ from fastapi import HTTPException, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from app.api.deps import require_api_key
+from app.constants.labels import FEATURE_LABELS, get_feature_label
 from app.models.schemas import (
     AdminMessageInboxItem,
     AdminMessageInboxResponse,
@@ -674,6 +675,11 @@ async def list_schools(request: Request) -> SchoolsCatalogResponse:
             if school.is_active
         ]
     )
+
+
+@router.get("/config/labels")
+async def config_labels(_: None = Depends(require_api_key)) -> dict[str, str]:
+    return FEATURE_LABELS
 
 
 @router.post("/auth/login", response_model=MobileLoginResponse)
@@ -2289,6 +2295,7 @@ async def active_incidents(
 
 
 @router.post("/team-assist/create", response_model=TeamAssistSummary)
+@router.post("/request-help/create", response_model=TeamAssistSummary)
 async def create_team_assist(
     body: TeamAssistCreateRequest,
     request: Request,
@@ -2326,13 +2333,14 @@ async def create_team_assist(
     background_tasks.add_task(
         _send_basic_push,
         request,
-        message=f"Team Assist: {team_assist.type}",
+        message=f"{get_feature_label('request_help')}: {get_feature_label(team_assist.type)}",
         target_user_ids=set(target_user_ids),
     )
     return _to_team_assist_summary(team_assist)
 
 
 @router.post("/team-assist/{team_assist_id}/action", response_model=TeamAssistSummary)
+@router.post("/request-help/{team_assist_id}/action", response_model=TeamAssistSummary)
 async def team_assist_action(
     team_assist_id: int,
     body: TeamAssistActionRequest,
@@ -2347,9 +2355,9 @@ async def team_assist_action(
 
     existing = await _incident_store(request).get_team_assist(team_assist_id)
     if existing is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Team assist not found")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Request help item not found")
     if existing.status == "cancelled":
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Team assist is already cancelled")
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Request help item is already cancelled")
 
     next_status = "acknowledged"
     forward_to_user_id: Optional[int] = None
@@ -2375,7 +2383,7 @@ async def team_assist_action(
         forward_to_label=forward_to_label,
     )
     if updated is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Team assist not found")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Request help item not found")
 
     await _incident_store(request).create_notification_log(
         user_id=updated.created_by,
@@ -2404,6 +2412,7 @@ async def team_assist_action(
 
 
 @router.post("/team-assist/{team_assist_id}/cancel-confirm", response_model=TeamAssistSummary)
+@router.post("/request-help/{team_assist_id}/cancel-confirm", response_model=TeamAssistSummary)
 async def team_assist_cancel_confirm(
     team_assist_id: int,
     body: TeamAssistCancelConfirmRequest,
@@ -2418,7 +2427,7 @@ async def team_assist_cancel_confirm(
 
     existing = await _incident_store(request).get_team_assist(team_assist_id)
     if existing is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Team assist not found")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Request help item not found")
     if existing.status == "cancelled":
         return _to_team_assist_summary(existing)
     if actor.role != "admin" and actor.id != existing.created_by:
@@ -2434,7 +2443,7 @@ async def team_assist_cancel_confirm(
         actor_label=actor.name,
     )
     if updated is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Team assist not found")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Request help item not found")
 
     await _incident_store(request).create_notification_log(
         user_id=updated.created_by,
@@ -2452,6 +2461,7 @@ async def team_assist_cancel_confirm(
 
 
 @router.get("/team-assist/active", response_model=TeamAssistListResponse)
+@router.get("/request-help/active", response_model=TeamAssistListResponse)
 async def active_team_assists(
     request: Request,
     limit: int = Query(default=50, ge=1, le=200),

@@ -253,28 +253,28 @@ private data class SafetyAction(
 private val SafetyActions = listOf(
     SafetyAction(
         key = "secure",
-        title = "SECURE",
+        title = AppLabels.SECURE.uppercase(),
         emoji = "\uD83D\uDD10",
         color = Color(0xFF3BA8F2),
         message = "SECURE emergency initiated. Follow school secure procedures.",
     ),
     SafetyAction(
         key = "lockdown",
-        title = "LOCKDOWN",
+        title = AppLabels.LOCKDOWN.uppercase(),
         emoji = "\uD83D\uDD12",
         color = Color(0xFFEF4444),
         message = "LOCKDOWN emergency initiated. Follow lockdown procedures immediately.",
     ),
     SafetyAction(
-        key = "evacuate",
-        title = "EVACUATE",
+        key = "evacuation",
+        title = AppLabels.EVACUATION.uppercase(),
         emoji = "\uD83D\uDEB6",
         color = Color(0xFF84CC16),
         message = "EVACUATE emergency initiated. Move to evacuation locations now.",
     ),
     SafetyAction(
         key = "shelter",
-        title = "SHELTER",
+        title = AppLabels.SHELTER.uppercase(),
         emoji = "\uD83C\uDFE0",
         color = Color(0xFFF59E0B),
         message = "SHELTER emergency initiated. Move into shelter protocol.",
@@ -573,7 +573,7 @@ class MainViewModel : ViewModel() {
     fun createTeamAssist(ctx: Context, type: String) {
         val userId = getUserId(ctx).toIntOrNull()
         if (userId == null) {
-            _state.update { it.copy(errorMsg = "You must be signed in to request Team Assist.") }
+            _state.update { it.copy(errorMsg = "You must be signed in to request help.") }
             return
         }
         viewModelScope.launch(Dispatchers.IO) {
@@ -584,13 +584,13 @@ class MainViewModel : ViewModel() {
                     _state.update {
                         it.copy(
                             isBusy = false,
-                            successMsg = "Team Assist sent.",
+                            successMsg = "Request help sent.",
                             activeTeamAssists = activeTeamAssists,
                         )
                     }
                 }
                 .onFailure { e ->
-                    _state.update { it.copy(isBusy = false, errorMsg = e.message ?: "Failed to send Team Assist.") }
+                    _state.update { it.copy(isBusy = false, errorMsg = e.message ?: "Failed to send request help.") }
                 }
         }
     }
@@ -616,13 +616,13 @@ class MainViewModel : ViewModel() {
                     _state.update {
                         it.copy(
                             isBusy = false,
-                            successMsg = "Team Assist updated by ${getUserName(ctx)}.",
+                            successMsg = "Request help updated by ${getUserName(ctx)}.",
                             activeTeamAssists = activeTeamAssists,
                         )
                     }
                 }
                 .onFailure { e ->
-                    _state.update { it.copy(isBusy = false, errorMsg = e.message ?: "Failed to update Team Assist.") }
+                    _state.update { it.copy(isBusy = false, errorMsg = e.message ?: "Failed to update request help.") }
                 }
         }
     }
@@ -642,7 +642,7 @@ class MainViewModel : ViewModel() {
                         it.copy(
                             isBusy = false,
                             successMsg = if (updated.status.equals("cancelled", ignoreCase = true)) {
-                                "Team Assist cancelled after dual confirmation."
+                                "Request help cancelled after dual confirmation."
                             } else {
                                 "Cancellation confirmation saved. Waiting for second confirmation."
                             },
@@ -651,7 +651,7 @@ class MainViewModel : ViewModel() {
                     }
                 }
                 .onFailure { e ->
-                    _state.update { it.copy(isBusy = false, errorMsg = e.message ?: "Failed to confirm Team Assist cancellation.") }
+                    _state.update { it.copy(isBusy = false, errorMsg = e.message ?: "Failed to confirm request-help cancellation.") }
                 }
         }
     }
@@ -1427,7 +1427,7 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                             enabled = !state.isBusy,
                             colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFF0F766E)),
                         ) {
-                            Text("Team Assist", fontWeight = FontWeight.SemiBold)
+                            Text(AppLabels.REQUEST_HELP, fontWeight = FontWeight.SemiBold)
                         }
 
                         OutlinedButton(
@@ -1623,7 +1623,7 @@ private fun ActiveSafetyFeedCard(
                 contentColor = BluePrimary,
             ) {
                 Tab(selected = selectedTab == 0, onClick = { onSelectTab(0) }, text = { Text("Emergencies") })
-                Tab(selected = selectedTab == 1, onClick = { onSelectTab(1) }, text = { Text("Team Assists") })
+                Tab(selected = selectedTab == 1, onClick = { onSelectTab(1) }, text = { Text(AppLabels.ACTIVE_HELP_REQUESTS) })
             }
             if (selectedTab == 0) {
                 if (incidents.isEmpty()) {
@@ -1639,7 +1639,7 @@ private fun ActiveSafetyFeedCard(
                 }
             } else {
                 if (teamAssists.isEmpty()) {
-                    Text("No active team assists.", color = TextMuted, fontSize = 13.sp)
+                    Text(AppLabels.NO_ACTIVE_HELP_REQUESTS, color = TextMuted, fontSize = 13.sp)
                 } else {
                     teamAssists.take(8).forEach { teamAssist ->
                         TeamAssistRow(
@@ -1692,7 +1692,7 @@ private fun TeamAssistRow(
     }
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         FeedRow(
-            title = teamAssist.type,
+            title = AppLabels.featureDisplayName(teamAssist.type),
             subtitle = subtitleParts.joinToString(" • "),
             tone = Color(0xFF0F766E),
         )
@@ -1724,7 +1724,7 @@ private fun TeamAssistRow(
     if (showForwardDialog) {
         AlertDialog(
             onDismissRequest = { showForwardDialog = false },
-            title = { Text("Forward Team Assist", color = TextPri, fontWeight = FontWeight.Bold) },
+            title = { Text(AppLabels.FORWARD_REQUEST_HELP, color = TextPri, fontWeight = FontWeight.Bold) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     OutlinedTextField(
@@ -2504,7 +2504,7 @@ private fun TeamAssistDialog(
     var selectedType by remember { mutableStateOf(TeamAssistTypes.first()) }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Team Assist", color = TextPri, fontWeight = FontWeight.Bold) },
+        title = { Text(AppLabels.REQUEST_HELP, color = TextPri, fontWeight = FontWeight.Bold) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text(

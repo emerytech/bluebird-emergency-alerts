@@ -6,6 +6,7 @@ from typing import Dict, List, Optional
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from app.constants.labels import normalize_feature_key
 
 _APNS_TOKEN_RE = re.compile(r"^[0-9a-f]+$")
 _E164_RE = re.compile(r"^[+][1-9][0-9]{1,14}$")
@@ -425,7 +426,7 @@ class TeamAssistCreateRequest(BaseModel):
         normalized = v.strip()
         if not normalized:
             raise ValueError("type is required")
-        return normalized
+        return normalize_feature_key(normalized)
 
 
 class TeamAssistSummary(BaseModel):

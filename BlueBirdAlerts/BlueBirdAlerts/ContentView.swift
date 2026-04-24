@@ -29,10 +29,10 @@ private struct SafetyActionItem: Identifiable {
 }
 
 private let safetyActions: [SafetyActionItem] = [
-    .init(id: "secure", title: "SECURE", icon: "hand.raised.fill", color: Color(red: 0.23, green: 0.66, blue: 0.95), message: "SECURE emergency initiated. Follow school secure procedures."),
-    .init(id: "lockdown", title: "LOCKDOWN", icon: "lock.fill", color: Color(red: 0.94, green: 0.27, blue: 0.27), message: "LOCKDOWN emergency initiated. Follow lockdown procedures immediately."),
-    .init(id: "evacuate", title: "EVACUATE", icon: "figure.walk.motion", color: Color(red: 0.52, green: 0.80, blue: 0.09), message: "EVACUATE emergency initiated. Move to evacuation locations now."),
-    .init(id: "shelter", title: "SHELTER", icon: "house.fill", color: Color(red: 0.96, green: 0.62, blue: 0.12), message: "SHELTER emergency initiated. Move into shelter protocol."),
+    .init(id: "secure", title: AppLabels.secure.uppercased(), icon: "hand.raised.fill", color: Color(red: 0.23, green: 0.66, blue: 0.95), message: "SECURE emergency initiated. Follow school secure procedures."),
+    .init(id: "lockdown", title: AppLabels.lockdown.uppercased(), icon: "lock.fill", color: Color(red: 0.94, green: 0.27, blue: 0.27), message: "LOCKDOWN emergency initiated. Follow lockdown procedures immediately."),
+    .init(id: "evacuation", title: AppLabels.evacuation.uppercased(), icon: "figure.walk.motion", color: Color(red: 0.52, green: 0.80, blue: 0.09), message: "EVACUATE emergency initiated. Move to evacuation locations now."),
+    .init(id: "shelter", title: AppLabels.shelter.uppercased(), icon: "house.fill", color: Color(red: 0.96, green: 0.62, blue: 0.12), message: "SHELTER emergency initiated. Move into shelter protocol."),
     .init(id: "hold", title: "HOLD", icon: "pause.fill", color: Color(red: 0.58, green: 0.20, blue: 0.92), message: "HOLD emergency initiated. Keep current position until cleared.")
 ]
 private let teamAssistTypes = [
@@ -159,7 +159,7 @@ struct ContentView: View {
                     }
                 )
             }
-            .confirmationDialog("Team Assist", isPresented: $showTeamAssistPicker, titleVisibility: .visible) {
+            .confirmationDialog(AppLabels.requestHelp, isPresented: $showTeamAssistPicker, titleVisibility: .visible) {
                 ForEach(teamAssistTypes, id: \.self) { type in
                     Button(type) {
                         Task { await submitTeamAssist(type: type) }
@@ -275,11 +275,11 @@ struct ContentView: View {
 
                 Divider()
 
-                Text("Team Assists")
+                Text(AppLabels.activeHelpRequests)
                     .font(.subheadline.weight(.bold))
                     .foregroundStyle(Color(red: 0.06, green: 0.46, blue: 0.43))
                 if activeTeamAssists.isEmpty {
-                    Text("No active team assists.")
+                    Text(AppLabels.noActiveHelpRequests)
                         .font(.subheadline)
                         .foregroundStyle(textMuted)
                 } else {
@@ -432,7 +432,7 @@ struct ContentView: View {
         card {
             VStack(spacing: DSSpacing.md) {
                 PrimaryButton(
-                    isSubmittingQuickAction ? "Submitting..." : "Team Assist",
+                    isSubmittingQuickAction ? "Submitting..." : AppLabels.requestHelp,
                     isLoading: isSubmittingQuickAction,
                     isEnabled: !isSubmittingQuickAction
                 ) {
@@ -628,7 +628,7 @@ struct ContentView: View {
 
     private func teamAssistFeedRow(item: TeamAssistSummary) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            feedRow(title: item.type, subtitle: teamAssistSubtitle(for: item))
+            feedRow(title: AppLabels.featureDisplayName(for: item.type), subtitle: teamAssistSubtitle(for: item))
             if isAdminSession {
                 HStack(spacing: 10) {
                     Menu {
@@ -834,7 +834,7 @@ struct ContentView: View {
             teamAssistForwardRecipients = try await api.listTeamAssistForwardRecipients()
         } catch {
             if teamAssistForwardRecipients.isEmpty {
-                appState.lastError = "Could not load users for team assist forwarding."
+                appState.lastError = "Could not load users for request-help forwarding."
             }
         }
     }
@@ -870,7 +870,7 @@ struct ContentView: View {
 
     private func submitTeamAssist(type: String) async {
         guard let userID = appState.userID else {
-            appState.lastError = "You must be signed in to request Team Assist."
+            appState.lastError = "You must be signed in to request help."
             return
         }
         isSubmittingQuickAction = true
@@ -878,10 +878,10 @@ struct ContentView: View {
         do {
             _ = try await api.createTeamAssist(userID: userID, type: type)
             appState.lastError = nil
-            appState.lastStatus = "Team Assist sent."
+            appState.lastStatus = "Request help sent."
             await refreshIncidentFeed()
         } catch {
-            appState.lastError = "Team Assist failed: \(error.localizedDescription)"
+            appState.lastError = "Request help failed: \(error.localizedDescription)"
         }
     }
 
@@ -895,10 +895,10 @@ struct ContentView: View {
         do {
             _ = try await api.updateTeamAssist(teamAssistID: item.id, actorUserID: userID, action: action)
             appState.lastError = nil
-            appState.lastStatus = "Team Assist marked \(action) by \(appState.userName)."
+            appState.lastStatus = "Request help marked \(action) by \(appState.userName)."
             await refreshIncidentFeed()
         } catch {
-            appState.lastError = "Team Assist update failed: \(error.localizedDescription)"
+            appState.lastError = "Request-help update failed: \(error.localizedDescription)"
         }
     }
 
@@ -913,13 +913,13 @@ struct ContentView: View {
             let updated = try await api.confirmTeamAssistCancel(teamAssistID: item.id, actorUserID: userID)
             appState.lastError = nil
             if updated.status == "cancelled" {
-                appState.lastStatus = "Team Assist cancelled after dual confirmation."
+                appState.lastStatus = "Request help cancelled after dual confirmation."
             } else {
                 appState.lastStatus = "Cancellation confirmation recorded. Waiting for second confirmation."
             }
             await refreshIncidentFeed()
         } catch {
-            appState.lastError = "Team Assist cancellation confirmation failed: \(error.localizedDescription)"
+            appState.lastError = "Request-help cancellation confirmation failed: \(error.localizedDescription)"
         }
     }
 
@@ -939,10 +939,10 @@ struct ContentView: View {
             )
             forwardingTeamAssist = nil
             appState.lastError = nil
-            appState.lastStatus = "Team Assist forwarded to \(recipient.label)."
+            appState.lastStatus = "Request help forwarded to \(recipient.label)."
             await refreshIncidentFeed()
         } catch {
-            appState.lastError = "Team Assist forward failed: \(error.localizedDescription)"
+            appState.lastError = "Request-help forward failed: \(error.localizedDescription)"
         }
     }
 
@@ -1114,7 +1114,7 @@ private struct TeamAssistForwardSheet: View {
                     }
                 }
             }
-            .navigationTitle("Forward Team Assist")
+            .navigationTitle(AppLabels.forwardRequestHelp)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {

@@ -101,6 +101,30 @@ def test_team_assist_create_and_active_fetch(client: TestClient, login_super_adm
     assert any(item["id"] == body["id"] for item in assists)
 
 
+def test_request_help_alias_type_normalizes_from_team_assist(client: TestClient, login_super_admin) -> None:
+    login_super_admin()
+    _create_school(client, name="Alias Help", slug="alias-help")
+    teacher_id = _create_user(client, "alias-help", name="Alias Teacher", role="teacher")
+
+    created = client.post(
+        "/alias-help/team-assist/create",
+        json={"type": "team_assist", "user_id": teacher_id, "assigned_team_ids": []},
+        headers={"X-API-Key": "test-api-key"},
+    )
+    assert created.status_code == 200
+    assert created.json()["type"] == "request_help"
+
+
+def test_config_labels_endpoint_returns_feature_labels(client: TestClient, login_super_admin) -> None:
+    login_super_admin()
+    _create_school(client, name="Labels School", slug="labels-school")
+    response = client.get("/labels-school/config/labels", headers={"X-API-Key": "test-api-key"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["request_help"] == "Request Help"
+    assert body["secure"] == "Secure Perimeter"
+
+
 def test_team_assist_admin_action_records_actor_label(client: TestClient, login_super_admin) -> None:
     login_super_admin()
     _create_school(client, name="Assist Action", slug="assist-action")
