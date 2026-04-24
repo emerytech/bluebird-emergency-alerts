@@ -182,6 +182,52 @@ data class BroadcastUpdate(
     val message: String,
 )
 
+private data class SafetyAction(
+    val key: String,
+    val title: String,
+    val emoji: String,
+    val color: Color,
+    val message: String,
+)
+
+private val SafetyActions = listOf(
+    SafetyAction(
+        key = "secure",
+        title = "SECURE",
+        emoji = "\uD83D\uDD10",
+        color = Color(0xFF3BA8F2),
+        message = "SECURE emergency initiated. Follow school secure procedures.",
+    ),
+    SafetyAction(
+        key = "lockdown",
+        title = "LOCKDOWN",
+        emoji = "\uD83D\uDD12",
+        color = Color(0xFFEF4444),
+        message = "LOCKDOWN emergency initiated. Follow lockdown procedures immediately.",
+    ),
+    SafetyAction(
+        key = "evacuate",
+        title = "EVACUATE",
+        emoji = "\uD83D\uDEB6",
+        color = Color(0xFF84CC16),
+        message = "EVACUATE emergency initiated. Move to evacuation locations now.",
+    ),
+    SafetyAction(
+        key = "shelter",
+        title = "SHELTER",
+        emoji = "\uD83C\uDFE0",
+        color = Color(0xFFF59E0B),
+        message = "SHELTER emergency initiated. Move into shelter protocol.",
+    ),
+    SafetyAction(
+        key = "hold",
+        title = "HOLD",
+        emoji = "\u23F8",
+        color = Color(0xFF9333EA),
+        message = "HOLD emergency initiated. Keep current position until cleared.",
+    ),
+)
+
 // ── Data ───────────────────────────────────────────────────────────────────────
 data class AlarmStatus(
     val isActive: Boolean = false,
@@ -693,11 +739,11 @@ private fun LoginScreen(onDone: () -> Unit) {
 private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
     val ctx = LocalContext.current
     val state by vm.state.collectAsState()
-    var showActivateDialog by remember { mutableStateOf(false) }
     var showDeactivateDialog by remember { mutableStateOf(false) }
     var showReportDialog by remember { mutableStateOf(false) }
     var showMessageAdminDialog by remember { mutableStateOf(false) }
     var showSettingsScreen by remember { mutableStateOf(false) }
+    var pendingSafetyAction by remember { mutableStateOf<SafetyAction?>(null) }
     val userName = remember { getUserName(ctx) }
     val userRole = remember { getUserRole(ctx) }
     val canDeactivate = remember { canDeactivateAlarm(ctx) }
@@ -813,6 +859,15 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                         )
                     }
 
+                    SafetyActionGrid(
+                        actions = SafetyActions,
+                        enabled = !state.isBusy && !state.alarm.isActive,
+                        onSelect = { action -> pendingSafetyAction = action },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 20.dp, vertical = 8.dp),
+                    )
+
                     Spacer(Modifier.weight(1f))
 
                     // ── Action buttons ───────────────────────────────────────
@@ -860,22 +915,6 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                             Text("Message Admin", fontWeight = FontWeight.SemiBold)
                         }
 
-                        // Activate
-                        Button(
-                            onClick = { showActivateDialog = true },
-                            modifier = Modifier.fillMaxWidth().height(72.dp),
-                            shape = RoundedCornerShape(18.dp),
-                            enabled = !state.isBusy,
-                            colors = ButtonDefaults.buttonColors(containerColor = AlarmRed),
-                        ) {
-                            Text(
-                                if (state.isBusy) "Sending…" else "ACTIVATE ALARM",
-                                fontSize = 22.sp,
-                                fontWeight = FontWeight.ExtraBold,
-                                letterSpacing = 1.sp,
-                            )
-                        }
-
                         Text(
                             "Version ${BuildConfig.VERSION_NAME}  ·  ${BuildConfig.BACKEND_BASE_URL}",
                             fontSize = 11.sp,
@@ -889,18 +928,19 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
         }
     }
 
-    // ── Dialogs ───────────────────────────────────────────────────────────────
-    if (showActivateDialog) {
-        ActivateDialog(
+    pendingSafetyAction?.let { action ->
+        ActionInitiateOverlay(
+            action = action,
             isBusy = state.isBusy,
-            onConfirm = { msg ->
-                showActivateDialog = false
-                vm.activateAlarm(ctx, msg)
+            onCancel = { pendingSafetyAction = null },
+            onInitiate = {
+                pendingSafetyAction = null
+                vm.activateAlarm(ctx, action.message)
             },
-            onDismiss = { showActivateDialog = false },
         )
     }
 
+    // ── Dialogs ───────────────────────────────────────────────────────────────
     if (showDeactivateDialog) {
         ConfirmDialog(
             title = "Deactivate alarm?",
@@ -1061,6 +1101,203 @@ private fun BroadcastsCard(broadcasts: List<BroadcastUpdate>, modifier: Modifier
                     HorizontalDivider(color = BorderSoft)
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun SafetyActionGrid(
+    actions: List<SafetyAction>,
+    enabled: Boolean,
+    onSelect: (SafetyAction) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(20.dp),
+        color = SurfaceMain,
+        tonalElevation = 2.dp,
+    ) {
+        Column(
+            modifier = Modifier.padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            Text(
+                "Emergency Actions",
+                color = TextPri,
+                fontWeight = FontWeight.Bold,
+                fontSize = 18.sp,
+            )
+            for (row in actions.chunked(2)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    row.forEach { action ->
+                        SafetyActionButton(
+                            action = action,
+                            enabled = enabled,
+                            onClick = { onSelect(action) },
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                    if (row.size == 1) {
+                        Spacer(modifier = Modifier.weight(1f))
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SafetyActionButton(
+    action: SafetyAction,
+    enabled: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(18.dp),
+        color = SurfaceSoft,
+        tonalElevation = 0.dp,
+    ) {
+        Button(
+            onClick = onClick,
+            enabled = enabled,
+            colors = ButtonDefaults.buttonColors(
+                containerColor = Color.Transparent,
+                disabledContainerColor = Color.Transparent,
+                contentColor = TextPri,
+                disabledContentColor = TextMuted,
+            ),
+            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 12.dp),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Surface(
+                    shape = CircleShape,
+                    color = action.color,
+                    modifier = Modifier.size(64.dp),
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Text(action.emoji, fontSize = 28.sp)
+                    }
+                }
+                Text(
+                    action.title,
+                    fontWeight = FontWeight.Bold,
+                    color = TextPri,
+                    fontSize = 13.sp,
+                    textAlign = TextAlign.Center,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ActionInitiateOverlay(
+    action: SafetyAction,
+    isBusy: Boolean,
+    onCancel: () -> Unit,
+    onInitiate: () -> Unit,
+) {
+    var slideValue by remember(action.key) { mutableStateOf(0f) }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color(0xCC0B1220))
+            .navigationBarsPadding()
+            .statusBarsPadding(),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 24.dp, vertical = 20.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Text("BlueBird Alerts", color = Color(0xFFD4DCEE), fontSize = 16.sp, fontWeight = FontWeight.Bold)
+            Spacer(modifier = Modifier.height(22.dp))
+            Surface(
+                shape = CircleShape,
+                color = action.color,
+                modifier = Modifier.size(86.dp),
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Text(action.emoji, fontSize = 36.sp)
+                }
+            }
+            Spacer(modifier = Modifier.height(14.dp))
+            Text(
+                "${action.title} EMERGENCY",
+                color = Color.White,
+                fontWeight = FontWeight.ExtraBold,
+                fontSize = 26.sp,
+                textAlign = TextAlign.Center,
+            )
+            Spacer(modifier = Modifier.height(34.dp))
+            Surface(
+                shape = RoundedCornerShape(28.dp),
+                color = Color(0xFF5B616B),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
+                    Text(
+                        if (isBusy) "Initiating…" else "Slide to Initiate →",
+                        color = Color.White,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 16.sp,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Slider(
+                        value = slideValue,
+                        onValueChange = { slideValue = it },
+                        onValueChangeFinished = {
+                            if (!isBusy && slideValue >= 0.95f) {
+                                onInitiate()
+                            }
+                            slideValue = 0f
+                        },
+                        enabled = !isBusy,
+                        colors = SliderDefaults.colors(
+                            thumbColor = Color.White,
+                            activeTrackColor = Color(0xFF9AA0AA),
+                            inactiveTrackColor = Color(0xFF6D747F),
+                        ),
+                        valueRange = 0f..1f,
+                    )
+                }
+            }
+            Spacer(modifier = Modifier.weight(1f))
+            Surface(
+                shape = CircleShape,
+                color = Color(0xCC9CA3AF),
+                modifier = Modifier.size(68.dp),
+            ) {
+                Button(
+                    onClick = onCancel,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color.Transparent,
+                        contentColor = Color.White,
+                    ),
+                    modifier = Modifier.fillMaxSize(),
+                ) {
+                    Text("✕", fontSize = 26.sp, fontWeight = FontWeight.Bold)
+                }
+            }
+            Text(
+                "Cancel",
+                color = Color.White,
+                fontSize = 14.sp,
+                modifier = Modifier.padding(top = 6.dp),
+            )
         }
     }
 }
