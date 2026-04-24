@@ -18,6 +18,7 @@ class QuietPeriodRecord:
     requested_at: str
     approved_at: Optional[str]
     approved_by_user_id: Optional[int]
+    approved_by_label: Optional[str]
     expires_at: Optional[str]
 
 
@@ -43,10 +44,17 @@ class QuietPeriodStore:
                     requested_at TEXT NOT NULL,
                     approved_at TEXT NULL,
                     approved_by_user_id INTEGER NULL,
+                    approved_by_label TEXT NULL,
                     expires_at TEXT NULL
                 );
                 """
             )
+            self._migrate_quiet_periods_table(conn)
+
+    def _migrate_quiet_periods_table(self, conn: sqlite3.Connection) -> None:
+        cols = {str(row[1]) for row in conn.execute("PRAGMA table_info(quiet_period_requests);").fetchall()}
+        if "approved_by_label" not in cols:
+            conn.execute("ALTER TABLE quiet_period_requests ADD COLUMN approved_by_label TEXT NULL;")
 
     def _row_to_record(self, row: sqlite3.Row | tuple) -> QuietPeriodRecord:
         return QuietPeriodRecord(
@@ -57,7 +65,8 @@ class QuietPeriodStore:
             requested_at=str(row[4]),
             approved_at=str(row[5]) if row[5] is not None else None,
             approved_by_user_id=int(row[6]) if row[6] is not None else None,
-            expires_at=str(row[7]) if row[7] is not None else None,
+            approved_by_label=str(row[7]) if row[7] is not None else None,
+            expires_at=str(row[8]) if row[8] is not None else None,
         )
 
     def _expire_old_sync(self) -> None:
@@ -113,7 +122,7 @@ class QuietPeriodStore:
     async def request_quiet_period(self, *, user_id: int, reason: Optional[str]) -> QuietPeriodRecord:
         return await anyio.to_thread.run_sync(self._request_sync, int(user_id), reason)
 
-    def _grant_sync(self, user_id: int, reason: Optional[str], admin_user_id: int) -> QuietPeriodRecord:
+    def _grant_sync(self, user_id: int, reason: Optional[str], admin_user_id: int, admin_label: Optional[str]) -> QuietPeriodRecord:
         self._expire_old_sync()
         now = datetime.now(timezone.utc)
         expires_at = (now + timedelta(hours=24)).isoformat()
@@ -130,15 +139,15 @@ class QuietPeriodStore:
             cur = conn.execute(
                 """
                 INSERT INTO quiet_period_requests (
-                    user_id, reason, status, requested_at, approved_at, approved_by_user_id, expires_at
+                    user_id, reason, status, requested_at, approved_at, approved_by_user_id, approved_by_label, expires_at
                 )
-                VALUES (?, ?, 'approved', ?, ?, ?, ?);
+                VALUES (?, ?, 'approved', ?, ?, ?, ?, ?);
                 """,
-                (int(user_id), reason, now.isoformat(), now.isoformat(), int(admin_user_id), expires_at),
+                (int(user_id), reason, now.isoformat(), now.isoformat(), int(admin_user_id), admin_label, expires_at),
             )
             row = conn.execute(
                 """
-                SELECT id, user_id, reason, status, requested_at, approved_at, approved_by_user_id, expires_at
+                SELECT id, user_id, reason, status, requested_at, approved_at, approved_by_user_id, approved_by_label, expires_at
                 FROM quiet_period_requests
                 WHERE id = ?;
                 """,
@@ -147,10 +156,10 @@ class QuietPeriodStore:
         assert row is not None
         return self._row_to_record(row)
 
-    async def grant_quiet_period(self, *, user_id: int, reason: Optional[str], admin_user_id: int) -> QuietPeriodRecord:
-        return await anyio.to_thread.run_sync(self._grant_sync, int(user_id), reason, int(admin_user_id))
+    async def grant_quiet_period(self, *, user_id: int, reason: Optional[str], admin_user_id: int, admin_label: Optional[str] = None) -> QuietPeriodRecord:
+        return await anyio.to_thread.run_sync(self._grant_sync, int(user_id), reason, int(admin_user_id), admin_label)
 
-    def _approve_sync(self, request_id: int, admin_user_id: int) -> Optional[QuietPeriodRecord]:
+    def _approve_sync(self, request_id: int, admin_user_id: int, admin_label: Optional[str]) -> Optional[QuietPeriodRecord]:
         self._expire_old_sync()
         approved_at = datetime.now(timezone.utc)
         expires_at = (approved_at + timedelta(hours=24)).isoformat()
@@ -161,15 +170,16 @@ class QuietPeriodStore:
                 SET status = 'approved',
                     approved_at = ?,
                     approved_by_user_id = ?,
+                    approved_by_label = ?,
                     expires_at = ?
                 WHERE id = ?
                   AND status = 'pending';
                 """,
-                (approved_at.isoformat(), int(admin_user_id), expires_at, int(request_id)),
+                (approved_at.isoformat(), int(admin_user_id), admin_label, expires_at, int(request_id)),
             )
             row = conn.execute(
                 """
-                SELECT id, user_id, reason, status, requested_at, approved_at, approved_by_user_id, expires_at
+                SELECT id, user_id, reason, status, requested_at, approved_at, approved_by_user_id, approved_by_label, expires_at
                 FROM quiet_period_requests
                 WHERE id = ?;
                 """,
@@ -177,10 +187,10 @@ class QuietPeriodStore:
             ).fetchone()
         return self._row_to_record(row) if row is not None else None
 
-    async def approve_request(self, *, request_id: int, admin_user_id: int) -> Optional[QuietPeriodRecord]:
-        return await anyio.to_thread.run_sync(self._approve_sync, int(request_id), int(admin_user_id))
+    async def approve_request(self, *, request_id: int, admin_user_id: int, admin_label: Optional[str] = None) -> Optional[QuietPeriodRecord]:
+        return await anyio.to_thread.run_sync(self._approve_sync, int(request_id), int(admin_user_id), admin_label)
 
-    def _deny_sync(self, request_id: int, admin_user_id: int) -> Optional[QuietPeriodRecord]:
+    def _deny_sync(self, request_id: int, admin_user_id: int, admin_label: Optional[str]) -> Optional[QuietPeriodRecord]:
         self._expire_old_sync()
         with self._connect() as conn:
             conn.execute(
@@ -189,15 +199,16 @@ class QuietPeriodStore:
                 SET status = 'denied',
                     approved_at = ?,
                     approved_by_user_id = ?,
+                    approved_by_label = ?,
                     expires_at = NULL
                 WHERE id = ?
                   AND status = 'pending';
                 """,
-                (datetime.now(timezone.utc).isoformat(), int(admin_user_id), int(request_id)),
+                (datetime.now(timezone.utc).isoformat(), int(admin_user_id), admin_label, int(request_id)),
             )
             row = conn.execute(
                 """
-                SELECT id, user_id, reason, status, requested_at, approved_at, approved_by_user_id, expires_at
+                SELECT id, user_id, reason, status, requested_at, approved_at, approved_by_user_id, approved_by_label, expires_at
                 FROM quiet_period_requests
                 WHERE id = ?;
                 """,
@@ -205,15 +216,15 @@ class QuietPeriodStore:
             ).fetchone()
         return self._row_to_record(row) if row is not None else None
 
-    async def deny_request(self, *, request_id: int, admin_user_id: int) -> Optional[QuietPeriodRecord]:
-        return await anyio.to_thread.run_sync(self._deny_sync, int(request_id), int(admin_user_id))
+    async def deny_request(self, *, request_id: int, admin_user_id: int, admin_label: Optional[str] = None) -> Optional[QuietPeriodRecord]:
+        return await anyio.to_thread.run_sync(self._deny_sync, int(request_id), int(admin_user_id), admin_label)
 
     def _list_recent_sync(self, limit: int) -> List[QuietPeriodRecord]:
         self._expire_old_sync()
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT id, user_id, reason, status, requested_at, approved_at, approved_by_user_id, expires_at
+                SELECT id, user_id, reason, status, requested_at, approved_at, approved_by_user_id, approved_by_label, expires_at
                 FROM quiet_period_requests
                 ORDER BY id DESC
                 LIMIT ?;
@@ -230,7 +241,7 @@ class QuietPeriodStore:
         with self._connect() as conn:
             row = conn.execute(
                 """
-                SELECT id, user_id, reason, status, requested_at, approved_at, approved_by_user_id, expires_at
+                SELECT id, user_id, reason, status, requested_at, approved_at, approved_by_user_id, approved_by_label, expires_at
                 FROM quiet_period_requests
                 WHERE user_id = ?
                   AND status = 'approved'

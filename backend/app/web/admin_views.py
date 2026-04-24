@@ -381,20 +381,22 @@ def _render_broadcast_rows(broadcasts: Sequence[BroadcastUpdateRecord]) -> str:
         return '<tr><td colspan="3" class="mini-copy">No admin updates posted yet.</td></tr>'
     rows = []
     for item in broadcasts:
+        actor = item.admin_label or (str(item.admin_user_id) if item.admin_user_id is not None else "admin")
         rows.append(
-            f"<tr><td>{escape(item.created_at)}</td><td>{escape(str(item.admin_user_id) if item.admin_user_id is not None else 'admin')}</td><td>{escape(item.message)}</td></tr>"
+            f"<tr><td>{escape(item.created_at)}</td><td>{escape(actor)}</td><td>{escape(item.message)}</td></tr>"
         )
     return "".join(rows)
 
 
 def _render_quiet_period_rows(records: Sequence[QuietPeriodRecord], users: Sequence[UserRecord]) -> str:
     if not records:
-        return '<tr><td colspan="5" class="mini-copy">No quiet periods yet.</td></tr>'
+        return '<tr><td colspan="6" class="mini-copy">No quiet periods yet.</td></tr>'
     user_names = {user.id: user.name for user in users}
     rows = []
     for item in records:
+        approver = item.approved_by_label or (f"User #{item.approved_by_user_id}" if item.approved_by_user_id is not None else "—")
         rows.append(
-            f"<tr><td>{escape(user_names.get(item.user_id, f'User #{item.user_id}'))}</td><td>{escape(item.status)}</td><td>{escape(item.reason or '—')}</td><td>{escape(item.requested_at)}</td><td>{escape(item.expires_at or '—')}</td></tr>"
+            f"<tr><td>{escape(user_names.get(item.user_id, f'User #{item.user_id}'))}</td><td>{escape(item.status)}</td><td>{escape(item.reason or '—')}</td><td>{escape(approver)}</td><td>{escape(item.requested_at)}</td><td>{escape(item.expires_at or '—')}</td></tr>"
         )
     return "".join(rows)
 
@@ -1331,7 +1333,12 @@ def render_admin_page(
                 <button class="button button-secondary" type="submit">Deactivate alarm</button>
               </div>
             </form>
-            <p class="mini-copy">Activated at: {escape(alarm_state.activated_at or 'Never')} • Deactivated at: {escape(alarm_state.deactivated_at or 'Not yet')}</p>
+            <p class="mini-copy">
+              Activated at: {escape(alarm_state.activated_at or 'Never')}
+              {" • by " + escape(alarm_state.activated_by_label or (f"User #{alarm_state.activated_by_user_id}" if alarm_state.activated_by_user_id is not None else "system")) if alarm_state.activated_at else ""}
+              • Deactivated at: {escape(alarm_state.deactivated_at or 'Not yet')}
+              {" • by " + escape(alarm_state.deactivated_by_label or (f"User #{alarm_state.deactivated_by_user_id}" if alarm_state.deactivated_by_user_id is not None else "system")) if alarm_state.deactivated_at else ""}
+            </p>
           </section>
 
           <section class="panel command-section span-7" id="users">
@@ -1467,7 +1474,7 @@ def render_admin_page(
             </form>
             <table style="margin-top:16px;">
               <thead>
-                <tr><th>User</th><th>Status</th><th>Reason</th><th>Requested</th><th>Expires</th></tr>
+                <tr><th>User</th><th>Status</th><th>Reason</th><th>Approved By</th><th>Requested</th><th>Expires</th></tr>
               </thead>
               <tbody>
                 {_render_quiet_period_rows(quiet_periods, users)}

@@ -195,6 +195,23 @@ def _super_admin_school_access_here(request: Request) -> bool:
     return _super_admin_ok(request) and _super_admin_school_slug(request) == str(getattr(request.state.school, "slug", "") or "")
 
 
+def _current_school_actor_label(request: Request) -> Optional[str]:
+    if _super_admin_school_access_here(request):
+        actor = getattr(request.state, "super_admin_actor", None)
+        login_name = getattr(actor, "login_name", None)
+        return f"Platform Super Admin ({login_name})" if login_name else "Platform Super Admin"
+    admin_user = getattr(request.state, "admin_user", None)
+    if admin_user is None:
+        return None
+    login_name = getattr(admin_user, "login_name", None)
+    name = getattr(admin_user, "name", None)
+    if login_name:
+        return str(login_name)
+    if name:
+        return str(name)
+    return None
+
+
 def _client_fingerprint(request: Request) -> str:
     user_agent = request.headers.get("user-agent", "").strip()
     return hashlib.sha256(user_agent.encode("utf-8")).hexdigest()
@@ -442,13 +459,16 @@ async def alarm_status(request: Request) -> AlarmStatusResponse:
         message=state.message,
         activated_at=state.activated_at,
         activated_by_user_id=state.activated_by_user_id,
+        activated_by_label=state.activated_by_label,
         deactivated_at=state.deactivated_at,
         deactivated_by_user_id=state.deactivated_by_user_id,
+        deactivated_by_label=state.deactivated_by_label,
         broadcasts=[
             BroadcastUpdateSummary(
                 update_id=item.id,
                 created_at=item.created_at,
                 admin_user_id=item.admin_user_id,
+                admin_label=item.admin_label,
                 message=item.message,
             )
             for item in broadcasts
@@ -474,7 +494,11 @@ async def activate_alarm(
         trigger_ip=trigger_ip,
         trigger_user_agent=trigger_user_agent,
     )
-    state = await _alarm_store(request).activate(message=body.message, activated_by_user_id=triggered_by_user_id)
+    state = await _alarm_store(request).activate(
+        message=body.message,
+        activated_by_user_id=triggered_by_user_id,
+        activated_by_label=_current_school_actor_label(request),
+    )
 
     paused_user_ids = set(await _quiet_periods(request).active_user_ids())
     apns_devices = await _registry(request).list_by_provider("apns")
@@ -500,8 +524,10 @@ async def activate_alarm(
         message=state.message,
         activated_at=state.activated_at,
         activated_by_user_id=state.activated_by_user_id,
+        activated_by_label=state.activated_by_label,
         deactivated_at=state.deactivated_at,
         deactivated_by_user_id=state.deactivated_by_user_id,
+        deactivated_by_label=state.deactivated_by_label,
     )
 
 
@@ -512,15 +538,20 @@ async def deactivate_alarm(
     _: None = Depends(require_api_key),
 ) -> AlarmStatusResponse:
     admin_user_id = await _require_admin_user(_users(request), body.user_id)
-    state = await _alarm_store(request).deactivate(deactivated_by_user_id=admin_user_id)
+    state = await _alarm_store(request).deactivate(
+        deactivated_by_user_id=admin_user_id,
+        deactivated_by_label=_current_school_actor_label(request),
+    )
     logger.warning("ALARM DEACTIVATED by_user=%s", admin_user_id)
     return AlarmStatusResponse(
         is_active=state.is_active,
         message=state.message,
         activated_at=state.activated_at,
         activated_by_user_id=state.activated_by_user_id,
+        activated_by_label=state.activated_by_label,
         deactivated_at=state.deactivated_at,
         deactivated_by_user_id=state.deactivated_by_user_id,
+        deactivated_by_label=state.deactivated_by_label,
     )
 
 
@@ -1592,7 +1623,10 @@ async def admin_deactivate_alarm(
 ) -> RedirectResponse:
     await _require_dashboard_admin(request)
     if bool(getattr(request.state, "super_admin_school_access", False)):
-        await _alarm_store(request).deactivate(deactivated_by_user_id=None)
+        await _alarm_store(request).deactivate(
+            deactivated_by_user_id=None,
+            deactivated_by_label=_current_school_actor_label(request),
+        )
     else:
         await deactivate_alarm(
             AlarmDeactivateRequest(user_id=_session_user_id(request)),
@@ -1616,6 +1650,7 @@ async def admin_create_broadcast(
         return RedirectResponse(url="/admin#reports", status_code=status.HTTP_303_SEE_OTHER)
     await _reports(request).create_broadcast_update(
         admin_user_id=_session_user_id(request),
+        admin_label=_current_school_actor_label(request),
         message=normalized_message,
     )
     if send_push == "1":
@@ -1661,6 +1696,7 @@ async def admin_grant_quiet_period(
         user_id=user_id,
         reason=reason.strip() or None,
         admin_user_id=_session_user_id(request) or 0,
+        admin_label=_current_school_actor_label(request),
     )
     _set_flash(request, message=f"Quiet period granted for {user.name} for 24 hours.")
     return RedirectResponse(url="/admin#quiet-periods", status_code=status.HTTP_303_SEE_OTHER)

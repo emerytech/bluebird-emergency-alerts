@@ -180,6 +180,7 @@ class BroadcastUpdateSummary(BaseModel):
     update_id: int
     created_at: str
     admin_user_id: Optional[int] = None
+    admin_label: Optional[str] = None
     message: str
 
 
@@ -226,6 +227,7 @@ class QuietPeriodSummary(BaseModel):
     requested_at: str
     approved_at: Optional[str] = None
     approved_by_user_id: Optional[int] = None
+    approved_by_label: Optional[str] = None
     expires_at: Optional[str] = None
 
 
@@ -243,8 +245,10 @@ class AlarmStatusResponse(BaseModel):
     message: Optional[str] = None
     activated_at: Optional[str] = None
     activated_by_user_id: Optional[int] = None
+    activated_by_label: Optional[str] = None
     deactivated_at: Optional[str] = None
     deactivated_by_user_id: Optional[int] = None
+    deactivated_by_label: Optional[str] = None
     broadcasts: List[BroadcastUpdateSummary] = []
 
 

@@ -23,6 +23,7 @@ class BroadcastUpdateRecord:
     id: int
     created_at: str
     admin_user_id: Optional[int]
+    admin_label: Optional[str]
     message: str
 
 
@@ -55,10 +56,17 @@ class ReportStore:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     created_at TEXT NOT NULL,
                     admin_user_id INTEGER NULL,
+                    admin_label TEXT NULL,
                     message TEXT NOT NULL
                 );
                 """
             )
+            self._migrate_broadcast_updates_table(conn)
+
+    def _migrate_broadcast_updates_table(self, conn: sqlite3.Connection) -> None:
+        cols = {str(row[1]) for row in conn.execute("PRAGMA table_info(broadcast_updates);").fetchall()}
+        if "admin_label" not in cols:
+            conn.execute("ALTER TABLE broadcast_updates ADD COLUMN admin_label TEXT NULL;")
 
     def _create_report_sync(self, created_at: str, user_id: Optional[int], category: str, note: Optional[str]) -> int:
         with self._connect() as conn:
@@ -80,22 +88,23 @@ class ReportStore:
             note,
         )
 
-    def _create_broadcast_update_sync(self, created_at: str, admin_user_id: Optional[int], message: str) -> int:
+    def _create_broadcast_update_sync(self, created_at: str, admin_user_id: Optional[int], admin_label: Optional[str], message: str) -> int:
         with self._connect() as conn:
             cur = conn.execute(
                 """
-                INSERT INTO broadcast_updates (created_at, admin_user_id, message)
-                VALUES (?, ?, ?);
+                INSERT INTO broadcast_updates (created_at, admin_user_id, admin_label, message)
+                VALUES (?, ?, ?, ?);
                 """,
-                (created_at, admin_user_id, message),
+                (created_at, admin_user_id, admin_label, message),
             )
             return int(cur.lastrowid)
 
-    async def create_broadcast_update(self, *, admin_user_id: Optional[int], message: str) -> int:
+    async def create_broadcast_update(self, *, admin_user_id: Optional[int], message: str, admin_label: Optional[str] = None) -> int:
         return await anyio.to_thread.run_sync(
             self._create_broadcast_update_sync,
             datetime.now(timezone.utc).isoformat(),
             admin_user_id,
+            admin_label,
             message,
         )
 
@@ -128,7 +137,7 @@ class ReportStore:
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT id, created_at, admin_user_id, message
+                SELECT id, created_at, admin_user_id, admin_label, message
                 FROM broadcast_updates
                 ORDER BY id DESC
                 LIMIT ?;
@@ -140,7 +149,8 @@ class ReportStore:
                 id=int(row[0]),
                 created_at=str(row[1]),
                 admin_user_id=int(row[2]) if row[2] is not None else None,
-                message=str(row[3]),
+                admin_label=str(row[3]) if row[3] is not None else None,
+                message=str(row[4]),
             )
             for row in rows
         ]
