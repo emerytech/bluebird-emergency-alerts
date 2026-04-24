@@ -34,6 +34,12 @@ from app.models.schemas import (
     AdminBroadcastRequest,
     AlertsResponse,
     AlertSummary,
+    IncidentCreateRequest,
+    IncidentListResponse,
+    IncidentSummary,
+    TeamAssistCreateRequest,
+    TeamAssistListResponse,
+    TeamAssistSummary,
     BroadcastUpdateSummary,
     CreateUserRequest,
     DevicesResponse,
@@ -61,6 +67,7 @@ from app.services.apns import APNsClient
 from app.services.alert_log import AlertLog
 from app.services.device_registry import DeviceRegistry
 from app.services.fcm import FCMClient
+from app.services.incident_store import IncidentStore
 from app.services.quiet_period_store import QuietPeriodStore
 from app.services.report_store import AdminMessageRecord, ReportStore
 from app.services.platform_admin_store import PlatformAdminStore
@@ -101,6 +108,10 @@ def _fcm(req: Request) -> FCMClient:
 
 def _reports(req: Request) -> ReportStore:
     return req.state.tenant.report_store  # type: ignore[attr-defined]
+
+
+def _incident_store(req: Request) -> IncidentStore:
+    return req.state.tenant.incident_store  # type: ignore[attr-defined]
 
 
 def _quiet_periods(req: Request) -> QuietPeriodStore:
@@ -541,6 +552,25 @@ async def _require_dashboard_admin_id(users: UserStore, user_id: int) -> int:
     if user is None or not user.is_active or user.role != "admin":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only active admin users can perform this action")
     return user.id
+
+
+async def _require_active_user_with_roles(users: UserStore, user_id: int, *, roles: set[str]) -> int:
+    user = await users.get_user(int(user_id))
+    if user is None or not user.is_active:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Active user is required")
+    if user.role not in roles:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User does not have permission for this action")
+    return user.id
+
+
+async def _team_assist_target_user_ids(users: UserStore, assigned_team_ids: list[int]) -> list[int]:
+    all_users = await users.list_users()
+    active_users = [u for u in all_users if u.is_active]
+    if assigned_team_ids:
+        selected = set(int(item) for item in assigned_team_ids if int(item) > 0)
+        return [u.id for u in active_users if u.id in selected]
+    # Stage 2 baseline: fallback target is active admin responders.
+    return [u.id for u in active_users if u.role == "admin"]
 
 
 def _to_admin_inbox_item(item: AdminMessageRecord) -> AdminMessageInboxItem:
@@ -2138,6 +2168,129 @@ async def alerts(
             for alert in recent_alerts
         ]
     )
+
+
+@router.post("/incidents/create", response_model=IncidentSummary)
+async def create_incident(
+    body: IncidentCreateRequest,
+    request: Request,
+    _: None = Depends(require_api_key),
+) -> IncidentSummary:
+    creator_id = await _require_active_user_with_roles(_users(request), body.user_id, roles={"admin"})
+    incident = await _incident_store(request).create_incident(
+        type_value=body.type,
+        status="active",
+        created_by=creator_id,
+        school_id=str(request.state.school.slug),
+        target_scope=body.target_scope.strip().upper() or "ALL",
+        metadata=body.metadata or {},
+    )
+    await _incident_store(request).create_notification_log(
+        user_id=creator_id,
+        type_value="incident_created",
+        payload={"incident_id": incident.id, "type": incident.type, "target_scope": incident.target_scope},
+    )
+    return IncidentSummary(
+        id=incident.id,
+        type=incident.type,
+        status=incident.status,
+        created_by=incident.created_by,
+        school_id=incident.school_id,
+        created_at=incident.created_at,
+        target_scope=incident.target_scope,
+        metadata=incident.metadata,
+    )
+
+
+@router.get("/incidents/active", response_model=IncidentListResponse)
+async def active_incidents(
+    request: Request,
+    limit: int = Query(default=50, ge=1, le=200),
+    _: None = Depends(require_api_key),
+) -> IncidentListResponse:
+    incidents = await _incident_store(request).list_active_incidents(limit=limit)
+    return IncidentListResponse(
+        incidents=[
+            IncidentSummary(
+                id=item.id,
+                type=item.type,
+                status=item.status,
+                created_by=item.created_by,
+                school_id=item.school_id,
+                created_at=item.created_at,
+                target_scope=item.target_scope,
+                metadata=item.metadata,
+            )
+            for item in incidents
+        ]
+    )
+
+
+@router.post("/team-assist/create", response_model=TeamAssistSummary)
+async def create_team_assist(
+    body: TeamAssistCreateRequest,
+    request: Request,
+    _: None = Depends(require_api_key),
+) -> TeamAssistSummary:
+    creator_id = await _require_active_user_with_roles(_users(request), body.user_id, roles={"admin", "teacher"})
+    team_assist = await _incident_store(request).create_team_assist(
+        type_value=body.type,
+        created_by=creator_id,
+        assigned_team_ids=[int(item) for item in body.assigned_team_ids],
+        status="active",
+    )
+    target_user_ids = await _team_assist_target_user_ids(_users(request), body.assigned_team_ids)
+    for target_user_id in target_user_ids:
+        await _incident_store(request).create_notification_log(
+            user_id=target_user_id,
+            type_value="team_assist_targeted",
+            payload={
+                "team_assist_id": team_assist.id,
+                "type": team_assist.type,
+                "created_by": team_assist.created_by,
+                "school_id": str(request.state.school.slug),
+            },
+        )
+    await _incident_store(request).create_notification_log(
+        user_id=creator_id,
+        type_value="team_assist_created",
+        payload={
+            "team_assist_id": team_assist.id,
+            "type": team_assist.type,
+            "target_user_ids": target_user_ids,
+        },
+    )
+    return TeamAssistSummary(
+        id=team_assist.id,
+        type=team_assist.type,
+        created_by=team_assist.created_by,
+        assigned_team_ids=team_assist.assigned_team_ids,
+        status=team_assist.status,
+        created_at=team_assist.created_at,
+    )
+
+
+@router.get("/team-assist/active", response_model=TeamAssistListResponse)
+async def active_team_assists(
+    request: Request,
+    limit: int = Query(default=50, ge=1, le=200),
+    _: None = Depends(require_api_key),
+) -> TeamAssistListResponse:
+    assists = await _incident_store(request).list_active_team_assists(limit=limit)
+    return TeamAssistListResponse(
+        team_assists=[
+            TeamAssistSummary(
+                id=item.id,
+                type=item.type,
+                created_by=item.created_by,
+                assigned_team_ids=item.assigned_team_ids,
+                status=item.status,
+                created_at=item.created_at,
+            )
+            for item in assists
+        ]
+    )
+
 
 @router.get("/users", response_model=UsersResponse)
 async def users(request: Request, _: None = Depends(require_api_key)) -> UsersResponse:

@@ -267,6 +267,14 @@ private val SafetyActions = listOf(
     ),
 )
 
+private val TeamAssistTypes = listOf(
+    "Fight in Progress",
+    "Irate Parent",
+    "Medical Assistance",
+    "Principal to Front Office",
+    "Suspicious Activity",
+)
+
 // ── Data ───────────────────────────────────────────────────────────────────────
 data class AlarmStatus(
     val isActive: Boolean = false,
@@ -274,6 +282,23 @@ data class AlarmStatus(
     val activatedAt: String? = null,
     val activatedByUserId: Int? = null,
     val broadcasts: List<BroadcastUpdate> = emptyList(),
+)
+
+data class IncidentFeedItem(
+    val id: Int,
+    val type: String,
+    val status: String,
+    val createdBy: Int,
+    val createdAt: String,
+    val targetScope: String,
+)
+
+data class TeamAssistFeedItem(
+    val id: Int,
+    val type: String,
+    val status: String,
+    val createdBy: Int,
+    val createdAt: String,
 )
 
 data class UiState(
@@ -286,6 +311,8 @@ data class UiState(
     val unreadAdminMessages: Int = 0,
     val adminMessageRecipients: List<InboxRecipient> = emptyList(),
     val quietPeriodStatus: QuietPeriodMobileStatus? = null,
+    val activeIncidents: List<IncidentFeedItem> = emptyList(),
+    val activeTeamAssists: List<TeamAssistFeedItem> = emptyList(),
 )
 
 // ── ViewModel ──────────────────────────────────────────────────────────────────
@@ -333,6 +360,14 @@ class MainViewModel : ViewModel() {
                             _state.update { it.copy(quietPeriodStatus = quiet) }
                         }
                 }
+                runCatching { client!!.activeIncidents() }
+                    .onSuccess { incidents ->
+                        _state.update { it.copy(activeIncidents = incidents) }
+                    }
+                runCatching { client!!.activeTeamAssists() }
+                    .onSuccess { teamAssists ->
+                        _state.update { it.copy(activeTeamAssists = teamAssists) }
+                    }
                 delay(4_000)
             }
         }
@@ -482,6 +517,31 @@ class MainViewModel : ViewModel() {
                 }
                 .onFailure { e ->
                     _state.update { it.copy(isBusy = false, errorMsg = e.message ?: "Failed to request quiet period.") }
+                }
+        }
+    }
+
+    fun createTeamAssist(ctx: Context, type: String) {
+        val userId = getUserId(ctx).toIntOrNull()
+        if (userId == null) {
+            _state.update { it.copy(errorMsg = "You must be signed in to request Team Assist.") }
+            return
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            _state.update { it.copy(isBusy = true, errorMsg = null) }
+            runCatching { client!!.createTeamAssist(userId = userId, type = type) }
+                .onSuccess {
+                    val activeTeamAssists = runCatching { client!!.activeTeamAssists() }.getOrDefault(_state.value.activeTeamAssists)
+                    _state.update {
+                        it.copy(
+                            isBusy = false,
+                            successMsg = "Team Assist sent.",
+                            activeTeamAssists = activeTeamAssists,
+                        )
+                    }
+                }
+                .onFailure { e ->
+                    _state.update { it.copy(isBusy = false, errorMsg = e.message ?: "Failed to send Team Assist.") }
                 }
         }
     }
@@ -914,7 +974,9 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
     var pendingSafetyAction by remember { mutableStateOf<SafetyAction?>(null) }
     var showQuietRequestOverlay by remember { mutableStateOf(false) }
     var showQuietDeleteConfirmOverlay by remember { mutableStateOf(false) }
+    var showTeamAssistDialog by remember { mutableStateOf(false) }
     var replyTarget by remember { mutableStateOf<AdminInboxMessage?>(null) }
+    var feedTab by remember { mutableStateOf(0) }
     val userName = remember { getUserName(ctx) }
     val userRole = remember { getUserRole(ctx) }
     val canDeactivate = remember { canDeactivateAlarm(ctx) }
@@ -1030,6 +1092,16 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                         )
                     }
 
+                    ActiveSafetyFeedCard(
+                        selectedTab = feedTab,
+                        onSelectTab = { feedTab = it },
+                        incidents = state.activeIncidents,
+                        teamAssists = state.activeTeamAssists,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 20.dp, vertical = 8.dp),
+                    )
+
                     // ── Alarm banner ─────────────────────────────────────────
                     AlarmBanner(
                         alarm = state.alarm,
@@ -1126,6 +1198,16 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                         }
 
                         OutlinedButton(
+                            onClick = { showTeamAssistDialog = true },
+                            modifier = Modifier.fillMaxWidth().height(52.dp),
+                            shape = RoundedCornerShape(14.dp),
+                            enabled = !state.isBusy,
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFF0F766E)),
+                        ) {
+                            Text("Team Assist", fontWeight = FontWeight.SemiBold)
+                        }
+
+                        OutlinedButton(
                             onClick = { showQuietRequestOverlay = true },
                             modifier = Modifier.fillMaxWidth().height(52.dp),
                             shape = RoundedCornerShape(14.dp),
@@ -1176,6 +1258,16 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
             onConfirm = {
                 showQuietDeleteConfirmOverlay = false
                 vm.deleteQuietPeriodRequest(ctx)
+            },
+        )
+    }
+    if (showTeamAssistDialog) {
+        TeamAssistDialog(
+            isBusy = state.isBusy,
+            onDismiss = { showTeamAssistDialog = false },
+            onConfirm = { type ->
+                showTeamAssistDialog = false
+                vm.createTeamAssist(ctx, type)
             },
         )
     }
@@ -1266,6 +1358,73 @@ private fun FlashBanner(message: String, isError: Boolean) {
             .padding(14.dp),
     ) {
         Text(message, color = fg, fontSize = 14.sp)
+    }
+}
+
+@Composable
+private fun ActiveSafetyFeedCard(
+    selectedTab: Int,
+    onSelectTab: (Int) -> Unit,
+    incidents: List<IncidentFeedItem>,
+    teamAssists: List<TeamAssistFeedItem>,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        modifier = modifier,
+        color = SurfaceMain,
+        shape = RoundedCornerShape(20.dp),
+        shadowElevation = 4.dp,
+    ) {
+        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("Active Feed", color = TextPri, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+            TabRow(
+                selectedTabIndex = selectedTab,
+                containerColor = Color.Transparent,
+                contentColor = BluePrimary,
+            ) {
+                Tab(selected = selectedTab == 0, onClick = { onSelectTab(0) }, text = { Text("Emergencies") })
+                Tab(selected = selectedTab == 1, onClick = { onSelectTab(1) }, text = { Text("Team Assists") })
+            }
+            if (selectedTab == 0) {
+                if (incidents.isEmpty()) {
+                    Text("No active incidents.", color = TextMuted, fontSize = 13.sp)
+                } else {
+                    incidents.take(8).forEach { incident ->
+                        FeedRow(
+                            title = incident.type.uppercase(),
+                            subtitle = "${formatIsoForBanner(incident.createdAt) ?: incident.createdAt} • by #${incident.createdBy}",
+                            tone = Color(0xFF1D4ED8),
+                        )
+                    }
+                }
+            } else {
+                if (teamAssists.isEmpty()) {
+                    Text("No active team assists.", color = TextMuted, fontSize = 13.sp)
+                } else {
+                    teamAssists.take(8).forEach { teamAssist ->
+                        FeedRow(
+                            title = teamAssist.type,
+                            subtitle = "${formatIsoForBanner(teamAssist.createdAt) ?: teamAssist.createdAt} • by #${teamAssist.createdBy}",
+                            tone = Color(0xFF0F766E),
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun FeedRow(title: String, subtitle: String, tone: Color) {
+    Surface(
+        color = tone.copy(alpha = 0.07f),
+        shape = RoundedCornerShape(12.dp),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
+            Text(title, color = tone, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+            Text(subtitle, color = TextMuted, fontSize = 12.sp)
+        }
     }
 }
 
@@ -1968,6 +2127,50 @@ private fun ReportDialog(
 }
 
 @Composable
+private fun TeamAssistDialog(
+    isBusy: Boolean,
+    onConfirm: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var selectedType by remember { mutableStateOf(TeamAssistTypes.first()) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Team Assist", color = TextPri, fontWeight = FontWeight.Bold) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    "Choose a type and send to your school's response team.",
+                    color = TextMuted,
+                    fontSize = 13.sp,
+                )
+                TeamAssistTypes.forEach { type ->
+                    FilterChip(
+                        selected = selectedType == type,
+                        onClick = { selectedType = type },
+                        label = { Text(type) },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onConfirm(selectedType) },
+                enabled = !isBusy,
+                colors = ButtonDefaults.buttonColors(containerColor = BluePrimary),
+            ) {
+                Text(if (isBusy) "Sending…" else "Send", fontWeight = FontWeight.Bold)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel", color = TextMuted)
+            }
+        },
+    )
+}
+
+@Composable
 private fun MessageAdminDialog(
     isBusy: Boolean,
     onConfirm: (String) -> Unit,
@@ -2628,6 +2831,85 @@ private class BackendClient(baseUrl: String, private val apiKey: String) {
                 approvedByLabel = j.optNullableString("approved_by_label"),
                 expiresAt = j.optNullableString("expires_at"),
             )
+        }
+    }
+
+    fun createTeamAssist(userId: Int, type: String): TeamAssistFeedItem {
+        val body = JSONObject()
+            .put("user_id", userId)
+            .put("type", type)
+            .put("assigned_team_ids", JSONArray())
+        val req = Request.Builder()
+            .url("$base/team-assist/create")
+            .withAuth()
+            .post(body.toString().toRequestBody(json))
+            .build()
+        http.newCall(req).execute().use { res ->
+            val item = JSONObject(requireSuccess(res))
+            return TeamAssistFeedItem(
+                id = item.optInt("id"),
+                type = item.optString("type"),
+                status = item.optString("status"),
+                createdBy = item.optInt("created_by"),
+                createdAt = item.optString("created_at"),
+            )
+        }
+    }
+
+    fun activeTeamAssists(): List<TeamAssistFeedItem> {
+        val req = Request.Builder()
+            .url("$base/team-assist/active")
+            .withAuth()
+            .get()
+            .build()
+        http.newCall(req).execute().use { res ->
+            val body = JSONObject(requireSuccess(res))
+            val items = body.optJSONArray("team_assists")
+            return buildList {
+                if (items != null) {
+                    for (i in 0 until items.length()) {
+                        val item = items.optJSONObject(i) ?: continue
+                        add(
+                            TeamAssistFeedItem(
+                                id = item.optInt("id"),
+                                type = item.optString("type"),
+                                status = item.optString("status"),
+                                createdBy = item.optInt("created_by"),
+                                createdAt = item.optString("created_at"),
+                            ),
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    fun activeIncidents(): List<IncidentFeedItem> {
+        val req = Request.Builder()
+            .url("$base/incidents/active")
+            .withAuth()
+            .get()
+            .build()
+        http.newCall(req).execute().use { res ->
+            val body = JSONObject(requireSuccess(res))
+            val items = body.optJSONArray("incidents")
+            return buildList {
+                if (items != null) {
+                    for (i in 0 until items.length()) {
+                        val item = items.optJSONObject(i) ?: continue
+                        add(
+                            IncidentFeedItem(
+                                id = item.optInt("id"),
+                                type = item.optString("type"),
+                                status = item.optString("status"),
+                                createdBy = item.optInt("created_by"),
+                                createdAt = item.optString("created_at"),
+                                targetScope = item.optString("target_scope"),
+                            ),
+                        )
+                    }
+                }
+            }
         }
     }
 

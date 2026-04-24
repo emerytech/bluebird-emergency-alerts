@@ -16,6 +16,7 @@ from app.services.report_store import ReportStore
 from app.services.school_registry import SchoolRecord, SchoolRegistry
 from app.services.twilio_sms import TwilioSMSClient
 from app.services.apns import APNsClient
+from app.services.incident_store import IncidentStore
 from app.services.user_store import UserStore
 
 
@@ -36,6 +37,7 @@ class TenantContext:
     alert_log: AlertLog
     alarm_store: AlarmStore
     report_store: ReportStore
+    incident_store: IncidentStore
     quiet_period_store: QuietPeriodStore
     user_store: UserStore
     broadcaster: AlertBroadcaster
@@ -99,6 +101,7 @@ class TenantManager:
                 alert_log=alert_log,
                 alarm_store=AlarmStore(db_path),
                 report_store=ReportStore(db_path),
+                incident_store=IncidentStore(db_path),
                 quiet_period_store=QuietPeriodStore(db_path),
                 user_store=UserStore(db_path),
                 broadcaster=AlertBroadcaster(

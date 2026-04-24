@@ -382,3 +382,60 @@ class AlertSummary(BaseModel):
 
 class AlertsResponse(BaseModel):
     alerts: List[AlertSummary]
+
+
+class IncidentCreateRequest(BaseModel):
+    type: str = Field(..., min_length=1, max_length=120)
+    user_id: int
+    target_scope: str = Field(default="ALL", min_length=1, max_length=40)
+    metadata: Dict[str, object] = Field(default_factory=dict)
+
+    @field_validator("type")
+    @classmethod
+    def normalize_incident_type(cls, v: str) -> str:
+        normalized = v.strip()
+        if not normalized:
+            raise ValueError("type is required")
+        return normalized
+
+
+class IncidentSummary(BaseModel):
+    id: int
+    type: str
+    status: str
+    created_by: int
+    school_id: str
+    created_at: str
+    target_scope: str
+    metadata: Dict[str, object] = Field(default_factory=dict)
+
+
+class IncidentListResponse(BaseModel):
+    incidents: List[IncidentSummary]
+
+
+class TeamAssistCreateRequest(BaseModel):
+    type: str = Field(..., min_length=1, max_length=120)
+    user_id: int
+    assigned_team_ids: List[int] = Field(default_factory=list)
+
+    @field_validator("type")
+    @classmethod
+    def normalize_team_assist_type(cls, v: str) -> str:
+        normalized = v.strip()
+        if not normalized:
+            raise ValueError("type is required")
+        return normalized
+
+
+class TeamAssistSummary(BaseModel):
+    id: int
+    type: str
+    created_by: int
+    assigned_team_ids: List[int] = Field(default_factory=list)
+    status: str
+    created_at: str
+
+
+class TeamAssistListResponse(BaseModel):
+    team_assists: List[TeamAssistSummary]
