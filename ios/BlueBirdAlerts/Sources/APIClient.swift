@@ -38,6 +38,20 @@ struct APIClient {
         return try JSONDecoder().decode(PanicResponse.self, from: data)
     }
 
+    func messageAdmin(message: String, userId: Int? = nil) async throws -> AdminMessageResponse {
+        let url = baseURL.appendingPathComponent("message-admin")
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        let body = AdminMessageRequest(userId: userId, message: message)
+        req.httpBody = try JSONEncoder().encode(body)
+
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        try require2xx(resp: resp, data: data)
+        return try JSONDecoder().decode(AdminMessageResponse.self, from: data)
+    }
+
     func devices() async throws -> DevicesResponse {
         let url = baseURL.appendingPathComponent("devices")
         let (data, resp) = try await URLSession.shared.data(from: url)
@@ -150,6 +164,16 @@ private struct PanicRequest: Encodable {
     let message: String
 }
 
+private struct AdminMessageRequest: Encodable {
+    let userId: Int?
+    let message: String
+
+    enum CodingKeys: String, CodingKey {
+        case userId = "user_id"
+        case message
+    }
+}
+
 struct PanicResponse: Decodable {
     let alertId: Int
     let deviceCount: Int
@@ -165,6 +189,20 @@ struct PanicResponse: Decodable {
         case succeeded
         case failed
         case apnsConfigured = "apns_configured"
+    }
+}
+
+struct AdminMessageResponse: Decodable {
+    let messageId: Int
+    let createdAt: String
+    let userId: Int?
+    let message: String
+
+    enum CodingKeys: String, CodingKey {
+        case messageId = "message_id"
+        case createdAt = "created_at"
+        case userId = "user_id"
+        case message
     }
 }
 

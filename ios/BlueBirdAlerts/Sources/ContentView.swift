@@ -5,65 +5,125 @@ struct ContentView: View {
     @State private var message: String = "Emergency alert. Please follow school procedures."
     @State private var showConfirm: Bool = false
     @State private var isSending: Bool = false
+    @State private var showSettings: Bool = false
+    @State private var showMessageAdminSheet: Bool = false
+    @State private var adminMessage: String = ""
+    @State private var isSendingAdminMessage: Bool = false
 
     private let api = APIClient(baseURL: Config.backendBaseURL)
 
     var body: some View {
-        VStack(spacing: 20) {
-            Text("BlueBird Alerts")
-                .font(.largeTitle).bold()
+        NavigationStack {
+            VStack(spacing: 20) {
+                VStack(spacing: 8) {
+                    statusLine
+                    tokenLine
+                    if let status = appState.lastStatus {
+                        Text(status)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
 
-            VStack(spacing: 8) {
-                statusLine
-                tokenLine
-                if let status = appState.lastStatus {
-                    Text(status)
+                TextField("Alert message", text: $message, axis: .vertical)
+                    .textFieldStyle(.roundedBorder)
+                    .lineLimit(2...4)
+
+                Button {
+                    showConfirm = true
+                } label: {
+                    Text(isSending ? "Sending…" : "PANIC")
+                        .font(.system(size: 32, weight: .heavy))
+                        .frame(maxWidth: .infinity, minHeight: 120)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.red)
+                .disabled(isSending)
+                .alert("Send emergency alert?", isPresented: $showConfirm) {
+                    Button("Cancel", role: .cancel) {}
+                    Button("Send", role: .destructive) {
+                        Task { await sendPanic() }
+                    }
+                } message: {
+                    Text(message)
+                }
+
+                Button {
+                    showMessageAdminSheet = true
+                } label: {
+                    Text("Message Admin")
+                        .font(.headline)
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                }
+                .buttonStyle(.bordered)
+                .disabled(isSendingAdminMessage)
+
+                if let err = appState.lastError {
+                    Text(err)
                         .font(.footnote)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.red)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
-            }
 
-            TextField("Alert message", text: $message, axis: .vertical)
-                .textFieldStyle(.roundedBorder)
-                .lineLimit(2...4)
-
-            Button {
-                showConfirm = true
-            } label: {
-                Text(isSending ? "Sending…" : "PANIC")
-                    .font(.system(size: 32, weight: .heavy))
-                    .frame(maxWidth: .infinity, minHeight: 120)
+                Spacer()
             }
-            .buttonStyle(.borderedProminent)
-            .tint(.red)
-            .disabled(isSending)
-            .alert("Send emergency alert?", isPresented: $showConfirm) {
-                Button("Cancel", role: .cancel) {}
-                Button("Send", role: .destructive) {
-                    Task { await sendPanic() }
+            .padding()
+            .navigationTitle("BlueBird Alerts")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Settings") {
+                        showSettings = true
+                    }
                 }
-            } message: {
-                Text(message)
             }
-
-            if let err = appState.lastError {
-                Text(err)
-                    .font(.footnote)
-                    .foregroundStyle(.red)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+            .navigationDestination(isPresented: $showSettings) {
+                SettingsView()
             }
+            .sheet(isPresented: $showMessageAdminSheet) {
+                NavigationStack {
+                    VStack(spacing: 16) {
+                        Text("Send a short message to school admins.")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
 
-            Spacer()
-        }
-        .padding()
-        .onReceive(NotificationCenter.default.publisher(for: .deviceTokenUpdated)) { note in
-            guard let token = note.userInfo?["token"] as? String else { return }
-            appState.deviceToken = token
-            Task { await registerDevice(token: token) }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .deviceTokenUpdateFailed)) { note in
-            appState.lastError = note.userInfo?["error"] as? String
+                        TextField("Need help in room 204", text: $adminMessage, axis: .vertical)
+                            .textFieldStyle(.roundedBorder)
+                            .lineLimit(2...4)
+
+                        Button {
+                            Task { await sendAdminMessage() }
+                        } label: {
+                            Text(isSendingAdminMessage ? "Sending…" : "Send")
+                                .frame(maxWidth: .infinity, minHeight: 44)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(isSendingAdminMessage || adminMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+                        Spacer()
+                    }
+                    .padding()
+                    .navigationTitle("Message Admin")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .topBarLeading) {
+                            Button("Cancel") {
+                                showMessageAdminSheet = false
+                            }
+                        }
+                    }
+                }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .deviceTokenUpdated)) { note in
+                guard let token = note.userInfo?["token"] as? String else { return }
+                appState.deviceToken = token
+                Task { await registerDevice(token: token) }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .deviceTokenUpdateFailed)) { note in
+                appState.lastError = note.userInfo?["error"] as? String
+            }
         }
     }
 
@@ -121,5 +181,37 @@ struct ContentView: View {
         } catch {
             appState.lastError = "Panic failed: \(error.localizedDescription)"
         }
+    }
+
+    private func sendAdminMessage() async {
+        let trimmed = adminMessage.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        isSendingAdminMessage = true
+        defer { isSendingAdminMessage = false }
+
+        do {
+            let response = try await api.messageAdmin(message: trimmed)
+            appState.lastStatus = "Message sent to admins at \(response.createdAt)"
+            appState.lastError = nil
+            adminMessage = ""
+            showMessageAdminSheet = false
+        } catch {
+            appState.lastError = "Message admin failed: \(error.localizedDescription)"
+        }
+    }
+}
+
+private struct SettingsView: View {
+    var body: some View {
+        List {
+            Section("Account") {
+                Text("BlueBird Alerts")
+                Text("Server: \(Config.backendBaseURL.absoluteString)")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .navigationTitle("Settings")
+        .navigationBarTitleDisplayMode(.inline)
     }
 }

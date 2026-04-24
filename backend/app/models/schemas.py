@@ -206,6 +206,26 @@ class ReportResponse(BaseModel):
     note: Optional[str] = None
 
 
+class AdminMessageRequest(BaseModel):
+    user_id: Optional[int] = None
+    message: str = Field(..., min_length=1, max_length=240)
+
+    @field_validator("message")
+    @classmethod
+    def normalize_message(cls, v: str) -> str:
+        normalized = v.strip()
+        if not normalized:
+            raise ValueError("message is required")
+        return normalized
+
+
+class AdminMessageResponse(BaseModel):
+    message_id: int
+    created_at: str
+    user_id: Optional[int] = None
+    message: str
+
+
 class QuietPeriodRequestCreate(BaseModel):
     user_id: int
     reason: Optional[str] = Field(default=None, max_length=240)

@@ -284,6 +284,20 @@ class MainViewModel : ViewModel() {
         }
     }
 
+    fun sendAdminMessage(ctx: Context, message: String) {
+        val userId = getUserId(ctx).toIntOrNull()
+        viewModelScope.launch(Dispatchers.IO) {
+            _state.update { it.copy(isBusy = true, errorMsg = null) }
+            runCatching { client!!.messageAdmin(userId = userId, message = message) }
+                .onSuccess {
+                    _state.update { it.copy(isBusy = false, successMsg = "Message sent to admins.") }
+                }
+                .onFailure { e ->
+                    _state.update { it.copy(isBusy = false, errorMsg = e.message ?: "Failed to message admins.") }
+                }
+        }
+    }
+
     fun clearMessages() = _state.update { it.copy(successMsg = null, errorMsg = null) }
 }
 
@@ -675,13 +689,15 @@ private fun LoginScreen(onDone: () -> Unit) {
 
 // ── Main screen ────────────────────────────────────────────────────────────────
 @Composable
+@OptIn(ExperimentalMaterial3Api::class)
 private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
     val ctx = LocalContext.current
     val state by vm.state.collectAsState()
     var showActivateDialog by remember { mutableStateOf(false) }
     var showDeactivateDialog by remember { mutableStateOf(false) }
     var showReportDialog by remember { mutableStateOf(false) }
-    var showSettingsDialog by remember { mutableStateOf(false) }
+    var showMessageAdminDialog by remember { mutableStateOf(false) }
+    var showSettingsScreen by remember { mutableStateOf(false) }
     val userName = remember { getUserName(ctx) }
     val userRole = remember { getUserRole(ctx) }
     val canDeactivate = remember { canDeactivateAlarm(ctx) }
@@ -698,145 +714,177 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
 
     AlarmSoundEffect(isAlarmActive = state.alarm.isActive)
 
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Brush.verticalGradient(listOf(AppBg, AppBgDeep))),
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .verticalScroll(rememberScrollState()),
-        ) {
-            Surface(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 20.dp, vertical = 16.dp),
-                color = SurfaceMain,
-                shape = RoundedCornerShape(24.dp),
-                shadowElevation = 6.dp,
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(14.dp),
-                    ) {
-                        BlueBirdLogo(modifier = Modifier.size(52.dp))
-                        Column {
-                            Text("BlueBird Alerts", fontWeight = FontWeight.Bold, fontSize = 20.sp, color = TextPri)
-                            Text(
-                                if (userName.isNotBlank()) "$userName • ${userRole.replaceFirstChar { it.uppercase() }}" else "School Safety",
-                                fontSize = 12.sp,
-                                color = TextMuted,
-                            )
-                        }
-                    }
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        ConnectionDot(state.connected)
-                        OutlinedButton(
-                            onClick = { showSettingsDialog = true },
-                            shape = RoundedCornerShape(14.dp),
-                            colors = ButtonDefaults.outlinedButtonColors(
-                                contentColor = BlueDark,
-                                containerColor = SurfaceSoft,
-                            ),
-                            border = androidx.compose.foundation.BorderStroke(1.dp, BorderSoft),
-                        ) {
-                            Text("Settings", fontWeight = FontWeight.SemiBold)
-                        }
-                    }
-                }
-            }
-
-            // ── Flash messages ───────────────────────────────────────
-            state.successMsg?.let {
-                FlashBanner(it, isError = false)
-            }
-            state.errorMsg?.let {
-                FlashBanner(it, isError = true)
-            }
-
-            // ── Alarm banner ─────────────────────────────────────────
-            AlarmBanner(
-                alarm = state.alarm,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 20.dp, vertical = 8.dp),
-            )
-
-            if (state.alarm.broadcasts.isNotEmpty()) {
-                BroadcastsCard(
-                    broadcasts = state.alarm.broadcasts,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 20.dp, vertical = 8.dp),
-                )
-            }
-
-            Spacer(Modifier.weight(1f))
-
-            // ── Action buttons ───────────────────────────────────────
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 20.dp, vertical = 24.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                // Deactivate (only when active)
-                if (state.alarm.isActive && canDeactivate) {
-                    OutlinedButton(
-                        onClick = { showDeactivateDialog = true },
-                        modifier = Modifier.fillMaxWidth().height(52.dp),
-                        shape = RoundedCornerShape(14.dp),
-                        enabled = !state.isBusy,
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = TextPri),
+    Scaffold(
+        containerColor = Color.Transparent,
+        topBar = {
+            TopAppBar(
+                title = {
+                    Text(
+                        if (showSettingsScreen) "Settings" else "BlueBird Alerts",
+                        fontWeight = FontWeight.Bold,
+                        color = TextPri,
+                    )
+                },
+                actions = {
+                    TextButton(
+                        onClick = { showSettingsScreen = !showSettingsScreen },
                     ) {
                         Text(
-                            if (state.isBusy) "Working…" else "Deactivate Alarm",
+                            if (showSettingsScreen) "Back" else "Settings",
+                            color = BluePrimary,
                             fontWeight = FontWeight.SemiBold,
                         )
                     }
-                }
-
-                if (state.alarm.isActive) {
-                    OutlinedButton(
-                        onClick = { showReportDialog = true },
-                        modifier = Modifier.fillMaxWidth().height(52.dp),
-                        shape = RoundedCornerShape(14.dp),
-                        enabled = !state.isBusy,
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = BlueLight),
+                },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = SurfaceMain,
+                    titleContentColor = TextPri,
+                ),
+            )
+        },
+    ) { innerPadding ->
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding)
+                .background(Brush.verticalGradient(listOf(AppBg, AppBgDeep))),
+        ) {
+            if (showSettingsScreen) {
+                SettingsScreen(onLogout = onLogout)
+            } else {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .verticalScroll(rememberScrollState()),
+                ) {
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 20.dp, vertical = 16.dp),
+                        color = SurfaceMain,
+                        shape = RoundedCornerShape(24.dp),
+                        shadowElevation = 6.dp,
                     ) {
-                        Text("Send Update To Admins", fontWeight = FontWeight.SemiBold)
+                        Row(
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(14.dp),
+                            ) {
+                                BlueBirdLogo(modifier = Modifier.size(52.dp))
+                                Column {
+                                    Text("BlueBird Alerts", fontWeight = FontWeight.Bold, fontSize = 20.sp, color = TextPri)
+                                    Text(
+                                        if (userName.isNotBlank()) "$userName • ${userRole.replaceFirstChar { it.uppercase() }}" else "School Safety",
+                                        fontSize = 12.sp,
+                                        color = TextMuted,
+                                    )
+                                }
+                            }
+                            ConnectionDot(state.connected)
+                        }
+                    }
+
+                    // ── Flash messages ───────────────────────────────────────
+                    state.successMsg?.let {
+                        FlashBanner(it, isError = false)
+                    }
+                    state.errorMsg?.let {
+                        FlashBanner(it, isError = true)
+                    }
+
+                    // ── Alarm banner ─────────────────────────────────────────
+                    AlarmBanner(
+                        alarm = state.alarm,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 20.dp, vertical = 8.dp),
+                    )
+
+                    if (state.alarm.broadcasts.isNotEmpty()) {
+                        BroadcastsCard(
+                            broadcasts = state.alarm.broadcasts,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 20.dp, vertical = 8.dp),
+                        )
+                    }
+
+                    Spacer(Modifier.weight(1f))
+
+                    // ── Action buttons ───────────────────────────────────────
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 20.dp, vertical = 24.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        // Deactivate (only when active)
+                        if (state.alarm.isActive && canDeactivate) {
+                            OutlinedButton(
+                                onClick = { showDeactivateDialog = true },
+                                modifier = Modifier.fillMaxWidth().height(52.dp),
+                                shape = RoundedCornerShape(14.dp),
+                                enabled = !state.isBusy,
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = TextPri),
+                            ) {
+                                Text(
+                                    if (state.isBusy) "Working…" else "Deactivate Alarm",
+                                    fontWeight = FontWeight.SemiBold,
+                                )
+                            }
+                        }
+
+                        if (state.alarm.isActive) {
+                            OutlinedButton(
+                                onClick = { showReportDialog = true },
+                                modifier = Modifier.fillMaxWidth().height(52.dp),
+                                shape = RoundedCornerShape(14.dp),
+                                enabled = !state.isBusy,
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = BlueLight),
+                            ) {
+                                Text("Send Update To Admins", fontWeight = FontWeight.SemiBold)
+                            }
+                        }
+
+                        OutlinedButton(
+                            onClick = { showMessageAdminDialog = true },
+                            modifier = Modifier.fillMaxWidth().height(52.dp),
+                            shape = RoundedCornerShape(14.dp),
+                            enabled = !state.isBusy,
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = BlueDark),
+                        ) {
+                            Text("Message Admin", fontWeight = FontWeight.SemiBold)
+                        }
+
+                        // Activate
+                        Button(
+                            onClick = { showActivateDialog = true },
+                            modifier = Modifier.fillMaxWidth().height(72.dp),
+                            shape = RoundedCornerShape(18.dp),
+                            enabled = !state.isBusy,
+                            colors = ButtonDefaults.buttonColors(containerColor = AlarmRed),
+                        ) {
+                            Text(
+                                if (state.isBusy) "Sending…" else "ACTIVATE ALARM",
+                                fontSize = 22.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                letterSpacing = 1.sp,
+                            )
+                        }
+
+                        Text(
+                            "Version ${BuildConfig.VERSION_NAME}  ·  ${BuildConfig.BACKEND_BASE_URL}",
+                            fontSize = 11.sp,
+                            color = TextMuted,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
                     }
                 }
-
-                // Activate
-                Button(
-                    onClick = { showActivateDialog = true },
-                    modifier = Modifier.fillMaxWidth().height(72.dp),
-                    shape = RoundedCornerShape(18.dp),
-                    enabled = !state.isBusy,
-                    colors = ButtonDefaults.buttonColors(containerColor = AlarmRed),
-                ) {
-                    Text(
-                        if (state.isBusy) "Sending…" else "ACTIVATE ALARM",
-                        fontSize = 22.sp,
-                        fontWeight = FontWeight.ExtraBold,
-                        letterSpacing = 1.sp,
-                    )
-                }
-
-                Text(
-                    "Version ${BuildConfig.VERSION_NAME}  ·  ${BuildConfig.BACKEND_BASE_URL}",
-                    fontSize = 11.sp,
-                    color = TextMuted,
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth(),
-                )
             }
         }
     }
@@ -877,11 +925,15 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
         )
     }
 
-    if (showSettingsDialog) {
-        SettingsDialog(onDismiss = { showSettingsDialog = false }, onLogout = {
-            showSettingsDialog = false
-            onLogout()
-        })
+    if (showMessageAdminDialog) {
+        MessageAdminDialog(
+            isBusy = state.isBusy,
+            onConfirm = { message ->
+                showMessageAdminDialog = false
+                vm.sendAdminMessage(ctx, message)
+            },
+            onDismiss = { showMessageAdminDialog = false },
+        )
     }
 }
 
@@ -1124,6 +1176,53 @@ private fun ReportDialog(
 }
 
 @Composable
+private fun MessageAdminDialog(
+    isBusy: Boolean,
+    onConfirm: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var message by remember { mutableStateOf("") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = SurfaceMain,
+        title = { Text("Message Admin", color = TextPri, fontWeight = FontWeight.Bold) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text("Send a short message to school admins.", color = TextMuted, fontSize = 14.sp)
+                OutlinedTextField(
+                    value = message,
+                    onValueChange = { message = it },
+                    label = { Text("Message", color = TextMuted) },
+                    placeholder = { Text("Need help in room 204", color = TextMuted) },
+                    minLines = 2,
+                    maxLines = 4,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = BluePrimary,
+                        unfocusedBorderColor = BorderSoft,
+                        focusedTextColor = TextPri,
+                        unfocusedTextColor = TextPri,
+                        cursorColor = BluePrimary,
+                        focusedContainerColor = SurfaceSoft,
+                        unfocusedContainerColor = SurfaceSoft,
+                    ),
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onConfirm(message.trim()) },
+                enabled = !isBusy && message.isNotBlank(),
+                colors = ButtonDefaults.buttonColors(containerColor = BluePrimary),
+            ) { Text("Send") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel", color = TextMuted) }
+        },
+    )
+}
+
+@Composable
 private fun ConfirmDialog(title: String, body: String, confirmLabel: String, onConfirm: () -> Unit, onDismiss: () -> Unit) {
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -1145,19 +1244,29 @@ private fun ConfirmDialog(title: String, body: String, confirmLabel: String, onC
 }
 
 @Composable
-private fun SettingsDialog(onDismiss: () -> Unit, onLogout: () -> Unit) {
+private fun SettingsScreen(onLogout: () -> Unit) {
     val ctx = LocalContext.current
     val userName = remember { getUserName(ctx) }
     val loginName = remember { getLoginName(ctx) }
     val userRole = remember { getUserRole(ctx) }
     val userId = remember { getUserId(ctx) }
 
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        containerColor = SurfaceMain,
-        title = { Text("Settings", color = TextPri, fontWeight = FontWeight.Bold) },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = 20.dp, vertical = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        Surface(
+            color = SurfaceMain,
+            shape = RoundedCornerShape(20.dp),
+            shadowElevation = 4.dp,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Column(
+                modifier = Modifier.padding(18.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
                 Text("Signed in as", color = TextMuted, fontSize = 12.sp)
                 Text(userName.ifBlank { "BlueBird user" }, color = TextPri, fontWeight = FontWeight.Bold, fontSize = 18.sp)
                 Text("@${loginName.ifBlank { "unknown" }}", color = BlueLight, fontSize = 13.sp)
@@ -1166,17 +1275,14 @@ private fun SettingsDialog(onDismiss: () -> Unit, onLogout: () -> Unit) {
                 Text("User ID: $userId", color = TextPri, fontSize = 14.sp)
                 Text("Server: ${BuildConfig.BACKEND_BASE_URL}", color = TextMuted, fontSize = 12.sp)
             }
-        },
-        confirmButton = {
-            Button(
-                onClick = onLogout,
-                colors = ButtonDefaults.buttonColors(containerColor = AlarmRed),
-            ) { Text("Log Out") }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Close", color = TextMuted) }
-        },
-    )
+        }
+        Button(
+            onClick = onLogout,
+            colors = ButtonDefaults.buttonColors(containerColor = AlarmRed),
+            modifier = Modifier.fillMaxWidth().height(50.dp),
+            shape = RoundedCornerShape(14.dp),
+        ) { Text("Log Out") }
+    }
 }
 
 // ── Alarm sound ────────────────────────────────────────────────────────────────
@@ -1336,6 +1442,16 @@ private class BackendClient(baseUrl: String, private val apiKey: String) {
         }
         val req = Request.Builder()
             .url("$base/reports")
+            .withAuth()
+            .post(body.toString().toRequestBody(json))
+            .build()
+        http.newCall(req).execute().use { requireSuccess(it) }
+    }
+
+    fun messageAdmin(userId: Int?, message: String) {
+        val body = JSONObject().put("message", message).apply { userId?.let { put("user_id", it) } }
+        val req = Request.Builder()
+            .url("$base/message-admin")
             .withAuth()
             .post(body.toString().toRequestBody(json))
             .build()

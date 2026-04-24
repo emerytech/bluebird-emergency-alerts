@@ -21,6 +21,8 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 
 from app.api.deps import require_api_key
 from app.models.schemas import (
+    AdminMessageRequest,
+    AdminMessageResponse,
     AlarmActivateRequest,
     AlarmDeactivateRequest,
     AlarmStatusResponse,
@@ -2063,6 +2065,30 @@ async def create_report(
         user_id=created.user_id,
         category=created.category,
         note=created.note,
+    )
+
+
+@router.post("/message-admin", response_model=AdminMessageResponse)
+async def message_admin(
+    body: AdminMessageRequest,
+    request: Request,
+    _: None = Depends(require_api_key),
+) -> AdminMessageResponse:
+    user_id = await _validated_user_id(_users(request), body.user_id)
+    message_id = await _reports(request).create_report(
+        user_id=user_id,
+        category="admin_message",
+        note=body.message,
+    )
+    reports = await _reports(request).list_reports(limit=20)
+    created = next((item for item in reports if item.id == message_id), None)
+    if created is None:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not load created admin message")
+    return AdminMessageResponse(
+        message_id=created.id,
+        created_at=created.created_at,
+        user_id=created.user_id,
+        message=created.note or "",
     )
 
 
