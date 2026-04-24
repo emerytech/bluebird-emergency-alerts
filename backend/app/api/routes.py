@@ -272,6 +272,8 @@ async def _platform_activity_feed(
         for item in quiet_periods:
             if not _is_platform_actor_label(item.approved_by_label):
                 continue
+            user = await tenant.user_store.get_user(item.user_id)
+            user_label = user.name if user is not None else f"User #{item.user_id}"
             reason = f" ({item.reason})" if item.reason else ""
             feed.append(
                 {
@@ -279,7 +281,7 @@ async def _platform_activity_feed(
                     "school": school_label,
                     "action": _quiet_period_action_label(item.status),
                     "actor": item.approved_by_label or "Platform Super Admin",
-                    "details": f"User #{item.user_id}{reason}",
+                    "details": f"{user_label}{reason}",
                 }
             )
 
@@ -1408,6 +1410,16 @@ async def super_admin_dashboard(request: Request) -> HTMLResponse:
             flash_error=flash_error,
         )
     )
+
+
+@router.get("/super-admin/audit-feed", include_in_schema=False)
+async def super_admin_audit_feed(
+    request: Request,
+    limit: int = Query(default=120, ge=1, le=500),
+) -> dict[str, object]:
+    _require_super_admin(request)
+    items = await _platform_activity_feed(request, limit=limit)
+    return {"count": len(items), "items": items}
 
 
 @router.post("/super-admin/schools/create", include_in_schema=False)
