@@ -18,6 +18,7 @@ from app.services.platform_admin_store import PlatformAdminStore
 from app.services.school_registry import SchoolRegistry
 from app.services.tenant_manager import TenantManager, normalize_school_slug
 from app.services.twilio_sms import TwilioSMSClient
+from app.services.user_tenant_store import UserTenantStore
 
 
 settings = Settings()
@@ -44,6 +45,7 @@ async def lifespan(app: FastAPI):
         password=settings.SUPERADMIN_PASSWORD,
     )
     school_registry = SchoolRegistry(settings.PLATFORM_DB_PATH)
+    user_tenant_store = UserTenantStore(settings.PLATFORM_DB_PATH)
     await school_registry.ensure_school(
         slug=settings.DEFAULT_SCHOOL_SLUG,
         name=settings.DEFAULT_SCHOOL_NAME,
@@ -63,6 +65,7 @@ async def lifespan(app: FastAPI):
     app.state.twilio_sms = twilio_sms
     app.state.platform_admin_store = platform_admin_store
     app.state.school_registry = school_registry
+    app.state.user_tenant_store = user_tenant_store
     app.state.tenant_manager = tenant_manager
 
     yield

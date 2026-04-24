@@ -9,6 +9,7 @@ from typing import List, Optional
 import anyio
 
 from app.services.passwords import hash_password, verify_password
+from app.services.permissions import is_dashboard_role
 
 
 @dataclass(frozen=True)
@@ -342,7 +343,7 @@ class UserStore:
                 """
                 SELECT COUNT(*)
                 FROM users
-                WHERE role = 'admin'
+                WHERE role IN ('admin', 'district_admin')
                   AND is_active = 1
                   AND login_name IS NOT NULL
                   AND password_hash IS NOT NULL
@@ -361,7 +362,7 @@ class UserStore:
                 SELECT COUNT(*)
                 FROM users
                 WHERE id != ?
-                  AND role = 'admin'
+                  AND role IN ('admin', 'district_admin')
                   AND is_active = 1
                   AND login_name IS NOT NULL
                   AND password_hash IS NOT NULL
@@ -414,7 +415,7 @@ class UserStore:
 
     def _authenticate_admin_sync(self, login_name: str, password: str) -> Optional[UserRecord]:
         user = self._authenticate_user_sync(login_name, password)
-        if user is None or user.role != "admin":
+        if user is None or not is_dashboard_role(user.role):
             return None
         return user
 

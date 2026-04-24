@@ -28,7 +28,10 @@ class UserRole(str, Enum):
     """
 
     teacher = "teacher"
+    law_enforcement = "law_enforcement"
     admin = "admin"
+    district_admin = "district_admin"
+    super_admin = "super_admin"
 
 
 class ReportCategory(str, Enum):

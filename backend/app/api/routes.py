@@ -10,6 +10,7 @@ import os
 import socket
 import sys
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from html import escape
 from types import SimpleNamespace
@@ -74,12 +75,27 @@ from app.services.alert_log import AlertLog
 from app.services.device_registry import DeviceRegistry
 from app.services.fcm import FCMClient
 from app.services.incident_store import IncidentStore
+from app.services.permissions import (
+    PERM_APPROVE_ASSIGNED_TENANT_QUIET_REQUESTS,
+    PERM_APPROVE_OWN_TENANT_QUIET_REQUESTS,
+    PERM_MANAGE_ASSIGNED_TENANT_INCIDENTS,
+    PERM_MANAGE_ASSIGNED_TENANT_USERS,
+    PERM_MANAGE_OWN_TENANT_USERS,
+    PERM_REQUEST_HELP,
+    PERM_SUBMIT_QUIET_REQUEST,
+    PERM_TRIGGER_OWN_TENANT_ALERTS,
+    can,
+    can_any,
+    is_dashboard_role,
+    valid_tenant_roles,
+)
 from app.services.quiet_period_store import QuietPeriodStore
 from app.services.report_store import AdminMessageRecord, ReportStore
 from app.services.platform_admin_store import PlatformAdminStore
 from app.services.school_registry import SchoolRegistry
 from app.services.totp import generate_secret as generate_totp_secret, otpauth_uri, verify_code as verify_totp_code
 from app.services.user_store import UserStore
+from app.services.user_tenant_store import UserTenantStore
 from app.web.admin_views import (
     render_admin_page,
     render_change_password_page,
@@ -98,14 +114,14 @@ SUPER_ADMIN_TRUST_COOKIE = "bluebird_super_admin_trusted_device"
 
 
 def _registry(req: Request) -> DeviceRegistry:
-    return req.state.tenant.device_registry  # type: ignore[attr-defined]
+    return _tenant(req).device_registry  # type: ignore[attr-defined]
 
 
 def _apns(req: Request) -> APNsClient:
     return req.app.state.apns_client  # type: ignore[attr-defined]
 
 def _alarm_store(req: Request) -> AlarmStore:
-    return req.state.tenant.alarm_store  # type: ignore[attr-defined]
+    return _tenant(req).alarm_store  # type: ignore[attr-defined]
 
 
 def _fcm(req: Request) -> FCMClient:
@@ -113,29 +129,33 @@ def _fcm(req: Request) -> FCMClient:
 
 
 def _reports(req: Request) -> ReportStore:
-    return req.state.tenant.report_store  # type: ignore[attr-defined]
+    return _tenant(req).report_store  # type: ignore[attr-defined]
 
 
 def _incident_store(req: Request) -> IncidentStore:
-    return req.state.tenant.incident_store  # type: ignore[attr-defined]
+    return _tenant(req).incident_store  # type: ignore[attr-defined]
 
 
 def _quiet_periods(req: Request) -> QuietPeriodStore:
-    return req.state.tenant.quiet_period_store  # type: ignore[attr-defined]
+    return _tenant(req).quiet_period_store  # type: ignore[attr-defined]
 
 
 def _alert_log(req: Request) -> AlertLog:
-    return req.state.tenant.alert_log  # type: ignore[attr-defined]
+    return _tenant(req).alert_log  # type: ignore[attr-defined]
 
 def _users(req: Request) -> UserStore:
-    return req.state.tenant.user_store  # type: ignore[attr-defined]
+    return _tenant(req).user_store  # type: ignore[attr-defined]
 
 def _broadcaster(req: Request) -> AlertBroadcaster:
-    return req.state.tenant.broadcaster  # type: ignore[attr-defined]
+    return _tenant(req).broadcaster  # type: ignore[attr-defined]
 
 
 def _schools(req: Request) -> SchoolRegistry:
     return req.app.state.school_registry  # type: ignore[attr-defined]
+
+
+def _user_tenants(req: Request) -> UserTenantStore:
+    return req.app.state.user_tenant_store  # type: ignore[attr-defined]
 
 
 def _platform_admins(req: Request) -> PlatformAdminStore:
@@ -239,6 +259,23 @@ def _school_url(request: Request, suffix: str) -> str:
     return f"{_school_prefix(request)}{normalized_suffix}"
 
 
+def _selected_tenant_slug_session_key(request: Request) -> str:
+    school_slug = str(getattr(request.state.school, "slug", "") or "").strip().lower()
+    return f"admin_selected_tenant_slug:{school_slug}"
+
+
+def _get_selected_tenant_slug(request: Request) -> Optional[str]:
+    value = request.session.get(_selected_tenant_slug_session_key(request))
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip().lower()
+    return normalized or None
+
+
+def _set_selected_tenant_slug(request: Request, slug: str) -> None:
+    request.session[_selected_tenant_slug_session_key(request)] = slug.strip().lower()
+
+
 def _school_theme(school) -> dict[str, str]:
     return {
         "accent": getattr(school, "accent", None) or "",
@@ -246,6 +283,60 @@ def _school_theme(school) -> dict[str, str]:
         "sidebar_start": getattr(school, "sidebar_start", None) or "",
         "sidebar_end": getattr(school, "sidebar_end", None) or "",
     }
+
+
+def _tenant(req: Request):
+    selected = getattr(req.state, "admin_effective_tenant", None)
+    return selected or req.state.tenant  # type: ignore[attr-defined]
+
+
+@dataclass(frozen=True)
+class _AdminTenantScope:
+    available_schools: list
+    selected_school: object
+
+
+async def _resolve_admin_tenant_scope(
+    request: Request,
+    *,
+    admin_user,
+    selected_slug_hint: Optional[str] = None,
+) -> _AdminTenantScope:
+    current_school = request.state.school
+    if bool(getattr(request.state, "super_admin_school_access", False)):
+        return _AdminTenantScope(
+            available_schools=[current_school],
+            selected_school=current_school,
+        )
+
+    available_by_slug: dict[str, object] = {str(current_school.slug): current_school}
+    if str(getattr(admin_user, "role", "")).strip().lower() == "district_admin":
+        assignments = await _user_tenants(request).list_assignments(
+            user_id=int(admin_user.id),
+            home_tenant_id=int(current_school.id),
+        )
+        assigned_ids = {int(item.tenant_id) for item in assignments if int(item.tenant_id) > 0}
+        if assigned_ids:
+            all_schools = await _schools(request).list_schools()
+            for school in all_schools:
+                if int(school.id) in assigned_ids:
+                    available_by_slug[str(school.slug)] = school
+
+    available_schools = sorted(
+        available_by_slug.values(),
+        key=lambda school: str(getattr(school, "name", "")).lower(),
+    )
+    selected_slug = (selected_slug_hint or "").strip().lower()
+    if not selected_slug:
+        selected_slug = _get_selected_tenant_slug(request) or str(current_school.slug)
+    elif selected_slug not in available_by_slug:
+        _set_flash(request, error="Requested tenant is not in your assignment scope. Showing your current school.")
+    selected_school = available_by_slug.get(selected_slug, current_school)
+    _set_selected_tenant_slug(request, str(getattr(selected_school, "slug", current_school.slug)))
+    return _AdminTenantScope(
+        available_schools=available_schools,
+        selected_school=selected_school,
+    )
 
 
 def _super_admin_school_access_here(request: Request) -> bool:
@@ -504,7 +595,7 @@ def _clear_super_admin_trust_cookie(request: Request, response: RedirectResponse
     )
 
 
-async def _require_dashboard_admin(request: Request) -> UserStore:
+async def _require_dashboard_admin(request: Request, *, selected_tenant_slug: Optional[str] = None) -> UserStore:
     active_super_admin_id = _super_admin_id(request)
     active_super_admin_school_slug = _super_admin_school_slug(request)
     current_school_slug = str(getattr(request.state.school, "slug", "") or "")
@@ -521,18 +612,29 @@ async def _require_dashboard_admin(request: Request) -> UserStore:
             login_name=platform_admin.login_name,
             role="super_admin",
         )
+        request.state.admin_available_schools = [request.state.school]
+        request.state.admin_effective_school = request.state.school
+        request.state.admin_effective_tenant = request.state.tenant
         return _users(request)
     user_id = _session_user_id(request)
     if user_id is None:
         raise HTTPException(status_code=status.HTTP_303_SEE_OTHER, headers={"Location": _school_url(request, "/admin/login")})
     user = await _users(request).get_user(user_id)
-    if user is None or not user.is_active or user.role != "admin" or not user.can_login:
+    if user is None or not user.is_active or not is_dashboard_role(user.role) or not user.can_login:
         request.session.clear()
         raise HTTPException(status_code=status.HTTP_303_SEE_OTHER, headers={"Location": _school_url(request, "/admin/login")})
     if user.must_change_password:
         raise HTTPException(status_code=status.HTTP_303_SEE_OTHER, headers={"Location": _school_url(request, "/admin/change-password")})
     request.state.admin_user = user
     request.state.super_admin_school_access = False
+    scope = await _resolve_admin_tenant_scope(
+        request,
+        admin_user=user,
+        selected_slug_hint=selected_tenant_slug,
+    )
+    request.state.admin_available_schools = scope.available_schools
+    request.state.admin_effective_school = scope.selected_school
+    request.state.admin_effective_tenant = request.app.state.tenant_manager.get(scope.selected_school)  # type: ignore[attr-defined]
     return _users(request)
 
 
@@ -548,15 +650,33 @@ async def _require_admin_user(users: UserStore, user_id: Optional[int]) -> int:
     if user_id is None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin user_id is required to deactivate alarm")
     user = await users.get_user(user_id)
-    if user is None or not user.is_active or user.role != "admin":
+    if user is None or not user.is_active or not can(user.role, PERM_TRIGGER_OWN_TENANT_ALERTS):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only active admin users can deactivate alarm")
     return user.id
 
 
 async def _require_dashboard_admin_id(users: UserStore, user_id: int) -> int:
     user = await users.get_user(int(user_id))
-    if user is None or not user.is_active or user.role != "admin":
+    if user is None or not user.is_active or not can_any(user.role, {PERM_MANAGE_OWN_TENANT_USERS, PERM_MANAGE_ASSIGNED_TENANT_USERS}):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only active admin users can perform this action")
+    return user.id
+
+
+async def _require_active_user_with_permission(users: UserStore, user_id: int, *, permission: str) -> int:
+    user = await users.get_user(int(user_id))
+    if user is None or not user.is_active:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Active user is required")
+    if not can(user.role, permission):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User does not have permission for this action")
+    return user.id
+
+
+async def _require_active_user_with_any_permission(users: UserStore, user_id: int, *, permissions: set[str]) -> int:
+    user = await users.get_user(int(user_id))
+    if user is None or not user.is_active:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Active user is required")
+    if not can_any(user.role, permissions):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User does not have permission for this action")
     return user.id
 
 
@@ -575,8 +695,8 @@ async def _team_assist_target_user_ids(users: UserStore, assigned_team_ids: list
     if assigned_team_ids:
         selected = set(int(item) for item in assigned_team_ids if int(item) > 0)
         return [u.id for u in active_users if u.id in selected]
-    # Stage 2 baseline: fallback target is active admin responders.
-    return [u.id for u in active_users if u.role == "admin"]
+    # Stage 2 baseline: fallback target is active dashboard responders.
+    return [u.id for u in active_users if is_dashboard_role(u.role)]
 
 
 def _to_team_assist_summary(item) -> TeamAssistSummary:
@@ -715,7 +835,7 @@ async def mobile_login(body: MobileLoginRequest, request: Request) -> MobileLogi
         role=user.role,
         login_name=user.login_name or body.login_name,
         must_change_password=user.must_change_password,
-        can_deactivate_alarm=user.role == "admin",
+        can_deactivate_alarm=can(user.role, PERM_TRIGGER_OWN_TENANT_ALERTS),
         quiet_period_expires_at=quiet_period.expires_at if quiet_period else None,
     )
 
@@ -856,10 +976,13 @@ def _build_server_info(request: Request) -> dict:
 async def admin_dashboard(
     request: Request,
     section: str = Query(default="dashboard"),
+    tenant: Optional[str] = Query(default=None),
 ) -> HTMLResponse:
     if _session_user_id(request) is None and not _super_admin_school_access_here(request):
         return RedirectResponse(url="/admin/login", status_code=status.HTTP_303_SEE_OTHER)
-    await _require_dashboard_admin(request)
+    await _require_dashboard_admin(request, selected_tenant_slug=tenant)
+    effective_school = getattr(request.state, "admin_effective_school", request.state.school)
+    available_schools = list(getattr(request.state, "admin_available_schools", [request.state.school]))
     devices = await _registry(request).list_devices()
     alerts = await _alert_log(request).list_recent(limit=20)
     users = await _users(request).list_users()
@@ -877,15 +1000,33 @@ async def admin_dashboard(
     quiet_periods_history = [item for item in quiet_periods_all if item.status not in {"pending", "approved"}]
     selected_section = _admin_section(section)
     flash_message, flash_error = _pop_flash(request)
+    assignments = await _user_tenants(request).list_assignments_for_users(
+        home_tenant_id=int(effective_school.id),
+        user_ids=[user.id for user in users],
+    )
+    schools_by_id = {int(item.id): item for item in await _schools(request).list_schools()}
+    user_tenant_assignments: dict[int, list[str]] = {}
+    for assignment in assignments:
+        school_match = schools_by_id.get(int(assignment.tenant_id))
+        if school_match is None:
+            continue
+        user_tenant_assignments.setdefault(int(assignment.user_id), []).append(str(school_match.name))
+    for labels in user_tenant_assignments.values():
+        labels.sort()
+
     html = render_admin_page(
         school_name=request.state.school.name,
         school_slug=request.state.school.slug,
         school_path_prefix=_school_prefix(request),
+        selected_tenant_slug=str(getattr(effective_school, "slug", request.state.school.slug)),
+        selected_tenant_name=str(getattr(effective_school, "name", request.state.school.name)),
+        tenant_options=[{"id": str(item.id), "slug": str(item.slug), "name": str(item.name)} for item in available_schools],
         theme=_school_theme(request.state.school),
         current_user=request.state.admin_user,  # type: ignore[attr-defined]
         alerts=alerts,
         devices=devices,
         users=users,
+        user_tenant_assignments=user_tenant_assignments,
         alarm_state=alarm_state,
         reports=reports,
         broadcasts=broadcasts,
@@ -926,10 +1067,11 @@ async def admin_dashboard(
 async def admin_login_page(request: Request) -> HTMLResponse:
     if _super_admin_school_access_here(request):
         return RedirectResponse(url="/admin", status_code=status.HTTP_303_SEE_OTHER)
+    user = None
     if _session_user_id(request) is not None:
         user = await _users(request).get_user(_session_user_id(request) or 0)
-        if user and user.role == "admin" and user.is_active and user.can_login:
-            return RedirectResponse(url="/admin", status_code=status.HTTP_303_SEE_OTHER)
+    if user and is_dashboard_role(user.role) and user.is_active and user.can_login:
+        return RedirectResponse(url="/admin", status_code=status.HTTP_303_SEE_OTHER)
     setup_mode = await _users(request).count_dashboard_admins() == 0
     flash_message, flash_error = _pop_flash(request)
     return HTMLResponse(
@@ -1017,7 +1159,7 @@ async def admin_totp_page(request: Request) -> HTMLResponse:
     if pending_user_id is None:
         return RedirectResponse(url="/admin/login", status_code=status.HTTP_303_SEE_OTHER)
     user = await _users(request).get_user(pending_user_id)
-    if user is None or not user.is_active or user.role != "admin" or not user.totp_enabled:
+    if user is None or not user.is_active or not is_dashboard_role(user.role) or not user.totp_enabled:
         _clear_pending_admin(request)
         return RedirectResponse(url="/admin/login", status_code=status.HTTP_303_SEE_OTHER)
     flash_message, flash_error = _pop_flash(request)
@@ -1884,8 +2026,8 @@ async def admin_create_user(
     if not normalized_name:
         _set_flash(request, error="Name is required.")
         return RedirectResponse(url="/admin?section=user-management#users", status_code=status.HTTP_303_SEE_OTHER)
-    if normalized_role not in {"admin", "teacher"}:
-        _set_flash(request, error="Role must be admin or teacher.")
+    if normalized_role not in valid_tenant_roles():
+        _set_flash(request, error="Role must be one of: teacher, law_enforcement, admin, district_admin.")
         return RedirectResponse(url="/admin?section=user-management#users", status_code=status.HTTP_303_SEE_OTHER)
     if bool(login_name.strip()) != bool(password.strip()):
         _set_flash(request, error="Provide both username and password to enable login for a user.")
@@ -2197,8 +2339,8 @@ async def admin_update_user(
     if not normalized_name:
         _set_flash(request, error="User name cannot be empty.")
         return RedirectResponse(url="/admin?section=user-management#users", status_code=status.HTTP_303_SEE_OTHER)
-    if normalized_role not in {"admin", "teacher"}:
-        _set_flash(request, error="Role must be admin or teacher.")
+    if normalized_role not in valid_tenant_roles():
+        _set_flash(request, error="Role must be one of: teacher, law_enforcement, admin, district_admin.")
         return RedirectResponse(url="/admin?section=user-management#users", status_code=status.HTTP_303_SEE_OTHER)
     if clear_login is None and bool(login_name.strip()) != bool(password.strip()) and bool(password.strip()):
         _set_flash(request, error="To change credentials, provide both username and password.")
@@ -2221,6 +2363,45 @@ async def admin_update_user(
     return RedirectResponse(url="/admin?section=user-management#users", status_code=status.HTTP_303_SEE_OTHER)
 
 
+@router.post("/admin/users/{user_id}/tenant-assignments", include_in_schema=False)
+async def admin_update_user_tenant_assignments(
+    request: Request,
+    user_id: int,
+    tenant_ids: list[int] = Form(default=[]),
+    role_for_tenant: str = Form(default=""),
+) -> RedirectResponse:
+    await _require_dashboard_admin(request)
+    actor = request.state.admin_user  # type: ignore[attr-defined]
+    actor_role = str(getattr(actor, "role", "")).strip().lower()
+    if not (
+        bool(getattr(request.state, "super_admin_school_access", False))
+        or actor_role == "district_admin"
+        or can(actor_role, PERM_MANAGE_ASSIGNED_TENANTS)
+    ):
+        _set_flash(request, error="Only district admins can change cross-tenant assignments.")
+        return RedirectResponse(url="/admin?section=user-management#users", status_code=status.HTTP_303_SEE_OTHER)
+
+    target_user = await _users(request).get_user(int(user_id))
+    if target_user is None:
+        _set_flash(request, error=f"User #{int(user_id)} was not found.")
+        return RedirectResponse(url="/admin?section=user-management#users", status_code=status.HTTP_303_SEE_OTHER)
+    if target_user.role not in {"district_admin", "law_enforcement"}:
+        _set_flash(request, error="Only district-admin and law-enforcement users support multi-tenant assignment.")
+        return RedirectResponse(url="/admin?section=user-management#users", status_code=status.HTTP_303_SEE_OTHER)
+
+    available_schools = list(getattr(request.state, "admin_available_schools", [request.state.school]))
+    allowed_ids = {int(item.id) for item in available_schools}
+    selected_ids = sorted({int(item) for item in tenant_ids if int(item) > 0 and int(item) in allowed_ids})
+    await _user_tenants(request).replace_assignments(
+        user_id=int(user_id),
+        home_tenant_id=int(request.state.admin_effective_school.id),  # type: ignore[attr-defined]
+        tenant_ids=selected_ids,
+        role_for_tenant=role_for_tenant.strip().lower() or None,
+    )
+    _set_flash(request, message=f"Updated tenant assignments for {target_user.name}.")
+    return RedirectResponse(url="/admin?section=user-management#users", status_code=status.HTTP_303_SEE_OTHER)
+
+
 @router.post("/admin/users/{user_id}/delete", include_in_schema=False)
 async def admin_delete_user(
     user_id: int,
@@ -2233,7 +2414,7 @@ async def admin_delete_user(
         _set_flash(request, error=f"User #{user_id} was not found.")
         return RedirectResponse(url="/admin?section=user-management#users", status_code=status.HTTP_303_SEE_OTHER)
 
-    if user.role == "admin" and user.can_login and user.is_active:
+    if is_dashboard_role(user.role) and user.can_login and user.is_active:
         other_admins = await _users(request).count_other_dashboard_admins(user.id)
         if other_admins <= 0:
             _set_flash(request, error="You cannot delete the last active admin with dashboard login access.")
@@ -2302,7 +2483,11 @@ async def create_incident(
     background_tasks: BackgroundTasks,
     _: None = Depends(require_api_key),
 ) -> IncidentSummary:
-    creator_id = await _require_active_user_with_roles(_users(request), body.user_id, roles={"admin"})
+    creator_id = await _require_active_user_with_any_permission(
+        _users(request),
+        body.user_id,
+        permissions={PERM_TRIGGER_OWN_TENANT_ALERTS, PERM_MANAGE_ASSIGNED_TENANT_INCIDENTS},
+    )
     incident = await _incident_store(request).create_incident(
         type_value=body.type,
         status="active",
@@ -2365,7 +2550,7 @@ async def create_team_assist(
     background_tasks: BackgroundTasks,
     _: None = Depends(require_api_key),
 ) -> TeamAssistSummary:
-    creator_id = await _require_active_user_with_roles(_users(request), body.user_id, roles={"admin", "teacher"})
+    creator_id = await _require_active_user_with_permission(_users(request), body.user_id, permission=PERM_REQUEST_HELP)
     team_assist = await _incident_store(request).create_team_assist(
         type_value=body.type,
         created_by=creator_id,
@@ -2411,7 +2596,11 @@ async def team_assist_action(
     _: None = Depends(require_api_key),
 ) -> TeamAssistSummary:
     users = _users(request)
-    actor_id = await _require_active_user_with_roles(users, body.user_id, roles={"admin"})
+    actor_id = await _require_active_user_with_any_permission(
+        users,
+        body.user_id,
+        permissions={PERM_TRIGGER_OWN_TENANT_ALERTS, PERM_MANAGE_ASSIGNED_TENANT_INCIDENTS},
+    )
     actor = await users.get_user(actor_id)
     if actor is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Acting user not found")
@@ -2482,7 +2671,7 @@ async def team_assist_cancel_confirm(
     _: None = Depends(require_api_key),
 ) -> TeamAssistSummary:
     users = _users(request)
-    actor_id = await _require_active_user_with_roles(users, body.user_id, roles={"admin", "teacher"})
+    actor_id = await _require_active_user_with_permission(users, body.user_id, permission=PERM_REQUEST_HELP)
     actor = await users.get_user(actor_id)
     if actor is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Acting user not found")
@@ -2492,7 +2681,7 @@ async def team_assist_cancel_confirm(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Request help item not found")
     if existing.status == "cancelled":
         return _to_team_assist_summary(existing)
-    if actor.role != "admin" and actor.id != existing.created_by:
+    if not can_any(actor.role, {PERM_TRIGGER_OWN_TENANT_ALERTS, PERM_MANAGE_ASSIGNED_TENANT_INCIDENTS}) and actor.id != existing.created_by:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only an admin or the initiating requester can confirm cancellation",
@@ -2637,9 +2826,7 @@ async def request_quiet_period(
     request: Request,
     _: None = Depends(require_api_key),
 ) -> QuietPeriodSummary:
-    user = await _users(request).get_user(body.user_id)
-    if user is None or not user.is_active:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found or inactive")
+    await _require_active_user_with_permission(_users(request), body.user_id, permission=PERM_SUBMIT_QUIET_REQUEST)
     record = await _quiet_periods(request).request_quiet_period(
         user_id=body.user_id,
         reason=body.reason,
@@ -2654,7 +2841,11 @@ async def admin_quiet_period_requests(
     limit: int = Query(default=100, ge=1, le=300),
     _: None = Depends(require_api_key),
 ) -> QuietPeriodAdminListResponse:
-    await _require_active_user_with_roles(_users(request), admin_user_id, roles={"admin"})
+    await _require_active_user_with_any_permission(
+        _users(request),
+        admin_user_id,
+        permissions={PERM_APPROVE_OWN_TENANT_QUIET_REQUESTS, PERM_APPROVE_ASSIGNED_TENANT_QUIET_REQUESTS},
+    )
     records = await _quiet_periods(request).list_recent(limit=limit)
     visible = [item for item in records if item.status in {"pending", "approved"}]
     all_users = await _users(request).list_users()
@@ -2686,7 +2877,11 @@ async def approve_quiet_period_request_api(
     request: Request,
     _: None = Depends(require_api_key),
 ) -> QuietPeriodSummary:
-    admin_id = await _require_active_user_with_roles(_users(request), body.admin_user_id, roles={"admin"})
+    admin_id = await _require_active_user_with_any_permission(
+        _users(request),
+        body.admin_user_id,
+        permissions={PERM_APPROVE_OWN_TENANT_QUIET_REQUESTS, PERM_APPROVE_ASSIGNED_TENANT_QUIET_REQUESTS},
+    )
     admin_user = await _users(request).get_user(admin_id)
     record = await _quiet_periods(request).approve_request(
         request_id=request_id,
@@ -2705,7 +2900,11 @@ async def deny_quiet_period_request_api(
     request: Request,
     _: None = Depends(require_api_key),
 ) -> QuietPeriodSummary:
-    admin_id = await _require_active_user_with_roles(_users(request), body.admin_user_id, roles={"admin"})
+    admin_id = await _require_active_user_with_any_permission(
+        _users(request),
+        body.admin_user_id,
+        permissions={PERM_APPROVE_OWN_TENANT_QUIET_REQUESTS, PERM_APPROVE_ASSIGNED_TENANT_QUIET_REQUESTS},
+    )
     admin_user = await _users(request).get_user(admin_id)
     record = await _quiet_periods(request).deny_request(
         request_id=request_id,
@@ -2809,7 +3008,7 @@ async def admin_send_message(
     recipients: list[int] = []
     if body.send_to_all:
         all_users = await users.list_users()
-        recipients = [u.id for u in all_users if u.is_active and u.role != "admin"]
+        recipients = [u.id for u in all_users if u.is_active and not is_dashboard_role(u.role)]
     else:
         requested_ids = set(int(item) for item in body.recipient_user_ids if int(item) > 0)
         if body.recipient_user_id is not None and int(body.recipient_user_id) > 0:
@@ -2818,7 +3017,7 @@ async def admin_send_message(
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="No recipient users selected")
         for recipient_user_id in sorted(requested_ids):
             target = await users.get_user(recipient_user_id)
-            if target is None or not target.is_active or target.role == "admin":
+            if target is None or not target.is_active or is_dashboard_role(target.role):
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Recipient user #{recipient_user_id} not found")
             recipients.append(target.id)
 
@@ -2851,7 +3050,7 @@ async def message_inbox(
     user = await users.get_user(user_id)
     if user is None or not user.is_active:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Active user is required")
-    if user.role == "admin":
+    if is_dashboard_role(user.role):
         messages = await _reports(request).list_admin_messages(limit=limit)
     else:
         messages = await _reports(request).list_admin_messages_for_user(user_id=user_id, limit=limit)

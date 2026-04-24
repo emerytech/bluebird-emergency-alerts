@@ -1,0 +1,121 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Final
+
+
+ROLE_TEACHER: Final[str] = "teacher"
+ROLE_LAW_ENFORCEMENT: Final[str] = "law_enforcement"
+ROLE_ADMIN: Final[str] = "admin"
+ROLE_DISTRICT_ADMIN: Final[str] = "district_admin"
+ROLE_SUPER_ADMIN: Final[str] = "super_admin"
+
+ALL_ROLES: Final[set[str]] = {
+    ROLE_TEACHER,
+    ROLE_LAW_ENFORCEMENT,
+    ROLE_ADMIN,
+    ROLE_DISTRICT_ADMIN,
+    ROLE_SUPER_ADMIN,
+}
+
+DASHBOARD_ROLES: Final[set[str]] = {
+    ROLE_ADMIN,
+    ROLE_DISTRICT_ADMIN,
+}
+
+PERM_REQUEST_HELP: Final[str] = "request_help"
+PERM_VIEW_OWN_TENANT_INCIDENTS: Final[str] = "view_own_tenant_incidents"
+PERM_VIEW_ASSIGNED_TENANT_INCIDENTS: Final[str] = "view_assigned_tenant_incidents"
+PERM_RECEIVE_ASSIGNED_TENANT_ALERTS: Final[str] = "receive_assigned_tenant_alerts"
+PERM_SUBMIT_QUIET_REQUEST: Final[str] = "submit_quiet_request"
+PERM_MANAGE_OWN_TENANT_USERS: Final[str] = "manage_own_tenant_users"
+PERM_TRIGGER_OWN_TENANT_ALERTS: Final[str] = "trigger_own_tenant_alerts"
+PERM_APPROVE_OWN_TENANT_QUIET_REQUESTS: Final[str] = "approve_own_tenant_quiet_requests"
+PERM_MANAGE_ASSIGNED_TENANTS: Final[str] = "manage_assigned_tenants"
+PERM_MANAGE_ASSIGNED_TENANT_USERS: Final[str] = "manage_assigned_tenant_users"
+PERM_MANAGE_ASSIGNED_TENANT_INCIDENTS: Final[str] = "manage_assigned_tenant_incidents"
+PERM_APPROVE_ASSIGNED_TENANT_QUIET_REQUESTS: Final[str] = "approve_assigned_tenant_quiet_requests"
+PERM_FULL_ACCESS: Final[str] = "full_access"
+
+
+ROLE_HIERARCHY: Final[dict[str, int]] = {
+    ROLE_TEACHER: 1,
+    ROLE_LAW_ENFORCEMENT: 2,
+    ROLE_ADMIN: 3,
+    ROLE_DISTRICT_ADMIN: 4,
+    ROLE_SUPER_ADMIN: 5,
+}
+
+
+_ROLE_PERMISSIONS: Final[dict[str, set[str]]] = {
+    ROLE_TEACHER: {
+        PERM_REQUEST_HELP,
+        PERM_VIEW_OWN_TENANT_INCIDENTS,
+    },
+    ROLE_LAW_ENFORCEMENT: {
+        PERM_REQUEST_HELP,
+        PERM_SUBMIT_QUIET_REQUEST,
+        PERM_VIEW_ASSIGNED_TENANT_INCIDENTS,
+        PERM_RECEIVE_ASSIGNED_TENANT_ALERTS,
+    },
+    ROLE_ADMIN: {
+        PERM_MANAGE_OWN_TENANT_USERS,
+        PERM_TRIGGER_OWN_TENANT_ALERTS,
+        PERM_APPROVE_OWN_TENANT_QUIET_REQUESTS,
+    },
+    ROLE_DISTRICT_ADMIN: {
+        PERM_MANAGE_ASSIGNED_TENANTS,
+        PERM_MANAGE_ASSIGNED_TENANT_USERS,
+        PERM_MANAGE_ASSIGNED_TENANT_INCIDENTS,
+        PERM_APPROVE_ASSIGNED_TENANT_QUIET_REQUESTS,
+        # Keep district admin compatible with existing tenant-local admin routes.
+        PERM_MANAGE_OWN_TENANT_USERS,
+        PERM_TRIGGER_OWN_TENANT_ALERTS,
+        PERM_APPROVE_OWN_TENANT_QUIET_REQUESTS,
+    },
+    ROLE_SUPER_ADMIN: {
+        PERM_FULL_ACCESS,
+    },
+}
+
+
+def normalize_role(role: str | None) -> str:
+    return str(role or "").strip().lower()
+
+
+def is_known_role(role: str | None) -> bool:
+    return normalize_role(role) in ALL_ROLES
+
+
+def is_dashboard_role(role: str | None) -> bool:
+    return normalize_role(role) in DASHBOARD_ROLES
+
+
+def can(role: str | None, permission: str) -> bool:
+    normalized_role = normalize_role(role)
+    if normalized_role == ROLE_SUPER_ADMIN:
+        return True
+    if normalized_role not in _ROLE_PERMISSIONS:
+        return False
+    return permission in _ROLE_PERMISSIONS[normalized_role]
+
+
+def can_any(role: str | None, permissions: set[str]) -> bool:
+    return any(can(role, permission) for permission in permissions)
+
+
+def valid_tenant_roles() -> set[str]:
+    # Platform super admin is intentionally not created as a tenant-local user role.
+    return {
+        ROLE_TEACHER,
+        ROLE_LAW_ENFORCEMENT,
+        ROLE_ADMIN,
+        ROLE_DISTRICT_ADMIN,
+    }
+
+
+@dataclass(frozen=True)
+class PermissionCheck:
+    role: str
+    permission: str
+    allowed: bool

@@ -457,6 +457,7 @@ def _render_quiet_period_rows(
     users: Sequence[UserRecord],
     school_path_prefix: str,
     *,
+    tenant_label: Optional[str] = None,
     include_actions: bool = True,
 ) -> str:
     if not records:
@@ -494,8 +495,9 @@ def _render_quiet_period_rows(
             """
         elif not include_actions:
             action_html = '<span class="mini-copy">History</span>'
+        tenant_note = f'<div class="mini-copy">Tenant: {escape(tenant_label)}</div>' if tenant_label else ""
         rows.append(
-            f"<tr><td>{escape(user_names.get(item.user_id, f'User #{item.user_id}'))}</td><td>{escape(item.status)}</td><td>{escape(item.reason or '—')}</td><td>{escape(approver)}</td><td>{escape(item.requested_at)}</td><td>{escape(item.expires_at or '—')}</td><td>{action_html}</td></tr>"
+            f"<tr><td>{escape(user_names.get(item.user_id, f'User #{item.user_id}'))}{tenant_note}</td><td>{escape(item.status)}</td><td>{escape(item.reason or '—')}</td><td>{escape(approver)}</td><td>{escape(item.requested_at)}</td><td>{escape(item.expires_at or '—')}</td><td>{action_html}</td></tr>"
         )
     return "".join(rows)
 
@@ -505,6 +507,7 @@ def _render_request_help_rows(
     users: Sequence[UserRecord],
     school_path_prefix: str,
     *,
+    tenant_label: Optional[str] = None,
     include_actions: bool = True,
 ) -> str:
     if not records:
@@ -524,12 +527,13 @@ def _render_request_help_rows(
               </form>
             </div>
             """
+        tenant_note = f'<div class="mini-copy">Tenant: {escape(tenant_label)}</div>' if tenant_label else ""
         rows.append(
             "<tr>"
             f"<td>{item.id}</td>"
             f"<td>{escape(item.created_at)}</td>"
             f"<td>{escape(item.type)}</td>"
-            f"<td>{escape(created_by)}</td>"
+            f"<td>{escape(created_by)}{tenant_note}</td>"
             f"<td>{escape(item.status)}</td>"
             f"<td>{escape(handled_by)}</td>"
             f"<td>{action_html}</td>"
@@ -1077,6 +1081,30 @@ def _count_list(items: Mapping[str, int]) -> str:
     )
 
 
+def _tenant_selector(
+    *,
+    school_path_prefix: str,
+    selected_section: str,
+    selected_tenant_slug: str,
+    tenant_options: Sequence[Mapping[str, str]],
+) -> str:
+    if len(tenant_options) <= 1:
+        return ""
+    prefix = escape(school_path_prefix)
+    options_html = "".join(
+        f"<option value=\"{escape(str(item.get('slug', '')))}\" {'selected' if str(item.get('slug', '')) == selected_tenant_slug else ''}>{escape(str(item.get('name', 'School')))}</option>"
+        for item in tenant_options
+    )
+    return f"""
+      <form method="get" action="{prefix}/admin" class="button-row" style="justify-content:flex-start; margin-top:10px;">
+        <input type="hidden" name="section" value="{escape(selected_section)}" />
+        <label for="tenant_filter" class="mini-copy" style="margin-right:6px;">Tenant</label>
+        <select id="tenant_filter" name="tenant" onchange="this.form.submit()">{options_html}</select>
+        <noscript><button class="button button-secondary" type="submit">Apply</button></noscript>
+      </form>
+    """
+
+
 def _render_alert_rows(alerts: Sequence[AlertRecord]) -> str:
     if not alerts:
         return '<tr><td colspan="4" class="mini-copy">No alerts logged yet.</td></tr>'
@@ -1135,7 +1163,15 @@ def _render_device_rows(devices: Sequence[RegisteredDevice], users: Sequence[Use
     return "".join(rows)
 
 
-def _render_user_cards(users: Sequence[UserRecord], school_path_prefix: str) -> str:
+def _render_user_cards(
+    users: Sequence[UserRecord],
+    school_path_prefix: str,
+    *,
+    tenant_label: Optional[str] = None,
+    tenant_options: Sequence[Mapping[str, str]] = (),
+    user_tenant_assignments: Optional[Mapping[int, Sequence[str]]] = None,
+    allow_assignment_edit: bool = False,
+) -> str:
     if not users:
         return '<div class="mini-copy">No users yet.</div>'
     cards = []
@@ -1146,6 +1182,29 @@ def _render_user_cards(users: Sequence[UserRecord], school_path_prefix: str) -> 
         login_name = escape(user.login_name or "")
         phone = escape(user.phone_e164 or "")
         last_login = escape(user.last_login_at or "Never")
+        tenant_badge = f'<p class="mini-copy">Tenant: <strong>{escape(tenant_label)}</strong></p>' if tenant_label else ""
+        assigned_labels = list((user_tenant_assignments or {}).get(user.id, []))
+        assignment_label = ", ".join(escape(item) for item in assigned_labels) if assigned_labels else "None"
+        assignment_options = "".join(
+            f'<label class="checkbox-row"><input type="checkbox" name="tenant_ids" value="{escape(str(item.get("id", "")))}" {"checked" if str(item.get("name", "")) in assigned_labels else ""} /><span>{escape(str(item.get("name", "")))}</span></label>'
+            for item in tenant_options
+        )
+        assignment_block = ""
+        if allow_assignment_edit and user.role in {"district_admin", "law_enforcement"}:
+            assignment_block = f"""
+              <form method="post" action="{prefix}/admin/users/{user.id}/tenant-assignments" class="stack" style="margin-top:10px;">
+                <div class="field">
+                  <label>Assigned tenants</label>
+                  <div class="stack">{assignment_options or '<span class="mini-copy">No tenants available.</span>'}</div>
+                </div>
+                <div class="button-row">
+                  <button class="button button-secondary" type="submit">Save tenant assignments</button>
+                </div>
+                <p class="mini-copy">Current assignment: {assignment_label}</p>
+              </form>
+            """
+        elif user.role in {"district_admin", "law_enforcement"}:
+            assignment_block = f'<p class="mini-copy">Assigned tenants: {assignment_label}</p>'
         cards.append(
             f"""
             <article class="user-card">
@@ -1154,6 +1213,7 @@ def _render_user_cards(users: Sequence[UserRecord], school_path_prefix: str) -> 
                   <div>
                     <h3>{escape(user.name)}</h3>
                     <p class="mini-copy">User #{user.id} • created {escape(user.created_at)}</p>
+                    {tenant_badge}
                   </div>
                   <span class="status-pill {'ok' if user.is_active else 'danger'}">{'Active' if user.is_active else 'Inactive'}</span>
                 </div>
@@ -1166,7 +1226,9 @@ def _render_user_cards(users: Sequence[UserRecord], school_path_prefix: str) -> 
                     <label>Role</label>
                     <select name="role">
                       <option value="teacher" {'selected' if user.role == 'teacher' else ''}>standard / teacher</option>
+                      <option value="law_enforcement" {'selected' if user.role == 'law_enforcement' else ''}>law enforcement</option>
                       <option value="admin" {'selected' if user.role == 'admin' else ''}>admin</option>
+                      <option value="district_admin" {'selected' if user.role == 'district_admin' else ''}>district admin</option>
                     </select>
                   </div>
                   <div class="field">
@@ -1195,6 +1257,7 @@ def _render_user_cards(users: Sequence[UserRecord], school_path_prefix: str) -> 
                 </div>
                 <p class="mini-copy">Dashboard login: <strong>{'enabled' if user.can_login else 'disabled'}</strong> • last login: {last_login}</p>
               </form>
+              {assignment_block}
               <form method="post" action="{prefix}/admin/users/{user.id}/delete" onsubmit="return confirm('Delete {escape(user.name)}? This cannot be undone.');">
                 <div class="button-row">
                   <button class="button button-danger-outline" type="submit">Delete user</button>
@@ -1270,9 +1333,13 @@ def render_admin_page(
     school_name: str,
     school_slug: str,
     school_path_prefix: str,
+    selected_tenant_slug: str,
+    selected_tenant_name: str,
+    tenant_options: Sequence[Mapping[str, str]],
     theme: Optional[Mapping[str, str]],
     current_user: UserRecord,
     users: Sequence[UserRecord],
+    user_tenant_assignments: Mapping[int, Sequence[str]],
     alerts: Sequence[AlertRecord],
     devices: Sequence[RegisteredDevice],
     alarm_state: AlarmStateRecord,
@@ -1315,6 +1382,12 @@ def render_admin_page(
         active_class = " nav-item-active" if section == name else ""
         badge_html = f'<span class="nav-badge">{escape(str(badge))}</span>' if badge else ""
         return f'<a class="nav-item{active_class}" href="{prefix}/admin?section={name}">{label}{badge_html}</a>'
+    tenant_selector_html = _tenant_selector(
+        school_path_prefix=school_path_prefix,
+        selected_section=section,
+        selected_tenant_slug=selected_tenant_slug,
+        tenant_options=tenant_options,
+    )
     super_admin_shell_action_html = ""
     super_admin_banner_html = ""
     if super_admin_mode:
@@ -1425,6 +1498,8 @@ def render_admin_page(
             <h2>Safety operations</h2>
             <p class="hero-copy">Signed in as <strong>{escape(current_user.name)}</strong> ({escape(current_user.login_name or 'admin')}).</p>
             <p class="mini-copy">School: <strong>{escape(school_name)}</strong> ({escape(school_slug)})</p>
+            <p class="mini-copy">Viewing tenant: <strong>{escape(selected_tenant_name)}</strong> ({escape(selected_tenant_slug)})</p>
+            {tenant_selector_html}
           </div>
         </section>
         <section class="signal-card">
@@ -1458,7 +1533,7 @@ def render_admin_page(
             <div>
               <p class="eyebrow">Command Deck</p>
               <h1>Admin dashboard</h1>
-              <p class="hero-copy">Manage users, see device readiness, review alerts, and control the active alarm state for <strong>{escape(school_name)}</strong> from one place.</p>
+              <p class="hero-copy">Manage users, see device readiness, review alerts, and control the active alarm state for <strong>{escape(selected_tenant_name)}</strong> from one place.</p>
             </div>
             <div class="status-row">
               <span class="status-pill {alarm_status_class}"><strong>{alarm_status_label}</strong>{escape(alarm_state.message or 'No active alarm')}</span>
@@ -1575,7 +1650,9 @@ def render_admin_page(
                   <label>Role</label>
                   <select name="role">
                     <option value="teacher">standard / teacher</option>
+                    <option value="law_enforcement">law enforcement</option>
                     <option value="admin">admin</option>
+                    <option value="district_admin">district admin</option>
                   </select>
                 </div>
                 <div class="field">
@@ -1610,7 +1687,14 @@ def render_admin_page(
               </div>
             </div>
             <div class="user-grid">
-              {_render_user_cards(users, school_path_prefix)}
+              {_render_user_cards(
+                  users,
+                  school_path_prefix,
+                  tenant_label=selected_tenant_name,
+                  tenant_options=[{"id": str(item.get("id", "")), "slug": str(item.get("slug", "")), "name": str(item.get("name", ""))} for item in tenant_options],
+                  user_tenant_assignments=user_tenant_assignments,
+                  allow_assignment_edit=(current_user.role in {"district_admin", "super_admin"}),
+              )}
             </div>
           </section>
 
@@ -1677,7 +1761,7 @@ def render_admin_page(
                 <tr><th>ID</th><th>Created</th><th>Type</th><th>Requested by</th><th>Status</th><th>Handled by</th><th>Action</th></tr>
               </thead>
               <tbody>
-                {_render_request_help_rows(request_help_active, users, school_path_prefix)}
+                {_render_request_help_rows(request_help_active, users, school_path_prefix, tenant_label=selected_tenant_name)}
               </tbody>
             </table>
           </section>
@@ -1736,7 +1820,7 @@ def render_admin_page(
                 <tr><th>User</th><th>Status</th><th>Reason</th><th>Approved By</th><th>Requested</th><th>Expires</th><th>Action</th></tr>
               </thead>
               <tbody>
-                {_render_quiet_period_rows(quiet_periods_active, users, school_path_prefix, include_actions=True)}
+                {_render_quiet_period_rows(quiet_periods_active, users, school_path_prefix, tenant_label=selected_tenant_name, include_actions=True)}
               </tbody>
             </table>
             <div class="button-row" style="margin-top:12px;">
@@ -1794,7 +1878,7 @@ def render_admin_page(
                 <tr><th>User</th><th>Status</th><th>Reason</th><th>Approved By</th><th>Requested</th><th>Expires</th><th>Action</th></tr>
               </thead>
               <tbody>
-                {_render_quiet_period_rows(quiet_periods_history, users, school_path_prefix, include_actions=False)}
+                {_render_quiet_period_rows(quiet_periods_history, users, school_path_prefix, tenant_label=selected_tenant_name, include_actions=False)}
               </tbody>
             </table>
           </section>
