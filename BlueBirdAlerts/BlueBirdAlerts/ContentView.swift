@@ -53,7 +53,11 @@ struct ContentView: View {
     @State private var showSettings = false
     @State private var activeIncidents: [IncidentSummary] = []
     @State private var activeTeamAssists: [TeamAssistSummary] = []
+    @State private var alarmIsActive = false
+    @State private var alarmMessage: String?
     @State private var isRefreshingIncidentFeed = false
+    @State private var isUpdatingAlarm = false
+    @State private var showDeactivateAlarmConfirm = false
     @State private var pendingAction: SafetyActionItem?
     @State private var slideValue: Double = 0
     @State private var adminOutboundMessage = ""
@@ -215,6 +219,14 @@ struct ContentView: View {
                 }
                 Button("Cancel", role: .cancel) {}
             }
+            .confirmationDialog("Disable active alarm?", isPresented: $showDeactivateAlarmConfirm, titleVisibility: .visible) {
+                Button("Disable Alarm", role: .destructive) {
+                    Task { await authenticateThenDeactivateAlarm() }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This will clear the currently active alarm for this school.")
+            }
             .sheet(
                 isPresented: Binding(
                     get: { isAdminSession && adminPromptRequestHelpItem != nil },
@@ -312,6 +324,42 @@ struct ContentView: View {
                     }
                     .disabled(isRefreshingIncidentFeed)
                     .font(.subheadline.weight(.semibold))
+                }
+
+                if appState.canDeactivateAlarm {
+                    HStack(spacing: 10) {
+                        HStack(spacing: 6) {
+                            Circle()
+                                .fill(alarmIsActive ? Color.red : Color.gray.opacity(0.6))
+                                .frame(width: 8, height: 8)
+                            Text(alarmIsActive ? "Alarm Active" : "No Active Alarm")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(textMuted)
+                        }
+                        Spacer()
+                        Button {
+                            showDeactivateAlarmConfirm = true
+                        } label: {
+                            Text(isUpdatingAlarm ? "Disabling…" : "Disable Alarm")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 8)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                        .fill(alarmIsActive ? Color(red: 0.72, green: 0.11, blue: 0.11) : Color.gray.opacity(0.45))
+                                )
+                        }
+                        .buttonStyle(PressableScaleButtonStyle())
+                        .disabled(isUpdatingAlarm || !alarmIsActive)
+                    }
+                    if let alarmMessage, alarmIsActive, !alarmMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        Text(alarmMessage)
+                            .font(.caption)
+                            .foregroundStyle(textMuted)
+                            .lineLimit(2)
+                    }
+                    Divider()
                 }
 
                 Text("Emergencies")
@@ -962,9 +1010,12 @@ struct ContentView: View {
         do {
             async let incidentsResponse = api.activeIncidents()
             async let teamAssistResponse = api.activeRequestHelp()
-            let (incidents, teamAssists) = try await (incidentsResponse, teamAssistResponse)
+            async let alarmResponse = api.alarmStatus()
+            let (incidents, teamAssists, alarm) = try await (incidentsResponse, teamAssistResponse, alarmResponse)
             activeIncidents = incidents.incidents
             activeTeamAssists = teamAssists.teamAssists
+            alarmIsActive = alarm.isActive
+            alarmMessage = alarm.message
             syncAdminRequestHelpPrompt()
             appState.lastError = nil
             appState.backendReachable = true
@@ -1021,6 +1072,37 @@ struct ContentView: View {
             return
         }
         await sendPanic()
+    }
+
+    private func authenticateThenDeactivateAlarm() async {
+        guard await authenticateIfNeeded(reason: "Confirm alarm deactivation.") else {
+            appState.lastError = "Biometric verification was canceled."
+            return
+        }
+        await deactivateAlarm()
+    }
+
+    private func deactivateAlarm() async {
+        guard appState.canDeactivateAlarm else { return }
+        guard let adminUserID = appState.userID else {
+            appState.lastError = "No active admin session found."
+            return
+        }
+        guard !isUpdatingAlarm else { return }
+
+        isUpdatingAlarm = true
+        defer { isUpdatingAlarm = false }
+
+        do {
+            let response = try await api.deactivateAlarm(adminUserID: adminUserID)
+            alarmIsActive = response.isActive
+            alarmMessage = response.message
+            appState.lastStatus = response.isActive ? "Alarm remains active." : "Alarm disabled."
+            appState.lastError = nil
+            await refreshIncidentFeed()
+        } catch {
+            appState.lastError = "Disable alarm failed: \(error.localizedDescription)"
+        }
     }
 
     private var recipientLabel: String {

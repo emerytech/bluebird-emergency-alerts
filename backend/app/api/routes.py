@@ -767,8 +767,10 @@ async def _require_admin_user(users: UserStore, user_id: Optional[int]) -> int:
     if user_id is None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin user_id is required to deactivate alarm")
     user = await users.get_user(user_id)
-    if user is None or not user.is_active or not can(user.role, PERM_TRIGGER_OWN_TENANT_ALERTS):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only active admin users can deactivate alarm")
+    if user is None or not user.is_active or not can_any(
+        user.role, {PERM_TRIGGER_OWN_TENANT_ALERTS, PERM_MANAGE_ASSIGNED_TENANT_INCIDENTS}
+    ):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only authorized active users can deactivate alarm")
     return user.id
 
 
@@ -958,7 +960,10 @@ async def mobile_login(body: MobileLoginRequest, request: Request) -> MobileLogi
         role=user.role,
         login_name=user.login_name or body.login_name,
         must_change_password=user.must_change_password,
-        can_deactivate_alarm=can(user.role, PERM_TRIGGER_OWN_TENANT_ALERTS),
+        can_deactivate_alarm=can_any(
+            user.role,
+            {PERM_TRIGGER_OWN_TENANT_ALERTS, PERM_MANAGE_ASSIGNED_TENANT_INCIDENTS},
+        ),
         quiet_period_expires_at=quiet_period.expires_at if quiet_period else None,
         quiet_mode_active=quiet_mode_active,
     )

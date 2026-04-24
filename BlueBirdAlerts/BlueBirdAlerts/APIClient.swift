@@ -78,6 +78,27 @@ struct APIClient {
         return try JSONDecoder().decode(IncidentListResponse.self, from: data)
     }
 
+    func alarmStatus() async throws -> AlarmStatusResponse {
+        let url = baseURL.appendingPathComponent("alarm/status")
+        var request = URLRequest(url: url)
+        withAPIKey(&request)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try requireSuccess(response: response, data: data)
+        return try JSONDecoder().decode(AlarmStatusResponse.self, from: data)
+    }
+
+    func deactivateAlarm(adminUserID: Int) async throws -> AlarmStatusResponse {
+        let url = baseURL.appendingPathComponent("alarm/deactivate")
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        withAPIKey(&request)
+        request.httpBody = try JSONEncoder().encode(AlarmDeactivateRequest(userID: adminUserID))
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try requireSuccess(response: response, data: data)
+        return try JSONDecoder().decode(AlarmStatusResponse.self, from: data)
+    }
+
     func activeRequestHelp() async throws -> TeamAssistListResponse {
         let url = baseURL.appendingPathComponent("team-assist/active")
         var request = URLRequest(url: url)
@@ -447,6 +468,16 @@ struct IncidentSummary: Decodable, Identifiable {
     }
 }
 
+struct AlarmStatusResponse: Decodable {
+    let isActive: Bool
+    let message: String?
+
+    enum CodingKeys: String, CodingKey {
+        case isActive = "is_active"
+        case message
+    }
+}
+
 struct TeamAssistListResponse: Decodable {
     let teamAssists: [TeamAssistSummary]
 
@@ -592,6 +623,14 @@ private struct QuietPeriodAdminActionPayload: Encodable {
 
     enum CodingKeys: String, CodingKey {
         case adminUserID = "admin_user_id"
+    }
+}
+
+private struct AlarmDeactivateRequest: Encodable {
+    let userID: Int
+
+    enum CodingKeys: String, CodingKey {
+        case userID = "user_id"
     }
 }
 
