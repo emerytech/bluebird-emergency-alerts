@@ -144,6 +144,15 @@ def _school_url(request: Request, suffix: str) -> str:
     return f"{_school_prefix(request)}{normalized_suffix}"
 
 
+def _school_theme(school) -> dict[str, str]:
+    return {
+        "accent": getattr(school, "accent", None) or "",
+        "accent_strong": getattr(school, "accent_strong", None) or "",
+        "sidebar_start": getattr(school, "sidebar_start", None) or "",
+        "sidebar_end": getattr(school, "sidebar_end", None) or "",
+    }
+
+
 async def _require_dashboard_admin(request: Request) -> UserStore:
     user_id = _session_user_id(request)
     if user_id is None:
@@ -362,6 +371,7 @@ async def admin_dashboard(request: Request) -> HTMLResponse:
         school_name=request.state.school.name,
         school_slug=request.state.school.slug,
         school_path_prefix=_school_prefix(request),
+        theme=_school_theme(request.state.school),
         current_user=request.state.admin_user,  # type: ignore[attr-defined]
         alerts=alerts,
         devices=devices,
@@ -396,6 +406,7 @@ async def admin_login_page(request: Request) -> HTMLResponse:
             school_slug=request.state.school.slug,
             school_path_prefix=_school_prefix(request),
             setup_pin_required=bool(getattr(request.state.school, "setup_pin_required", False)),
+            theme=_school_theme(request.state.school),
         )
     )
 
@@ -577,6 +588,31 @@ async def super_admin_dashboard(request: Request) -> HTMLResponse:
             </form>
             """
         )
+        theme_controls_html = f"""
+            <form method="post" action="/super-admin/schools/{school.slug}/theme" class="stack" style="margin-top:10px;">
+              <div class="form-grid">
+                <div class="field">
+                  <label>Accent</label>
+                  <input name="accent" value="{escape(school.accent or '')}" placeholder="#1b5fe4" />
+                </div>
+                <div class="field">
+                  <label>Accent strong</label>
+                  <input name="accent_strong" value="{escape(school.accent_strong or '')}" placeholder="#2f84ff" />
+                </div>
+                <div class="field">
+                  <label>Sidebar start</label>
+                  <input name="sidebar_start" value="{escape(school.sidebar_start or '')}" placeholder="#092054" />
+                </div>
+                <div class="field">
+                  <label>Sidebar end</label>
+                  <input name="sidebar_end" value="{escape(school.sidebar_end or '')}" placeholder="#071536" />
+                </div>
+              </div>
+              <div class="button-row">
+                <button class="button button-secondary" type="submit">Save Theme</button>
+              </div>
+            </form>
+        """
         school_rows.append(
             {
                 "name": school.name,
@@ -595,6 +631,7 @@ async def super_admin_dashboard(request: Request) -> HTMLResponse:
                     )
                 ),
                 "pin_controls_html": pin_controls_html,
+                "theme_controls_html": theme_controls_html,
                 "is_active": school.is_active,
             }
         )
@@ -603,6 +640,7 @@ async def super_admin_dashboard(request: Request) -> HTMLResponse:
             base_domain=request.app.state.settings.BASE_DOMAIN,  # type: ignore[attr-defined]
             school_rows=school_rows,
             git_pull_configured=bool(request.app.state.settings.SERVER_GIT_PULL_COMMAND),  # type: ignore[attr-defined]
+            server_info=_build_server_info(request),
             flash_message=flash_message,
             flash_error=flash_error,
         )
@@ -694,6 +732,33 @@ async def super_admin_clear_setup_pin(
     return RedirectResponse(url="/super-admin#schools", status_code=status.HTTP_303_SEE_OTHER)
 
 
+@router.post("/super-admin/schools/{slug}/theme", include_in_schema=False)
+async def super_admin_update_school_theme(
+    request: Request,
+    slug: str,
+    accent: str = Form(default=""),
+    accent_strong: str = Form(default=""),
+    sidebar_start: str = Form(default=""),
+    sidebar_end: str = Form(default=""),
+) -> RedirectResponse:
+    _require_super_admin(request)
+    from app.services.tenant_manager import normalize_school_slug
+
+    normalized_slug = normalize_school_slug(slug)
+    school = await _schools(request).update_theme(
+        slug=normalized_slug,
+        accent=accent.strip() or None,
+        accent_strong=accent_strong.strip() or None,
+        sidebar_start=sidebar_start.strip() or None,
+        sidebar_end=sidebar_end.strip() or None,
+    )
+    if school is None:
+        _set_flash(request, error="School not found.")
+        return RedirectResponse(url="/super-admin#schools", status_code=status.HTTP_303_SEE_OTHER)
+    _set_flash(request, message=f"Updated the theme for {school.name}.")
+    return RedirectResponse(url="/super-admin#schools", status_code=status.HTTP_303_SEE_OTHER)
+
+
 def _run_server_command(command: Optional[str]) -> None:
     if command:
         os.system(command)
@@ -711,6 +776,18 @@ async def super_admin_pull_latest(
         return RedirectResponse(url="/super-admin#server-tools", status_code=status.HTTP_303_SEE_OTHER)
     background_tasks.add_task(_run_server_command, command)
     _set_flash(request, message="Server git pull started in the background.")
+    return RedirectResponse(url="/super-admin#server-tools", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.post("/super-admin/server/restart", include_in_schema=False)
+async def super_admin_restart(
+    request: Request,
+    background_tasks: BackgroundTasks,
+) -> RedirectResponse:
+    _require_super_admin(request)
+    command = request.app.state.settings.SERVER_RESTART_COMMAND
+    background_tasks.add_task(_do_restart, command)
+    _set_flash(request, message="Restart initiated. The service will be back in a few seconds.")
     return RedirectResponse(url="/super-admin#server-tools", status_code=status.HTTP_303_SEE_OTHER)
 
 
@@ -753,6 +830,7 @@ async def change_password_page(request: Request) -> HTMLResponse:
             message=flash_message,
             error=flash_error,
             action=_school_url(request, "/admin/change-password"),
+            theme=_school_theme(request.state.school),
         )
     )
 

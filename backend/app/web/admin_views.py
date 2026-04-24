@@ -13,9 +13,20 @@ from app.services.school_registry import SchoolRecord
 from app.services.user_store import UserRecord
 
 
-def _base_styles() -> str:
-    return """
-    :root {
+def _theme_vars(theme: Optional[Mapping[str, str]] = None) -> str:
+    resolved = {
+        "accent": "#1b5fe4",
+        "accent_strong": "#2f84ff",
+        "sidebar_start": "#092054",
+        "sidebar_end": "#071536",
+    }
+    if theme:
+        for key in resolved:
+            value = str(theme.get(key, "") or "").strip()
+            if value:
+                resolved[key] = value
+    return f"""
+    :root {{
       --bg: #eef5ff;
       --bg-deep: #dce9ff;
       --panel: rgba(255, 255, 255, 0.9);
@@ -23,16 +34,16 @@ def _base_styles() -> str:
       --border: rgba(18, 52, 120, 0.10);
       --text: #10203f;
       --muted: #5d7398;
-      --accent: #1b5fe4;
-      --accent-strong: #2f84ff;
-      --accent-soft: rgba(27, 95, 228, 0.14);
-      --accent-soft-strong: rgba(27, 95, 228, 0.22);
-      --nav-bg: linear-gradient(180deg, rgba(9, 32, 84, 0.98) 0%, rgba(7, 21, 54, 0.98) 100%);
+      --accent: {resolved["accent"]};
+      --accent-strong: {resolved["accent_strong"]};
+      --accent-soft: color-mix(in srgb, var(--accent) 14%, transparent);
+      --accent-soft-strong: color-mix(in srgb, var(--accent) 22%, transparent);
+      --nav-bg: linear-gradient(180deg, {resolved["sidebar_start"]} 0%, {resolved["sidebar_end"]} 100%);
       --nav-border: rgba(255, 255, 255, 0.10);
       --nav-text: rgba(248, 250, 252, 0.96);
       --nav-muted: rgba(148, 163, 184, 0.82);
-      --brand-glow: rgba(47, 132, 255, 0.18);
-      --brand-glow-soft: rgba(27, 95, 228, 0.10);
+      --brand-glow: color-mix(in srgb, var(--accent-strong) 18%, transparent);
+      --brand-glow-soft: color-mix(in srgb, var(--accent) 10%, transparent);
       --success: #16a34a;
       --success-soft: rgba(22, 163, 74, 0.12);
       --danger: #dc2626;
@@ -42,7 +53,12 @@ def _base_styles() -> str:
       --radius-soft: 18px;
       --headline: "Avenir Next", "Segoe UI Variable Display", "SF Pro Display", "Trebuchet MS", sans-serif;
       --body: "Avenir Next", "Segoe UI Variable Text", "SF Pro Text", "Helvetica Neue", sans-serif;
-    }
+    }}
+    """
+
+
+def _base_styles(theme: Optional[Mapping[str, str]] = None) -> str:
+    return _theme_vars(theme) + """
     * { box-sizing: border-box; }
     html, body { margin: 0; min-height: 100%; color: var(--text); font-family: var(--body); }
     body {
@@ -373,6 +389,7 @@ def render_login_page(
     school_slug: str = "default",
     school_path_prefix: str = "/default",
     setup_pin_required: bool = False,
+    theme: Optional[Mapping[str, str]] = None,
 ) -> str:
     heading = "Create the first BlueBird admin" if setup_mode else "Sign in to BlueBird Admin"
     button = "Create admin account" if setup_mode else "Sign in"
@@ -409,7 +426,7 @@ def render_login_page(
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>BlueBird Admin Login</title>
-  <style>{_base_styles()}</style>
+  <style>{_base_styles(theme)}</style>
 </head>
 <body>
   <main class="login-shell">
@@ -520,6 +537,7 @@ def render_super_admin_page(
     base_domain: str,
     school_rows: Sequence[Mapping[str, object]],
     git_pull_configured: bool,
+    server_info: Mapping[str, str],
     flash_message: Optional[str] = None,
     flash_error: Optional[str] = None,
 ) -> str:
@@ -530,7 +548,7 @@ def render_super_admin_page(
             f"<td><code>{escape(str(item['slug']))}</code></td>"
             f"<td><a href=\"{escape(str(item['admin_url']))}\" target=\"_blank\">{escape(str(item['admin_url_label']))}</a>"
             f"<div class=\"mini-copy\">Mobile/API base: <code>{escape(str(item['api_base_label']))}</code></div></td>"
-            f"<td>{escape(str(item['setup_status']))}<div class=\"mini-copy\">{escape(str(item['setup_hint']))}</div>{str(item['pin_controls_html'])}</td>"
+            f"<td>{escape(str(item['setup_status']))}<div class=\"mini-copy\">{escape(str(item['setup_hint']))}</div>{str(item['pin_controls_html'])}{str(item['theme_controls_html'])}</td>"
             f"<td>{'Active' if bool(item['is_active']) else 'Inactive'}</td>"
             "</tr>"
         )
@@ -662,19 +680,44 @@ def render_super_admin_page(
           <div class="panel-header">
             <div>
               <p class="eyebrow">Server Tools</p>
-              <h2>Update backend from Git</h2>
-              <p class="card-copy">Pull the latest <code>main</code> branch on the server without opening a terminal. This only runs if a server-side pull command is configured.</p>
+              <h2>Backend service</h2>
+              <p class="card-copy">Pull the latest code or restart the running backend from one platform-only control surface.</p>
             </div>
+          </div>
+          <div class="metrics-grid" style="margin-bottom:20px;">
+            <article class="metric-card">
+              <div class="meta">Uptime</div>
+              <div class="metric-value" style="font-size:1.3rem;">{escape(server_info.get("uptime", "—"))}</div>
+            </article>
+            <article class="metric-card">
+              <div class="meta">Hostname</div>
+              <div class="metric-value" style="font-size:1.3rem;">{escape(server_info.get("hostname", "—"))}</div>
+            </article>
+            <article class="metric-card">
+              <div class="meta">Python</div>
+              <div class="metric-value" style="font-size:1.3rem;">{escape(server_info.get("python_version", "—"))}</div>
+            </article>
+            <article class="metric-card">
+              <div class="meta">Process ID</div>
+              <div class="metric-value" style="font-size:1.3rem;">{escape(server_info.get("pid", "—"))}</div>
+            </article>
           </div>
           <p class="mini-copy" style="margin-bottom:14px;">
             {'Configured and ready to run.' if git_pull_configured else 'Set <code>SERVER_GIT_PULL_COMMAND</code> in the backend environment to enable this action.'}
           </p>
-          <form method="post" action="/super-admin/server/pull-latest"
-                onsubmit="return confirm('Pull the latest main branch on the server now?');">
-            <div class="button-row">
+          <div class="button-row">
+            <form method="post" action="/super-admin/server/pull-latest"
+                  onsubmit="return confirm('Pull the latest main branch on the server now?');">
               <button class="button button-primary" type="submit" {'disabled' if not git_pull_configured else ''}>Pull Latest Main</button>
-            </div>
-          </form>
+            </form>
+            <form method="post" action="/super-admin/server/restart"
+                  onsubmit="return confirm('Restart the backend service now? The dashboard will be unavailable for a few seconds.');">
+              <button class="button button-danger" type="submit">Restart service</button>
+            </form>
+          </div>
+          <p class="mini-copy" style="margin-top:14px;">
+            {'Uses <code>SERVER_RESTART_COMMAND</code> env var.' if server_info.get("restart_configured") == "yes" else 'No <code>SERVER_RESTART_COMMAND</code> set — restart falls back to a self-restart of the running process.'}
+          </p>
         </section>
       </section>
     </div>
@@ -830,6 +873,7 @@ def render_change_password_page(
     eyebrow: str = "BlueBird Alerts",
     heading: str = "Password change required",
     helper: str = "Your account was set up with a temporary password. Please choose a new password before continuing.",
+    theme: Optional[Mapping[str, str]] = None,
 ) -> str:
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -837,7 +881,7 @@ def render_change_password_page(
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>{escape(title)}</title>
-  <style>{_base_styles()}</style>
+  <style>{_base_styles(theme)}</style>
 </head>
 <body>
   <main class="login-shell">
@@ -882,6 +926,7 @@ def render_admin_page(
     school_name: str,
     school_slug: str,
     school_path_prefix: str,
+    theme: Optional[Mapping[str, str]],
     current_user: UserRecord,
     users: Sequence[UserRecord],
     alerts: Sequence[AlertRecord],
@@ -910,7 +955,7 @@ def render_admin_page(
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>BlueBird Admin</title>
-  <style>{_base_styles()}</style>
+  <style>{_base_styles(theme)}</style>
 </head>
 <body>
   <main class="page-shell">
@@ -936,7 +981,6 @@ def render_admin_page(
             <a class="nav-item" href="#quiet-periods">Quiet Periods</a>
             <a class="nav-item" href="#alerts">Alert log</a>
             <a class="nav-item" href="#devices">Devices</a>
-            <a class="nav-item" href="#server">Server</a>
           </nav>
           </div>
           <div class="shell-actions">
@@ -1182,42 +1226,6 @@ def render_admin_page(
             </table>
           </section>
 
-          <section class="panel span-12" id="server">
-            <div class="panel-header">
-              <div>
-                <p class="eyebrow">Server Management</p>
-                <h2>Backend service</h2>
-                <p class="card-copy">Current process info and service controls. Restart applies the latest deployed code.</p>
-              </div>
-            </div>
-            <div class="metrics-grid" style="margin-bottom:20px;">
-              <article class="metric-card">
-                <div class="meta">Uptime</div>
-                <div class="metric-value" style="font-size:1.3rem;">{escape(server_info.get("uptime", "—"))}</div>
-              </article>
-              <article class="metric-card">
-                <div class="meta">Hostname</div>
-                <div class="metric-value" style="font-size:1.3rem;">{escape(server_info.get("hostname", "—"))}</div>
-              </article>
-              <article class="metric-card">
-                <div class="meta">Python</div>
-                <div class="metric-value" style="font-size:1.3rem;">{escape(server_info.get("python_version", "—"))}</div>
-              </article>
-              <article class="metric-card">
-                <div class="meta">Process ID</div>
-                <div class="metric-value" style="font-size:1.3rem;">{escape(server_info.get("pid", "—"))}</div>
-              </article>
-            </div>
-            <p class="mini-copy" style="margin-bottom:14px;">
-              {'Uses <code>SERVER_RESTART_COMMAND</code> env var.' if server_info.get("restart_configured") == "yes" else 'No <code>SERVER_RESTART_COMMAND</code> set — will self-restart the process.'}
-            </p>
-            <form method="post" action="{prefix}/admin/server/restart"
-                  onsubmit="return confirm('Restart the backend service now? The dashboard will be unavailable for a few seconds.');">
-              <div class="button-row">
-                <button class="button button-danger" type="submit">Restart service</button>
-              </div>
-            </form>
-          </section>
         </section>
       </section>
     </div>

@@ -18,6 +18,10 @@ class SchoolRecord:
     name: str
     is_active: bool
     setup_pin_required: bool = False
+    accent: Optional[str] = None
+    accent_strong: Optional[str] = None
+    sidebar_start: Optional[str] = None
+    sidebar_end: Optional[str] = None
 
     @property
     def subdomain(self) -> str:
@@ -44,6 +48,10 @@ class SchoolRegistry:
                     slug TEXT NOT NULL UNIQUE,
                     name TEXT NOT NULL,
                     is_active INTEGER NOT NULL DEFAULT 1,
+                    accent TEXT NULL,
+                    accent_strong TEXT NULL,
+                    sidebar_start TEXT NULL,
+                    sidebar_end TEXT NULL,
                     setup_pin_salt TEXT NULL,
                     setup_pin_hash TEXT NULL
                 );
@@ -54,6 +62,14 @@ class SchoolRegistry:
 
     def _migrate_schools_table(self, conn: sqlite3.Connection) -> None:
         cols = {str(row[1]) for row in conn.execute("PRAGMA table_info(schools);").fetchall()}
+        if "accent" not in cols:
+            conn.execute("ALTER TABLE schools ADD COLUMN accent TEXT NULL;")
+        if "accent_strong" not in cols:
+            conn.execute("ALTER TABLE schools ADD COLUMN accent_strong TEXT NULL;")
+        if "sidebar_start" not in cols:
+            conn.execute("ALTER TABLE schools ADD COLUMN sidebar_start TEXT NULL;")
+        if "sidebar_end" not in cols:
+            conn.execute("ALTER TABLE schools ADD COLUMN sidebar_end TEXT NULL;")
         if "setup_pin_salt" not in cols:
             conn.execute("ALTER TABLE schools ADD COLUMN setup_pin_salt TEXT NULL;")
         if "setup_pin_hash" not in cols:
@@ -66,7 +82,11 @@ class SchoolRegistry:
             slug=str(row[2]),
             name=str(row[3]),
             is_active=bool(int(row[4])),
-            setup_pin_required=bool(row[5] and row[6]),
+            accent=str(row[5]) if row[5] is not None else None,
+            accent_strong=str(row[6]) if row[6] is not None else None,
+            sidebar_start=str(row[7]) if row[7] is not None else None,
+            sidebar_end=str(row[8]) if row[8] is not None else None,
+            setup_pin_required=bool(row[9] and row[10]),
         )
 
     def _ensure_school_sync(self, slug: str, name: str) -> SchoolRecord:
@@ -74,15 +94,21 @@ class SchoolRegistry:
         with self._connect() as conn:
             conn.execute(
                 """
-                INSERT INTO schools (created_at, slug, name, is_active, setup_pin_salt, setup_pin_hash)
-                VALUES (?, ?, ?, 1, NULL, NULL)
+                INSERT INTO schools (
+                    created_at, slug, name, is_active,
+                    accent, accent_strong, sidebar_start, sidebar_end,
+                    setup_pin_salt, setup_pin_hash
+                )
+                VALUES (?, ?, ?, 1, NULL, NULL, NULL, NULL, NULL, NULL)
                 ON CONFLICT(slug) DO UPDATE SET name = schools.name;
                 """,
                 (datetime.now(timezone.utc).isoformat(), normalized_slug, name.strip()),
             )
             row = conn.execute(
                 """
-                SELECT id, created_at, slug, name, is_active, setup_pin_salt, setup_pin_hash
+                SELECT id, created_at, slug, name, is_active,
+                       accent, accent_strong, sidebar_start, sidebar_end,
+                       setup_pin_salt, setup_pin_hash
                 FROM schools
                 WHERE slug = ?
                 LIMIT 1;
@@ -105,14 +131,20 @@ class SchoolRegistry:
         with self._connect() as conn:
             cur = conn.execute(
                 """
-                INSERT INTO schools (created_at, slug, name, is_active, setup_pin_salt, setup_pin_hash)
-                VALUES (?, ?, ?, 1, ?, ?);
+                INSERT INTO schools (
+                    created_at, slug, name, is_active,
+                    accent, accent_strong, sidebar_start, sidebar_end,
+                    setup_pin_salt, setup_pin_hash
+                )
+                VALUES (?, ?, ?, 1, NULL, NULL, NULL, NULL, ?, ?);
                 """,
                 (created_at, normalized_slug, name.strip(), pin_salt, pin_hash),
             )
             row = conn.execute(
                 """
-                SELECT id, created_at, slug, name, is_active, setup_pin_salt, setup_pin_hash
+                SELECT id, created_at, slug, name, is_active,
+                       accent, accent_strong, sidebar_start, sidebar_end,
+                       setup_pin_salt, setup_pin_hash
                 FROM schools
                 WHERE id = ?;
                 """,
@@ -129,7 +161,9 @@ class SchoolRegistry:
         with self._connect() as conn:
             row = conn.execute(
                 """
-                SELECT id, created_at, slug, name, is_active, setup_pin_salt, setup_pin_hash
+                SELECT id, created_at, slug, name, is_active,
+                       accent, accent_strong, sidebar_start, sidebar_end,
+                       setup_pin_salt, setup_pin_hash
                 FROM schools
                 WHERE slug = ?
                 LIMIT 1;
@@ -145,7 +179,9 @@ class SchoolRegistry:
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT id, created_at, slug, name, is_active, setup_pin_salt, setup_pin_hash
+                SELECT id, created_at, slug, name, is_active,
+                       accent, accent_strong, sidebar_start, sidebar_end,
+                       setup_pin_salt, setup_pin_hash
                 FROM schools
                 ORDER BY name ASC, slug ASC;
                 """
@@ -194,7 +230,9 @@ class SchoolRegistry:
             )
             row = conn.execute(
                 """
-                SELECT id, created_at, slug, name, is_active, setup_pin_salt, setup_pin_hash
+                SELECT id, created_at, slug, name, is_active,
+                       accent, accent_strong, sidebar_start, sidebar_end,
+                       setup_pin_salt, setup_pin_hash
                 FROM schools
                 WHERE slug = ?
                 LIMIT 1;
@@ -206,3 +244,58 @@ class SchoolRegistry:
     async def set_setup_pin(self, *, slug: str, setup_pin: Optional[str]) -> Optional[SchoolRecord]:
         normalized_pin = setup_pin.strip() if setup_pin else None
         return await anyio.to_thread.run_sync(self._set_setup_pin_sync, slug, normalized_pin or None)
+
+    def _update_theme_sync(
+        self,
+        slug: str,
+        accent: Optional[str],
+        accent_strong: Optional[str],
+        sidebar_start: Optional[str],
+        sidebar_end: Optional[str],
+    ) -> Optional[SchoolRecord]:
+        normalized_slug = slug.strip().lower()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE schools
+                SET accent = ?, accent_strong = ?, sidebar_start = ?, sidebar_end = ?
+                WHERE slug = ?;
+                """,
+                (
+                    accent.strip() if accent else None,
+                    accent_strong.strip() if accent_strong else None,
+                    sidebar_start.strip() if sidebar_start else None,
+                    sidebar_end.strip() if sidebar_end else None,
+                    normalized_slug,
+                ),
+            )
+            row = conn.execute(
+                """
+                SELECT id, created_at, slug, name, is_active,
+                       accent, accent_strong, sidebar_start, sidebar_end,
+                       setup_pin_salt, setup_pin_hash
+                FROM schools
+                WHERE slug = ?
+                LIMIT 1;
+                """,
+                (normalized_slug,),
+            ).fetchone()
+        return self._row_to_record(row) if row is not None else None
+
+    async def update_theme(
+        self,
+        *,
+        slug: str,
+        accent: Optional[str],
+        accent_strong: Optional[str],
+        sidebar_start: Optional[str],
+        sidebar_end: Optional[str],
+    ) -> Optional[SchoolRecord]:
+        return await anyio.to_thread.run_sync(
+            self._update_theme_sync,
+            slug,
+            accent,
+            accent_strong,
+            sidebar_start,
+            sidebar_end,
+        )
