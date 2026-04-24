@@ -637,8 +637,10 @@ def render_super_admin_page(
         )
         for item in school_rows
     ) or '<tr><td colspan="5" class="mini-copy">No schools yet.</td></tr>'
+    security_feedback = f"{_render_flash(flash_message, 'success')}{_render_flash(flash_error, 'error')}"
     if totp_enabled:
         security_html = f"""
+          {security_feedback}
           <div class="flash success">
             Two-factor authentication is active for <strong>{escape(super_admin_login_name)}</strong>.
           </div>
@@ -677,6 +679,7 @@ def render_super_admin_page(
             """
         security_html = f"""
           <div class="stack" style="max-width:680px;">
+            {security_feedback}
             <form method="post" action="/super-admin/totp/setup-form">
               <div class="button-row">
                 <button class="button button-primary" type="submit">Start 2FA Setup</button>
@@ -727,8 +730,6 @@ def render_super_admin_page(
         </section>
       </aside>
       <section class="content-stack workspace">
-        {_render_flash(flash_message, "success")}
-        {_render_flash(flash_error, "error")}
         <section class="panel command-section" id="schools">
           <div class="panel-header hero-band">
             <div>
@@ -1106,8 +1107,10 @@ def render_admin_page(
     login_enabled = sum(1 for user in users if user.can_login)
     alarm_status_class = "danger" if alarm_state.is_active else "ok"
     alarm_status_label = "ALARM ACTIVE" if alarm_state.is_active else "Alarm clear"
+    security_feedback = f"{_render_flash(flash_message, 'success')}{_render_flash(flash_error, 'error')}"
     if totp_enabled:
         admin_security_html = """
+          {security_feedback}
           <div class="flash success">
             Two-factor authentication is active for this admin account.
           </div>
@@ -1121,7 +1124,7 @@ def render_admin_page(
               <a class="button button-secondary" href="{prefix}/admin/change-password">Change password</a>
             </div>
           </form>
-        """.replace("{prefix}", prefix)
+        """.replace("{prefix}", prefix).replace("{security_feedback}", security_feedback)
     else:
         setup_details = '<p class="mini-copy">Start setup to generate a secret for your authenticator app.</p>'
         if totp_setup_secret:
@@ -1148,6 +1151,7 @@ def render_admin_page(
             """
         admin_security_html = f"""
           <div class="stack" style="max-width:680px;">
+            {security_feedback}
             <form method="post" action="{prefix}/admin/totp/setup-form">
               <div class="button-row">
                 <button class="button button-primary" type="submit">Start 2FA Setup</button>
