@@ -59,6 +59,7 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONArray
 import org.json.JSONObject
 import java.time.Instant
 import java.time.ZoneId
@@ -393,7 +394,7 @@ class MainViewModel : ViewModel() {
         }
     }
 
-    fun sendAdminMessageToUsers(ctx: Context, message: String, recipientUserId: Int?, sendToAll: Boolean) {
+    fun sendAdminMessageToUsers(ctx: Context, message: String, recipientUserIds: List<Int>, sendToAll: Boolean) {
         val adminUserId = getUserId(ctx).toIntOrNull()
         if (adminUserId == null) {
             _state.update { it.copy(errorMsg = "Admin sign-in is required.") }
@@ -405,7 +406,7 @@ class MainViewModel : ViewModel() {
                 client!!.sendMessageFromAdmin(
                     adminUserId = adminUserId,
                     message = message,
-                    recipientUserId = recipientUserId,
+                    recipientUserIds = recipientUserIds,
                     sendToAll = sendToAll,
                 )
             }
@@ -1051,11 +1052,11 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                             unreadCount = state.unreadAdminMessages,
                             recipients = state.adminMessageRecipients,
                             isBusy = state.isBusy,
-                            onSendMessage = { message, recipientUserId, sendToAll ->
+                            onSendMessage = { message, recipientUserIds, sendToAll ->
                                 vm.sendAdminMessageToUsers(
                                     ctx = ctx,
                                     message = message,
-                                    recipientUserId = recipientUserId,
+                                    recipientUserIds = recipientUserIds,
                                     sendToAll = sendToAll,
                                 )
                             },
@@ -2019,16 +2020,18 @@ private fun AdminInboxCard(
     unreadCount: Int,
     recipients: List<InboxRecipient>,
     isBusy: Boolean,
-    onSendMessage: (String, Int?, Boolean) -> Unit,
+    onSendMessage: (String, List<Int>, Boolean) -> Unit,
     onReply: (AdminInboxMessage) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var outboundMessage by remember { mutableStateOf("") }
-    var expanded by remember { mutableStateOf(false) }
-    var selectedRecipientId by remember { mutableStateOf<Int?>(null) }
-    val recipientLabel = when (selectedRecipientId) {
-        null -> "All users"
-        else -> recipients.firstOrNull { it.userId == selectedRecipientId }?.label ?: "Select user"
+    var showRecipientPicker by remember { mutableStateOf(false) }
+    var sendToAll by remember { mutableStateOf(true) }
+    var selectedRecipientIds by remember { mutableStateOf(setOf<Int>()) }
+    val recipientLabel = if (sendToAll) {
+        "All users"
+    } else {
+        "${selectedRecipientIds.size} selected"
     }
     Surface(
         modifier = modifier,
@@ -2060,47 +2063,23 @@ private fun AdminInboxCard(
                 ),
                 modifier = Modifier.fillMaxWidth(),
             )
-            Box(modifier = Modifier.fillMaxWidth()) {
-                OutlinedButton(
-                    onClick = { expanded = true },
-                    enabled = !isBusy,
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(10.dp),
-                ) {
-                    Text("Recipient: $recipientLabel", fontWeight = FontWeight.SemiBold)
-                }
-                DropdownMenu(
-                    expanded = expanded,
-                    onDismissRequest = { expanded = false },
-                    modifier = Modifier.fillMaxWidth(0.92f),
-                ) {
-                    DropdownMenuItem(
-                        text = { Text("All users") },
-                        onClick = {
-                            selectedRecipientId = null
-                            expanded = false
-                        },
-                    )
-                    recipients.forEach { recipient ->
-                        DropdownMenuItem(
-                            text = { Text(recipient.label) },
-                            onClick = {
-                                selectedRecipientId = recipient.userId
-                                expanded = false
-                            },
-                        )
-                    }
-                }
+            OutlinedButton(
+                onClick = { showRecipientPicker = true },
+                enabled = !isBusy,
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(10.dp),
+            ) {
+                Text("Recipients: $recipientLabel", fontWeight = FontWeight.SemiBold)
             }
             Button(
                 onClick = {
                     val trimmed = outboundMessage.trim()
                     if (trimmed.isNotBlank()) {
-                        onSendMessage(trimmed, selectedRecipientId, selectedRecipientId == null)
+                        onSendMessage(trimmed, selectedRecipientIds.toList(), sendToAll)
                         outboundMessage = ""
                     }
                 },
-                enabled = !isBusy && outboundMessage.isNotBlank(),
+                enabled = !isBusy && outboundMessage.isNotBlank() && (sendToAll || selectedRecipientIds.isNotEmpty()),
                 colors = ButtonDefaults.buttonColors(containerColor = BluePrimary),
                 modifier = Modifier.fillMaxWidth(),
             ) {
@@ -2142,6 +2121,83 @@ private fun AdminInboxCard(
                 }
             }
         }
+    }
+    if (showRecipientPicker) {
+        var query by remember { mutableStateOf("") }
+        val filtered = recipients.filter { it.label.contains(query, ignoreCase = true) }
+        AlertDialog(
+            onDismissRequest = { showRecipientPicker = false },
+            containerColor = SurfaceMain,
+            title = { Text("Choose recipients", color = TextPri, fontWeight = FontWeight.Bold) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OutlinedTextField(
+                        value = query,
+                        onValueChange = { query = it },
+                        label = { Text("Search users", color = TextMuted) },
+                        placeholder = { Text("Type a name...", color = TextMuted) },
+                        singleLine = true,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = BluePrimary,
+                            unfocusedBorderColor = BorderSoft,
+                            focusedTextColor = TextPri,
+                            unfocusedTextColor = TextPri,
+                            cursorColor = BluePrimary,
+                            focusedContainerColor = SurfaceSoft,
+                            unfocusedContainerColor = SurfaceSoft,
+                        ),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Checkbox(
+                            checked = sendToAll,
+                            onCheckedChange = { checked ->
+                                sendToAll = checked
+                                if (checked) selectedRecipientIds = emptySet()
+                            },
+                        )
+                        Text("Send to all users", color = TextPri)
+                    }
+                    if (!sendToAll) {
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            filtered.take(12).forEach { recipient ->
+                                val checked = selectedRecipientIds.contains(recipient.userId)
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                ) {
+                                    Checkbox(
+                                        checked = checked,
+                                        onCheckedChange = { picked ->
+                                            selectedRecipientIds = if (picked) {
+                                                selectedRecipientIds + recipient.userId
+                                            } else {
+                                                selectedRecipientIds - recipient.userId
+                                            }
+                                        },
+                                    )
+                                    Text(recipient.label, color = TextPri, fontSize = 13.sp)
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = { showRecipientPicker = false },
+                    colors = ButtonDefaults.buttonColors(containerColor = BluePrimary),
+                ) {
+                    Text("Done")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showRecipientPicker = false }) {
+                    Text("Close", color = TextMuted)
+                }
+            },
+        )
     }
 }
 
@@ -2432,12 +2488,16 @@ private class BackendClient(baseUrl: String, private val apiKey: String) {
         http.newCall(req).execute().use { requireSuccess(it) }
     }
 
-    fun sendMessageFromAdmin(adminUserId: Int, message: String, recipientUserId: Int?, sendToAll: Boolean): Int {
+    fun sendMessageFromAdmin(adminUserId: Int, message: String, recipientUserIds: List<Int>, sendToAll: Boolean): Int {
         val body = JSONObject()
             .put("admin_user_id", adminUserId)
             .put("message", message)
             .put("send_to_all", sendToAll)
-            .apply { recipientUserId?.let { put("recipient_user_id", it) } }
+            .apply {
+                if (recipientUserIds.isNotEmpty()) {
+                    put("recipient_user_ids", JSONArray(recipientUserIds))
+                }
+            }
         val req = Request.Builder()
             .url("$base/messages/send")
             .withAuth()

@@ -223,6 +223,7 @@ class AdminSendMessageRequest(BaseModel):
     admin_user_id: int
     message: str = Field(..., min_length=1, max_length=240)
     recipient_user_id: Optional[int] = None
+    recipient_user_ids: List[int] = Field(default_factory=list)
     send_to_all: bool = False
 
     @field_validator("message")
@@ -235,8 +236,12 @@ class AdminSendMessageRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_recipient_scope(self) -> "AdminSendMessageRequest":
-        if not self.send_to_all and self.recipient_user_id is None:
-            raise ValueError("recipient_user_id is required when send_to_all is false")
+        if self.send_to_all:
+            return self
+        has_single = self.recipient_user_id is not None
+        has_multi = bool(self.recipient_user_ids)
+        if not has_single and not has_multi:
+            raise ValueError("recipient_user_id or recipient_user_ids is required when send_to_all is false")
         return self
 
 

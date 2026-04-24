@@ -2366,10 +2366,16 @@ async def admin_send_message(
         all_users = await users.list_users()
         recipients = [u.id for u in all_users if u.is_active and u.role != "admin"]
     else:
-        target = await users.get_user(int(body.recipient_user_id or 0))
-        if target is None or not target.is_active or target.role == "admin":
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Recipient user not found")
-        recipients = [target.id]
+        requested_ids = set(int(item) for item in body.recipient_user_ids if int(item) > 0)
+        if body.recipient_user_id is not None and int(body.recipient_user_id) > 0:
+            requested_ids.add(int(body.recipient_user_id))
+        if not requested_ids:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="No recipient users selected")
+        for recipient_user_id in sorted(requested_ids):
+            target = await users.get_user(recipient_user_id)
+            if target is None or not target.is_active or target.role == "admin":
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Recipient user #{recipient_user_id} not found")
+            recipients.append(target.id)
 
     if not recipients:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="No active non-admin recipients found")
