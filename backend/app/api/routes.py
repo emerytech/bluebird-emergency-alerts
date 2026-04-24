@@ -1400,7 +1400,7 @@ async def super_admin_enter_school(
     from app.services.tenant_manager import normalize_school_slug
 
     normalized_slug = normalize_school_slug(slug)
-    school = await _schools(request).get_school(normalized_slug)
+    school = await _schools(request).get_by_slug(normalized_slug)
     if school is None or not school.is_active:
         _set_flash(request, error="School not found.")
         return RedirectResponse(url="/super-admin#schools", status_code=status.HTTP_303_SEE_OTHER)
