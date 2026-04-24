@@ -291,6 +291,23 @@ class QuietPeriodStore:
     async def latest_for_user(self, *, user_id: int) -> Optional[QuietPeriodRecord]:
         return await anyio.to_thread.run_sync(self._latest_for_user_sync, int(user_id))
 
+    def _get_request_sync(self, request_id: int) -> Optional[QuietPeriodRecord]:
+        self._expire_old_sync()
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT id, user_id, reason, status, requested_at, approved_at, approved_by_user_id, approved_by_label, expires_at
+                FROM quiet_period_requests
+                WHERE id = ?
+                LIMIT 1;
+                """,
+                (int(request_id),),
+            ).fetchone()
+        return self._row_to_record(row) if row is not None else None
+
+    async def get_request(self, *, request_id: int) -> Optional[QuietPeriodRecord]:
+        return await anyio.to_thread.run_sync(self._get_request_sync, int(request_id))
+
     def _clear_quiet_period_sync(self, request_id: int, admin_user_id: int, admin_label: Optional[str]) -> Optional[QuietPeriodRecord]:
         self._expire_old_sync()
         with self._connect() as conn:

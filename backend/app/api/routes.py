@@ -92,6 +92,7 @@ from app.services.permissions import (
 from app.services.quiet_period_store import QuietPeriodStore
 from app.services.report_store import AdminMessageRecord, ReportStore
 from app.services.platform_admin_store import PlatformAdminStore
+from app.services.quiet_state_store import QuietStateStore
 from app.services.school_registry import SchoolRegistry
 from app.services.totp import generate_secret as generate_totp_secret, otpauth_uri, verify_code as verify_totp_code
 from app.services.user_store import UserStore
@@ -160,6 +161,10 @@ def _user_tenants(req: Request) -> UserTenantStore:
 
 def _platform_admins(req: Request) -> PlatformAdminStore:
     return req.app.state.platform_admin_store  # type: ignore[attr-defined]
+
+
+def _quiet_states(req: Request) -> QuietStateStore:
+    return req.app.state.quiet_state_store  # type: ignore[attr-defined]
 
 
 def _session_user_id(request: Request) -> Optional[int]:
@@ -336,6 +341,113 @@ async def _resolve_admin_tenant_scope(
     return _AdminTenantScope(
         available_schools=available_schools,
         selected_school=selected_school,
+    )
+
+
+def _tenant_school_id(request: Request) -> int:
+    active_tenant = _tenant(request)
+    school = getattr(active_tenant, "school", None)
+    return int(getattr(school, "id", 0) or 0)
+
+
+async def _quiet_state_is_currently_valid(
+    request: Request,
+    *,
+    home_tenant_id: int,
+    user_id: int,
+) -> bool:
+    state = await _quiet_states(request).get(user_id=int(user_id), home_tenant_id=int(home_tenant_id))
+    if state is None or not state.active:
+        return False
+    if state.source_request_id is None:
+        return True
+
+    schools = await _schools(request).list_schools()
+    home_school = next((item for item in schools if int(item.id) == int(home_tenant_id)), None)
+    if home_school is None:
+        await _quiet_states(request).deactivate(user_id=int(user_id), home_tenant_id=int(home_tenant_id))
+        return False
+
+    home_tenant = request.app.state.tenant_manager.get(home_school)  # type: ignore[attr-defined]
+    source_request = await home_tenant.quiet_period_store.get_request(request_id=int(state.source_request_id))
+    if source_request is None or source_request.status != "approved":
+        await _quiet_states(request).deactivate(user_id=int(user_id), home_tenant_id=int(home_tenant_id))
+        return False
+    return True
+
+
+async def _is_effective_quiet_user(request: Request, *, user_id: int) -> bool:
+    if int(user_id) <= 0:
+        return False
+    tenant_id = _tenant_school_id(request)
+    local_quiet = set(await _quiet_periods(request).active_user_ids())
+    if int(user_id) in local_quiet:
+        return True
+
+    if await _quiet_state_is_currently_valid(
+        request,
+        home_tenant_id=int(tenant_id),
+        user_id=int(user_id),
+    ):
+        return True
+
+    assignments = await _user_tenants(request).list_assignments_for_tenant_user(
+        tenant_id=int(tenant_id),
+        user_id=int(user_id),
+    )
+    for assignment in assignments:
+        if await _quiet_state_is_currently_valid(
+            request,
+            home_tenant_id=int(assignment.home_tenant_id),
+            user_id=int(assignment.user_id),
+        ):
+            return True
+    return False
+
+
+async def _quiet_suppressed_user_ids(
+    request: Request,
+    *,
+    candidate_user_ids: set[int],
+) -> set[int]:
+    if not candidate_user_ids:
+        return set()
+    suppressed: set[int] = set()
+    for user_id in sorted({int(item) for item in candidate_user_ids if int(item) > 0}):
+        if await _is_effective_quiet_user(request, user_id=int(user_id)):
+            suppressed.add(int(user_id))
+    return suppressed
+
+
+async def _apply_law_enforcement_quiet_state_for_request(
+    request: Request,
+    *,
+    request_user_id: int,
+    source_request_id: int,
+    approved_by_user_id: Optional[int],
+) -> None:
+    user = await _users(request).get_user(int(request_user_id))
+    if user is None or str(user.role).strip().lower() != "law_enforcement":
+        return
+    await _quiet_states(request).upsert_active(
+        user_id=int(request_user_id),
+        home_tenant_id=_tenant_school_id(request),
+        source_request_id=int(source_request_id),
+        approved_by_user_id=int(approved_by_user_id) if approved_by_user_id is not None else None,
+    )
+
+
+async def _deactivate_law_enforcement_quiet_state_for_user(
+    request: Request,
+    *,
+    user_id: int,
+) -> None:
+    user = await _users(request).get_user(int(user_id))
+    if user is None or str(user.role).strip().lower() != "law_enforcement":
+        return
+    await _quiet_states(request).deactivate(
+        user_id=int(user_id),
+        home_tenant_id=_tenant_school_id(request),
     )
 
 
@@ -736,9 +848,14 @@ async def _push_tokens_for_scope(
     *,
     target_user_ids: Optional[set[int]] = None,
 ) -> tuple[list[str], list[str]]:
-    paused_user_ids = set(await _quiet_periods(request).active_user_ids())
     apns_devices = await _registry(request).list_by_provider("apns")
     fcm_devices = await _registry(request).list_by_provider("fcm")
+    candidate_user_ids = {
+        int(device.user_id)
+        for device in (*apns_devices, *fcm_devices)
+        if device.user_id is not None and int(device.user_id) > 0
+    }
+    paused_user_ids = await _quiet_suppressed_user_ids(request, candidate_user_ids=candidate_user_ids)
 
     def _allow_user(user_id: Optional[int]) -> bool:
         if user_id is not None and user_id in paused_user_ids:
@@ -829,6 +946,7 @@ async def mobile_login(body: MobileLoginRequest, request: Request) -> MobileLogi
         )
     await _users(request).mark_login(user.id)
     quiet_period = await _quiet_periods(request).active_for_user(user_id=user.id)
+    quiet_mode_active = await _is_effective_quiet_user(request, user_id=user.id)
     return MobileLoginResponse(
         user_id=user.id,
         name=user.name,
@@ -837,6 +955,7 @@ async def mobile_login(body: MobileLoginRequest, request: Request) -> MobileLogi
         must_change_password=user.must_change_password,
         can_deactivate_alarm=can(user.role, PERM_TRIGGER_OWN_TENANT_ALERTS),
         quiet_period_expires_at=quiet_period.expires_at if quiet_period else None,
+        quiet_mode_active=quiet_mode_active,
     )
 
 
@@ -891,12 +1010,34 @@ async def activate_alarm(
         activated_by_label=_current_school_actor_label(request),
     )
 
-    paused_user_ids = set(await _quiet_periods(request).active_user_ids())
     apns_devices = await _registry(request).list_by_provider("apns")
     fcm_devices = await _registry(request).list_by_provider("fcm")
-    apns_tokens = [device.token for device in apns_devices if device.user_id is None or device.user_id not in paused_user_ids]
-    fcm_tokens = [device.token for device in fcm_devices if device.user_id is None or device.user_id not in paused_user_ids]
-    sms_numbers = await users.list_sms_targets(excluded_user_ids=list(paused_user_ids))
+    candidate_user_ids = {
+        int(device.user_id)
+        for device in (*apns_devices, *fcm_devices)
+        if device.user_id is not None and int(device.user_id) > 0
+    }
+    candidate_user_ids.update(int(user.id) for user in await users.list_users() if int(user.id) > 0)
+    paused_user_ids = await _quiet_suppressed_user_ids(request, candidate_user_ids=candidate_user_ids)
+    apns_tokens = list(
+        dict.fromkeys(
+            [
+                device.token
+                for device in apns_devices
+                if device.user_id is None or device.user_id not in paused_user_ids
+            ]
+        )
+    )
+    fcm_tokens = list(
+        dict.fromkeys(
+            [
+                device.token
+                for device in fcm_devices
+                if device.user_id is None or device.user_id not in paused_user_ids
+            ]
+        )
+    )
+    sms_numbers = await users.list_sms_targets(excluded_user_ids=sorted(paused_user_ids))
     plan = BroadcastPlan(apns_tokens=apns_tokens, fcm_tokens=fcm_tokens, sms_numbers=sms_numbers)
     background_tasks.add_task(_broadcaster(request).broadcast_panic, alert_id=alert_id, message=body.message, plan=plan)
 
@@ -2111,11 +2252,24 @@ async def admin_create_broadcast(
             trigger_ip=trigger_ip,
             trigger_user_agent=trigger_user_agent,
         )
-        paused_user_ids = set(await _quiet_periods(request).active_user_ids())
         apns_devices = await _registry(request).list_by_provider("apns")
         fcm_devices = await _registry(request).list_by_provider("fcm")
-        apns_tokens = [device.token for device in apns_devices if device.user_id is None or device.user_id not in paused_user_ids]
-        fcm_tokens = [device.token for device in fcm_devices if device.user_id is None or device.user_id not in paused_user_ids]
+        candidate_user_ids = {
+            int(device.user_id)
+            for device in (*apns_devices, *fcm_devices)
+            if device.user_id is not None and int(device.user_id) > 0
+        }
+        paused_user_ids = await _quiet_suppressed_user_ids(request, candidate_user_ids=candidate_user_ids)
+        apns_tokens = list(
+            dict.fromkeys(
+                [device.token for device in apns_devices if device.user_id is None or device.user_id not in paused_user_ids]
+            )
+        )
+        fcm_tokens = list(
+            dict.fromkeys(
+                [device.token for device in fcm_devices if device.user_id is None or device.user_id not in paused_user_ids]
+            )
+        )
         plan = BroadcastPlan(apns_tokens=apns_tokens, fcm_tokens=fcm_tokens, sms_numbers=[])
         background_tasks.add_task(
             _broadcaster(request).broadcast_panic,
@@ -2215,6 +2369,14 @@ async def admin_grant_quiet_period(
         admin_user_id=_session_user_id(request) or 0,
         admin_label=_current_school_actor_label(request),
     )
+    latest = await _quiet_periods(request).active_for_user(user_id=user_id)
+    if latest is not None:
+        await _apply_law_enforcement_quiet_state_for_request(
+            request,
+            request_user_id=int(latest.user_id),
+            source_request_id=int(latest.id),
+            approved_by_user_id=(_session_user_id(request) or 0),
+        )
     _set_flash(request, message=f"Quiet period granted for {user.name} for 24 hours.")
     return RedirectResponse(url="/admin?section=quiet-periods#quiet-periods", status_code=status.HTTP_303_SEE_OTHER)
 
@@ -2233,6 +2395,12 @@ async def admin_approve_quiet_period(
     if record is None or record.status != "approved":
         _set_flash(request, error="Quiet period request was not found or is no longer pending.")
         return RedirectResponse(url="/admin?section=quiet-periods#quiet-periods", status_code=status.HTTP_303_SEE_OTHER)
+    await _apply_law_enforcement_quiet_state_for_request(
+        request,
+        request_user_id=int(record.user_id),
+        source_request_id=int(record.id),
+        approved_by_user_id=(_session_user_id(request) or 0),
+    )
     user = await _users(request).get_user(record.user_id)
     label = user.name if user else f"User #{record.user_id}"
     _set_flash(request, message=f"Approved quiet period request for {label}.")
@@ -2253,6 +2421,7 @@ async def admin_deny_quiet_period(
     if record is None or record.status != "denied":
         _set_flash(request, error="Quiet period request was not found or is no longer pending.")
         return RedirectResponse(url="/admin?section=quiet-periods#quiet-periods", status_code=status.HTTP_303_SEE_OTHER)
+    await _deactivate_law_enforcement_quiet_state_for_user(request, user_id=int(record.user_id))
     user = await _users(request).get_user(record.user_id)
     label = user.name if user else f"User #{record.user_id}"
     _set_flash(request, message=f"Denied quiet period request for {label}.")
@@ -2273,6 +2442,7 @@ async def admin_clear_quiet_period(
     if record is None or record.status != "cleared":
         _set_flash(request, error="Active quiet period was not found.")
         return RedirectResponse(url="/admin?section=quiet-periods#quiet-periods", status_code=status.HTTP_303_SEE_OTHER)
+    await _deactivate_law_enforcement_quiet_state_for_user(request, user_id=int(record.user_id))
     user = await _users(request).get_user(record.user_id)
     label = user.name if user else f"User #{record.user_id}"
     _set_flash(request, message=f"Removed the quiet period for {label}.")
@@ -2890,6 +3060,12 @@ async def approve_quiet_period_request_api(
     )
     if record is None or record.status != "approved":
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Quiet period request is not pending")
+    await _apply_law_enforcement_quiet_state_for_request(
+        request,
+        request_user_id=int(record.user_id),
+        source_request_id=int(record.id),
+        approved_by_user_id=admin_id,
+    )
     return _to_quiet_period_summary(record)
 
 
@@ -2913,6 +3089,7 @@ async def deny_quiet_period_request_api(
     )
     if record is None or record.status != "denied":
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Quiet period request is not pending")
+    await _deactivate_law_enforcement_quiet_state_for_user(request, user_id=int(record.user_id))
     return _to_quiet_period_summary(record)
 
 
@@ -2927,7 +3104,10 @@ async def quiet_period_status(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found or inactive")
     record = await _quiet_periods(request).latest_for_user(user_id=user_id)
     if record is None:
-        return QuietPeriodStatusResponse(user_id=user_id)
+        return QuietPeriodStatusResponse(
+            user_id=user_id,
+            quiet_mode_active=await _is_effective_quiet_user(request, user_id=user_id),
+        )
     return QuietPeriodStatusResponse(
         request_id=record.id,
         user_id=user_id,
@@ -2937,6 +3117,7 @@ async def quiet_period_status(
         approved_at=record.approved_at,
         approved_by_label=record.approved_by_label,
         expires_at=record.expires_at,
+        quiet_mode_active=await _is_effective_quiet_user(request, user_id=user_id),
     )
 
 
@@ -2958,6 +3139,7 @@ async def delete_quiet_period_request(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Quiet period request not found")
     if record.status not in {"cancelled"}:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Quiet period request is not deletable")
+    await _deactivate_law_enforcement_quiet_state_for_user(request, user_id=int(record.user_id))
     return _to_quiet_period_summary(record)
 
 
@@ -3121,14 +3303,36 @@ async def panic(
         activated_by_label=_current_school_actor_label(request),
     )
 
-    paused_user_ids = set(await _quiet_periods(request).active_user_ids())
     apns_devices = await _registry(request).list_by_provider("apns")
     fcm_devices = await _registry(request).list_by_provider("fcm")
     provider_counts = await _registry(request).provider_counts()
     device_count = await _registry(request).count()
-    apns_tokens = [device.token for device in apns_devices if device.user_id is None or device.user_id not in paused_user_ids]
-    fcm_tokens = [device.token for device in fcm_devices if device.user_id is None or device.user_id not in paused_user_ids]
-    sms_numbers = await _users(request).list_sms_targets(excluded_user_ids=list(paused_user_ids))
+    candidate_user_ids = {
+        int(device.user_id)
+        for device in (*apns_devices, *fcm_devices)
+        if device.user_id is not None and int(device.user_id) > 0
+    }
+    candidate_user_ids.update(int(user.id) for user in await _users(request).list_users() if int(user.id) > 0)
+    paused_user_ids = await _quiet_suppressed_user_ids(request, candidate_user_ids=candidate_user_ids)
+    apns_tokens = list(
+        dict.fromkeys(
+            [
+                device.token
+                for device in apns_devices
+                if device.user_id is None or device.user_id not in paused_user_ids
+            ]
+        )
+    )
+    fcm_tokens = list(
+        dict.fromkeys(
+            [
+                device.token
+                for device in fcm_devices
+                if device.user_id is None or device.user_id not in paused_user_ids
+            ]
+        )
+    )
+    sms_numbers = await _users(request).list_sms_targets(excluded_user_ids=sorted(paused_user_ids))
 
     logger.warning(
         "PANIC alert_id=%s devices=%s providers=%s sms_targets=%s message=%r",

@@ -128,7 +128,7 @@ def test_config_labels_endpoint_returns_feature_labels(client: TestClient, login
 def test_admin_quiet_period_mobile_list_and_approve(client: TestClient, login_super_admin) -> None:
     login_super_admin()
     _create_school(client, name="Quiet Mobile", slug="quiet-mobile")
-    teacher_id = _create_user(client, "quiet-mobile", name="Quiet Teacher", role="teacher")
+    teacher_id = _create_user(client, "quiet-mobile", name="Quiet Officer", role="law_enforcement")
     admin_id = _create_user(client, "quiet-mobile", name="Quiet Admin", role="admin")
 
     created = client.post(
@@ -145,7 +145,7 @@ def test_admin_quiet_period_mobile_list_and_approve(client: TestClient, login_su
     )
     assert listing.status_code == 200
     rows = listing.json()["requests"]
-    assert any(item["request_id"] == request_id and item["user_name"] == "Quiet Teacher" for item in rows)
+    assert any(item["request_id"] == request_id and item["user_name"] == "Quiet Officer" for item in rows)
 
     approved = client.post(
         f"/quiet-mobile/quiet-periods/{request_id}/approve",

@@ -15,6 +15,7 @@ from app.services.apns import APNsClient
 from app.services.cloudflare_dns import CloudflareDNSClient
 from app.services.fcm import FCMClient
 from app.services.platform_admin_store import PlatformAdminStore
+from app.services.quiet_state_store import QuietStateStore
 from app.services.school_registry import SchoolRegistry
 from app.services.tenant_manager import TenantManager, normalize_school_slug
 from app.services.twilio_sms import TwilioSMSClient
@@ -40,6 +41,7 @@ async def lifespan(app: FastAPI):
     twilio_sms = TwilioSMSClient(settings)
     await twilio_sms.start()
     platform_admin_store = PlatformAdminStore(settings.PLATFORM_DB_PATH)
+    quiet_state_store = QuietStateStore(settings.PLATFORM_DB_PATH)
     await platform_admin_store.ensure_bootstrap(
         login_name=settings.SUPERADMIN_USERNAME,
         password=settings.SUPERADMIN_PASSWORD,
@@ -64,6 +66,7 @@ async def lifespan(app: FastAPI):
     app.state.fcm_client = fcm_client
     app.state.twilio_sms = twilio_sms
     app.state.platform_admin_store = platform_admin_store
+    app.state.quiet_state_store = quiet_state_store
     app.state.school_registry = school_registry
     app.state.user_tenant_store = user_tenant_store
     app.state.tenant_manager = tenant_manager

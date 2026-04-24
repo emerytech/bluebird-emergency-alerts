@@ -166,6 +166,7 @@ class MobileLoginResponse(BaseModel):
     must_change_password: bool = False
     can_deactivate_alarm: bool = False
     quiet_period_expires_at: Optional[str] = None
+    quiet_mode_active: bool = False
 
 
 class PublicSchoolSummary(BaseModel):
@@ -327,6 +328,7 @@ class QuietPeriodStatusResponse(BaseModel):
     approved_at: Optional[str] = None
     approved_by_label: Optional[str] = None
     expires_at: Optional[str] = None
+    quiet_mode_active: bool = False
 
 
 class QuietPeriodDeleteRequest(BaseModel):
@@ -335,6 +337,7 @@ class QuietPeriodDeleteRequest(BaseModel):
 
 class QuietPeriodAdminActionRequest(BaseModel):
     admin_user_id: int
+    admin_home_tenant_id: Optional[int] = None
 
 
 class QuietPeriodAdminItem(BaseModel):

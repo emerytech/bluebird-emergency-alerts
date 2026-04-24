@@ -120,6 +120,37 @@ class UserTenantStore:
             )
         )
 
+    def _list_assignments_for_tenant_user_sync(
+        self,
+        *,
+        tenant_id: int,
+        user_id: int,
+    ) -> list[UserTenantAssignmentRecord]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, created_at, user_id, home_tenant_id, tenant_id, role_for_tenant
+                FROM user_tenants
+                WHERE tenant_id = ? AND user_id = ?
+                ORDER BY id ASC;
+                """,
+                (int(tenant_id), int(user_id)),
+            ).fetchall()
+        return [self._row_to_record(row) for row in rows]
+
+    async def list_assignments_for_tenant_user(
+        self,
+        *,
+        tenant_id: int,
+        user_id: int,
+    ) -> list[UserTenantAssignmentRecord]:
+        return await anyio.to_thread.run_sync(
+            lambda: self._list_assignments_for_tenant_user_sync(
+                tenant_id=int(tenant_id),
+                user_id=int(user_id),
+            )
+        )
+
     def _replace_assignments_sync(
         self,
         *,
