@@ -327,32 +327,41 @@ struct ContentView: View {
                 }
 
                 if appState.canDeactivateAlarm {
-                    HStack(spacing: 10) {
-                        HStack(spacing: 6) {
-                            Circle()
-                                .fill(alarmIsActive ? Color.red : Color.gray.opacity(0.6))
-                                .frame(width: 8, height: 8)
-                            Text(alarmIsActive ? "Alarm Active" : "No Active Alarm")
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(textMuted)
-                        }
-                        Spacer()
-                        Button {
-                            showDeactivateAlarmConfirm = true
-                        } label: {
-                            Text(isUpdatingAlarm ? "Disabling…" : "Disable Alarm")
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(.white)
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 8)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                        .fill(alarmIsActive ? Color(red: 0.72, green: 0.11, blue: 0.11) : Color.gray.opacity(0.45))
-                                )
-                        }
-                        .buttonStyle(PressableScaleButtonStyle())
-                        .disabled(isUpdatingAlarm || !alarmIsActive)
+                    HStack(spacing: 8) {
+                        Circle()
+                            .fill(alarmIsActive ? Color.red : Color.gray.opacity(0.6))
+                            .frame(width: 9, height: 9)
+                        Text(alarmIsActive ? "Alarm Active" : "No Active Alarm")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(alarmIsActive ? Color(red: 0.62, green: 0.12, blue: 0.12) : textMuted)
                     }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(
+                        Capsule(style: .continuous)
+                            .fill(alarmIsActive ? Color(red: 1.0, green: 0.93, blue: 0.93) : Color.gray.opacity(0.12))
+                    )
+
+                    Button {
+                        showDeactivateAlarmConfirm = true
+                    } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: "bell.slash.fill")
+                                .font(.subheadline.weight(.bold))
+                            Text(isUpdatingAlarm ? "Disabling Alarm…" : "Disable Alarm")
+                                .font(.subheadline.weight(.bold))
+                        }
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity, minHeight: 50)
+                        .background(
+                            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                .fill(alarmIsActive ? Color(red: 0.72, green: 0.11, blue: 0.11) : Color.gray.opacity(0.45))
+                        )
+                    }
+                    .buttonStyle(PressableScaleButtonStyle())
+                    .shadow(color: alarmIsActive ? Color.red.opacity(0.22) : .clear, radius: 8, x: 0, y: 3)
+                    .disabled(isUpdatingAlarm || !alarmIsActive)
+
                     if let alarmMessage, alarmIsActive, !alarmMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         Text(alarmMessage)
                             .font(.caption)
