@@ -12,6 +12,7 @@ from app.api.routes import router
 from app.core.config import Settings
 from app.core.logging import configure_logging
 from app.services.apns import APNsClient
+from app.services.tenant_billing_store import TenantBillingStore
 from app.services.cloudflare_dns import CloudflareDNSClient
 from app.services.fcm import FCMClient
 from app.services.platform_admin_store import PlatformAdminStore
@@ -41,6 +42,7 @@ async def lifespan(app: FastAPI):
     twilio_sms = TwilioSMSClient(settings)
     await twilio_sms.start()
     platform_admin_store = PlatformAdminStore(settings.PLATFORM_DB_PATH)
+    tenant_billing_store = TenantBillingStore(settings.PLATFORM_DB_PATH)
     quiet_state_store = QuietStateStore(settings.PLATFORM_DB_PATH)
     await platform_admin_store.ensure_bootstrap(
         login_name=settings.SUPERADMIN_USERNAME,
@@ -66,6 +68,7 @@ async def lifespan(app: FastAPI):
     app.state.fcm_client = fcm_client
     app.state.twilio_sms = twilio_sms
     app.state.platform_admin_store = platform_admin_store
+    app.state.tenant_billing_store = tenant_billing_store
     app.state.quiet_state_store = quiet_state_store
     app.state.school_registry = school_registry
     app.state.user_tenant_store = user_tenant_store

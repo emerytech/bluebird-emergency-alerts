@@ -40,6 +40,54 @@ def test_super_admin_session_allows_dashboard_access(client: TestClient, login_s
     assert "Platform super-admin activity" in response.text
 
 
+def test_super_admin_billing_panel_and_controls(client: TestClient, login_super_admin) -> None:
+    login_super_admin()
+    _create_school(client, name="Billing Academy", slug="billing-academy")
+
+    billing_page = client.get("/super-admin?section=billing", follow_redirects=False)
+    assert billing_page.status_code == 200
+    assert "Tenant Billing" in billing_page.text
+    assert "Billing Controls" in billing_page.text
+    assert "Billing Academy" in billing_page.text
+
+    start_trial = client.post(
+        "/super-admin/schools/billing-academy/billing/start-trial",
+        data={"duration_days": "30"},
+        follow_redirects=False,
+    )
+    assert start_trial.status_code == 303
+    assert start_trial.headers.get("location") == "/super-admin?section=billing#billing"
+
+    grant_free = client.post(
+        "/super-admin/schools/billing-academy/billing/grant-free",
+        data={"free_reason": "Pilot campus"},
+        follow_redirects=False,
+    )
+    assert grant_free.status_code == 303
+    assert grant_free.headers.get("location") == "/super-admin?section=billing#billing"
+
+    school = client.app.state.tenant_manager.school_for_slug("billing-academy")
+    assert school is not None
+    billing = asyncio.run(client.app.state.tenant_billing_store.get_tenant_billing(tenant_id=school.id))
+    assert billing is not None
+    assert billing.billing_status == "trial"
+    assert billing.trial_end is not None
+    assert billing.is_free_override is True
+    assert billing.free_reason == "Pilot campus"
+
+    remove_free = client.post(
+        "/super-admin/schools/billing-academy/billing/remove-free",
+        follow_redirects=False,
+    )
+    assert remove_free.status_code == 303
+    assert remove_free.headers.get("location") == "/super-admin?section=billing#billing"
+
+    updated = asyncio.run(client.app.state.tenant_billing_store.get_tenant_billing(tenant_id=school.id))
+    assert updated is not None
+    assert updated.is_free_override is False
+    assert updated.free_reason is None
+
+
 def test_super_admin_school_enter_and_exit_scope(client: TestClient, login_super_admin) -> None:
     login_super_admin()
     _create_school(client, name="Oak Ridge", slug="oak-ridge")

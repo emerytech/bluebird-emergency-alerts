@@ -768,6 +768,7 @@ def render_super_admin_page(
     *,
     base_domain: str,
     school_rows: Sequence[Mapping[str, object]],
+    billing_rows: Sequence[Mapping[str, object]],
     platform_activity_rows: Sequence[Mapping[str, str]],
     git_pull_configured: bool,
     server_info: Mapping[str, str],
@@ -805,7 +806,42 @@ def render_super_admin_page(
         )
         for item in platform_activity_rows
     ) or '<tr><td colspan="5" class="mini-copy">No platform-super-admin activity recorded yet.</td></tr>'
-    section = active_section if active_section in {"schools", "platform-audit", "create-school", "security", "server-tools"} else "schools"
+    billing_table_rows = "".join(
+        (
+            "<tr>"
+            f"<td>{escape(str(item.get('name', '')))}<div class=\"mini-copy\"><code>{escape(str(item.get('slug', '')))}</code></div></td>"
+            f"<td>{escape(str(item.get('plan_id', '—')))}</td>"
+            f"<td><span class=\"status-pill {escape(str(item.get('billing_status_class', '')))}\">{escape(str(item.get('billing_status', 'unknown')))}</span></td>"
+            f"<td>{escape(str(item.get('trial_end', '—')))}</td>"
+            f"<td>{escape(str(item.get('renewal_date', '—')))}</td>"
+            f"<td><span class=\"status-pill {escape(str(item.get('free_override_class', '')))}\">{escape(str(item.get('free_override_label', 'Disabled')))}</span><div class=\"mini-copy\">{escape(str(item.get('free_reason', '—')))}</div></td>"
+            f"<td><code>{escape(str(item.get('stripe_customer_id', '—')))}</code><div class=\"mini-copy\"><code>{escape(str(item.get('stripe_subscription_id', '—')))}</code></div></td>"
+            f"<td>"
+            f"<form method=\"post\" action=\"{escape(str(item.get('start_trial_action', '#')))}\" class=\"stack\" style=\"margin-bottom:8px;\">"
+            f"<div class=\"button-row\" style=\"justify-content:flex-start;\">"
+            f"<input name=\"duration_days\" type=\"number\" min=\"1\" max=\"365\" value=\"14\" style=\"max-width:120px;\" />"
+            f"<button class=\"button button-secondary\" type=\"submit\">Start Trial</button>"
+            f"</div>"
+            f"</form>"
+            f"<form method=\"post\" action=\"{escape(str(item.get('grant_free_action', '#')))}\" class=\"stack\" style=\"margin-bottom:8px;\">"
+            f"<div class=\"field\">"
+            f"<input name=\"free_reason\" placeholder=\"Optional free-access reason\" />"
+            f"</div>"
+            f"<div class=\"button-row\" style=\"justify-content:flex-start;\">"
+            f"<button class=\"button button-primary\" type=\"submit\">Grant Free Access</button>"
+            f"</div>"
+            f"</form>"
+            f"<form method=\"post\" action=\"{escape(str(item.get('remove_free_action', '#')))}\" onsubmit=\"return confirm('Remove free access for {escape(str(item.get('name', 'this school')))}?');\">"
+            f"<div class=\"button-row\" style=\"justify-content:flex-start;\">"
+            f"<button class=\"button button-danger-outline\" type=\"submit\">Remove Free Access</button>"
+            f"</div>"
+            f"</form>"
+            f"</td>"
+            "</tr>"
+        )
+        for item in billing_rows
+    ) or '<tr><td colspan="8" class="mini-copy">No tenant billing records yet.</td></tr>'
+    section = active_section if active_section in {"schools", "billing", "platform-audit", "create-school", "security", "server-tools"} else "schools"
 
     def _section_style(name: str) -> str:
         return "" if section == name else ' style="display:none;"'
@@ -890,6 +926,7 @@ def render_super_admin_page(
             <p class="nav-label">Control</p>
           <nav class="nav-list">
             {_nav_item("schools", "Schools", str(len(school_rows)) if school_rows else None)}
+            {_nav_item("billing", "Billing", str(len(billing_rows)) if billing_rows else None)}
             {_nav_item("create-school", "Create School")}
             {_nav_item("platform-audit", "Platform Audit")}
             {_nav_item("security", "Security")}
@@ -925,6 +962,25 @@ def render_super_admin_page(
               <tr><th>Name</th><th>Slug</th><th>School URLs</th><th>Setup</th><th>Status</th></tr>
             </thead>
             <tbody>{rows}</tbody>
+          </table>
+        </section>
+        <section class="panel command-section" id="billing"{_section_style("billing")}>
+          <div class="panel-header hero-band">
+            <div>
+              <p class="eyebrow">Tenant Billing</p>
+              <h1>Billing Controls</h1>
+              <p class="hero-copy">Manage tenant billing state, trial windows, and manual free-access overrides without changing checkout or Stripe integration flows.</p>
+            </div>
+            <div class="status-row">
+              <span class="status-pill"><strong>Tenants</strong>{len(billing_rows)}</span>
+              <span class="status-pill ok"><strong>Stripe checkout</strong>unchanged</span>
+            </div>
+          </div>
+          <table>
+            <thead>
+              <tr><th>School</th><th>Plan</th><th>Status</th><th>Trial End</th><th>Renewal</th><th>Free Override</th><th>Stripe IDs</th><th>Controls</th></tr>
+            </thead>
+            <tbody>{billing_table_rows}</tbody>
           </table>
         </section>
         <section class="panel command-section" id="platform-audit"{_section_style("platform-audit")}>

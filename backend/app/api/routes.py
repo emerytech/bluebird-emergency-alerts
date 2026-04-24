@@ -11,7 +11,7 @@ import socket
 import sys
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from html import escape
 from types import SimpleNamespace
 from typing import Optional
@@ -94,6 +94,7 @@ from app.services.report_store import AdminMessageRecord, ReportStore
 from app.services.platform_admin_store import PlatformAdminStore
 from app.services.quiet_state_store import QuietStateStore
 from app.services.school_registry import SchoolRegistry
+from app.services.tenant_billing_store import TenantBillingStore
 from app.services.totp import generate_secret as generate_totp_secret, otpauth_uri, verify_code as verify_totp_code
 from app.services.user_store import UserStore
 from app.services.user_tenant_store import UserTenantStore
@@ -163,6 +164,10 @@ def _platform_admins(req: Request) -> PlatformAdminStore:
     return req.app.state.platform_admin_store  # type: ignore[attr-defined]
 
 
+def _tenant_billing(req: Request) -> TenantBillingStore:
+    return req.app.state.tenant_billing_store  # type: ignore[attr-defined]
+
+
 def _quiet_states(req: Request) -> QuietStateStore:
     return req.app.state.quiet_state_store  # type: ignore[attr-defined]
 
@@ -224,7 +229,7 @@ def _admin_section(value: Optional[str]) -> str:
 
 def _super_admin_section(value: Optional[str]) -> str:
     normalized = str(value or "").strip().lower()
-    if normalized in {"schools", "platform-audit", "create-school", "security", "server-tools"}:
+    if normalized in {"schools", "billing", "platform-audit", "create-school", "security", "server-tools"}:
         return normalized
     return "schools"
 
@@ -1785,10 +1790,12 @@ async def super_admin_dashboard(
     platform_activity_rows = await _platform_activity_feed(request, limit=120)
     base_domain = str(request.app.state.settings.BASE_DOMAIN).strip().lower()  # type: ignore[attr-defined]
     school_rows: list[dict[str, object]] = []
+    billing_rows: list[dict[str, object]] = []
     for school in schools:
         school_prefix = f"/{school.slug}"
         admin_count = await request.app.state.tenant_manager.get(school).user_store.count_dashboard_admins()  # type: ignore[attr-defined]
         admin_url = f"https://{base_domain}{school_prefix}/admin"
+        billing = await _tenant_billing(request).ensure_tenant_billing(tenant_id=int(school.id))
         access_controls_html = f"""
             <form method="post" action="/super-admin/schools/{school.slug}/enter" style="margin-top:10px;">
               <div class="button-row">
@@ -1862,10 +1869,33 @@ async def super_admin_dashboard(
                 "is_active": school.is_active,
             }
         )
+        billing_status = str(billing.billing_status or "trial").strip().lower()
+        billing_status_class = "ok" if billing_status in {"active", "trial", "free"} else "danger"
+        free_override_class = "ok" if billing.is_free_override else "danger"
+        billing_rows.append(
+            {
+                "name": school.name,
+                "slug": school.slug,
+                "plan_id": billing.plan_id or "—",
+                "billing_status": billing_status,
+                "billing_status_class": billing_status_class,
+                "trial_end": billing.trial_end or "—",
+                "renewal_date": billing.renewal_date or "—",
+                "free_override_label": "Enabled" if billing.is_free_override else "Disabled",
+                "free_override_class": free_override_class,
+                "free_reason": billing.free_reason or "—",
+                "stripe_customer_id": billing.stripe_customer_id or "—",
+                "stripe_subscription_id": billing.stripe_subscription_id or "—",
+                "start_trial_action": f"/super-admin/schools/{school.slug}/billing/start-trial",
+                "grant_free_action": f"/super-admin/schools/{school.slug}/billing/grant-free",
+                "remove_free_action": f"/super-admin/schools/{school.slug}/billing/remove-free",
+            }
+        )
     return HTMLResponse(
         render_super_admin_page(
             base_domain=request.app.state.settings.BASE_DOMAIN,  # type: ignore[attr-defined]
             school_rows=school_rows,
+            billing_rows=billing_rows,
             platform_activity_rows=platform_activity_rows,
             git_pull_configured=bool(request.app.state.settings.SERVER_GIT_PULL_COMMAND),  # type: ignore[attr-defined]
             server_info=_build_server_info(request),
@@ -1926,6 +1956,7 @@ async def super_admin_create_school(
             name=normalized_name,
             setup_pin=normalized_pin or None,
         )
+        await _tenant_billing(request).ensure_tenant_billing(tenant_id=int(school.id))
     except Exception as exc:
         _set_flash(request, error=f"Could not create school: {exc}")
         return RedirectResponse(url=_super_admin_url("create-school"), status_code=status.HTTP_303_SEE_OTHER)
@@ -2008,6 +2039,104 @@ async def super_admin_update_school_theme(
         return RedirectResponse(url=_super_admin_url("schools"), status_code=status.HTTP_303_SEE_OTHER)
     _set_flash(request, message=f"Updated the theme for {school.name}.")
     return RedirectResponse(url=_super_admin_url("schools"), status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.post("/super-admin/schools/{slug}/billing/start-trial", include_in_schema=False)
+async def super_admin_start_tenant_trial(
+    request: Request,
+    slug: str,
+    duration_days: int = Form(default=14),
+) -> RedirectResponse:
+    _require_super_admin(request)
+    from app.services.tenant_manager import normalize_school_slug
+
+    normalized_slug = normalize_school_slug(slug)
+    school = await _schools(request).get_by_slug(normalized_slug)
+    if school is None:
+        _set_flash(request, error="School not found.")
+        return RedirectResponse(url=_super_admin_url("billing"), status_code=status.HTTP_303_SEE_OTHER)
+    if int(duration_days) < 1 or int(duration_days) > 365:
+        _set_flash(request, error="Trial duration must be between 1 and 365 days.")
+        return RedirectResponse(url=_super_admin_url("billing"), status_code=status.HTTP_303_SEE_OTHER)
+    existing = await _tenant_billing(request).ensure_tenant_billing(tenant_id=int(school.id))
+    now = datetime.now(timezone.utc)
+    trial_start = now.isoformat()
+    trial_end = (now + timedelta(days=int(duration_days))).isoformat()
+    await _tenant_billing(request).upsert_tenant_billing(
+        tenant_id=int(school.id),
+        plan_id=existing.plan_id,
+        billing_status="trial",
+        trial_start=trial_start,
+        trial_end=trial_end,
+        is_free_override=existing.is_free_override,
+        free_reason=existing.free_reason,
+        stripe_customer_id=existing.stripe_customer_id,
+        stripe_subscription_id=existing.stripe_subscription_id,
+        renewal_date=existing.renewal_date,
+    )
+    _set_flash(request, message=f"Started {int(duration_days)}-day trial for {school.name}.")
+    return RedirectResponse(url=_super_admin_url("billing"), status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.post("/super-admin/schools/{slug}/billing/grant-free", include_in_schema=False)
+async def super_admin_grant_tenant_free_access(
+    request: Request,
+    slug: str,
+    free_reason: str = Form(default=""),
+) -> RedirectResponse:
+    _require_super_admin(request)
+    from app.services.tenant_manager import normalize_school_slug
+
+    normalized_slug = normalize_school_slug(slug)
+    school = await _schools(request).get_by_slug(normalized_slug)
+    if school is None:
+        _set_flash(request, error="School not found.")
+        return RedirectResponse(url=_super_admin_url("billing"), status_code=status.HTTP_303_SEE_OTHER)
+    existing = await _tenant_billing(request).ensure_tenant_billing(tenant_id=int(school.id))
+    await _tenant_billing(request).upsert_tenant_billing(
+        tenant_id=int(school.id),
+        plan_id=existing.plan_id,
+        billing_status=existing.billing_status,
+        trial_start=existing.trial_start,
+        trial_end=existing.trial_end,
+        is_free_override=True,
+        free_reason=free_reason.strip() or "Granted by super admin",
+        stripe_customer_id=existing.stripe_customer_id,
+        stripe_subscription_id=existing.stripe_subscription_id,
+        renewal_date=existing.renewal_date,
+    )
+    _set_flash(request, message=f"Granted free access for {school.name}.")
+    return RedirectResponse(url=_super_admin_url("billing"), status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.post("/super-admin/schools/{slug}/billing/remove-free", include_in_schema=False)
+async def super_admin_remove_tenant_free_access(
+    request: Request,
+    slug: str,
+) -> RedirectResponse:
+    _require_super_admin(request)
+    from app.services.tenant_manager import normalize_school_slug
+
+    normalized_slug = normalize_school_slug(slug)
+    school = await _schools(request).get_by_slug(normalized_slug)
+    if school is None:
+        _set_flash(request, error="School not found.")
+        return RedirectResponse(url=_super_admin_url("billing"), status_code=status.HTTP_303_SEE_OTHER)
+    existing = await _tenant_billing(request).ensure_tenant_billing(tenant_id=int(school.id))
+    await _tenant_billing(request).upsert_tenant_billing(
+        tenant_id=int(school.id),
+        plan_id=existing.plan_id,
+        billing_status=existing.billing_status,
+        trial_start=existing.trial_start,
+        trial_end=existing.trial_end,
+        is_free_override=False,
+        free_reason=None,
+        stripe_customer_id=existing.stripe_customer_id,
+        stripe_subscription_id=existing.stripe_subscription_id,
+        renewal_date=existing.renewal_date,
+    )
+    _set_flash(request, message=f"Removed free-access override for {school.name}.")
+    return RedirectResponse(url=_super_admin_url("billing"), status_code=status.HTTP_303_SEE_OTHER)
 
 
 @router.post("/super-admin/schools/{slug}/enter", include_in_schema=False)
