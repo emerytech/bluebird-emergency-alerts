@@ -60,6 +60,9 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import java.util.concurrent.TimeUnit
 
 // ── Brand colours ─────────────────────────────────────────────────────────────
@@ -131,6 +134,14 @@ private fun currentDeviceName(): String {
         model.isBlank() -> manufacturer
         else -> "$manufacturer $model"
     }
+}
+
+private val bannerTimeFormatter: DateTimeFormatter = DateTimeFormatter.ofPattern("MMM d, h:mm a")
+private fun formatIsoForBanner(value: String?): String? {
+    val cleaned = value?.trim()?.takeIf { it.isNotEmpty() && !it.equals("null", ignoreCase = true) } ?: return null
+    return runCatching {
+        bannerTimeFormatter.format(Instant.parse(cleaned).atZone(ZoneId.systemDefault()))
+    }.getOrNull()
 }
 
 internal fun ensureNotificationChannel(context: Context) {
@@ -1205,7 +1216,7 @@ private fun QuietPeriodStatusBanner(
     val text: String
     when (normalized) {
         "approved" -> {
-            val until = status.expiresAt?.let { " until $it" } ?: ""
+            val until = formatIsoForBanner(status.expiresAt)?.let { " until $it" } ?: ""
             bg = Color(0xFFFEE2E2)
             border = Color(0xFFFCA5A5)
             fg = Color(0xFF991B1B)
@@ -1239,15 +1250,20 @@ private fun QuietPeriodStatusBanner(
                 Text("Reason: $it", color = fg, fontSize = 12.sp)
             }
             if (normalized == "pending" || normalized == "approved") {
-                TextButton(
+                Button(
                     onClick = onDelete,
                     enabled = !isBusy,
-                    contentPadding = PaddingValues(0.dp),
+                    shape = RoundedCornerShape(10.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color(0xFFB91C1C),
+                        contentColor = Color.White,
+                        disabledContainerColor = Color(0xFF94A3B8),
+                        disabledContentColor = Color.White,
+                    ),
                 ) {
                     Text(
                         if (isBusy) "Deleting..." else "Delete Request",
-                        color = fg,
-                        fontSize = 12.sp,
+                        fontSize = 13.sp,
                         fontWeight = FontWeight.SemiBold,
                     )
                 }
@@ -2043,6 +2059,11 @@ private class BackendClient(baseUrl: String, private val apiKey: String) {
         if (apiKey.isNotBlank()) header("X-API-Key", apiKey)
     }
 
+    private fun JSONObject.optNullableString(key: String): String? {
+        val value = optString(key).trim()
+        return value.takeIf { it.isNotEmpty() && !it.equals("null", ignoreCase = true) }
+    }
+
     fun listSchools(): List<SchoolOption> {
         val req = Request.Builder().url("${BuildConfig.BACKEND_BASE_URL}/schools").get().build()
         http.newCall(req).execute().use { res ->
@@ -2241,12 +2262,12 @@ private class BackendClient(baseUrl: String, private val apiKey: String) {
             val j = JSONObject(body)
             return QuietPeriodMobileStatus(
                 requestId = if (j.has("request_id") && !j.isNull("request_id")) j.optInt("request_id") else null,
-                status = j.optString("status").ifBlank { null },
-                reason = j.optString("reason").ifBlank { null },
-                requestedAt = j.optString("requested_at").ifBlank { null },
-                approvedAt = j.optString("approved_at").ifBlank { null },
-                approvedByLabel = j.optString("approved_by_label").ifBlank { null },
-                expiresAt = j.optString("expires_at").ifBlank { null },
+                status = j.optNullableString("status"),
+                reason = j.optNullableString("reason"),
+                requestedAt = j.optNullableString("requested_at"),
+                approvedAt = j.optNullableString("approved_at"),
+                approvedByLabel = j.optNullableString("approved_by_label"),
+                expiresAt = j.optNullableString("expires_at"),
             )
         }
     }
