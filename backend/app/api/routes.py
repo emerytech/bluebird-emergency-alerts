@@ -573,6 +573,42 @@ async def _team_assist_target_user_ids(users: UserStore, assigned_team_ids: list
     return [u.id for u in active_users if u.role == "admin"]
 
 
+async def _push_tokens_for_scope(
+    request: Request,
+    *,
+    target_user_ids: Optional[set[int]] = None,
+) -> tuple[list[str], list[str]]:
+    paused_user_ids = set(await _quiet_periods(request).active_user_ids())
+    apns_devices = await _registry(request).list_by_provider("apns")
+    fcm_devices = await _registry(request).list_by_provider("fcm")
+
+    def _allow_user(user_id: Optional[int]) -> bool:
+        if user_id is not None and user_id in paused_user_ids:
+            return False
+        if target_user_ids is None:
+            return user_id is None or user_id > 0
+        if user_id is None:
+            return False
+        return user_id in target_user_ids
+
+    apns_tokens = [device.token for device in apns_devices if _allow_user(device.user_id)]
+    fcm_tokens = [device.token for device in fcm_devices if _allow_user(device.user_id)]
+    return list(dict.fromkeys(apns_tokens)), list(dict.fromkeys(fcm_tokens))
+
+
+async def _send_basic_push(
+    request: Request,
+    *,
+    message: str,
+    target_user_ids: Optional[set[int]] = None,
+) -> None:
+    apns_tokens, fcm_tokens = await _push_tokens_for_scope(request, target_user_ids=target_user_ids)
+    if apns_tokens:
+        await _apns(request).send_bulk(apns_tokens, message)
+    if fcm_tokens:
+        await _fcm(request).send_bulk(fcm_tokens, message)
+
+
 def _to_admin_inbox_item(item: AdminMessageRecord) -> AdminMessageInboxItem:
     return AdminMessageInboxItem(
         message_id=item.id,
@@ -2174,6 +2210,7 @@ async def alerts(
 async def create_incident(
     body: IncidentCreateRequest,
     request: Request,
+    background_tasks: BackgroundTasks,
     _: None = Depends(require_api_key),
 ) -> IncidentSummary:
     creator_id = await _require_active_user_with_roles(_users(request), body.user_id, roles={"admin"})
@@ -2189,6 +2226,11 @@ async def create_incident(
         user_id=creator_id,
         type_value="incident_created",
         payload={"incident_id": incident.id, "type": incident.type, "target_scope": incident.target_scope},
+    )
+    background_tasks.add_task(
+        _send_basic_push,
+        request,
+        message=f"Incident active: {incident.type}",
     )
     return IncidentSummary(
         id=incident.id,
@@ -2230,6 +2272,7 @@ async def active_incidents(
 async def create_team_assist(
     body: TeamAssistCreateRequest,
     request: Request,
+    background_tasks: BackgroundTasks,
     _: None = Depends(require_api_key),
 ) -> TeamAssistSummary:
     creator_id = await _require_active_user_with_roles(_users(request), body.user_id, roles={"admin", "teacher"})
@@ -2259,6 +2302,12 @@ async def create_team_assist(
             "type": team_assist.type,
             "target_user_ids": target_user_ids,
         },
+    )
+    background_tasks.add_task(
+        _send_basic_push,
+        request,
+        message=f"Team Assist: {team_assist.type}",
+        target_user_ids=set(target_user_ids),
     )
     return TeamAssistSummary(
         id=team_assist.id,
@@ -2327,6 +2376,7 @@ async def create_user(body: CreateUserRequest, request: Request, _: None = Depen
 
 
 @router.post("/register-device", response_model=RegisterDeviceResponse)
+@router.post("/devices/register", response_model=RegisterDeviceResponse)
 async def register_device(
     body: RegisterDeviceRequest,
     request: Request,

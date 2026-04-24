@@ -25,6 +25,21 @@ def _create_user(client: TestClient, slug: str, *, name: str, role: str) -> int:
     return int(response.json()["user_id"])
 
 
+def _register_android_device(client: TestClient, slug: str, *, token: str, user_id: int) -> None:
+    response = client.post(
+        f"/{slug}/devices/register",
+        json={
+            "device_token": token,
+            "platform": "android",
+            "push_provider": "fcm",
+            "device_name": "Pytest Android",
+            "user_id": user_id,
+        },
+        headers={"X-API-Key": "test-api-key"},
+    )
+    assert response.status_code == 200
+
+
 def test_incident_routes_require_api_key(client: TestClient, login_super_admin) -> None:
     login_super_admin()
     _create_school(client, name="Incident Guard", slug="incident-guard")
@@ -143,3 +158,75 @@ def test_team_assist_writes_targeted_notification_logs(client: TestClient, login
         and int(log.payload.get("team_assist_id", 0)) == team_assist_id
         for log in logs
     )
+
+
+def test_devices_register_alias_path(client: TestClient, login_super_admin) -> None:
+    login_super_admin()
+    _create_school(client, name="Device Alias", slug="device-alias")
+    admin_id = _create_user(client, "device-alias", name="Alias Admin", role="admin")
+
+    response = client.post(
+        "/device-alias/devices/register",
+        json={
+            "device_token": "device-token-123",
+            "platform": "android",
+            "push_provider": "fcm",
+            "device_name": "Alias Device",
+            "user_id": admin_id,
+        },
+        headers={"X-API-Key": "test-api-key"},
+    )
+    assert response.status_code == 200
+    assert response.json()["registered"] is True
+
+
+def test_incident_create_triggers_fcm_push(client: TestClient, login_super_admin, monkeypatch) -> None:
+    login_super_admin()
+    _create_school(client, name="Push Incident", slug="push-incident")
+    admin_id = _create_user(client, "push-incident", name="Push Admin", role="admin")
+    _register_android_device(client, "push-incident", token="fcm-incident-token", user_id=admin_id)
+
+    push_calls: list[tuple[list[str], str]] = []
+
+    async def _fake_send_bulk(tokens: list[str], message: str):
+        push_calls.append((list(tokens), message))
+        return []
+
+    monkeypatch.setattr(client.app.state.fcm_client, "send_bulk", _fake_send_bulk)
+
+    response = client.post(
+        "/push-incident/incidents/create",
+        json={"type": "lockdown", "user_id": admin_id, "target_scope": "ALL", "metadata": {}},
+        headers={"X-API-Key": "test-api-key"},
+    )
+    assert response.status_code == 200
+    assert push_calls
+    assert "fcm-incident-token" in push_calls[0][0]
+
+
+def test_team_assist_push_targets_assigned_user_only(client: TestClient, login_super_admin, monkeypatch) -> None:
+    login_super_admin()
+    _create_school(client, name="Push Assist", slug="push-assist")
+    teacher_id = _create_user(client, "push-assist", name="Assist Teacher", role="teacher")
+    admin_id = _create_user(client, "push-assist", name="Assist Admin", role="admin")
+    _register_android_device(client, "push-assist", token="fcm-teacher-token", user_id=teacher_id)
+    _register_android_device(client, "push-assist", token="fcm-admin-token", user_id=admin_id)
+
+    push_calls: list[tuple[list[str], str]] = []
+
+    async def _fake_send_bulk(tokens: list[str], message: str):
+        push_calls.append((list(tokens), message))
+        return []
+
+    monkeypatch.setattr(client.app.state.fcm_client, "send_bulk", _fake_send_bulk)
+
+    response = client.post(
+        "/push-assist/team-assist/create",
+        json={"type": "medical", "user_id": teacher_id, "assigned_team_ids": [admin_id]},
+        headers={"X-API-Key": "test-api-key"},
+    )
+    assert response.status_code == 200
+    assert push_calls
+    sent_tokens = set(push_calls[0][0])
+    assert "fcm-admin-token" in sent_tokens
+    assert "fcm-teacher-token" not in sent_tokens
