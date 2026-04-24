@@ -259,7 +259,7 @@ data class AdminQuietPeriodRequest(
 private data class SafetyAction(
     val key: String,
     val title: String,
-    val iconRes: Int,
+    val symbol: String,
     val color: Color,
     val message: String,
 )
@@ -268,35 +268,35 @@ private fun buildSafetyActions(featureLabels: Map<String, String>): List<SafetyA
     SafetyAction(
         key = AppLabels.KEY_SECURE,
         title = AppLabels.labelForFeatureKey(AppLabels.KEY_SECURE, featureLabels).uppercase(),
-        iconRes = android.R.drawable.ic_menu_compass,
+        symbol = "\uD83D\uDD10",
         color = Color(0xFF5EA8F2),
         message = "SECURE emergency initiated. Follow school secure procedures.",
     ),
     SafetyAction(
         key = AppLabels.KEY_LOCKDOWN,
         title = AppLabels.labelForFeatureKey(AppLabels.KEY_LOCKDOWN, featureLabels).uppercase(),
-        iconRes = android.R.drawable.ic_lock_lock,
+        symbol = "\uD83D\uDD12",
         color = Color(0xFFE0524D),
         message = "LOCKDOWN emergency initiated. Follow lockdown procedures immediately.",
     ),
     SafetyAction(
         key = AppLabels.KEY_EVACUATION,
         title = AppLabels.labelForFeatureKey(AppLabels.KEY_EVACUATION, featureLabels).uppercase(),
-        iconRes = android.R.drawable.ic_menu_directions,
+        symbol = "\uD83D\uDEB6",
         color = Color(0xFF93CB43),
         message = "EVACUATE emergency initiated. Move to evacuation locations now.",
     ),
     SafetyAction(
         key = AppLabels.KEY_SHELTER,
         title = AppLabels.labelForFeatureKey(AppLabels.KEY_SHELTER, featureLabels).uppercase(),
-        iconRes = android.R.drawable.ic_menu_myplaces,
+        symbol = "\uD83C\uDFE0",
         color = Color(0xFFE6A23C),
         message = "SHELTER emergency initiated. Move into shelter protocol.",
     ),
     SafetyAction(
         key = "hold",
         title = "HOLD",
-        iconRes = android.R.drawable.ic_media_pause,
+        symbol = "\u23F8",
         color = Color(0xFF8E3BEB),
         message = "HOLD emergency initiated. Keep current position until cleared.",
     ),
@@ -2579,12 +2579,7 @@ private fun SafetyActionButton(
                 modifier = Modifier.size(126.dp),
             ) {
                 Box(contentAlignment = Alignment.Center) {
-                    Icon(
-                        painter = painterResource(action.iconRes),
-                        contentDescription = action.title,
-                        tint = Color.White,
-                        modifier = Modifier.size(44.dp),
-                    )
+                    Text(action.symbol, fontSize = 42.sp, color = Color.White)
                 }
             }
             Text(
@@ -2629,12 +2624,7 @@ private fun ActionInitiateOverlay(
                 modifier = Modifier.size(86.dp),
             ) {
                 Box(contentAlignment = Alignment.Center) {
-                    Icon(
-                        painter = painterResource(action.iconRes),
-                        contentDescription = action.title,
-                        tint = Color.White,
-                        modifier = Modifier.size(38.dp),
-                    )
+                    Text(action.symbol, fontSize = 34.sp, color = Color.White)
                 }
             }
             Spacer(modifier = Modifier.height(14.dp))
