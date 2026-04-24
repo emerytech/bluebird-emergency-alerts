@@ -12,7 +12,7 @@ def _create_school(client: TestClient, *, name: str, slug: str) -> None:
         follow_redirects=False,
     )
     assert response.status_code == 303
-    assert response.headers.get("location") == "/super-admin#schools"
+    assert response.headers.get("location") == "/super-admin?section=schools#schools"
 
 
 def _enter_school(client: TestClient, slug: str) -> None:
@@ -125,7 +125,7 @@ def test_platform_audit_feed_endpoint_returns_labeled_human_readable_rows(client
         follow_redirects=False,
     )
     assert response.status_code == 303
-    assert response.headers.get("location") == "/north-point/admin"
+    assert response.headers.get("location") == "/north-point/admin?section=user-management#users"
 
     school = client.app.state.tenant_manager.school_for_slug("north-point")
     assert school is not None

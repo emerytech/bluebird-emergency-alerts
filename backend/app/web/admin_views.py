@@ -734,6 +734,7 @@ def render_super_admin_page(
     totp_setup_uri: Optional[str] = None,
     flash_message: Optional[str] = None,
     flash_error: Optional[str] = None,
+    active_section: str = "schools",
 ) -> str:
     rows = "".join(
         (
@@ -761,6 +762,15 @@ def render_super_admin_page(
         )
         for item in platform_activity_rows
     ) or '<tr><td colspan="5" class="mini-copy">No platform-super-admin activity recorded yet.</td></tr>'
+    section = active_section if active_section in {"schools", "platform-audit", "create-school", "security", "server-tools"} else "schools"
+
+    def _section_style(name: str) -> str:
+        return "" if section == name else ' style="display:none;"'
+
+    def _nav_item(name: str, label: str, badge: Optional[str] = None) -> str:
+        active_class = " nav-item-active" if section == name else ""
+        badge_html = f'<span class="nav-badge">{escape(str(badge))}</span>' if badge else ""
+        return f'<a class="nav-item{active_class}" href="/super-admin?section={name}#{name}">{label}{badge_html}</a>'
     if totp_enabled:
         security_html = f"""
           {security_feedback}
@@ -836,12 +846,12 @@ def render_super_admin_page(
           <div class="nav-group">
             <p class="nav-label">Control</p>
           <nav class="nav-list">
-            <a class="nav-item" href="#schools">Schools</a>
-            <a class="nav-item" href="#platform-audit">Platform audit</a>
-            <a class="nav-item" href="#create-school">Create school</a>
-            <a class="nav-item" href="#security">Security</a>
+            {_nav_item("schools", "Schools", str(len(school_rows)) if school_rows else None)}
+            {_nav_item("create-school", "Create School")}
+            {_nav_item("platform-audit", "Platform Audit")}
+            {_nav_item("security", "Security")}
+            {_nav_item("server-tools", "Server Tools")}
             <a class="nav-item" href="/super-admin/change-password">Change password</a>
-            <a class="nav-item" href="#server-tools">Server tools</a>
           </nav>
           </div>
           <div class="shell-actions">
@@ -854,7 +864,7 @@ def render_super_admin_page(
         </section>
       </aside>
       <section class="content-stack workspace">
-        <section class="panel command-section" id="schools">
+        <section class="panel command-section" id="schools"{_section_style("schools")}>
           <div class="panel-header hero-band">
             <div>
               <p class="eyebrow">Tenant Registry</p>
@@ -874,7 +884,7 @@ def render_super_admin_page(
             <tbody>{rows}</tbody>
           </table>
         </section>
-        <section class="panel command-section" id="platform-audit">
+        <section class="panel command-section" id="platform-audit"{_section_style("platform-audit")}>
           <div class="panel-header">
             <div>
               <p class="eyebrow">Audit</p>
@@ -889,7 +899,7 @@ def render_super_admin_page(
             <tbody>{platform_rows}</tbody>
           </table>
         </section>
-        <section class="panel command-section" id="create-school">
+        <section class="panel command-section" id="create-school"{_section_style("create-school")}>
           <div class="panel-header">
             <div>
               <p class="eyebrow">Provisioning</p>
@@ -918,7 +928,7 @@ def render_super_admin_page(
           </form>
           <p class="mini-copy" style="margin-top:14px;">New school URLs use the same domain with a school path, like <code>https://{escape(base_domain)}/school-slug/admin</code>.</p>
         </section>
-        <section class="panel command-section" id="security">
+        <section class="panel command-section" id="security"{_section_style("security")}>
           <div class="panel-header">
             <div>
               <p class="eyebrow">Security</p>
@@ -938,7 +948,7 @@ def render_super_admin_page(
           </div>
           {security_html}
         </section>
-        <section class="panel command-section">
+        <section class="panel command-section"{_section_style("create-school")}>
           <div class="panel-header">
             <div>
               <p class="eyebrow">Onboarding</p>
@@ -969,7 +979,7 @@ def render_super_admin_page(
             </article>
           </div>
         </section>
-        <section class="panel command-section" id="server-tools">
+        <section class="panel command-section" id="server-tools"{_section_style("server-tools")}>
           <div class="panel-header">
             <div>
               <p class="eyebrow">Server Tools</p>
@@ -1255,7 +1265,7 @@ def render_admin_page(
     alarm_status_class = "danger" if alarm_state.is_active else "ok"
     alarm_status_label = "ALARM ACTIVE" if alarm_state.is_active else "Alarm clear"
     security_feedback = f"{_render_flash(flash_message, 'success')}{_render_flash(flash_error, 'error')}"
-    section = active_section if active_section in {"dashboard", "quiet-periods", "audit-logs", "settings"} else "dashboard"
+    section = active_section if active_section in {"dashboard", "user-management", "quiet-periods", "audit-logs", "settings"} else "dashboard"
     quiet_period_total = len(quiet_periods_active) + len(quiet_periods_history)
 
     def _section_style(name: str) -> str:
@@ -1382,6 +1392,7 @@ def render_admin_page(
             <p class="nav-label">Command Deck</p>
           <nav class="nav-list">
             {_nav_item("dashboard", "Dashboard")}
+            {_nav_item("user-management", "User Management")}
             {_nav_item("quiet-periods", "Quiet Period Requests", str(len(quiet_periods_active)) if quiet_periods_active else None)}
             {_nav_item("audit-logs", "Audit Logs")}
             {_nav_item("settings", "Settings")}
@@ -1489,7 +1500,23 @@ def render_admin_page(
             </p>
           </section>
 
-          <section class="panel command-section span-7" id="users"{_section_style("dashboard")}>
+          <section class="panel command-section span-12" id="user-management"{_section_style("user-management")}>
+            <div class="panel-header">
+              <div>
+                <p class="eyebrow">User Management</p>
+                <h2>Manage school user accounts</h2>
+                <p class="card-copy">Create, edit, and maintain staff/admin accounts in one dedicated workspace.</p>
+              </div>
+            </div>
+            <div class="metrics-grid">
+              <article class="metric-card"><div class="meta">Total users</div><div class="metric-value">{len(users)}</div></article>
+              <article class="metric-card"><div class="meta">Active users</div><div class="metric-value">{active_users}</div></article>
+              <article class="metric-card"><div class="meta">Login-enabled users</div><div class="metric-value">{login_enabled}</div></article>
+              <article class="metric-card"><div class="meta">Admin users</div><div class="metric-value">{role_counts.get("admin", 0)}</div></article>
+            </div>
+          </section>
+
+          <section class="panel command-section span-7" id="users"{_section_style("user-management")}>
             <div class="panel-header">
               <div>
                 <p class="eyebrow">Accounts</p>
@@ -1533,7 +1560,7 @@ def render_admin_page(
             </form>
           </section>
 
-          <section class="panel command-section span-12"{_section_style("dashboard")}>
+          <section class="panel command-section span-12"{_section_style("user-management")}>
             <div class="panel-header">
               <div>
                 <p class="eyebrow">Account Editor</p>

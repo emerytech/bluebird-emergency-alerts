@@ -173,9 +173,22 @@ def _pop_flash(request: Request) -> tuple[Optional[str], Optional[str]]:
 
 def _admin_section(value: Optional[str]) -> str:
     normalized = str(value or "").strip().lower()
-    if normalized in {"dashboard", "quiet-periods", "audit-logs", "settings"}:
+    if normalized in {"dashboard", "user-management", "quiet-periods", "audit-logs", "settings"}:
         return normalized
     return "dashboard"
+
+
+def _super_admin_section(value: Optional[str]) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"schools", "platform-audit", "create-school", "security", "server-tools"}:
+        return normalized
+    return "schools"
+
+
+def _super_admin_url(section: str, anchor: Optional[str] = None) -> str:
+    resolved = _super_admin_section(section)
+    suffix = anchor or resolved
+    return f"/super-admin?section={resolved}#{suffix}"
 
 
 def _quiet_hidden_ids(request: Request) -> set[int]:
@@ -1214,13 +1227,13 @@ async def super_admin_totp_setup_form(request: Request) -> RedirectResponse:
     admin = await _platform_admins(request).get_by_id(_super_admin_id(request) or 0)
     if admin is None:
         _set_flash(request, error="Super admin account not found.")
-        return RedirectResponse(url="/super-admin#security", status_code=status.HTTP_303_SEE_OTHER)
+        return RedirectResponse(url=_super_admin_url("security"), status_code=status.HTTP_303_SEE_OTHER)
     if admin.totp_enabled:
         _set_flash(request, error="Two-factor authentication is already enabled.")
-        return RedirectResponse(url="/super-admin#security", status_code=status.HTTP_303_SEE_OTHER)
+        return RedirectResponse(url=_super_admin_url("security"), status_code=status.HTTP_303_SEE_OTHER)
     request.session["super_admin_totp_setup_secret"] = generate_totp_secret()
     _set_flash(request, message="Authenticator setup secret generated. Add it to your app, then confirm with a 6-digit code.")
-    return RedirectResponse(url="/super-admin#security", status_code=status.HTTP_303_SEE_OTHER)
+    return RedirectResponse(url=_super_admin_url("security"), status_code=status.HTTP_303_SEE_OTHER)
 
 
 @router.post("/super-admin/totp/enable")
@@ -1251,21 +1264,21 @@ async def super_admin_totp_enable_form(
     admin = await _platform_admins(request).get_by_id(_super_admin_id(request) or 0)
     if admin is None:
         _set_flash(request, error="Super admin account not found.")
-        return RedirectResponse(url="/super-admin#security", status_code=status.HTTP_303_SEE_OTHER)
+        return RedirectResponse(url=_super_admin_url("security"), status_code=status.HTTP_303_SEE_OTHER)
     secret = str(request.session.get("super_admin_totp_setup_secret", "") or "").strip()
     if not secret:
         _set_flash(request, error="Start TOTP setup first.")
-        return RedirectResponse(url="/super-admin#security", status_code=status.HTTP_303_SEE_OTHER)
+        return RedirectResponse(url=_super_admin_url("security"), status_code=status.HTTP_303_SEE_OTHER)
     if not code.strip():
         _set_flash(request, error="Enter the 6-digit authenticator code.")
-        return RedirectResponse(url="/super-admin#security", status_code=status.HTTP_303_SEE_OTHER)
+        return RedirectResponse(url=_super_admin_url("security"), status_code=status.HTTP_303_SEE_OTHER)
     if not verify_totp_code(secret, code):
         _set_flash(request, error="Invalid authenticator code.")
-        return RedirectResponse(url="/super-admin#security", status_code=status.HTTP_303_SEE_OTHER)
+        return RedirectResponse(url=_super_admin_url("security"), status_code=status.HTTP_303_SEE_OTHER)
     await _platform_admins(request).set_totp_secret(admin.id, secret)
     request.session.pop("super_admin_totp_setup_secret", None)
     _set_flash(request, message="Two-factor authentication is now enabled for the super admin account.")
-    return RedirectResponse(url="/super-admin#security", status_code=status.HTTP_303_SEE_OTHER)
+    return RedirectResponse(url=_super_admin_url("security"), status_code=status.HTTP_303_SEE_OTHER)
 
 
 @router.post("/super-admin/totp/disable")
@@ -1293,17 +1306,17 @@ async def super_admin_totp_disable_form(
     admin = await _platform_admins(request).get_by_id(_super_admin_id(request) or 0)
     if admin is None:
         _set_flash(request, error="Super admin account not found.")
-        return RedirectResponse(url="/super-admin#security", status_code=status.HTTP_303_SEE_OTHER)
+        return RedirectResponse(url=_super_admin_url("security"), status_code=status.HTTP_303_SEE_OTHER)
     if not current_password.strip():
         _set_flash(request, error="Enter your current password to disable 2FA.")
-        return RedirectResponse(url="/super-admin#security", status_code=status.HTTP_303_SEE_OTHER)
+        return RedirectResponse(url=_super_admin_url("security"), status_code=status.HTTP_303_SEE_OTHER)
     if not await _platform_admins(request).verify_current_password(admin.id, current_password):
         _set_flash(request, error="Current password is incorrect.")
-        return RedirectResponse(url="/super-admin#security", status_code=status.HTTP_303_SEE_OTHER)
+        return RedirectResponse(url=_super_admin_url("security"), status_code=status.HTTP_303_SEE_OTHER)
     await _platform_admins(request).set_totp_secret(admin.id, None)
     request.session.pop("super_admin_totp_setup_secret", None)
     _set_flash(request, message="Two-factor authentication has been disabled for the super admin account.")
-    response = RedirectResponse(url="/super-admin#security", status_code=status.HTTP_303_SEE_OTHER)
+    response = RedirectResponse(url=_super_admin_url("security"), status_code=status.HTTP_303_SEE_OTHER)
     _clear_super_admin_trust_cookie(request, response)
     return response
 
@@ -1363,7 +1376,10 @@ async def super_admin_change_password_submit(
 
 
 @router.get("/super-admin", response_class=HTMLResponse, include_in_schema=False)
-async def super_admin_dashboard(request: Request) -> HTMLResponse:
+async def super_admin_dashboard(
+    request: Request,
+    section: str = Query(default="schools"),
+) -> HTMLResponse:
     _require_super_admin(request)
     admin = await _platform_admins(request).get_by_id(_super_admin_id(request) or 0)
     if admin and admin.must_change_password:
@@ -1471,6 +1487,7 @@ async def super_admin_dashboard(request: Request) -> HTMLResponse:
             ),
             flash_message=flash_message,
             flash_error=flash_error,
+            active_section=_super_admin_section(section),
         )
     )
 
@@ -1499,14 +1516,14 @@ async def super_admin_create_school(
     normalized_slug = normalize_school_slug(slug)
     if not normalized_name:
         _set_flash(request, error="School name is required.")
-        return RedirectResponse(url="/super-admin#create-school", status_code=status.HTTP_303_SEE_OTHER)
+        return RedirectResponse(url=_super_admin_url("create-school"), status_code=status.HTTP_303_SEE_OTHER)
     if not normalized_slug:
         _set_flash(request, error="School slug is required.")
-        return RedirectResponse(url="/super-admin#create-school", status_code=status.HTTP_303_SEE_OTHER)
+        return RedirectResponse(url=_super_admin_url("create-school"), status_code=status.HTTP_303_SEE_OTHER)
     normalized_pin = setup_pin.strip()
     if normalized_pin and len(normalized_pin) < 4:
         _set_flash(request, error="Setup PIN must be at least 4 characters.")
-        return RedirectResponse(url="/super-admin#create-school", status_code=status.HTTP_303_SEE_OTHER)
+        return RedirectResponse(url=_super_admin_url("create-school"), status_code=status.HTTP_303_SEE_OTHER)
     try:
         school = await _schools(request).create_school(
             slug=normalized_slug,
@@ -1515,7 +1532,7 @@ async def super_admin_create_school(
         )
     except Exception as exc:
         _set_flash(request, error=f"Could not create school: {exc}")
-        return RedirectResponse(url="/super-admin#create-school", status_code=status.HTTP_303_SEE_OTHER)
+        return RedirectResponse(url=_super_admin_url("create-school"), status_code=status.HTTP_303_SEE_OTHER)
     base_domain = str(request.app.state.settings.BASE_DOMAIN).strip().lower()  # type: ignore[attr-defined]
     admin_url = f"https://{base_domain}/{school.slug}/admin"
     _set_flash(
@@ -1525,7 +1542,7 @@ async def super_admin_create_school(
             + (" A setup PIN was saved for first-admin creation." if school.setup_pin_required else "")
         ),
     )
-    return RedirectResponse(url="/super-admin#schools", status_code=status.HTTP_303_SEE_OTHER)
+    return RedirectResponse(url=_super_admin_url("schools"), status_code=status.HTTP_303_SEE_OTHER)
 
 
 @router.post("/super-admin/schools/{slug}/setup-pin", include_in_schema=False)
@@ -1541,16 +1558,16 @@ async def super_admin_update_setup_pin(
     normalized_pin = setup_pin.strip()
     if not normalized_pin:
         _set_flash(request, error="Enter a setup PIN to save, or use Clear PIN instead.")
-        return RedirectResponse(url="/super-admin#schools", status_code=status.HTTP_303_SEE_OTHER)
+        return RedirectResponse(url=_super_admin_url("schools"), status_code=status.HTTP_303_SEE_OTHER)
     if len(normalized_pin) < 4:
         _set_flash(request, error="Setup PIN must be at least 4 characters.")
-        return RedirectResponse(url="/super-admin#schools", status_code=status.HTTP_303_SEE_OTHER)
+        return RedirectResponse(url=_super_admin_url("schools"), status_code=status.HTTP_303_SEE_OTHER)
     school = await _schools(request).set_setup_pin(slug=normalized_slug, setup_pin=normalized_pin)
     if school is None:
         _set_flash(request, error="School not found.")
-        return RedirectResponse(url="/super-admin#schools", status_code=status.HTTP_303_SEE_OTHER)
+        return RedirectResponse(url=_super_admin_url("schools"), status_code=status.HTTP_303_SEE_OTHER)
     _set_flash(request, message=f"Updated the setup PIN for {school.name}.")
-    return RedirectResponse(url="/super-admin#schools", status_code=status.HTTP_303_SEE_OTHER)
+    return RedirectResponse(url=_super_admin_url("schools"), status_code=status.HTTP_303_SEE_OTHER)
 
 
 @router.post("/super-admin/schools/{slug}/setup-pin/clear", include_in_schema=False)
@@ -1565,9 +1582,9 @@ async def super_admin_clear_setup_pin(
     school = await _schools(request).set_setup_pin(slug=normalized_slug, setup_pin=None)
     if school is None:
         _set_flash(request, error="School not found.")
-        return RedirectResponse(url="/super-admin#schools", status_code=status.HTTP_303_SEE_OTHER)
+        return RedirectResponse(url=_super_admin_url("schools"), status_code=status.HTTP_303_SEE_OTHER)
     _set_flash(request, message=f"Cleared the setup PIN for {school.name}.")
-    return RedirectResponse(url="/super-admin#schools", status_code=status.HTTP_303_SEE_OTHER)
+    return RedirectResponse(url=_super_admin_url("schools"), status_code=status.HTTP_303_SEE_OTHER)
 
 
 @router.post("/super-admin/schools/{slug}/theme", include_in_schema=False)
@@ -1592,9 +1609,9 @@ async def super_admin_update_school_theme(
     )
     if school is None:
         _set_flash(request, error="School not found.")
-        return RedirectResponse(url="/super-admin#schools", status_code=status.HTTP_303_SEE_OTHER)
+        return RedirectResponse(url=_super_admin_url("schools"), status_code=status.HTTP_303_SEE_OTHER)
     _set_flash(request, message=f"Updated the theme for {school.name}.")
-    return RedirectResponse(url="/super-admin#schools", status_code=status.HTTP_303_SEE_OTHER)
+    return RedirectResponse(url=_super_admin_url("schools"), status_code=status.HTTP_303_SEE_OTHER)
 
 
 @router.post("/super-admin/schools/{slug}/enter", include_in_schema=False)
@@ -1609,7 +1626,7 @@ async def super_admin_enter_school(
     school = await _schools(request).get_by_slug(normalized_slug)
     if school is None or not school.is_active:
         _set_flash(request, error="School not found.")
-        return RedirectResponse(url="/super-admin#schools", status_code=status.HTTP_303_SEE_OTHER)
+        return RedirectResponse(url=_super_admin_url("schools"), status_code=status.HTTP_303_SEE_OTHER)
     request.session["super_admin_school_slug"] = school.slug
     request.session.pop("admin_user_id", None)
     request.session.pop("pending_admin_user_id", None)
@@ -1632,10 +1649,10 @@ async def super_admin_pull_latest(
     command = request.app.state.settings.SERVER_GIT_PULL_COMMAND  # type: ignore[attr-defined]
     if not command:
         _set_flash(request, error="SERVER_GIT_PULL_COMMAND is not configured on this server.")
-        return RedirectResponse(url="/super-admin#server-tools", status_code=status.HTTP_303_SEE_OTHER)
+        return RedirectResponse(url=_super_admin_url("server-tools"), status_code=status.HTTP_303_SEE_OTHER)
     background_tasks.add_task(_run_server_command, command)
     _set_flash(request, message="Server git pull started in the background.")
-    return RedirectResponse(url="/super-admin#server-tools", status_code=status.HTTP_303_SEE_OTHER)
+    return RedirectResponse(url=_super_admin_url("server-tools"), status_code=status.HTTP_303_SEE_OTHER)
 
 
 @router.post("/super-admin/server/restart", include_in_schema=False)
@@ -1647,7 +1664,7 @@ async def super_admin_restart(
     command = request.app.state.settings.SERVER_RESTART_COMMAND
     background_tasks.add_task(_do_restart, command)
     _set_flash(request, message="Restart initiated. The service will be back in a few seconds.")
-    return RedirectResponse(url="/super-admin#server-tools", status_code=status.HTTP_303_SEE_OTHER)
+    return RedirectResponse(url=_super_admin_url("server-tools"), status_code=status.HTTP_303_SEE_OTHER)
 
 
 def _do_restart(command: Optional[str]) -> None:
@@ -1753,13 +1770,13 @@ async def admin_create_user(
     normalized_phone = phone_e164.strip() or None
     if not normalized_name:
         _set_flash(request, error="Name is required.")
-        return RedirectResponse(url="/admin", status_code=status.HTTP_303_SEE_OTHER)
+        return RedirectResponse(url="/admin?section=user-management#users", status_code=status.HTTP_303_SEE_OTHER)
     if normalized_role not in {"admin", "teacher"}:
         _set_flash(request, error="Role must be admin or teacher.")
-        return RedirectResponse(url="/admin", status_code=status.HTTP_303_SEE_OTHER)
+        return RedirectResponse(url="/admin?section=user-management#users", status_code=status.HTTP_303_SEE_OTHER)
     if bool(login_name.strip()) != bool(password.strip()):
         _set_flash(request, error="Provide both username and password to enable login for a user.")
-        return RedirectResponse(url="/admin", status_code=status.HTTP_303_SEE_OTHER)
+        return RedirectResponse(url="/admin?section=user-management#users", status_code=status.HTTP_303_SEE_OTHER)
     try:
         await _users(request).create_user(
             name=normalized_name,
@@ -1771,9 +1788,9 @@ async def admin_create_user(
         )
     except Exception as exc:
         _set_flash(request, error=f"Could not create user: {exc}")
-        return RedirectResponse(url="/admin", status_code=status.HTTP_303_SEE_OTHER)
+        return RedirectResponse(url="/admin?section=user-management#users", status_code=status.HTTP_303_SEE_OTHER)
     _set_flash(request, message=f"Created user {normalized_name}.")
-    return RedirectResponse(url="/admin", status_code=status.HTTP_303_SEE_OTHER)
+    return RedirectResponse(url="/admin?section=user-management#users", status_code=status.HTTP_303_SEE_OTHER)
 
 
 @router.post("/admin/alarm/activate", include_in_schema=False)
@@ -2017,18 +2034,18 @@ async def admin_update_user(
     existing_user = await _users(request).get_user(user_id)
     if existing_user is None:
         _set_flash(request, error=f"User #{user_id} was not found.")
-        return RedirectResponse(url="/admin", status_code=status.HTTP_303_SEE_OTHER)
+        return RedirectResponse(url="/admin?section=user-management#users", status_code=status.HTTP_303_SEE_OTHER)
     normalized_name = name.strip()
     normalized_role = role.strip().lower()
     if not normalized_name:
         _set_flash(request, error="User name cannot be empty.")
-        return RedirectResponse(url="/admin", status_code=status.HTTP_303_SEE_OTHER)
+        return RedirectResponse(url="/admin?section=user-management#users", status_code=status.HTTP_303_SEE_OTHER)
     if normalized_role not in {"admin", "teacher"}:
         _set_flash(request, error="Role must be admin or teacher.")
-        return RedirectResponse(url="/admin", status_code=status.HTTP_303_SEE_OTHER)
+        return RedirectResponse(url="/admin?section=user-management#users", status_code=status.HTTP_303_SEE_OTHER)
     if clear_login is None and bool(login_name.strip()) != bool(password.strip()) and bool(password.strip()):
         _set_flash(request, error="To change credentials, provide both username and password.")
-        return RedirectResponse(url="/admin", status_code=status.HTTP_303_SEE_OTHER)
+        return RedirectResponse(url="/admin?section=user-management#users", status_code=status.HTTP_303_SEE_OTHER)
     try:
         await _users(request).update_user(
             user_id=user_id,
@@ -2042,9 +2059,9 @@ async def admin_update_user(
         )
     except Exception as exc:
         _set_flash(request, error=f"Could not update user #{user_id}: {exc}")
-        return RedirectResponse(url="/admin", status_code=status.HTTP_303_SEE_OTHER)
+        return RedirectResponse(url="/admin?section=user-management#users", status_code=status.HTTP_303_SEE_OTHER)
     _set_flash(request, message=f"Updated user {normalized_name}.")
-    return RedirectResponse(url="/admin", status_code=status.HTTP_303_SEE_OTHER)
+    return RedirectResponse(url="/admin?section=user-management#users", status_code=status.HTTP_303_SEE_OTHER)
 
 
 @router.post("/admin/users/{user_id}/delete", include_in_schema=False)
@@ -2057,13 +2074,13 @@ async def admin_delete_user(
     user = await _users(request).get_user(user_id)
     if user is None:
         _set_flash(request, error=f"User #{user_id} was not found.")
-        return RedirectResponse(url="/admin", status_code=status.HTTP_303_SEE_OTHER)
+        return RedirectResponse(url="/admin?section=user-management#users", status_code=status.HTTP_303_SEE_OTHER)
 
     if user.role == "admin" and user.can_login and user.is_active:
         other_admins = await _users(request).count_other_dashboard_admins(user.id)
         if other_admins <= 0:
             _set_flash(request, error="You cannot delete the last active admin with dashboard login access.")
-            return RedirectResponse(url="/admin", status_code=status.HTTP_303_SEE_OTHER)
+            return RedirectResponse(url="/admin?section=user-management#users", status_code=status.HTTP_303_SEE_OTHER)
 
     await _users(request).delete_user(user_id)
 
@@ -2072,7 +2089,7 @@ async def admin_delete_user(
         return RedirectResponse(url="/admin/login", status_code=status.HTTP_303_SEE_OTHER)
 
     _set_flash(request, message=f"Deleted user {user.name}.")
-    return RedirectResponse(url="/admin", status_code=status.HTTP_303_SEE_OTHER)
+    return RedirectResponse(url="/admin?section=user-management#users", status_code=status.HTTP_303_SEE_OTHER)
 
 
 @router.get("/devices", response_model=DevicesResponse)
