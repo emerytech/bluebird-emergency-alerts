@@ -35,6 +35,13 @@ private let safetyActions: [SafetyActionItem] = [
     .init(id: "shelter", title: "SHELTER", icon: "house.fill", color: Color(red: 0.96, green: 0.62, blue: 0.12), message: "SHELTER emergency initiated. Move into shelter protocol."),
     .init(id: "hold", title: "HOLD", icon: "pause.fill", color: Color(red: 0.58, green: 0.20, blue: 0.92), message: "HOLD emergency initiated. Keep current position until cleared.")
 ]
+private let teamAssistTypes = [
+    "Fight in Progress",
+    "Irate Parent",
+    "Medical Assistance",
+    "Principal to Front Office",
+    "Suspicious Activity",
+]
 
 struct ContentView: View {
     @EnvironmentObject private var appState: AppState
@@ -52,6 +59,13 @@ struct ContentView: View {
     @State private var selectedRecipientIDs: Set<Int> = []
     @State private var showRecipientSheet = false
     @State private var isSendingAdminMessage = false
+    @State private var showTeamAssistPicker = false
+    @State private var showQuietPeriodSheet = false
+    @State private var quietPeriodReason = ""
+    @State private var isSubmittingQuickAction = false
+    @State private var teamAssistForwardRecipients: [MessageRecipient] = []
+    @State private var forwardingTeamAssist: TeamAssistSummary?
+    @State private var isUpdatingTeamAssist = false
 
     private var api: APIClient {
         APIClient(baseURL: appState.serverURL, apiKey: Config.backendApiKey)
@@ -83,6 +97,7 @@ struct ContentView: View {
                             adminMessageCard
                         }
                         customPanicCard
+                        supportActionsCard
                     }
                     .padding(.horizontal, 16)
                     .padding(.vertical, 14)
@@ -111,6 +126,7 @@ struct ContentView: View {
                 await refreshIncidentFeed()
                 if isAdminSession {
                     await loadAdminRecipients()
+                    await loadTeamAssistForwardRecipients()
                 }
                 if let token = appState.deviceToken, appState.initialDeviceAuthUserID == nil {
                     appState.usingLocalTestToken = (token == localTestToken)
@@ -123,6 +139,7 @@ struct ContentView: View {
                     tick += 1
                     if isAdminSession && tick % 6 == 0 {
                         await loadAdminRecipients()
+                        await loadTeamAssistForwardRecipients()
                     }
                 }
             }
@@ -131,6 +148,55 @@ struct ContentView: View {
                     recipients: adminRecipients,
                     selectedRecipientIDs: $selectedRecipientIDs
                 )
+            }
+            .sheet(item: $forwardingTeamAssist) { teamAssist in
+                TeamAssistForwardSheet(
+                    teamAssist: teamAssist,
+                    recipients: teamAssistForwardRecipients.filter { $0.userID != appState.userID },
+                    isBusy: isUpdatingTeamAssist,
+                    onSelect: { recipient in
+                        Task { await forwardTeamAssist(teamAssist, to: recipient) }
+                    }
+                )
+            }
+            .confirmationDialog("Team Assist", isPresented: $showTeamAssistPicker, titleVisibility: .visible) {
+                ForEach(teamAssistTypes, id: \.self) { type in
+                    Button(type) {
+                        Task { await submitTeamAssist(type: type) }
+                    }
+                }
+                Button("Cancel", role: .cancel) {}
+            }
+            .sheet(isPresented: $showQuietPeriodSheet) {
+                NavigationStack {
+                    CardView {
+                        SectionContainer("Request Quiet Period") {
+                            Text("Share optional context for approvers.")
+                                .font(.subheadline)
+                                .foregroundStyle(DSColor.textSecondary)
+                            TextInput(
+                                text: $quietPeriodReason,
+                                placeholder: "Reason (optional)",
+                                axis: .vertical
+                            )
+                            PrimaryButton(
+                                isSubmittingQuickAction ? "Submitting..." : "Submit Request",
+                                isLoading: isSubmittingQuickAction,
+                                isEnabled: !isSubmittingQuickAction
+                            ) {
+                                Task { await submitQuietPeriodRequest() }
+                            }
+                        }
+                    }
+                    .padding(DSSpacing.xl)
+                    .navigationTitle("Quiet Period")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Button("Close") { showQuietPeriodSheet = false }
+                        }
+                    }
+                }
             }
         }
         .overlay {
@@ -218,7 +284,7 @@ struct ContentView: View {
                         .foregroundStyle(textMuted)
                 } else {
                     ForEach(activeTeamAssists.prefix(6)) { item in
-                        feedRow(title: item.type, subtitle: "by #\(item.createdBy)")
+                        teamAssistFeedRow(item: item)
                     }
                 }
             }
@@ -358,6 +424,42 @@ struct ContentView: View {
                 .buttonStyle(PressableScaleButtonStyle())
                 .shadow(color: Color.red.opacity(0.24), radius: 8, x: 0, y: 3)
                 .disabled(isSending || message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+    }
+
+    private var supportActionsCard: some View {
+        card {
+            VStack(spacing: DSSpacing.md) {
+                PrimaryButton(
+                    isSubmittingQuickAction ? "Submitting..." : "Team Assist",
+                    isLoading: isSubmittingQuickAction,
+                    isEnabled: !isSubmittingQuickAction
+                ) {
+                    showTeamAssistPicker = true
+                }
+                Button {
+                    showQuietPeriodSheet = true
+                } label: {
+                    HStack {
+                        Text("Request Quiet Period")
+                            .font(DSTypography.button)
+                            .foregroundStyle(DSColor.textPrimary)
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .foregroundStyle(DSColor.textSecondary)
+                    }
+                    .padding(.horizontal, 14)
+                    .frame(maxWidth: .infinity, minHeight: 46)
+                    .background(Color.white)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: DSRadius.button, style: .continuous)
+                            .stroke(Color.black.opacity(0.1), lineWidth: 1)
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: DSRadius.button, style: .continuous))
+                }
+                .buttonStyle(PressableScaleButtonStyle())
+                .disabled(isSubmittingQuickAction)
             }
         }
     }
@@ -524,6 +626,79 @@ struct ContentView: View {
         .padding(.vertical, 4)
     }
 
+    private func teamAssistFeedRow(item: TeamAssistSummary) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            feedRow(title: item.type, subtitle: teamAssistSubtitle(for: item))
+            if isAdminSession {
+                HStack(spacing: 10) {
+                    Menu {
+                        Button("Acknowledge") {
+                            Task { await applyTeamAssistAction(item, action: "acknowledge") }
+                        }
+                        Button("Responding") {
+                            Task { await applyTeamAssistAction(item, action: "responding") }
+                        }
+                        Button("Forward…") {
+                            forwardingTeamAssist = item
+                        }
+                    } label: {
+                        Text("Update")
+                            .font(.caption.weight(.semibold))
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 7)
+                            .background(bluePrimary.opacity(0.14))
+                            .clipShape(Capsule())
+                    }
+
+                    if item.status != "cancelled" {
+                        Button {
+                            Task { await confirmTeamAssistCancel(item) }
+                        } label: {
+                            Text(item.cancelAdminConfirmed ? "Admin Confirmed" : "Confirm Cancel")
+                                .font(.caption.weight(.semibold))
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 7)
+                                .background(item.cancelAdminConfirmed ? Color.green.opacity(0.15) : Color.red.opacity(0.14))
+                                .clipShape(Capsule())
+                        }
+                        .disabled(isUpdatingTeamAssist || item.cancelAdminConfirmed)
+                    }
+                }
+            } else if appState.userID == item.createdBy && item.status != "cancelled" {
+                Button {
+                    Task { await confirmTeamAssistCancel(item) }
+                } label: {
+                    Text(item.cancelRequesterConfirmed ? "Requester Confirmed" : "Confirm Cancel")
+                        .font(.caption.weight(.semibold))
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 7)
+                        .background(item.cancelRequesterConfirmed ? Color.green.opacity(0.15) : Color.orange.opacity(0.14))
+                        .clipShape(Capsule())
+                }
+                .disabled(isUpdatingTeamAssist || item.cancelRequesterConfirmed)
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    private func teamAssistSubtitle(for item: TeamAssistSummary) -> String {
+        var parts: [String] = ["by #\(item.createdBy)"]
+        if let actor = item.actedByLabel, !actor.isEmpty {
+            parts.append("\(item.status.capitalized) by \(actor)")
+        } else {
+            parts.append(item.status.capitalized)
+        }
+        if item.status == "forwarded", let forwardLabel = item.forwardToLabel, !forwardLabel.isEmpty {
+            parts.append("to \(forwardLabel)")
+        }
+        if item.status == "cancel_pending" {
+            let requester = item.cancelRequesterConfirmed ? "Requester ✓" : "Requester …"
+            let admin = item.cancelAdminConfirmed ? "Admin ✓" : "Admin …"
+            parts.append("\(requester), \(admin)")
+        }
+        return parts.joined(separator: " • ")
+    }
+
     private var backendStatusColor: Color {
         if appState.backendReachable == true { return .green }
         if appState.backendReachable == false { return .red }
@@ -653,6 +828,17 @@ struct ContentView: View {
         }
     }
 
+    private func loadTeamAssistForwardRecipients() async {
+        guard isAdminSession else { return }
+        do {
+            teamAssistForwardRecipients = try await api.listTeamAssistForwardRecipients()
+        } catch {
+            if teamAssistForwardRecipients.isEmpty {
+                appState.lastError = "Could not load users for team assist forwarding."
+            }
+        }
+    }
+
     private func sendAdminMessage() async {
         guard let adminUserID = appState.userID else {
             appState.lastError = "No admin session is active."
@@ -679,6 +865,106 @@ struct ContentView: View {
             appState.lastStatus = "Message sent (\(response.sentCount)) to \(response.recipientScope)."
         } catch {
             appState.lastError = "Send message failed: \(error.localizedDescription)"
+        }
+    }
+
+    private func submitTeamAssist(type: String) async {
+        guard let userID = appState.userID else {
+            appState.lastError = "You must be signed in to request Team Assist."
+            return
+        }
+        isSubmittingQuickAction = true
+        defer { isSubmittingQuickAction = false }
+        do {
+            _ = try await api.createTeamAssist(userID: userID, type: type)
+            appState.lastError = nil
+            appState.lastStatus = "Team Assist sent."
+            await refreshIncidentFeed()
+        } catch {
+            appState.lastError = "Team Assist failed: \(error.localizedDescription)"
+        }
+    }
+
+    private func applyTeamAssistAction(_ item: TeamAssistSummary, action: String) async {
+        guard let userID = appState.userID else {
+            appState.lastError = "Admin sign-in is required."
+            return
+        }
+        isUpdatingTeamAssist = true
+        defer { isUpdatingTeamAssist = false }
+        do {
+            _ = try await api.updateTeamAssist(teamAssistID: item.id, actorUserID: userID, action: action)
+            appState.lastError = nil
+            appState.lastStatus = "Team Assist marked \(action) by \(appState.userName)."
+            await refreshIncidentFeed()
+        } catch {
+            appState.lastError = "Team Assist update failed: \(error.localizedDescription)"
+        }
+    }
+
+    private func confirmTeamAssistCancel(_ item: TeamAssistSummary) async {
+        guard let userID = appState.userID else {
+            appState.lastError = "Sign-in is required."
+            return
+        }
+        isUpdatingTeamAssist = true
+        defer { isUpdatingTeamAssist = false }
+        do {
+            let updated = try await api.confirmTeamAssistCancel(teamAssistID: item.id, actorUserID: userID)
+            appState.lastError = nil
+            if updated.status == "cancelled" {
+                appState.lastStatus = "Team Assist cancelled after dual confirmation."
+            } else {
+                appState.lastStatus = "Cancellation confirmation recorded. Waiting for second confirmation."
+            }
+            await refreshIncidentFeed()
+        } catch {
+            appState.lastError = "Team Assist cancellation confirmation failed: \(error.localizedDescription)"
+        }
+    }
+
+    private func forwardTeamAssist(_ item: TeamAssistSummary, to recipient: MessageRecipient) async {
+        guard let userID = appState.userID else {
+            appState.lastError = "Admin sign-in is required."
+            return
+        }
+        isUpdatingTeamAssist = true
+        defer { isUpdatingTeamAssist = false }
+        do {
+            _ = try await api.updateTeamAssist(
+                teamAssistID: item.id,
+                actorUserID: userID,
+                action: "forward",
+                forwardToUserID: recipient.userID
+            )
+            forwardingTeamAssist = nil
+            appState.lastError = nil
+            appState.lastStatus = "Team Assist forwarded to \(recipient.label)."
+            await refreshIncidentFeed()
+        } catch {
+            appState.lastError = "Team Assist forward failed: \(error.localizedDescription)"
+        }
+    }
+
+    private func submitQuietPeriodRequest() async {
+        guard let userID = appState.userID else {
+            appState.lastError = "You must be signed in to request quiet period."
+            return
+        }
+        isSubmittingQuickAction = true
+        defer { isSubmittingQuickAction = false }
+        do {
+            let trimmed = quietPeriodReason.trimmingCharacters(in: .whitespacesAndNewlines)
+            _ = try await api.requestQuietPeriod(
+                userID: userID,
+                reason: trimmed.isEmpty ? nil : trimmed
+            )
+            quietPeriodReason = ""
+            showQuietPeriodSheet = false
+            appState.lastError = nil
+            appState.lastStatus = "Quiet period request submitted."
+        } catch {
+            appState.lastError = "Quiet period request failed: \(error.localizedDescription)"
         }
     }
 
@@ -794,6 +1080,53 @@ private struct RecipientSelectionSheet: View {
             return nil
         }
         return String(label[label.index(after: open)..<close])
+    }
+}
+
+private struct TeamAssistForwardSheet: View {
+    let teamAssist: TeamAssistSummary
+    let recipients: [MessageRecipient]
+    let isBusy: Bool
+    let onSelect: (MessageRecipient) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            List {
+                if recipients.isEmpty {
+                    Text("No active users available.")
+                        .foregroundStyle(textMuted)
+                } else {
+                    ForEach(recipients) { recipient in
+                        Button {
+                            onSelect(recipient)
+                        } label: {
+                            HStack {
+                                Text(recipient.label)
+                                    .foregroundStyle(textPrimary)
+                                Spacer()
+                                Image(systemName: "arrowshape.turn.up.right.fill")
+                                    .foregroundStyle(bluePrimary)
+                            }
+                            .padding(.vertical, 4)
+                        }
+                        .disabled(isBusy)
+                    }
+                }
+            }
+            .navigationTitle("Forward Team Assist")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Text("#\(teamAssist.id)")
+                        .font(.caption)
+                        .foregroundStyle(textMuted)
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Close") { dismiss() }
+                }
+            }
+        }
     }
 }
 

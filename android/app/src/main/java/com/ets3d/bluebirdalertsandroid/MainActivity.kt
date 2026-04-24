@@ -227,6 +227,11 @@ data class InboxRecipient(
     val label: String,
 )
 
+data class TeamAssistActionRecipient(
+    val userId: Int,
+    val label: String,
+)
+
 data class QuietPeriodMobileStatus(
     val requestId: Int? = null,
     val status: String? = null,
@@ -315,6 +320,11 @@ data class TeamAssistFeedItem(
     val status: String,
     val createdBy: Int,
     val createdAt: String,
+    val actedByLabel: String? = null,
+    val forwardToLabel: String? = null,
+    val cancelRequesterConfirmed: Boolean = false,
+    val cancelAdminConfirmed: Boolean = false,
+    val cancelAdminLabel: String? = null,
 )
 
 data class UiState(
@@ -330,6 +340,7 @@ data class UiState(
     val activeIncidents: List<IncidentFeedItem> = emptyList(),
     val activeTeamAssists: List<TeamAssistFeedItem> = emptyList(),
     val isRefreshingFeed: Boolean = false,
+    val teamAssistActionRecipients: List<TeamAssistActionRecipient> = emptyList(),
 )
 
 // ── ViewModel ──────────────────────────────────────────────────────────────────
@@ -503,6 +514,15 @@ class MainViewModel : ViewModel() {
         }
     }
 
+    fun refreshTeamAssistActionRecipients() {
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { client!!.listTeamAssistActionRecipients() }
+                .onSuccess { recipients ->
+                    _state.update { it.copy(teamAssistActionRecipients = recipients) }
+                }
+        }
+    }
+
     fun replyToAdminMessage(ctx: Context, messageId: Int, message: String) {
         val userId = getUserId(ctx).toIntOrNull() ?: return
         viewModelScope.launch(Dispatchers.IO) {
@@ -571,6 +591,67 @@ class MainViewModel : ViewModel() {
                 }
                 .onFailure { e ->
                     _state.update { it.copy(isBusy = false, errorMsg = e.message ?: "Failed to send Team Assist.") }
+                }
+        }
+    }
+
+    fun updateTeamAssistAction(ctx: Context, teamAssistId: Int, action: String, forwardToUserId: Int? = null) {
+        val actorUserId = getUserId(ctx).toIntOrNull()
+        if (actorUserId == null) {
+            _state.update { it.copy(errorMsg = "Admin sign-in is required.") }
+            return
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            _state.update { it.copy(isBusy = true, errorMsg = null) }
+            runCatching {
+                client!!.updateTeamAssistAction(
+                    teamAssistId = teamAssistId,
+                    actorUserId = actorUserId,
+                    action = action,
+                    forwardToUserId = forwardToUserId,
+                )
+            }
+                .onSuccess { _ ->
+                    val activeTeamAssists = runCatching { client!!.activeTeamAssists() }.getOrDefault(_state.value.activeTeamAssists)
+                    _state.update {
+                        it.copy(
+                            isBusy = false,
+                            successMsg = "Team Assist updated by ${getUserName(ctx)}.",
+                            activeTeamAssists = activeTeamAssists,
+                        )
+                    }
+                }
+                .onFailure { e ->
+                    _state.update { it.copy(isBusy = false, errorMsg = e.message ?: "Failed to update Team Assist.") }
+                }
+        }
+    }
+
+    fun confirmTeamAssistCancel(ctx: Context, teamAssistId: Int) {
+        val actorUserId = getUserId(ctx).toIntOrNull()
+        if (actorUserId == null) {
+            _state.update { it.copy(errorMsg = "Sign-in is required.") }
+            return
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            _state.update { it.copy(isBusy = true, errorMsg = null) }
+            runCatching { client!!.confirmTeamAssistCancel(teamAssistId = teamAssistId, actorUserId = actorUserId) }
+                .onSuccess { updated ->
+                    val activeTeamAssists = runCatching { client!!.activeTeamAssists() }.getOrDefault(_state.value.activeTeamAssists)
+                    _state.update {
+                        it.copy(
+                            isBusy = false,
+                            successMsg = if (updated.status.equals("cancelled", ignoreCase = true)) {
+                                "Team Assist cancelled after dual confirmation."
+                            } else {
+                                "Cancellation confirmation saved. Waiting for second confirmation."
+                            },
+                            activeTeamAssists = activeTeamAssists,
+                        )
+                    }
+                }
+                .onFailure { e ->
+                    _state.update { it.copy(isBusy = false, errorMsg = e.message ?: "Failed to confirm Team Assist cancellation.") }
                 }
         }
     }
@@ -1089,6 +1170,7 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
     LaunchedEffect(isAdmin) {
         if (!isAdmin) return@LaunchedEffect
         vm.refreshAdminRecipients()
+        vm.refreshTeamAssistActionRecipients()
         while (true) {
             vm.refreshAdminInbox(ctx)
             delay(8_000)
@@ -1215,8 +1297,27 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                         onSelectTab = { feedTab = it },
                         incidents = state.activeIncidents,
                         teamAssists = state.activeTeamAssists,
+                        isAdmin = isAdmin,
+                        currentUserId = getUserId(ctx).toIntOrNull(),
+                        actionRecipients = state.teamAssistActionRecipients,
+                        isBusy = state.isBusy,
                         isRefreshing = state.isRefreshingFeed,
                         onRefresh = { vm.refreshIncidentFeeds() },
+                        onTeamAssistAction = { teamAssistId, action, forwardToUserId ->
+                            runProtectedAction(true) {
+                                vm.updateTeamAssistAction(
+                                    ctx = ctx,
+                                    teamAssistId = teamAssistId,
+                                    action = action,
+                                    forwardToUserId = forwardToUserId,
+                                )
+                            }
+                        },
+                        onTeamAssistCancelConfirm = { teamAssistId ->
+                            runProtectedAction(true) {
+                                vm.confirmTeamAssistCancel(ctx = ctx, teamAssistId = teamAssistId)
+                            }
+                        },
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(horizontal = 20.dp, vertical = 8.dp),
@@ -1489,8 +1590,14 @@ private fun ActiveSafetyFeedCard(
     onSelectTab: (Int) -> Unit,
     incidents: List<IncidentFeedItem>,
     teamAssists: List<TeamAssistFeedItem>,
+    isAdmin: Boolean,
+    currentUserId: Int?,
+    actionRecipients: List<TeamAssistActionRecipient>,
+    isBusy: Boolean,
     isRefreshing: Boolean,
     onRefresh: () -> Unit,
+    onTeamAssistAction: (Int, String, Int?) -> Unit,
+    onTeamAssistCancelConfirm: (Int) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Surface(
@@ -1535,14 +1642,143 @@ private fun ActiveSafetyFeedCard(
                     Text("No active team assists.", color = TextMuted, fontSize = 13.sp)
                 } else {
                     teamAssists.take(8).forEach { teamAssist ->
-                        FeedRow(
-                            title = teamAssist.type,
-                            subtitle = "${formatIsoForBanner(teamAssist.createdAt) ?: teamAssist.createdAt} • by #${teamAssist.createdBy}",
-                            tone = Color(0xFF0F766E),
+                        TeamAssistRow(
+                            teamAssist = teamAssist,
+                            isAdmin = isAdmin,
+                            currentUserId = currentUserId,
+                            actionRecipients = actionRecipients,
+                            isBusy = isBusy,
+                            onTeamAssistAction = onTeamAssistAction,
+                            onTeamAssistCancelConfirm = onTeamAssistCancelConfirm,
                         )
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun TeamAssistRow(
+    teamAssist: TeamAssistFeedItem,
+    isAdmin: Boolean,
+    currentUserId: Int?,
+    actionRecipients: List<TeamAssistActionRecipient>,
+    isBusy: Boolean,
+    onTeamAssistAction: (Int, String, Int?) -> Unit,
+    onTeamAssistCancelConfirm: (Int) -> Unit,
+) {
+    var showForwardDialog by remember(teamAssist.id) { mutableStateOf(false) }
+    var forwardQuery by remember(teamAssist.id) { mutableStateOf("") }
+    val filteredRecipients = remember(actionRecipients, forwardQuery) {
+        actionRecipients.filter {
+            it.label.contains(forwardQuery, ignoreCase = true)
+        }
+    }
+    val subtitleParts = buildList {
+        add("${formatIsoForBanner(teamAssist.createdAt) ?: teamAssist.createdAt} • by #${teamAssist.createdBy}")
+        val actorLabel = teamAssist.actedByLabel?.takeIf { it.isNotBlank() }
+        if (actorLabel != null) {
+            add("${teamAssist.status.replaceFirstChar { it.uppercase() }} by $actorLabel")
+        } else {
+            add(teamAssist.status.replaceFirstChar { it.uppercase() })
+        }
+        teamAssist.forwardToLabel?.takeIf { it.isNotBlank() }?.let { add("to $it") }
+        if (teamAssist.status.equals("cancel_pending", ignoreCase = true)) {
+            val requesterState = if (teamAssist.cancelRequesterConfirmed) "Requester ✓" else "Requester …"
+            val adminState = if (teamAssist.cancelAdminConfirmed) "Admin ✓" else "Admin …"
+            add("$requesterState, $adminState")
+        }
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        FeedRow(
+            title = teamAssist.type,
+            subtitle = subtitleParts.joinToString(" • "),
+            tone = Color(0xFF0F766E),
+        )
+        val canRequesterConfirm = currentUserId != null && currentUserId == teamAssist.createdBy && !teamAssist.cancelRequesterConfirmed
+        if (isAdmin || canRequesterConfirm) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (isAdmin) {
+                    AssistActionChip(label = "Acknowledge", enabled = !isBusy) {
+                        onTeamAssistAction(teamAssist.id, "acknowledge", null)
+                    }
+                    AssistActionChip(label = "Responding", enabled = !isBusy) {
+                        onTeamAssistAction(teamAssist.id, "responding", null)
+                    }
+                    AssistActionChip(label = "Forward", enabled = !isBusy && actionRecipients.isNotEmpty()) {
+                        showForwardDialog = true
+                    }
+                    AssistActionChip(label = if (teamAssist.cancelAdminConfirmed) "Admin Confirmed" else "Confirm Cancel", enabled = !isBusy && !teamAssist.cancelAdminConfirmed) {
+                        onTeamAssistCancelConfirm(teamAssist.id)
+                    }
+                } else if (canRequesterConfirm) {
+                    AssistActionChip(label = "Confirm Cancel", enabled = !isBusy) {
+                        onTeamAssistCancelConfirm(teamAssist.id)
+                    }
+                }
+            }
+        }
+    }
+
+    if (showForwardDialog) {
+        AlertDialog(
+            onDismissRequest = { showForwardDialog = false },
+            title = { Text("Forward Team Assist", color = TextPri, fontWeight = FontWeight.Bold) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OutlinedTextField(
+                        value = forwardQuery,
+                        onValueChange = { forwardQuery = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                        label = { Text("Search users") },
+                    )
+                    Column(
+                        modifier = Modifier.heightIn(max = 220.dp).verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        filteredRecipients.take(20).forEach { recipient ->
+                            TextButton(
+                                onClick = {
+                                    onTeamAssistAction(teamAssist.id, "forward", recipient.userId)
+                                    showForwardDialog = false
+                                    forwardQuery = ""
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                                enabled = !isBusy,
+                            ) {
+                                Text(recipient.label, color = BluePrimary, modifier = Modifier.fillMaxWidth())
+                            }
+                        }
+                        if (filteredRecipients.isEmpty()) {
+                            Text("No users found.", color = TextMuted, fontSize = 12.sp)
+                        }
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = {
+                TextButton(onClick = { showForwardDialog = false }) {
+                    Text("Close", color = TextMuted)
+                }
+            },
+        )
+    }
+}
+
+@Composable
+private fun AssistActionChip(label: String, enabled: Boolean, onClick: () -> Unit) {
+    Surface(
+        color = if (enabled) BluePrimary.copy(alpha = 0.12f) else Color(0xFFE2E8F0),
+        shape = RoundedCornerShape(999.dp),
+    ) {
+        TextButton(
+            onClick = onClick,
+            enabled = enabled,
+            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+        ) {
+            Text(label, color = if (enabled) BluePrimary else TextMuted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
         }
     }
 }
@@ -2883,6 +3119,34 @@ private class BackendClient(baseUrl: String, private val apiKey: String) {
         }
     }
 
+    fun listTeamAssistActionRecipients(): List<TeamAssistActionRecipient> {
+        val req = Request.Builder()
+            .url("$base/users")
+            .withAuth()
+            .get()
+            .build()
+        http.newCall(req).execute().use { res ->
+            val body = requireSuccess(res)
+            val usersJson = JSONObject(body).optJSONArray("users")
+            return buildList {
+                if (usersJson != null) {
+                    for (i in 0 until usersJson.length()) {
+                        val item = usersJson.optJSONObject(i) ?: continue
+                        val isActive = item.optBoolean("is_active", true)
+                        val userId = item.optInt("user_id", 0)
+                        if (!isActive || userId <= 0) continue
+                        add(
+                            TeamAssistActionRecipient(
+                                userId = userId,
+                                label = "${item.optString("name")} (${item.optString("role")})",
+                            )
+                        )
+                    }
+                }
+            }.sortedBy { it.label.lowercase() }
+        }
+    }
+
     fun messageInbox(userId: Int): MessageInboxResponse {
         val req = Request.Builder()
             .url("$base/messages/inbox?user_id=$userId&limit=40")
@@ -2994,6 +3258,64 @@ private class BackendClient(baseUrl: String, private val apiKey: String) {
                 status = item.optString("status"),
                 createdBy = item.optInt("created_by"),
                 createdAt = item.optString("created_at"),
+                actedByLabel = item.optNullableString("acted_by_label"),
+                forwardToLabel = item.optNullableString("forward_to_label"),
+                cancelRequesterConfirmed = item.optBoolean("cancel_requester_confirmed", false),
+                cancelAdminConfirmed = item.optBoolean("cancel_admin_confirmed", false),
+                cancelAdminLabel = item.optNullableString("cancel_admin_label"),
+            )
+        }
+    }
+
+    fun updateTeamAssistAction(teamAssistId: Int, actorUserId: Int, action: String, forwardToUserId: Int? = null): TeamAssistFeedItem {
+        val body = JSONObject()
+            .put("user_id", actorUserId)
+            .put("action", action)
+            .apply {
+                if (forwardToUserId != null) put("forward_to_user_id", forwardToUserId)
+            }
+        val req = Request.Builder()
+            .url("$base/team-assist/$teamAssistId/action")
+            .withAuth()
+            .post(body.toString().toRequestBody(json))
+            .build()
+        http.newCall(req).execute().use { res ->
+            val item = JSONObject(requireSuccess(res))
+            return TeamAssistFeedItem(
+                id = item.optInt("id"),
+                type = item.optString("type"),
+                status = item.optString("status"),
+                createdBy = item.optInt("created_by"),
+                createdAt = item.optString("created_at"),
+                actedByLabel = item.optNullableString("acted_by_label"),
+                forwardToLabel = item.optNullableString("forward_to_label"),
+                cancelRequesterConfirmed = item.optBoolean("cancel_requester_confirmed", false),
+                cancelAdminConfirmed = item.optBoolean("cancel_admin_confirmed", false),
+                cancelAdminLabel = item.optNullableString("cancel_admin_label"),
+            )
+        }
+    }
+
+    fun confirmTeamAssistCancel(teamAssistId: Int, actorUserId: Int): TeamAssistFeedItem {
+        val body = JSONObject().put("user_id", actorUserId)
+        val req = Request.Builder()
+            .url("$base/team-assist/$teamAssistId/cancel-confirm")
+            .withAuth()
+            .post(body.toString().toRequestBody(json))
+            .build()
+        http.newCall(req).execute().use { res ->
+            val item = JSONObject(requireSuccess(res))
+            return TeamAssistFeedItem(
+                id = item.optInt("id"),
+                type = item.optString("type"),
+                status = item.optString("status"),
+                createdBy = item.optInt("created_by"),
+                createdAt = item.optString("created_at"),
+                actedByLabel = item.optNullableString("acted_by_label"),
+                forwardToLabel = item.optNullableString("forward_to_label"),
+                cancelRequesterConfirmed = item.optBoolean("cancel_requester_confirmed", false),
+                cancelAdminConfirmed = item.optBoolean("cancel_admin_confirmed", false),
+                cancelAdminLabel = item.optNullableString("cancel_admin_label"),
             )
         }
     }
@@ -3018,6 +3340,11 @@ private class BackendClient(baseUrl: String, private val apiKey: String) {
                                 status = item.optString("status"),
                                 createdBy = item.optInt("created_by"),
                                 createdAt = item.optString("created_at"),
+                                actedByLabel = item.optNullableString("acted_by_label"),
+                                forwardToLabel = item.optNullableString("forward_to_label"),
+                                cancelRequesterConfirmed = item.optBoolean("cancel_requester_confirmed", false),
+                                cancelAdminConfirmed = item.optBoolean("cancel_admin_confirmed", false),
+                                cancelAdminLabel = item.optNullableString("cancel_admin_label"),
                             ),
                         )
                     }

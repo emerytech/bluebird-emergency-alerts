@@ -38,6 +38,8 @@ from app.models.schemas import (
     IncidentListResponse,
     IncidentSummary,
     TeamAssistCreateRequest,
+    TeamAssistActionRequest,
+    TeamAssistCancelConfirmRequest,
     TeamAssistListResponse,
     TeamAssistSummary,
     BroadcastUpdateSummary,
@@ -571,6 +573,24 @@ async def _team_assist_target_user_ids(users: UserStore, assigned_team_ids: list
         return [u.id for u in active_users if u.id in selected]
     # Stage 2 baseline: fallback target is active admin responders.
     return [u.id for u in active_users if u.role == "admin"]
+
+
+def _to_team_assist_summary(item) -> TeamAssistSummary:
+    return TeamAssistSummary(
+        id=item.id,
+        type=item.type,
+        created_by=item.created_by,
+        assigned_team_ids=item.assigned_team_ids,
+        status=item.status,
+        created_at=item.created_at,
+        acted_by_user_id=item.acted_by_user_id,
+        acted_by_label=item.acted_by_label,
+        forward_to_user_id=item.forward_to_user_id,
+        forward_to_label=item.forward_to_label,
+        cancel_requester_confirmed=bool(item.cancel_requester_confirmed_at),
+        cancel_admin_confirmed=bool(item.cancel_admin_confirmed_at),
+        cancel_admin_label=item.cancel_admin_label,
+    )
 
 
 async def _push_tokens_for_scope(
@@ -2309,14 +2329,126 @@ async def create_team_assist(
         message=f"Team Assist: {team_assist.type}",
         target_user_ids=set(target_user_ids),
     )
-    return TeamAssistSummary(
-        id=team_assist.id,
-        type=team_assist.type,
-        created_by=team_assist.created_by,
-        assigned_team_ids=team_assist.assigned_team_ids,
-        status=team_assist.status,
-        created_at=team_assist.created_at,
+    return _to_team_assist_summary(team_assist)
+
+
+@router.post("/team-assist/{team_assist_id}/action", response_model=TeamAssistSummary)
+async def team_assist_action(
+    team_assist_id: int,
+    body: TeamAssistActionRequest,
+    request: Request,
+    _: None = Depends(require_api_key),
+) -> TeamAssistSummary:
+    users = _users(request)
+    actor_id = await _require_active_user_with_roles(users, body.user_id, roles={"admin"})
+    actor = await users.get_user(actor_id)
+    if actor is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Acting user not found")
+
+    existing = await _incident_store(request).get_team_assist(team_assist_id)
+    if existing is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Team assist not found")
+    if existing.status == "cancelled":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Team assist is already cancelled")
+
+    next_status = "acknowledged"
+    forward_to_user_id: Optional[int] = None
+    forward_to_label: Optional[str] = None
+    if body.action == "responding":
+        next_status = "responding"
+    elif body.action == "forward":
+        if body.forward_to_user_id is None:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="forward_to_user_id is required")
+        forward_user = await users.get_user(int(body.forward_to_user_id))
+        if forward_user is None or not forward_user.is_active:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Forward target user not found")
+        next_status = "forwarded"
+        forward_to_user_id = forward_user.id
+        forward_to_label = forward_user.name
+
+    updated = await _incident_store(request).update_team_assist_action(
+        team_assist_id=team_assist_id,
+        status=next_status,
+        acted_by_user_id=actor_id,
+        acted_by_label=actor.name,
+        forward_to_user_id=forward_to_user_id,
+        forward_to_label=forward_to_label,
     )
+    if updated is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Team assist not found")
+
+    await _incident_store(request).create_notification_log(
+        user_id=updated.created_by,
+        type_value="team_assist_action",
+        payload={
+            "team_assist_id": updated.id,
+            "action": body.action,
+            "status": updated.status,
+            "acted_by_user_id": actor.id,
+            "acted_by_label": actor.name,
+            "forward_to_user_id": forward_to_user_id,
+            "forward_to_label": forward_to_label,
+        },
+    )
+    if forward_to_user_id is not None:
+        await _incident_store(request).create_notification_log(
+            user_id=forward_to_user_id,
+            type_value="team_assist_forwarded",
+            payload={
+                "team_assist_id": updated.id,
+                "type": updated.type,
+                "forwarded_by_label": actor.name,
+            },
+        )
+    return _to_team_assist_summary(updated)
+
+
+@router.post("/team-assist/{team_assist_id}/cancel-confirm", response_model=TeamAssistSummary)
+async def team_assist_cancel_confirm(
+    team_assist_id: int,
+    body: TeamAssistCancelConfirmRequest,
+    request: Request,
+    _: None = Depends(require_api_key),
+) -> TeamAssistSummary:
+    users = _users(request)
+    actor_id = await _require_active_user_with_roles(users, body.user_id, roles={"admin", "teacher"})
+    actor = await users.get_user(actor_id)
+    if actor is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Acting user not found")
+
+    existing = await _incident_store(request).get_team_assist(team_assist_id)
+    if existing is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Team assist not found")
+    if existing.status == "cancelled":
+        return _to_team_assist_summary(existing)
+    if actor.role != "admin" and actor.id != existing.created_by:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only an admin or the initiating requester can confirm cancellation",
+        )
+
+    updated = await _incident_store(request).confirm_team_assist_cancel(
+        team_assist_id=team_assist_id,
+        actor_user_id=actor.id,
+        actor_role=actor.role,
+        actor_label=actor.name,
+    )
+    if updated is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Team assist not found")
+
+    await _incident_store(request).create_notification_log(
+        user_id=updated.created_by,
+        type_value="team_assist_cancel_confirmation",
+        payload={
+            "team_assist_id": updated.id,
+            "status": updated.status,
+            "confirmed_by_user_id": actor.id,
+            "confirmed_by_label": actor.name,
+            "requester_confirmed": bool(updated.cancel_requester_confirmed_at),
+            "admin_confirmed": bool(updated.cancel_admin_confirmed_at),
+        },
+    )
+    return _to_team_assist_summary(updated)
 
 
 @router.get("/team-assist/active", response_model=TeamAssistListResponse)
@@ -2326,19 +2458,7 @@ async def active_team_assists(
     _: None = Depends(require_api_key),
 ) -> TeamAssistListResponse:
     assists = await _incident_store(request).list_active_team_assists(limit=limit)
-    return TeamAssistListResponse(
-        team_assists=[
-            TeamAssistSummary(
-                id=item.id,
-                type=item.type,
-                created_by=item.created_by,
-                assigned_team_ids=item.assigned_team_ids,
-                status=item.status,
-                created_at=item.created_at,
-            )
-            for item in assists
-        ]
-    )
+    return TeamAssistListResponse(team_assists=[_to_team_assist_summary(item) for item in assists])
 
 
 @router.get("/users", response_model=UsersResponse)

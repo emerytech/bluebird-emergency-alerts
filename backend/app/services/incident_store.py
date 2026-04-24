@@ -30,6 +30,14 @@ class TeamAssistRecord:
     assigned_team_ids: list[int]
     status: str
     created_at: str
+    acted_by_user_id: Optional[int]
+    acted_by_label: Optional[str]
+    forward_to_user_id: Optional[int]
+    forward_to_label: Optional[str]
+    cancel_requester_confirmed_at: Optional[str]
+    cancel_admin_confirmed_at: Optional[str]
+    cancel_admin_user_id: Optional[int]
+    cancel_admin_label: Optional[str]
 
 
 @dataclass(frozen=True)
@@ -75,10 +83,19 @@ class IncidentStore:
                     created_by INTEGER NOT NULL,
                     assigned_team_ids_json TEXT NOT NULL DEFAULT '[]',
                     status TEXT NOT NULL,
-                    created_at TEXT NOT NULL
+                    created_at TEXT NOT NULL,
+                    acted_by_user_id INTEGER NULL,
+                    acted_by_label TEXT NULL,
+                    forward_to_user_id INTEGER NULL,
+                    forward_to_label TEXT NULL,
+                    cancel_requester_confirmed_at TEXT NULL,
+                    cancel_admin_confirmed_at TEXT NULL,
+                    cancel_admin_user_id INTEGER NULL,
+                    cancel_admin_label TEXT NULL
                 );
                 """
             )
+            self._migrate_team_assists_table(conn)
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS notification_logs (
@@ -90,6 +107,25 @@ class IncidentStore:
                 );
                 """
             )
+
+    def _migrate_team_assists_table(self, conn: sqlite3.Connection) -> None:
+        cols = {str(row[1]) for row in conn.execute("PRAGMA table_info(team_assists);").fetchall()}
+        if "acted_by_user_id" not in cols:
+            conn.execute("ALTER TABLE team_assists ADD COLUMN acted_by_user_id INTEGER NULL;")
+        if "acted_by_label" not in cols:
+            conn.execute("ALTER TABLE team_assists ADD COLUMN acted_by_label TEXT NULL;")
+        if "forward_to_user_id" not in cols:
+            conn.execute("ALTER TABLE team_assists ADD COLUMN forward_to_user_id INTEGER NULL;")
+        if "forward_to_label" not in cols:
+            conn.execute("ALTER TABLE team_assists ADD COLUMN forward_to_label TEXT NULL;")
+        if "cancel_requester_confirmed_at" not in cols:
+            conn.execute("ALTER TABLE team_assists ADD COLUMN cancel_requester_confirmed_at TEXT NULL;")
+        if "cancel_admin_confirmed_at" not in cols:
+            conn.execute("ALTER TABLE team_assists ADD COLUMN cancel_admin_confirmed_at TEXT NULL;")
+        if "cancel_admin_user_id" not in cols:
+            conn.execute("ALTER TABLE team_assists ADD COLUMN cancel_admin_user_id INTEGER NULL;")
+        if "cancel_admin_label" not in cols:
+            conn.execute("ALTER TABLE team_assists ADD COLUMN cancel_admin_label TEXT NULL;")
 
     def _create_incident_sync(
         self,
@@ -202,7 +238,21 @@ class IncidentStore:
             )
             row = conn.execute(
                 """
-                SELECT id, type, created_by, assigned_team_ids_json, status, created_at
+                SELECT
+                    id,
+                    type,
+                    created_by,
+                    assigned_team_ids_json,
+                    status,
+                    created_at,
+                    acted_by_user_id,
+                    acted_by_label,
+                    forward_to_user_id,
+                    forward_to_label,
+                    cancel_requester_confirmed_at,
+                    cancel_admin_confirmed_at,
+                    cancel_admin_user_id,
+                    cancel_admin_label
                 FROM team_assists
                 WHERE id = ?
                 LIMIT 1;
@@ -217,6 +267,14 @@ class IncidentStore:
             assigned_team_ids=[int(item) for item in json.loads(str(row[3]) or "[]")],
             status=str(row[4]),
             created_at=str(row[5]),
+            acted_by_user_id=int(row[6]) if row[6] is not None else None,
+            acted_by_label=str(row[7]) if row[7] is not None else None,
+            forward_to_user_id=int(row[8]) if row[8] is not None else None,
+            forward_to_label=str(row[9]) if row[9] is not None else None,
+            cancel_requester_confirmed_at=str(row[10]) if row[10] is not None else None,
+            cancel_admin_confirmed_at=str(row[11]) if row[11] is not None else None,
+            cancel_admin_user_id=int(row[12]) if row[12] is not None else None,
+            cancel_admin_label=str(row[13]) if row[13] is not None else None,
         )
 
     async def create_team_assist(
@@ -240,9 +298,23 @@ class IncidentStore:
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT id, type, created_by, assigned_team_ids_json, status, created_at
+                SELECT
+                    id,
+                    type,
+                    created_by,
+                    assigned_team_ids_json,
+                    status,
+                    created_at,
+                    acted_by_user_id,
+                    acted_by_label,
+                    forward_to_user_id,
+                    forward_to_label,
+                    cancel_requester_confirmed_at,
+                    cancel_admin_confirmed_at,
+                    cancel_admin_user_id,
+                    cancel_admin_label
                 FROM team_assists
-                WHERE status = 'active'
+                WHERE status NOT IN ('cancelled', 'resolved')
                 ORDER BY id DESC
                 LIMIT ?;
                 """,
@@ -256,12 +328,268 @@ class IncidentStore:
                 assigned_team_ids=[int(item) for item in json.loads(str(row[3]) or "[]")],
                 status=str(row[4]),
                 created_at=str(row[5]),
+                acted_by_user_id=int(row[6]) if row[6] is not None else None,
+                acted_by_label=str(row[7]) if row[7] is not None else None,
+                forward_to_user_id=int(row[8]) if row[8] is not None else None,
+                forward_to_label=str(row[9]) if row[9] is not None else None,
+                cancel_requester_confirmed_at=str(row[10]) if row[10] is not None else None,
+                cancel_admin_confirmed_at=str(row[11]) if row[11] is not None else None,
+                cancel_admin_user_id=int(row[12]) if row[12] is not None else None,
+                cancel_admin_label=str(row[13]) if row[13] is not None else None,
             )
             for row in rows
         ]
 
     async def list_active_team_assists(self, *, limit: int = 50) -> List[TeamAssistRecord]:
         return await anyio.to_thread.run_sync(self._list_active_team_assists_sync, int(limit))
+
+    def _team_assist_from_row(self, row: tuple[Any, ...]) -> TeamAssistRecord:
+        return TeamAssistRecord(
+            id=int(row[0]),
+            type=str(row[1]),
+            created_by=int(row[2]),
+            assigned_team_ids=[int(item) for item in json.loads(str(row[3]) or "[]")],
+            status=str(row[4]),
+            created_at=str(row[5]),
+            acted_by_user_id=int(row[6]) if row[6] is not None else None,
+            acted_by_label=str(row[7]) if row[7] is not None else None,
+            forward_to_user_id=int(row[8]) if row[8] is not None else None,
+            forward_to_label=str(row[9]) if row[9] is not None else None,
+            cancel_requester_confirmed_at=str(row[10]) if row[10] is not None else None,
+            cancel_admin_confirmed_at=str(row[11]) if row[11] is not None else None,
+            cancel_admin_user_id=int(row[12]) if row[12] is not None else None,
+            cancel_admin_label=str(row[13]) if row[13] is not None else None,
+        )
+
+    def _get_team_assist_sync(self, team_assist_id: int) -> Optional[TeamAssistRecord]:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT
+                    id,
+                    type,
+                    created_by,
+                    assigned_team_ids_json,
+                    status,
+                    created_at,
+                    acted_by_user_id,
+                    acted_by_label,
+                    forward_to_user_id,
+                    forward_to_label,
+                    cancel_requester_confirmed_at,
+                    cancel_admin_confirmed_at,
+                    cancel_admin_user_id,
+                    cancel_admin_label
+                FROM team_assists
+                WHERE id = ?
+                LIMIT 1;
+                """,
+                (int(team_assist_id),),
+            ).fetchone()
+        if row is None:
+            return None
+        return self._team_assist_from_row(row)
+
+    async def get_team_assist(self, team_assist_id: int) -> Optional[TeamAssistRecord]:
+        return await anyio.to_thread.run_sync(self._get_team_assist_sync, int(team_assist_id))
+
+    def _update_team_assist_action_sync(
+        self,
+        *,
+        team_assist_id: int,
+        status: str,
+        acted_by_user_id: int,
+        acted_by_label: str,
+        forward_to_user_id: Optional[int],
+        forward_to_label: Optional[str],
+    ) -> Optional[TeamAssistRecord]:
+        with self._connect() as conn:
+            cur = conn.execute(
+                """
+                UPDATE team_assists
+                SET
+                    status = ?,
+                    acted_by_user_id = ?,
+                    acted_by_label = ?,
+                    forward_to_user_id = ?,
+                    forward_to_label = ?
+                WHERE id = ?;
+                """,
+                (
+                    status,
+                    int(acted_by_user_id),
+                    acted_by_label,
+                    int(forward_to_user_id) if forward_to_user_id is not None else None,
+                    forward_to_label,
+                    int(team_assist_id),
+                ),
+            )
+            if cur.rowcount <= 0:
+                return None
+            row = conn.execute(
+                """
+                SELECT
+                    id,
+                    type,
+                    created_by,
+                    assigned_team_ids_json,
+                    status,
+                    created_at,
+                    acted_by_user_id,
+                    acted_by_label,
+                    forward_to_user_id,
+                    forward_to_label,
+                    cancel_requester_confirmed_at,
+                    cancel_admin_confirmed_at,
+                    cancel_admin_user_id,
+                    cancel_admin_label
+                FROM team_assists
+                WHERE id = ?
+                LIMIT 1;
+                """,
+                (int(team_assist_id),),
+            ).fetchone()
+        if row is None:
+            return None
+        return self._team_assist_from_row(row)
+
+    async def update_team_assist_action(
+        self,
+        *,
+        team_assist_id: int,
+        status: str,
+        acted_by_user_id: int,
+        acted_by_label: str,
+        forward_to_user_id: Optional[int],
+        forward_to_label: Optional[str],
+    ) -> Optional[TeamAssistRecord]:
+        return await anyio.to_thread.run_sync(
+            lambda: self._update_team_assist_action_sync(
+                team_assist_id=int(team_assist_id),
+                status=status,
+                acted_by_user_id=int(acted_by_user_id),
+                acted_by_label=acted_by_label,
+                forward_to_user_id=int(forward_to_user_id) if forward_to_user_id is not None else None,
+                forward_to_label=forward_to_label,
+            )
+        )
+
+    def _confirm_team_assist_cancel_sync(
+        self,
+        *,
+        team_assist_id: int,
+        actor_user_id: int,
+        actor_role: str,
+        actor_label: str,
+    ) -> Optional[TeamAssistRecord]:
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT
+                    id,
+                    type,
+                    created_by,
+                    assigned_team_ids_json,
+                    status,
+                    created_at,
+                    acted_by_user_id,
+                    acted_by_label,
+                    forward_to_user_id,
+                    forward_to_label,
+                    cancel_requester_confirmed_at,
+                    cancel_admin_confirmed_at,
+                    cancel_admin_user_id,
+                    cancel_admin_label
+                FROM team_assists
+                WHERE id = ?
+                LIMIT 1;
+                """,
+                (int(team_assist_id),),
+            ).fetchone()
+            if row is None:
+                return None
+            current = self._team_assist_from_row(row)
+            requester_confirmed_at = current.cancel_requester_confirmed_at
+            admin_confirmed_at = current.cancel_admin_confirmed_at
+            admin_user_id = current.cancel_admin_user_id
+            admin_label = current.cancel_admin_label
+
+            if int(actor_user_id) == int(current.created_by):
+                requester_confirmed_at = requester_confirmed_at or now
+            if actor_role.lower() == "admin" and int(actor_user_id) != int(current.created_by):
+                admin_confirmed_at = admin_confirmed_at or now
+                admin_user_id = int(actor_user_id)
+                admin_label = actor_label
+
+            next_status = "cancelled" if requester_confirmed_at and admin_confirmed_at else "cancel_pending"
+            conn.execute(
+                """
+                UPDATE team_assists
+                SET
+                    status = ?,
+                    cancel_requester_confirmed_at = ?,
+                    cancel_admin_confirmed_at = ?,
+                    cancel_admin_user_id = ?,
+                    cancel_admin_label = ?,
+                    acted_by_user_id = ?,
+                    acted_by_label = ?
+                WHERE id = ?;
+                """,
+                (
+                    next_status,
+                    requester_confirmed_at,
+                    admin_confirmed_at,
+                    int(admin_user_id) if admin_user_id is not None else None,
+                    admin_label,
+                    int(actor_user_id),
+                    actor_label,
+                    int(team_assist_id),
+                ),
+            )
+            updated_row = conn.execute(
+                """
+                SELECT
+                    id,
+                    type,
+                    created_by,
+                    assigned_team_ids_json,
+                    status,
+                    created_at,
+                    acted_by_user_id,
+                    acted_by_label,
+                    forward_to_user_id,
+                    forward_to_label,
+                    cancel_requester_confirmed_at,
+                    cancel_admin_confirmed_at,
+                    cancel_admin_user_id,
+                    cancel_admin_label
+                FROM team_assists
+                WHERE id = ?
+                LIMIT 1;
+                """,
+                (int(team_assist_id),),
+            ).fetchone()
+        if updated_row is None:
+            return None
+        return self._team_assist_from_row(updated_row)
+
+    async def confirm_team_assist_cancel(
+        self,
+        *,
+        team_assist_id: int,
+        actor_user_id: int,
+        actor_role: str,
+        actor_label: str,
+    ) -> Optional[TeamAssistRecord]:
+        return await anyio.to_thread.run_sync(
+            lambda: self._confirm_team_assist_cancel_sync(
+                team_assist_id=int(team_assist_id),
+                actor_user_id=int(actor_user_id),
+                actor_role=actor_role,
+                actor_label=actor_label,
+            )
+        )
 
     def _create_notification_log_sync(self, *, user_id: Optional[int], type_value: str, payload: dict[str, Any]) -> NotificationLogRecord:
         timestamp = datetime.now(timezone.utc).isoformat()

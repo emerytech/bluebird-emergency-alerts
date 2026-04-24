@@ -87,6 +87,61 @@ struct APIClient {
         return try JSONDecoder().decode(TeamAssistListResponse.self, from: data)
     }
 
+    func createTeamAssist(userID: Int, type: String) async throws -> TeamAssistSummary {
+        let url = baseURL.appendingPathComponent("team-assist/create")
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        withAPIKey(&request)
+        request.httpBody = try JSONEncoder().encode(TeamAssistCreateRequest(userID: userID, type: type))
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try requireSuccess(response: response, data: data)
+        return try JSONDecoder().decode(TeamAssistSummary.self, from: data)
+    }
+
+    func updateTeamAssist(
+        teamAssistID: Int,
+        actorUserID: Int,
+        action: String,
+        forwardToUserID: Int? = nil
+    ) async throws -> TeamAssistSummary {
+        let url = baseURL.appendingPathComponent("team-assist/\(teamAssistID)/action")
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        withAPIKey(&request)
+        request.httpBody = try JSONEncoder().encode(
+            TeamAssistActionPayload(userID: actorUserID, action: action, forwardToUserID: forwardToUserID)
+        )
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try requireSuccess(response: response, data: data)
+        return try JSONDecoder().decode(TeamAssistSummary.self, from: data)
+    }
+
+    func confirmTeamAssistCancel(teamAssistID: Int, actorUserID: Int) async throws -> TeamAssistSummary {
+        let url = baseURL.appendingPathComponent("team-assist/\(teamAssistID)/cancel-confirm")
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        withAPIKey(&request)
+        request.httpBody = try JSONEncoder().encode(TeamAssistCancelConfirmPayload(userID: actorUserID))
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try requireSuccess(response: response, data: data)
+        return try JSONDecoder().decode(TeamAssistSummary.self, from: data)
+    }
+
+    func requestQuietPeriod(userID: Int, reason: String?) async throws -> QuietPeriodRequestResponse {
+        let url = baseURL.appendingPathComponent("quiet-periods/request")
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        withAPIKey(&request)
+        request.httpBody = try JSONEncoder().encode(QuietPeriodRequestPayload(userID: userID, reason: reason))
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try requireSuccess(response: response, data: data)
+        return try JSONDecoder().decode(QuietPeriodRequestResponse.self, from: data)
+    }
+
     func listSchools() async throws -> SchoolsCatalogResponse {
         let url = Config.backendBaseURL.appendingPathComponent("schools")
         let (data, response) = try await URLSession.shared.data(from: url)
@@ -127,6 +182,19 @@ struct APIClient {
         let users = try JSONDecoder().decode(UsersResponse.self, from: data).users
         return users
             .filter { $0.isActive && $0.role.lowercased() != "admin" }
+            .map { MessageRecipient(userID: $0.userID, label: "\($0.name) (\($0.role))") }
+            .sorted { $0.label.localizedCaseInsensitiveCompare($1.label) == .orderedAscending }
+    }
+
+    func listTeamAssistForwardRecipients() async throws -> [MessageRecipient] {
+        let url = baseURL.appendingPathComponent("users")
+        var request = URLRequest(url: url)
+        withAPIKey(&request)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try requireSuccess(response: response, data: data)
+        let users = try JSONDecoder().decode(UsersResponse.self, from: data).users
+        return users
+            .filter { $0.isActive }
             .map { MessageRecipient(userID: $0.userID, label: "\($0.name) (\($0.role))") }
             .sorted { $0.label.localizedCaseInsensitiveCompare($1.label) == .orderedAscending }
     }
@@ -318,6 +386,13 @@ struct TeamAssistSummary: Decodable, Identifiable {
     let status: String
     let createdBy: Int
     let createdAt: String
+    let actedByUserID: Int?
+    let actedByLabel: String?
+    let forwardToUserID: Int?
+    let forwardToLabel: String?
+    let cancelRequesterConfirmed: Bool
+    let cancelAdminConfirmed: Bool
+    let cancelAdminLabel: String?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -325,6 +400,13 @@ struct TeamAssistSummary: Decodable, Identifiable {
         case status
         case createdBy = "created_by"
         case createdAt = "created_at"
+        case actedByUserID = "acted_by_user_id"
+        case actedByLabel = "acted_by_label"
+        case forwardToUserID = "forward_to_user_id"
+        case forwardToLabel = "forward_to_label"
+        case cancelRequesterConfirmed = "cancel_requester_confirmed"
+        case cancelAdminConfirmed = "cancel_admin_confirmed"
+        case cancelAdminLabel = "cancel_admin_label"
     }
 }
 
@@ -390,6 +472,46 @@ private struct AdminSendMessageRequest: Encodable {
     }
 }
 
+private struct TeamAssistCreateRequest: Encodable {
+    let userID: Int
+    let type: String
+
+    enum CodingKeys: String, CodingKey {
+        case userID = "user_id"
+        case type
+    }
+}
+
+private struct TeamAssistActionPayload: Encodable {
+    let userID: Int
+    let action: String
+    let forwardToUserID: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case userID = "user_id"
+        case action
+        case forwardToUserID = "forward_to_user_id"
+    }
+}
+
+private struct TeamAssistCancelConfirmPayload: Encodable {
+    let userID: Int
+
+    enum CodingKeys: String, CodingKey {
+        case userID = "user_id"
+    }
+}
+
+private struct QuietPeriodRequestPayload: Encodable {
+    let userID: Int
+    let reason: String?
+
+    enum CodingKeys: String, CodingKey {
+        case userID = "user_id"
+        case reason
+    }
+}
+
 struct AdminMessageResponse: Decodable {
     let messageID: Int
     let createdAt: String
@@ -409,6 +531,16 @@ struct AdminSendMessageResponse: Decodable {
     enum CodingKeys: String, CodingKey {
         case sentCount = "sent_count"
         case recipientScope = "recipient_scope"
+    }
+}
+
+struct QuietPeriodRequestResponse: Decodable {
+    let requestID: Int?
+    let status: String?
+
+    enum CodingKeys: String, CodingKey {
+        case requestID = "request_id"
+        case status
     }
 }
 

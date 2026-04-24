@@ -435,7 +435,32 @@ class TeamAssistSummary(BaseModel):
     assigned_team_ids: List[int] = Field(default_factory=list)
     status: str
     created_at: str
+    acted_by_user_id: Optional[int] = None
+    acted_by_label: Optional[str] = None
+    forward_to_user_id: Optional[int] = None
+    forward_to_label: Optional[str] = None
+    cancel_requester_confirmed: bool = False
+    cancel_admin_confirmed: bool = False
+    cancel_admin_label: Optional[str] = None
 
 
 class TeamAssistListResponse(BaseModel):
     team_assists: List[TeamAssistSummary]
+
+
+class TeamAssistActionRequest(BaseModel):
+    user_id: int
+    action: str = Field(..., min_length=1, max_length=40)
+    forward_to_user_id: Optional[int] = None
+
+    @field_validator("action")
+    @classmethod
+    def normalize_action(cls, v: str) -> str:
+        normalized = v.strip().lower()
+        if normalized not in {"acknowledge", "responding", "forward"}:
+            raise ValueError("action must be acknowledge, responding, or forward")
+        return normalized
+
+
+class TeamAssistCancelConfirmRequest(BaseModel):
+    user_id: int
