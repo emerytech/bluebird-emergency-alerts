@@ -11,6 +11,7 @@ from app.api.routes import router
 from app.core.config import Settings
 from app.core.logging import configure_logging
 from app.services.apns import APNsClient
+from app.services.cloudflare_dns import CloudflareDNSClient
 from app.services.fcm import FCMClient
 from app.services.platform_admin_store import PlatformAdminStore
 from app.services.school_registry import SchoolRegistry
@@ -30,6 +31,8 @@ async def lifespan(app: FastAPI):
 
     apns_client = APNsClient(settings)
     await apns_client.start()
+    cloudflare_dns = CloudflareDNSClient(settings)
+    await cloudflare_dns.start()
     fcm_client = FCMClient(settings)
     await fcm_client.start()
     twilio_sms = TwilioSMSClient(settings)
@@ -54,6 +57,7 @@ async def lifespan(app: FastAPI):
 
     app.state.settings = settings
     app.state.apns_client = apns_client
+    app.state.cloudflare_dns = cloudflare_dns
     app.state.fcm_client = fcm_client
     app.state.twilio_sms = twilio_sms
     app.state.platform_admin_store = platform_admin_store
@@ -63,6 +67,7 @@ async def lifespan(app: FastAPI):
     yield
 
     await apns_client.stop()
+    await cloudflare_dns.stop()
     await fcm_client.stop()
     await twilio_sms.stop()
 

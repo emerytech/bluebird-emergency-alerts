@@ -42,6 +42,7 @@ from app.services.alert_broadcaster import BroadcastPlan, AlertBroadcaster
 from app.services.alarm_store import AlarmStore
 from app.services.apns import APNsClient
 from app.services.alert_log import AlertLog
+from app.services.cloudflare_dns import CloudflareDNSClient, CloudflareDNSError
 from app.services.device_registry import DeviceRegistry
 from app.services.fcm import FCMClient
 from app.services.quiet_period_store import QuietPeriodStore
@@ -68,6 +69,10 @@ def _registry(req: Request) -> DeviceRegistry:
 
 def _apns(req: Request) -> APNsClient:
     return req.app.state.apns_client  # type: ignore[attr-defined]
+
+
+def _cloudflare_dns(req: Request) -> CloudflareDNSClient:
+    return req.app.state.cloudflare_dns  # type: ignore[attr-defined]
 
 def _alarm_store(req: Request) -> AlarmStore:
     return req.state.tenant.alarm_store  # type: ignore[attr-defined]
@@ -513,6 +518,7 @@ async def super_admin_dashboard(request: Request) -> HTMLResponse:
             base_domain=request.app.state.settings.BASE_DOMAIN,  # type: ignore[attr-defined]
             schools=schools,
             git_pull_configured=bool(request.app.state.settings.SERVER_GIT_PULL_COMMAND),  # type: ignore[attr-defined]
+            cloudflare_dns_configured=bool(request.app.state.settings.cloudflare_dns_is_configured()),  # type: ignore[attr-defined]
             flash_message=flash_message,
             flash_error=flash_error,
         )
@@ -541,9 +547,35 @@ async def super_admin_create_school(
     except Exception as exc:
         _set_flash(request, error=f"Could not create school: {exc}")
         return RedirectResponse(url="/super-admin#create-school", status_code=status.HTTP_303_SEE_OTHER)
+    dns_client = _cloudflare_dns(request)
+    admin_url = f"https://{school.slug}.{request.app.state.settings.BASE_DOMAIN}/admin"  # type: ignore[attr-defined]
+    if not dns_client.is_configured():
+        _set_flash(
+            request,
+            message=(
+                f"Created school {school.name}. Admin URL: {admin_url}. "
+                "Cloudflare DNS automation is not configured yet, so create the DNS record manually."
+            ),
+        )
+        return RedirectResponse(url="/super-admin#schools", status_code=status.HTTP_303_SEE_OTHER)
+    try:
+        dns_result = await dns_client.create_or_update_school_dns(school.slug)
+    except CloudflareDNSError as exc:
+        _set_flash(
+            request,
+            error=(
+                f"Created school {school.name}. Admin URL: {admin_url}. "
+                f"Cloudflare DNS could not be provisioned: {exc}"
+            ),
+        )
+        return RedirectResponse(url="/super-admin#schools", status_code=status.HTTP_303_SEE_OTHER)
+    dns_action = "created" if dns_result.created else "updated"
     _set_flash(
         request,
-        message=f"Created school {school.name}. Admin URL: https://{school.slug}.{request.app.state.settings.BASE_DOMAIN}/admin",  # type: ignore[attr-defined]
+        message=(
+            f"Created school {school.name}. Admin URL: {admin_url}. "
+            f"Cloudflare DNS {dns_action} for {dns_result.hostname}."
+        ),
     )
     return RedirectResponse(url="/super-admin#schools", status_code=status.HTTP_303_SEE_OTHER)
 

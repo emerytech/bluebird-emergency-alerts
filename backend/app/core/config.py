@@ -35,6 +35,13 @@ class Settings(BaseSettings):
     SUPERADMIN_USERNAME: str = "temery"
     SUPERADMIN_PASSWORD: str = "Password@123"
 
+    # Cloudflare DNS automation
+    CLOUDFLARE_API_TOKEN: Optional[str] = None
+    CLOUDFLARE_ZONE_ID: Optional[str] = None
+    CLOUDFLARE_DNS_BASE_HOSTNAME: Optional[str] = None
+    CLOUDFLARE_TUNNEL_CNAME_TARGET: Optional[str] = None
+    CLOUDFLARE_DNS_PROXIED: bool = True
+
     # APNs
     APNS_USE_SANDBOX: bool = True
     APNS_TEAM_ID: Optional[str] = None
@@ -84,3 +91,16 @@ class Settings(BaseSettings):
 
     def fcm_is_configured(self) -> bool:
         return bool(self.FCM_SERVICE_ACCOUNT_JSON)
+
+    def cloudflare_dns_is_configured(self) -> bool:
+        return all(
+            [
+                self.CLOUDFLARE_API_TOKEN,
+                self.CLOUDFLARE_ZONE_ID,
+                self.CLOUDFLARE_TUNNEL_CNAME_TARGET,
+            ]
+        )
+
+    @property
+    def cloudflare_dns_base_hostname(self) -> str:
+        return (self.CLOUDFLARE_DNS_BASE_HOSTNAME or self.BASE_DOMAIN).strip().lower()

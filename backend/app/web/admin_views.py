@@ -415,6 +415,7 @@ def render_super_admin_page(
     base_domain: str,
     schools: Sequence[SchoolRecord],
     git_pull_configured: bool,
+    cloudflare_dns_configured: bool,
     flash_message: Optional[str] = None,
     flash_error: Optional[str] = None,
 ) -> str:
@@ -467,6 +468,7 @@ def render_super_admin_page(
             <div class="status-row">
               <span class="status-pill ok"><strong>Base domain</strong>{escape(base_domain)}</span>
               <span class="status-pill"><strong>Schools</strong>{len(schools)}</span>
+              <span class="status-pill {'ok' if cloudflare_dns_configured else 'danger'}"><strong>Cloudflare DNS</strong>{'configured' if cloudflare_dns_configured else 'not configured'}</span>
               <span class="status-pill {'ok' if git_pull_configured else 'danger'}"><strong>Git pull</strong>{'configured' if git_pull_configured else 'not configured'}</span>
             </div>
           </div>
@@ -482,7 +484,7 @@ def render_super_admin_page(
             <div>
               <p class="eyebrow">Provisioning</p>
               <h2>Create a new school</h2>
-              <p class="card-copy">This creates the school registry entry and reserves its subdomain. The first school admin is still created from that school's own admin portal.</p>
+              <p class="card-copy">This creates the school registry entry and, when configured, also creates the Cloudflare DNS record for that school's subdomain. The first school admin is still created from that school's own admin portal.</p>
             </div>
           </div>
           <form method="post" action="/super-admin/schools/create" class="stack">
