@@ -7,6 +7,7 @@ import socket
 import sys
 import time
 from datetime import datetime, timezone
+from html import escape
 from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Form, Query, Request
