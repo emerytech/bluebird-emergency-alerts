@@ -4,19 +4,17 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
 from fastapi import FastAPI
+from fastapi.responses import PlainTextResponse
 from starlette.middleware.sessions import SessionMiddleware
 
 from app.api.routes import router
 from app.core.config import Settings
 from app.core.logging import configure_logging
-from app.services.alert_broadcaster import AlertBroadcaster
 from app.services.apns import APNsClient
-from app.services.alert_log import AlertLog
-from app.services.alarm_store import AlarmStore
-from app.services.device_registry import DeviceRegistry
 from app.services.fcm import FCMClient
+from app.services.school_registry import SchoolRegistry
+from app.services.tenant_manager import TenantManager
 from app.services.twilio_sms import TwilioSMSClient
-from app.services.user_store import UserStore
 
 
 settings = Settings()
@@ -29,28 +27,31 @@ async def lifespan(app: FastAPI):
     # Load environment/config first so logging uses the intended level.
     configure_logging(settings.LOG_LEVEL)
 
-    # Core services (simple + explicit for reliability).
-    device_registry = DeviceRegistry(settings.DB_PATH)
-    alert_log = AlertLog(settings.DB_PATH)
-    alarm_store = AlarmStore(settings.DB_PATH)
     apns_client = APNsClient(settings)
     await apns_client.start()
     fcm_client = FCMClient(settings)
     await fcm_client.start()
-    user_store = UserStore(settings.DB_PATH)
     twilio_sms = TwilioSMSClient(settings)
     await twilio_sms.start()
-    broadcaster = AlertBroadcaster(apns=apns_client, fcm=fcm_client, twilio=twilio_sms, alert_log=alert_log)
+    school_registry = SchoolRegistry(settings.PLATFORM_DB_PATH)
+    await school_registry.ensure_school(
+        slug=settings.DEFAULT_SCHOOL_SLUG,
+        name=settings.DEFAULT_SCHOOL_NAME,
+    )
+    tenant_manager = TenantManager(
+        settings=settings,
+        school_registry=school_registry,
+        apns=apns_client,
+        fcm=fcm_client,
+        twilio=twilio_sms,
+    )
 
     app.state.settings = settings
-    app.state.device_registry = device_registry
-    app.state.alert_log = alert_log
-    app.state.alarm_store = alarm_store
     app.state.apns_client = apns_client
     app.state.fcm_client = fcm_client
-    app.state.user_store = user_store
     app.state.twilio_sms = twilio_sms
-    app.state.broadcaster = broadcaster
+    app.state.school_registry = school_registry
+    app.state.tenant_manager = tenant_manager
 
     yield
 
@@ -65,4 +66,18 @@ app = FastAPI(
     lifespan=lifespan,
 )
 app.add_middleware(SessionMiddleware, secret_key=settings.SESSION_SECRET, same_site="lax", https_only=False)
+
+
+@app.middleware("http")
+async def school_context_middleware(request, call_next):
+    school = request.app.state.tenant_manager.school_for_host(request.headers.get("host", ""))
+    if school is None:
+        return PlainTextResponse("Unknown school subdomain.", status_code=404)
+    request.state.school_slug = school.slug
+    request.state.school = school
+    request.state.tenant = request.app.state.tenant_manager.get(school)
+    response = await call_next(request)
+    return response
+
+
 app.include_router(router)

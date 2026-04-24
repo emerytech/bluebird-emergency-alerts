@@ -159,11 +159,18 @@ class UserStore:
     async def list_users(self) -> List[UserRecord]:
         return await anyio.to_thread.run_sync(self._list_users_sync)
 
-    def _list_sms_targets_sync(self, roles: Optional[List[str]]) -> List[str]:
+    def _list_sms_targets_sync(self, roles: Optional[List[str]], excluded_user_ids: Optional[List[int]]) -> List[str]:
         roles = roles or []
+        excluded_user_ids = excluded_user_ids or []
         with self._connect() as conn:
             if roles:
                 placeholders = ",".join(["?"] * len(roles))
+                excluded_clause = ""
+                excluded_params: tuple[object, ...] = ()
+                if excluded_user_ids:
+                    excluded_placeholders = ",".join(["?"] * len(excluded_user_ids))
+                    excluded_clause = f" AND id NOT IN ({excluded_placeholders})"
+                    excluded_params = tuple(int(v) for v in excluded_user_ids)
                 rows = conn.execute(
                     f"""
                     SELECT phone_e164
@@ -171,29 +178,38 @@ class UserStore:
                     WHERE is_active = 1
                       AND phone_e164 IS NOT NULL
                       AND role IN ({placeholders})
+                      {excluded_clause}
                     ORDER BY id ASC;
                     """,
-                    tuple(roles),
+                    tuple(roles) + excluded_params,
                 ).fetchall()
             else:
+                excluded_clause = ""
+                excluded_params = ()
+                if excluded_user_ids:
+                    excluded_placeholders = ",".join(["?"] * len(excluded_user_ids))
+                    excluded_clause = f" AND id NOT IN ({excluded_placeholders})"
+                    excluded_params = tuple(int(v) for v in excluded_user_ids)
                 rows = conn.execute(
-                    """
+                    f"""
                     SELECT phone_e164
                     FROM users
                     WHERE is_active = 1
                       AND phone_e164 IS NOT NULL
+                      {excluded_clause}
                     ORDER BY id ASC;
-                    """
+                    """,
+                    excluded_params,
                 ).fetchall()
 
         return [str(row[0]) for row in rows if row and row[0]]
 
-    async def list_sms_targets(self, *, roles: Optional[List[str]] = None) -> List[str]:
+    async def list_sms_targets(self, *, roles: Optional[List[str]] = None, excluded_user_ids: Optional[List[int]] = None) -> List[str]:
         """
         Returns phone numbers for outbound SMS.
         """
 
-        return await anyio.to_thread.run_sync(self._list_sms_targets_sync, roles)
+        return await anyio.to_thread.run_sync(self._list_sms_targets_sync, roles, excluded_user_ids)
 
     def _exists_sync(self, user_id: int) -> bool:
         with self._connect() as conn:

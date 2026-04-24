@@ -6,6 +6,7 @@ import os
 import socket
 import sys
 import time
+import hmac
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -18,8 +19,10 @@ from app.models.schemas import (
     AlarmActivateRequest,
     AlarmDeactivateRequest,
     AlarmStatusResponse,
+    AdminBroadcastRequest,
     AlertsResponse,
     AlertSummary,
+    BroadcastUpdateSummary,
     CreateUserRequest,
     DevicesResponse,
     DeviceSummary,
@@ -27,8 +30,12 @@ from app.models.schemas import (
     MobileLoginResponse,
     PanicRequest,
     PanicResponse,
+    QuietPeriodRequestCreate,
+    QuietPeriodSummary,
     RegisterDeviceRequest,
     RegisterDeviceResponse,
+    ReportRequest,
+    ReportResponse,
     UserSummary,
     UsersResponse,
 )
@@ -38,8 +45,17 @@ from app.services.apns import APNsClient
 from app.services.alert_log import AlertLog
 from app.services.device_registry import DeviceRegistry
 from app.services.fcm import FCMClient
+from app.services.quiet_period_store import QuietPeriodStore
+from app.services.report_store import ReportStore
+from app.services.school_registry import SchoolRegistry
 from app.services.user_store import UserStore
-from app.web.admin_views import render_admin_page, render_change_password_page, render_login_page
+from app.web.admin_views import (
+    render_admin_page,
+    render_change_password_page,
+    render_login_page,
+    render_super_admin_login_page,
+    render_super_admin_page,
+)
 
 
 router = APIRouter()
@@ -47,28 +63,40 @@ logger = logging.getLogger("bluebird.routes")
 
 
 def _registry(req: Request) -> DeviceRegistry:
-    return req.app.state.device_registry  # type: ignore[attr-defined]
+    return req.state.tenant.device_registry  # type: ignore[attr-defined]
 
 
 def _apns(req: Request) -> APNsClient:
     return req.app.state.apns_client  # type: ignore[attr-defined]
 
 def _alarm_store(req: Request) -> AlarmStore:
-    return req.app.state.alarm_store  # type: ignore[attr-defined]
+    return req.state.tenant.alarm_store  # type: ignore[attr-defined]
 
 
 def _fcm(req: Request) -> FCMClient:
     return req.app.state.fcm_client  # type: ignore[attr-defined]
 
 
+def _reports(req: Request) -> ReportStore:
+    return req.state.tenant.report_store  # type: ignore[attr-defined]
+
+
+def _quiet_periods(req: Request) -> QuietPeriodStore:
+    return req.state.tenant.quiet_period_store  # type: ignore[attr-defined]
+
+
 def _alert_log(req: Request) -> AlertLog:
-    return req.app.state.alert_log  # type: ignore[attr-defined]
+    return req.state.tenant.alert_log  # type: ignore[attr-defined]
 
 def _users(req: Request) -> UserStore:
-    return req.app.state.user_store  # type: ignore[attr-defined]
+    return req.state.tenant.user_store  # type: ignore[attr-defined]
 
 def _broadcaster(req: Request) -> AlertBroadcaster:
-    return req.app.state.broadcaster  # type: ignore[attr-defined]
+    return req.state.tenant.broadcaster  # type: ignore[attr-defined]
+
+
+def _schools(req: Request) -> SchoolRegistry:
+    return req.app.state.school_registry  # type: ignore[attr-defined]
 
 
 def _session_user_id(request: Request) -> Optional[int]:
@@ -85,6 +113,15 @@ def _pop_flash(request: Request) -> tuple[Optional[str], Optional[str]]:
     message = str(request.session.pop("admin_flash_message", "") or "") or None
     error = str(request.session.pop("admin_flash_error", "") or "") or None
     return message, error
+
+
+def _super_admin_ok(request: Request) -> bool:
+    return bool(request.session.get("super_admin_ok"))
+
+
+def _require_super_admin(request: Request) -> None:
+    if not _super_admin_ok(request):
+        raise HTTPException(status_code=status.HTTP_303_SEE_OTHER, headers={"Location": "/super-admin/login"})
 
 
 async def _require_dashboard_admin(request: Request) -> UserStore:
@@ -137,6 +174,7 @@ async def mobile_login(body: MobileLoginRequest, request: Request) -> MobileLogi
             detail="Invalid username or password",
         )
     await _users(request).mark_login(user.id)
+    quiet_period = await _quiet_periods(request).active_for_user(user_id=user.id)
     return MobileLoginResponse(
         user_id=user.id,
         name=user.name,
@@ -144,12 +182,14 @@ async def mobile_login(body: MobileLoginRequest, request: Request) -> MobileLogi
         login_name=user.login_name or body.login_name,
         must_change_password=user.must_change_password,
         can_deactivate_alarm=user.role == "admin",
+        quiet_period_expires_at=quiet_period.expires_at if quiet_period else None,
     )
 
 
 @router.get("/alarm/status", response_model=AlarmStatusResponse)
 async def alarm_status(request: Request) -> AlarmStatusResponse:
     state = await _alarm_store(request).get_state()
+    broadcasts = await _reports(request).list_broadcast_updates(limit=5)
     return AlarmStatusResponse(
         is_active=state.is_active,
         message=state.message,
@@ -157,6 +197,15 @@ async def alarm_status(request: Request) -> AlarmStatusResponse:
         activated_by_user_id=state.activated_by_user_id,
         deactivated_at=state.deactivated_at,
         deactivated_by_user_id=state.deactivated_by_user_id,
+        broadcasts=[
+            BroadcastUpdateSummary(
+                update_id=item.id,
+                created_at=item.created_at,
+                admin_user_id=item.admin_user_id,
+                message=item.message,
+            )
+            for item in broadcasts
+        ],
     )
 
 
@@ -180,11 +229,12 @@ async def activate_alarm(
     )
     state = await _alarm_store(request).activate(message=body.message, activated_by_user_id=triggered_by_user_id)
 
+    paused_user_ids = set(await _quiet_periods(request).active_user_ids())
     apns_devices = await _registry(request).list_by_provider("apns")
     fcm_devices = await _registry(request).list_by_provider("fcm")
-    apns_tokens = [device.token for device in apns_devices]
-    fcm_tokens = [device.token for device in fcm_devices]
-    sms_numbers = await users.list_sms_targets()
+    apns_tokens = [device.token for device in apns_devices if device.user_id is None or device.user_id not in paused_user_ids]
+    fcm_tokens = [device.token for device in fcm_devices if device.user_id is None or device.user_id not in paused_user_ids]
+    sms_numbers = await users.list_sms_targets(excluded_user_ids=list(paused_user_ids))
     plan = BroadcastPlan(apns_tokens=apns_tokens, fcm_tokens=fcm_tokens, sms_numbers=sms_numbers)
     background_tasks.add_task(_broadcaster(request).broadcast_panic, alert_id=alert_id, message=body.message, plan=plan)
 
@@ -262,13 +312,21 @@ async def admin_dashboard(request: Request) -> HTMLResponse:
     alerts = await _alert_log(request).list_recent(limit=20)
     users = await _users(request).list_users()
     alarm_state = await _alarm_store(request).get_state()
+    reports = await _reports(request).list_reports(limit=25)
+    broadcasts = await _reports(request).list_broadcast_updates(limit=10)
+    quiet_periods = await _quiet_periods(request).list_recent(limit=25)
     flash_message, flash_error = _pop_flash(request)
     html = render_admin_page(
+        school_name=request.state.school.name,
+        school_slug=request.state.school.slug,
         current_user=request.state.admin_user,  # type: ignore[attr-defined]
         alerts=alerts,
         devices=devices,
         users=users,
         alarm_state=alarm_state,
+        reports=reports,
+        broadcasts=broadcasts,
+        quiet_periods=quiet_periods,
         apns_configured=_apns(request).is_configured(),
         twilio_configured=_broadcaster(request).twilio_configured(),
         server_info=_build_server_info(request),
@@ -291,6 +349,8 @@ async def admin_login_page(request: Request) -> HTMLResponse:
             message=flash_message,
             error=flash_error,
             setup_mode=setup_mode,
+            school_name=request.state.school.name,
+            school_slug=request.state.school.slug,
         )
     )
 
@@ -341,6 +401,81 @@ async def admin_login(
 async def admin_logout(request: Request) -> RedirectResponse:
     request.session.clear()
     return RedirectResponse(url="/admin/login", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.get("/super-admin/login", response_class=HTMLResponse, include_in_schema=False)
+async def super_admin_login_page(request: Request) -> HTMLResponse:
+    if _super_admin_ok(request):
+        return RedirectResponse(url="/super-admin", status_code=status.HTTP_303_SEE_OTHER)
+    flash_message, flash_error = _pop_flash(request)
+    return HTMLResponse(render_super_admin_login_page(message=flash_message, error=flash_error))
+
+
+@router.post("/super-admin/login", include_in_schema=False)
+async def super_admin_login(
+    request: Request,
+    login_name: str = Form(...),
+    password: str = Form(...),
+) -> RedirectResponse:
+    settings = request.app.state.settings  # type: ignore[attr-defined]
+    ok_user = hmac.compare_digest(login_name.strip(), settings.SUPERADMIN_USERNAME)
+    ok_pass = hmac.compare_digest(password, settings.SUPERADMIN_PASSWORD)
+    if not (ok_user and ok_pass):
+        _set_flash(request, error="Invalid super admin credentials.")
+        return RedirectResponse(url="/super-admin/login", status_code=status.HTTP_303_SEE_OTHER)
+    request.session["super_admin_ok"] = True
+    _set_flash(request, message="Signed in to super admin.")
+    return RedirectResponse(url="/super-admin", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.post("/super-admin/logout", include_in_schema=False)
+async def super_admin_logout(request: Request) -> RedirectResponse:
+    request.session.pop("super_admin_ok", None)
+    return RedirectResponse(url="/super-admin/login", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.get("/super-admin", response_class=HTMLResponse, include_in_schema=False)
+async def super_admin_dashboard(request: Request) -> HTMLResponse:
+    _require_super_admin(request)
+    flash_message, flash_error = _pop_flash(request)
+    schools = await _schools(request).list_schools()
+    return HTMLResponse(
+        render_super_admin_page(
+            base_domain=request.app.state.settings.BASE_DOMAIN,  # type: ignore[attr-defined]
+            schools=schools,
+            flash_message=flash_message,
+            flash_error=flash_error,
+        )
+    )
+
+
+@router.post("/super-admin/schools/create", include_in_schema=False)
+async def super_admin_create_school(
+    request: Request,
+    name: str = Form(...),
+    slug: str = Form(...),
+) -> RedirectResponse:
+    _require_super_admin(request)
+    from app.services.tenant_manager import normalize_school_slug
+
+    normalized_name = name.strip()
+    normalized_slug = normalize_school_slug(slug)
+    if not normalized_name:
+        _set_flash(request, error="School name is required.")
+        return RedirectResponse(url="/super-admin#create-school", status_code=status.HTTP_303_SEE_OTHER)
+    if not normalized_slug:
+        _set_flash(request, error="School slug is required.")
+        return RedirectResponse(url="/super-admin#create-school", status_code=status.HTTP_303_SEE_OTHER)
+    try:
+        school = await _schools(request).create_school(slug=normalized_slug, name=normalized_name)
+    except Exception as exc:
+        _set_flash(request, error=f"Could not create school: {exc}")
+        return RedirectResponse(url="/super-admin#create-school", status_code=status.HTTP_303_SEE_OTHER)
+    _set_flash(
+        request,
+        message=f"Created school {school.name}. Admin URL: https://{school.slug}.{request.app.state.settings.BASE_DOMAIN}/admin",  # type: ignore[attr-defined]
+    )
+    return RedirectResponse(url="/super-admin#schools", status_code=status.HTTP_303_SEE_OTHER)
 
 
 def _do_restart(command: Optional[str]) -> None:
@@ -471,6 +606,59 @@ async def admin_deactivate_alarm(
     return RedirectResponse(url="/admin", status_code=status.HTTP_303_SEE_OTHER)
 
 
+@router.post("/admin/broadcasts/create", include_in_schema=False)
+async def admin_create_broadcast(
+    request: Request,
+    message: str = Form(...),
+) -> RedirectResponse:
+    await _require_dashboard_admin(request)
+    normalized_message = message.strip()
+    if not normalized_message:
+        _set_flash(request, error="Broadcast message cannot be empty.")
+        return RedirectResponse(url="/admin#reports", status_code=status.HTTP_303_SEE_OTHER)
+    await _reports(request).create_broadcast_update(
+        admin_user_id=_session_user_id(request),
+        message=normalized_message,
+    )
+    _set_flash(request, message="Broadcast update posted.")
+    return RedirectResponse(url="/admin#reports", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.post("/admin/quiet-periods/grant", include_in_schema=False)
+async def admin_grant_quiet_period(
+    request: Request,
+    user_id: int = Form(...),
+    reason: str = Form(default=""),
+) -> RedirectResponse:
+    await _require_dashboard_admin(request)
+    user = await _users(request).get_user(user_id)
+    if user is None or not user.is_active:
+        _set_flash(request, error="User was not found or is inactive.")
+        return RedirectResponse(url="/admin#quiet-periods", status_code=status.HTTP_303_SEE_OTHER)
+    await _quiet_periods(request).grant_quiet_period(
+        user_id=user_id,
+        reason=reason.strip() or None,
+        admin_user_id=_session_user_id(request) or 0,
+    )
+    _set_flash(request, message=f"Quiet period granted for {user.name} for 24 hours.")
+    return RedirectResponse(url="/admin#quiet-periods", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.post("/admin/devices/delete", include_in_schema=False)
+async def admin_delete_device(
+    request: Request,
+    token: str = Form(...),
+    push_provider: str = Form(...),
+) -> RedirectResponse:
+    await _require_dashboard_admin(request)
+    deleted = await _registry(request).delete(token=token, push_provider=push_provider)
+    if deleted:
+        _set_flash(request, message="Device registration deleted.")
+    else:
+        _set_flash(request, error="That device registration was not found.")
+    return RedirectResponse(url="/admin#devices", status_code=status.HTTP_303_SEE_OTHER)
+
+
 @router.post("/admin/users/{user_id}/update", include_in_schema=False)
 async def admin_update_user(
     user_id: int,
@@ -560,6 +748,9 @@ async def devices(request: Request, _: None = Depends(require_api_key)) -> Devic
             DeviceSummary(
                 platform=device.platform,
                 push_provider=device.push_provider,
+                device_name=device.device_name,
+                user_id=device.user_id,
+                first_user_id=device.first_user_id,
                 token_suffix=device.token[-8:],
             )
             for device in all_devices
@@ -634,6 +825,8 @@ async def register_device(
         token=body.device_token,
         platform=body.platform.value,
         push_provider=body.push_provider.value,
+        device_name=body.device_name,
+        user_id=body.user_id,
     )
     device_count = await _registry(request).count()
     platform_counts = await _registry(request).platform_counts()
@@ -651,6 +844,33 @@ async def register_device(
         device_count=device_count,
         platform_counts=platform_counts,
         provider_counts=provider_counts,
+    )
+
+
+@router.post("/reports", response_model=ReportResponse)
+async def create_report(
+    body: ReportRequest,
+    request: Request,
+    _: None = Depends(require_api_key),
+) -> ReportResponse:
+    if not (await _alarm_store(request).get_state()).is_active:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Reports are only accepted during an active alarm")
+    user_id = await _validated_user_id(_users(request), body.user_id)
+    report_id = await _reports(request).create_report(
+        user_id=user_id,
+        category=body.category.value,
+        note=body.note,
+    )
+    reports = await _reports(request).list_reports(limit=10)
+    created = next((item for item in reports if item.id == report_id), None)
+    if created is None:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not load created report")
+    return ReportResponse(
+        report_id=created.id,
+        created_at=created.created_at,
+        user_id=created.user_id,
+        category=created.category,
+        note=created.note,
     )
 
 
@@ -684,13 +904,14 @@ async def panic(
     )
     await _alarm_store(request).activate(message=body.message, activated_by_user_id=triggered_by_user_id)
 
+    paused_user_ids = set(await _quiet_periods(request).active_user_ids())
     apns_devices = await _registry(request).list_by_provider("apns")
     fcm_devices = await _registry(request).list_by_provider("fcm")
     provider_counts = await _registry(request).provider_counts()
     device_count = await _registry(request).count()
-    apns_tokens = [device.token for device in apns_devices]
-    fcm_tokens = [device.token for device in fcm_devices]
-    sms_numbers = await _users(request).list_sms_targets()
+    apns_tokens = [device.token for device in apns_devices if device.user_id is None or device.user_id not in paused_user_ids]
+    fcm_tokens = [device.token for device in fcm_devices if device.user_id is None or device.user_id not in paused_user_ids]
+    sms_numbers = await _users(request).list_sms_targets(excluded_user_ids=list(paused_user_ids))
 
     logger.warning(
         "PANIC alert_id=%s devices=%s providers=%s sms_targets=%s message=%r",

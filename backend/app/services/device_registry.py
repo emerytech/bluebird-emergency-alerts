@@ -14,6 +14,9 @@ class RegisteredDevice:
     token: str
     platform: str
     push_provider: str
+    device_name: str | None = None
+    user_id: int | None = None
+    first_user_id: int | None = None
 
 
 class DeviceRegistry:
@@ -44,13 +47,30 @@ class DeviceRegistry:
                     token TEXT NOT NULL,
                     platform TEXT NOT NULL,
                     push_provider TEXT NOT NULL,
+                    device_name TEXT NULL,
+                    user_id INTEGER NULL,
+                    first_user_id INTEGER NULL,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     PRIMARY KEY (push_provider, token)
                 );
                 """
             )
+            cols = {str(row[1]) for row in conn.execute("PRAGMA table_info(registered_devices);").fetchall()}
+            if "device_name" not in cols:
+                conn.execute("ALTER TABLE registered_devices ADD COLUMN device_name TEXT NULL;")
+            if "user_id" not in cols:
+                conn.execute("ALTER TABLE registered_devices ADD COLUMN user_id INTEGER NULL;")
+            if "first_user_id" not in cols:
+                conn.execute("ALTER TABLE registered_devices ADD COLUMN first_user_id INTEGER NULL;")
 
-    def _register_sync(self, token: str, platform: str, push_provider: str) -> bool:
+    def _register_sync(
+        self,
+        token: str,
+        platform: str,
+        push_provider: str,
+        device_name: str | None,
+        user_id: int | None,
+    ) -> bool:
         with self._lock:
             with self._connect() as conn:
                 row = conn.execute(
@@ -65,20 +85,37 @@ class DeviceRegistry:
                 is_new = row is None
                 conn.execute(
                     """
-                    INSERT INTO registered_devices (token, platform, push_provider)
-                    VALUES (?, ?, ?)
+                    INSERT INTO registered_devices (token, platform, push_provider, device_name, user_id, first_user_id)
+                    VALUES (?, ?, ?, ?, ?, ?)
                     ON CONFLICT(push_provider, token)
                     DO UPDATE SET
                         platform = excluded.platform,
-                        push_provider = excluded.push_provider;
+                        push_provider = excluded.push_provider,
+                        device_name = excluded.device_name,
+                        user_id = excluded.user_id,
+                        first_user_id = COALESCE(registered_devices.first_user_id, excluded.first_user_id);
                     """,
-                    (token, platform, push_provider),
+                    (token, platform, push_provider, device_name, user_id, user_id),
                 )
                 return is_new
 
-    async def register(self, token: str, platform: str, push_provider: str) -> bool:
+    async def register(
+        self,
+        token: str,
+        platform: str,
+        push_provider: str,
+        device_name: str | None = None,
+        user_id: int | None = None,
+    ) -> bool:
         # Run in a worker thread to avoid blocking the asyncio loop on SQLite I/O.
-        return await anyio.to_thread.run_sync(self._register_sync, token, platform, push_provider)
+        return await anyio.to_thread.run_sync(
+            self._register_sync,
+            token,
+            platform,
+            push_provider,
+            device_name,
+            user_id,
+        )
 
     async def list_tokens(self) -> List[str]:
         devices = await self.list_devices()
@@ -89,7 +126,7 @@ class DeviceRegistry:
             with self._connect() as conn:
                 rows = conn.execute(
                     """
-                    SELECT token, platform, push_provider
+                    SELECT token, platform, push_provider, device_name, user_id, first_user_id
                     FROM registered_devices
                     WHERE push_provider = ?
                     ORDER BY created_at ASC, rowid ASC;
@@ -101,6 +138,9 @@ class DeviceRegistry:
                 token=str(row[0]),
                 platform=str(row[1]),
                 push_provider=str(row[2]),
+                device_name=str(row[3]) if row[3] is not None else None,
+                user_id=int(row[4]) if row[4] is not None else None,
+                first_user_id=int(row[5]) if row[5] is not None else None,
             )
             for row in rows
         ]
@@ -113,7 +153,7 @@ class DeviceRegistry:
             with self._connect() as conn:
                 rows = conn.execute(
                     """
-                    SELECT token, platform, push_provider
+                    SELECT token, platform, push_provider, device_name, user_id, first_user_id
                     FROM registered_devices
                     ORDER BY created_at ASC, rowid ASC;
                     """
@@ -123,6 +163,9 @@ class DeviceRegistry:
                 token=str(row[0]),
                 platform=str(row[1]),
                 push_provider=str(row[2]),
+                device_name=str(row[3]) if row[3] is not None else None,
+                user_id=int(row[4]) if row[4] is not None else None,
+                first_user_id=int(row[5]) if row[5] is not None else None,
             )
             for row in rows
         ]
@@ -168,3 +211,18 @@ class DeviceRegistry:
 
     async def provider_counts(self) -> Dict[str, int]:
         return await anyio.to_thread.run_sync(self._provider_counts_sync)
+
+    def _delete_sync(self, token: str, push_provider: str) -> bool:
+        with self._lock:
+            with self._connect() as conn:
+                cur = conn.execute(
+                    """
+                    DELETE FROM registered_devices
+                    WHERE push_provider = ? AND token = ?;
+                    """,
+                    (push_provider, token),
+                )
+        return int(cur.rowcount or 0) > 0
+
+    async def delete(self, token: str, push_provider: str) -> bool:
+        return await anyio.to_thread.run_sync(self._delete_sync, token, push_provider)

@@ -27,6 +27,13 @@ class Settings(BaseSettings):
 
     # SQLite (used for alert logging)
     DB_PATH: str = "./data/bluebird.db"
+    PLATFORM_DB_PATH: str = "./data/platform.db"
+    BASE_DOMAIN: str = "bluebird.ets3d.com"
+    DEFAULT_SCHOOL_SLUG: str = "default"
+    DEFAULT_SCHOOL_NAME: str = "Default School"
+
+    SUPERADMIN_USERNAME: str = "superadmin"
+    SUPERADMIN_PASSWORD: str = "change-me-now"
 
     # APNs
     APNS_USE_SANDBOX: bool = True

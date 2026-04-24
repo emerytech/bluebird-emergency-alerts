@@ -74,6 +74,7 @@ private const val KEY_NAME   = "user_name"
 private const val KEY_ROLE   = "user_role"
 private const val KEY_LOGIN  = "login_name"
 private const val KEY_CAN_DEACTIVATE = "can_deactivate"
+private const val KEY_SERVER_URL = "server_url"
 internal const val NOTIF_CH   = "bluebird_alerts"
 
 private fun prefs(ctx: Context) = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -83,6 +84,24 @@ private fun getUserName(ctx: Context) = prefs(ctx).getString(KEY_NAME, "") ?: ""
 private fun getUserRole(ctx: Context) = prefs(ctx).getString(KEY_ROLE, "") ?: ""
 private fun getLoginName(ctx: Context) = prefs(ctx).getString(KEY_LOGIN, "") ?: ""
 private fun canDeactivateAlarm(ctx: Context) = prefs(ctx).getBoolean(KEY_CAN_DEACTIVATE, false)
+private fun getServerUrl(ctx: Context) = prefs(ctx).getString(KEY_SERVER_URL, BuildConfig.BACKEND_BASE_URL) ?: BuildConfig.BACKEND_BASE_URL
+private fun normalizeServerUrl(value: String): String {
+    val trimmed = value.trim().removeSuffix("/")
+    if (trimmed.isBlank()) return BuildConfig.BACKEND_BASE_URL
+    if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) return trimmed
+    return "https://$trimmed"
+}
+private fun currentDeviceName(): String {
+    val manufacturer = Build.MANUFACTURER?.trim().orEmpty()
+    val model = Build.MODEL?.trim().orEmpty()
+    return when {
+        manufacturer.isBlank() && model.isBlank() -> "Android device"
+        model.startsWith(manufacturer, ignoreCase = true) -> model
+        manufacturer.isBlank() -> model
+        model.isBlank() -> manufacturer
+        else -> "$manufacturer $model"
+    }
+}
 
 internal fun ensureNotificationChannel(context: Context) {
     val channel = NotificationChannel(
@@ -113,12 +132,20 @@ private data class AuthUser(
     val canDeactivateAlarm: Boolean,
 )
 
+data class BroadcastUpdate(
+    val updateId: Int,
+    val createdAt: String,
+    val adminUserId: Int? = null,
+    val message: String,
+)
+
 // ── Data ───────────────────────────────────────────────────────────────────────
 data class AlarmStatus(
     val isActive: Boolean = false,
     val message: String?  = null,
     val activatedAt: String? = null,
     val activatedByUserId: Int? = null,
+    val broadcasts: List<BroadcastUpdate> = emptyList(),
 )
 
 data class UiState(
@@ -139,19 +166,20 @@ class MainViewModel : ViewModel() {
     fun init(ctx: Context) {
         if (client != null) return
         client = BackendClient(
-            baseUrl = BuildConfig.BACKEND_BASE_URL,
+            baseUrl = getServerUrl(ctx),
             apiKey  = BuildConfig.BACKEND_API_KEY,
         )
-        registerPushToken()
+        registerPushToken(ctx)
         startPolling()
     }
 
-    private fun registerPushToken() {
+    private fun registerPushToken(ctx: Context) {
         FirebaseMessaging.getInstance().token.addOnCompleteListener { task ->
             if (!task.isSuccessful) return@addOnCompleteListener
             val token = task.result ?: return@addOnCompleteListener
+            val userId = getUserId(ctx).toIntOrNull()
             viewModelScope.launch(Dispatchers.IO) {
-                runCatching { client?.registerAndroidDevice(token) }
+                runCatching { client?.registerAndroidDevice(token, userId) }
             }
         }
     }
@@ -195,6 +223,20 @@ class MainViewModel : ViewModel() {
                 }
                 .onFailure { e ->
                     _state.update { it.copy(isBusy = false, errorMsg = e.message ?: "Failed to deactivate alarm.") }
+                }
+        }
+    }
+
+    fun sendReport(ctx: Context, category: String, note: String?) {
+        val userId = getUserId(ctx).toIntOrNull()
+        viewModelScope.launch(Dispatchers.IO) {
+            _state.update { it.copy(isBusy = true, errorMsg = null) }
+            runCatching { client!!.sendReport(userId = userId, category = category, note = note) }
+                .onSuccess {
+                    _state.update { it.copy(isBusy = false, successMsg = "Report sent to admins.") }
+                }
+                .onFailure { e ->
+                    _state.update { it.copy(isBusy = false, errorMsg = e.message ?: "Failed to send report.") }
                 }
         }
     }
@@ -257,7 +299,8 @@ private fun App() {
         LoginScreen(onDone = { setupDone = true })
     } else {
         MainScreen(onLogout = {
-            prefs(ctx).edit().clear().apply()
+            val savedServerUrl = getServerUrl(ctx)
+            prefs(ctx).edit().clear().putString(KEY_SERVER_URL, savedServerUrl).apply()
             setupDone = false
         })
     }
@@ -267,7 +310,7 @@ private fun App() {
 @Composable
 private fun LoginScreen(onDone: () -> Unit) {
     val ctx = LocalContext.current
-    val client = remember { BackendClient(BuildConfig.BACKEND_BASE_URL, BuildConfig.BACKEND_API_KEY) }
+    var serverUrl by remember { mutableStateOf(getServerUrl(ctx)) }
     var username by remember { mutableStateOf(getLoginName(ctx)) }
     var password by remember { mutableStateOf("") }
     var showPassword by remember { mutableStateOf(false) }
@@ -317,13 +360,32 @@ private fun LoginScreen(onDone: () -> Unit) {
                 Column(Modifier.padding(16.dp)) {
                     Text("Server", fontSize = 12.sp, color = TextMuted)
                     Text(
-                        BuildConfig.BACKEND_BASE_URL,
+                        normalizeServerUrl(serverUrl),
                         fontSize = 14.sp,
                         color = BlueLight,
                         fontWeight = FontWeight.Medium,
                     )
                 }
             }
+
+            OutlinedTextField(
+                value = serverUrl,
+                onValueChange = {
+                    serverUrl = it
+                    error = null
+                },
+                label = { Text("School domain", color = TextMuted) },
+                placeholder = { Text("nen.bluebird.ets3d.com", color = TextMuted) },
+                singleLine = true,
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = BluePrimary,
+                    unfocusedBorderColor = Color(0xFF2A3F5F),
+                    focusedTextColor = TextPri,
+                    unfocusedTextColor = TextPri,
+                    cursorColor = BluePrimary,
+                ),
+                modifier = Modifier.fillMaxWidth(),
+            )
 
             OutlinedTextField(
                 value = username,
@@ -395,8 +457,10 @@ private fun LoginScreen(onDone: () -> Unit) {
                         error = "Enter your username and password."
                         return@Button
                     }
+                    val normalizedServerUrl = normalizeServerUrl(serverUrl)
                     isSubmitting = true
                     error = null
+                    val client = BackendClient(normalizedServerUrl, BuildConfig.BACKEND_API_KEY)
                     kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch {
                         runCatching { client.login(normalizedUsername, password) }
                             .onSuccess { user ->
@@ -405,6 +469,7 @@ private fun LoginScreen(onDone: () -> Unit) {
                                     .putString(KEY_NAME, user.name)
                                     .putString(KEY_ROLE, user.role)
                                     .putString(KEY_LOGIN, user.loginName)
+                                    .putString(KEY_SERVER_URL, normalizedServerUrl)
                                     .putBoolean(KEY_CAN_DEACTIVATE, user.canDeactivateAlarm)
                                     .putBoolean(KEY_SETUP, true)
                                     .apply()
@@ -441,6 +506,7 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
     val state by vm.state.collectAsState()
     var showActivateDialog by remember { mutableStateOf(false) }
     var showDeactivateDialog by remember { mutableStateOf(false) }
+    var showReportDialog by remember { mutableStateOf(false) }
     var showSettingsDialog by remember { mutableStateOf(false) }
     val userName = remember { getUserName(ctx) }
     val userRole = remember { getUserRole(ctx) }
@@ -508,6 +574,15 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                     .padding(horizontal = 20.dp, vertical = 8.dp),
             )
 
+            if (state.alarm.broadcasts.isNotEmpty()) {
+                BroadcastsCard(
+                    broadcasts = state.alarm.broadcasts,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 20.dp, vertical = 8.dp),
+                )
+            }
+
             Spacer(Modifier.weight(1f))
 
             // ── Action buttons ───────────────────────────────────────
@@ -530,6 +605,18 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                             if (state.isBusy) "Working…" else "Deactivate Alarm",
                             fontWeight = FontWeight.SemiBold,
                         )
+                    }
+                }
+
+                if (state.alarm.isActive) {
+                    OutlinedButton(
+                        onClick = { showReportDialog = true },
+                        modifier = Modifier.fillMaxWidth().height(52.dp),
+                        shape = RoundedCornerShape(14.dp),
+                        enabled = !state.isBusy,
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = BlueLight),
+                    ) {
+                        Text("Send Update To Admins", fontWeight = FontWeight.SemiBold)
                     }
                 }
 
@@ -582,6 +669,17 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                 vm.deactivateAlarm(ctx)
             },
             onDismiss = { showDeactivateDialog = false },
+        )
+    }
+
+    if (showReportDialog) {
+        ReportDialog(
+            isBusy = state.isBusy,
+            onConfirm = { category, note ->
+                showReportDialog = false
+                vm.sendReport(ctx, category, note)
+            },
+            onDismiss = { showReportDialog = false },
         )
     }
 
@@ -695,6 +793,32 @@ private fun AlarmBanner(alarm: AlarmStatus, modifier: Modifier = Modifier) {
 }
 
 @Composable
+private fun BroadcastsCard(broadcasts: List<BroadcastUpdate>, modifier: Modifier = Modifier) {
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(20.dp),
+        color = NavySurface,
+        tonalElevation = 2.dp,
+    ) {
+        Column(
+            modifier = Modifier.padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Text("Admin Updates", color = TextPri, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+            broadcasts.take(3).forEach { item ->
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(item.message, color = TextPri, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                    Text(item.createdAt, color = TextMuted, fontSize = 11.sp)
+                }
+                if (item != broadcasts.take(3).last()) {
+                    HorizontalDivider(color = Color(0xFF2A3F5F))
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun ActivateDialog(isBusy: Boolean, onConfirm: (String) -> Unit, onDismiss: () -> Unit) {
     var message by remember { mutableStateOf("Emergency alert. Please follow school procedures.") }
 
@@ -733,6 +857,69 @@ private fun ActivateDialog(isBusy: Boolean, onConfirm: (String) -> Unit, onDismi
             TextButton(onClick = onDismiss) {
                 Text("Cancel", color = TextMuted)
             }
+        },
+    )
+}
+
+@Composable
+private fun ReportDialog(
+    isBusy: Boolean,
+    onConfirm: (String, String?) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var selectedCategory by remember { mutableStateOf("need_help") }
+    var note by remember { mutableStateOf("") }
+    val categories = listOf(
+        "safe" to "I Am Safe",
+        "need_help" to "Need Help",
+        "suspicious_person" to "Suspicious Person",
+        "medical_emergency" to "Medical Emergency",
+    )
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = NavySurface,
+        title = { Text("Send structured report", color = TextPri, fontWeight = FontWeight.Bold) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text("Send a short structured update to admins without opening a chat feed.", color = TextMuted, fontSize = 14.sp)
+                categories.forEach { (value, label) ->
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        RadioButton(
+                            selected = selectedCategory == value,
+                            onClick = { selectedCategory = value },
+                            colors = RadioButtonDefaults.colors(selectedColor = BluePrimary),
+                        )
+                        Text(label, color = TextPri)
+                    }
+                }
+                OutlinedTextField(
+                    value = note,
+                    onValueChange = { note = it },
+                    label = { Text("Optional note", color = TextMuted) },
+                    minLines = 2,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = BluePrimary,
+                        unfocusedBorderColor = Color(0xFF2A3F5F),
+                        focusedTextColor = TextPri,
+                        unfocusedTextColor = TextPri,
+                        cursorColor = BluePrimary,
+                    ),
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onConfirm(selectedCategory, note.trim().ifBlank { null }) },
+                enabled = !isBusy,
+                colors = ButtonDefaults.buttonColors(containerColor = BluePrimary),
+            ) { Text("Send") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel", color = TextMuted) }
         },
     )
 }
@@ -873,11 +1060,13 @@ private class BackendClient(baseUrl: String, private val apiKey: String) {
         }
     }
 
-    fun registerAndroidDevice(token: String) {
+    fun registerAndroidDevice(token: String, userId: Int?) {
         val body = JSONObject()
             .put("device_token", token.trim())
             .put("platform", "android")
             .put("push_provider", "fcm")
+            .put("device_name", currentDeviceName())
+            .apply { userId?.let { put("user_id", it) } }
         val req = Request.Builder()
             .url("$base/register-device")
             .withAuth()
@@ -891,14 +1080,44 @@ private class BackendClient(baseUrl: String, private val apiKey: String) {
         http.newCall(req).execute().use { res ->
             val body = requireSuccess(res)
             val j = JSONObject(body)
+            val broadcastsJson = j.optJSONArray("broadcasts")
+            val broadcasts = buildList {
+                if (broadcastsJson != null) {
+                    for (i in 0 until broadcastsJson.length()) {
+                        val item = broadcastsJson.optJSONObject(i) ?: continue
+                        add(
+                            BroadcastUpdate(
+                                updateId = item.optInt("update_id"),
+                                createdAt = item.optString("created_at"),
+                                adminUserId = if (item.has("admin_user_id") && !item.isNull("admin_user_id")) item.optInt("admin_user_id") else null,
+                                message = item.optString("message"),
+                            )
+                        )
+                    }
+                }
+            }
             return AlarmStatus(
                 isActive          = j.optBoolean("is_active"),
                 message           = j.optString("message").ifBlank { null },
                 activatedAt       = j.optString("activated_at").ifBlank { null },
                 activatedByUserId = if (j.has("activated_by_user_id") && !j.isNull("activated_by_user_id"))
                     j.optInt("activated_by_user_id") else null,
+                broadcasts       = broadcasts,
             )
         }
+    }
+
+    fun sendReport(userId: Int?, category: String, note: String?) {
+        val body = JSONObject().put("category", category).apply {
+            userId?.let { put("user_id", it) }
+            note?.let { put("note", it) }
+        }
+        val req = Request.Builder()
+            .url("$base/reports")
+            .withAuth()
+            .post(body.toString().toRequestBody(json))
+            .build()
+        http.newCall(req).execute().use { requireSuccess(it) }
     }
 
     fun activateAlarm(message: String, userId: Int?): AlarmStatus {
@@ -924,12 +1143,29 @@ private class BackendClient(baseUrl: String, private val apiKey: String) {
     private fun parseAlarm(res: okhttp3.Response): AlarmStatus {
         val body = requireSuccess(res)
         val j = JSONObject(body)
+        val broadcastsJson = j.optJSONArray("broadcasts")
+        val broadcasts = buildList {
+            if (broadcastsJson != null) {
+                for (i in 0 until broadcastsJson.length()) {
+                    val item = broadcastsJson.optJSONObject(i) ?: continue
+                    add(
+                        BroadcastUpdate(
+                            updateId = item.optInt("update_id"),
+                            createdAt = item.optString("created_at"),
+                            adminUserId = if (item.has("admin_user_id") && !item.isNull("admin_user_id")) item.optInt("admin_user_id") else null,
+                            message = item.optString("message"),
+                        )
+                    )
+                }
+            }
+        }
         return AlarmStatus(
             isActive          = j.optBoolean("is_active"),
             message           = j.optString("message").ifBlank { null },
             activatedAt       = j.optString("activated_at").ifBlank { null },
             activatedByUserId = if (j.has("activated_by_user_id") && !j.isNull("activated_by_user_id"))
                 j.optInt("activated_by_user_id") else null,
+            broadcasts        = broadcasts,
         )
     }
 

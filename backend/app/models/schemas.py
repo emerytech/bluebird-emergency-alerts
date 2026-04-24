@@ -30,10 +30,19 @@ class UserRole(str, Enum):
     admin = "admin"
 
 
+class ReportCategory(str, Enum):
+    safe = "safe"
+    need_help = "need_help"
+    suspicious_person = "suspicious_person"
+    medical_emergency = "medical_emergency"
+
+
 class RegisterDeviceRequest(BaseModel):
     device_token: str = Field(..., min_length=1, max_length=4096, description="Push provider device token.")
     platform: Platform = Field(default=Platform.ios, description="Client platform.")
     push_provider: PushProvider = Field(default=PushProvider.apns, description="Push notification provider.")
+    device_name: Optional[str] = Field(default=None, max_length=120)
+    user_id: Optional[int] = None
 
     @field_validator("device_token")
     @classmethod
@@ -75,6 +84,9 @@ class RegisterDeviceResponse(BaseModel):
 class DeviceSummary(BaseModel):
     platform: str
     push_provider: str
+    device_name: Optional[str] = None
+    user_id: Optional[int] = None
+    first_user_id: Optional[int] = None
     token_suffix: str
 
 
@@ -149,6 +161,64 @@ class MobileLoginResponse(BaseModel):
     login_name: str
     must_change_password: bool = False
     can_deactivate_alarm: bool = False
+    quiet_period_expires_at: Optional[str] = None
+
+
+class BroadcastUpdateSummary(BaseModel):
+    update_id: int
+    created_at: str
+    admin_user_id: Optional[int] = None
+    message: str
+
+
+class ReportRequest(BaseModel):
+    user_id: Optional[int] = None
+    category: ReportCategory
+    note: Optional[str] = Field(default=None, max_length=240)
+
+    @field_validator("note")
+    @classmethod
+    def normalize_note(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        normalized = v.strip()
+        return normalized or None
+
+
+class ReportResponse(BaseModel):
+    report_id: int
+    created_at: str
+    user_id: Optional[int] = None
+    category: str
+    note: Optional[str] = None
+
+
+class QuietPeriodRequestCreate(BaseModel):
+    user_id: int
+    reason: Optional[str] = Field(default=None, max_length=240)
+
+    @field_validator("reason")
+    @classmethod
+    def normalize_reason(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        normalized = v.strip()
+        return normalized or None
+
+
+class QuietPeriodSummary(BaseModel):
+    request_id: int
+    user_id: int
+    reason: Optional[str] = None
+    status: str
+    requested_at: str
+    approved_at: Optional[str] = None
+    approved_by_user_id: Optional[int] = None
+    expires_at: Optional[str] = None
+
+
+class AdminBroadcastRequest(BaseModel):
+    message: str = Field(..., min_length=1, max_length=240)
 
 
 class PanicRequest(BaseModel):
@@ -163,6 +233,7 @@ class AlarmStatusResponse(BaseModel):
     activated_by_user_id: Optional[int] = None
     deactivated_at: Optional[str] = None
     deactivated_by_user_id: Optional[int] = None
+    broadcasts: List[BroadcastUpdateSummary] = []
 
 
 class AlarmActivateRequest(BaseModel):

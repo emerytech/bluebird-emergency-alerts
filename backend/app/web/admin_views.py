@@ -7,6 +7,9 @@ from typing import Mapping, Optional, Sequence
 from app.services.alert_log import AlertRecord
 from app.services.alarm_store import AlarmStateRecord
 from app.services.device_registry import RegisteredDevice
+from app.services.quiet_period_store import QuietPeriodRecord
+from app.services.report_store import BroadcastUpdateRecord, ReportRecord
+from app.services.school_registry import SchoolRecord
 from app.services.user_store import UserRecord
 
 
@@ -246,11 +249,48 @@ def _render_flash(message: Optional[str], kind: str = "success") -> str:
     return f'<div class="flash {escape(kind)}">{escape(message)}</div>'
 
 
+def _render_report_rows(reports: Sequence[ReportRecord]) -> str:
+    if not reports:
+        return '<tr><td colspan="4" class="mini-copy">No user reports yet.</td></tr>'
+    rows = []
+    for report in reports:
+        note_text = report.note or (f"User #{report.user_id}" if report.user_id is not None else "No note")
+        rows.append(
+            f"<tr><td>{report.id}</td><td>{escape(report.created_at)}</td><td>{escape(report.category.replace('_', ' '))}</td><td>{escape(note_text)}</td></tr>"
+        )
+    return "".join(rows)
+
+
+def _render_broadcast_rows(broadcasts: Sequence[BroadcastUpdateRecord]) -> str:
+    if not broadcasts:
+        return '<tr><td colspan="3" class="mini-copy">No admin updates posted yet.</td></tr>'
+    rows = []
+    for item in broadcasts:
+        rows.append(
+            f"<tr><td>{escape(item.created_at)}</td><td>{escape(str(item.admin_user_id) if item.admin_user_id is not None else 'admin')}</td><td>{escape(item.message)}</td></tr>"
+        )
+    return "".join(rows)
+
+
+def _render_quiet_period_rows(records: Sequence[QuietPeriodRecord], users: Sequence[UserRecord]) -> str:
+    if not records:
+        return '<tr><td colspan="5" class="mini-copy">No quiet periods yet.</td></tr>'
+    user_names = {user.id: user.name for user in users}
+    rows = []
+    for item in records:
+        rows.append(
+            f"<tr><td>{escape(user_names.get(item.user_id, f'User #{item.user_id}'))}</td><td>{escape(item.status)}</td><td>{escape(item.reason or '—')}</td><td>{escape(item.requested_at)}</td><td>{escape(item.expires_at or '—')}</td></tr>"
+        )
+    return "".join(rows)
+
+
 def render_login_page(
     *,
     message: Optional[str] = None,
     error: Optional[str] = None,
     setup_mode: bool,
+    school_name: str = "School",
+    school_slug: str = "default",
 ) -> str:
     heading = "Create the first BlueBird admin" if setup_mode else "Sign in to BlueBird Admin"
     button = "Create admin account" if setup_mode else "Sign in"
@@ -284,6 +324,7 @@ def render_login_page(
           A calm command surface for alarm activation, account management, recent alert review, and device readiness.
           This version reuses the same visual language as your accounting app, just tuned for emergency operations instead of finance.
         </p>
+        <p class="mini-copy">School: <strong>{escape(school_name)}</strong> ({escape(school_slug)})</p>
       </div>
       <div class="hero-metrics">
         <span class="metric-pill"><strong>Admin login</strong> session-based</span>
@@ -319,6 +360,147 @@ def render_login_page(
 </html>"""
 
 
+def render_super_admin_login_page(*, message: Optional[str] = None, error: Optional[str] = None) -> str:
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>BlueBird Super Admin</title>
+  <style>{_base_styles()}</style>
+</head>
+<body>
+  <main class="login-shell">
+    <section class="hero-card">
+      <div class="stack">
+        <p class="eyebrow">Platform Control</p>
+        <h1>BlueBird super admin</h1>
+        <p class="hero-copy">Provision schools, hand out school-specific admin URLs, and keep the multi-school platform organized from one place.</p>
+      </div>
+      <div class="hero-metrics">
+        <span class="metric-pill"><strong>School setup</strong> centralized</span>
+        <span class="metric-pill"><strong>Tenant routing</strong> subdomain based</span>
+        <span class="metric-pill"><strong>Isolation</strong> per-school data</span>
+      </div>
+    </section>
+    <section class="login-panel">
+      <div class="stack">
+        <p class="eyebrow">Platform Access</p>
+        <h2>Sign in to super admin</h2>
+        <p class="card-copy">Use the platform credentials from the backend environment to manage school creation and setup.</p>
+      </div>
+      {_render_flash(message, "success")}
+      {_render_flash(error, "error")}
+      <form method="post" action="/super-admin/login" class="stack">
+        <div class="field">
+          <label for="login_name">Username</label>
+          <input id="login_name" name="login_name" autocomplete="username" />
+        </div>
+        <div class="field">
+          <label for="password">Password</label>
+          <input id="password" name="password" type="password" autocomplete="current-password" />
+        </div>
+        <div class="button-row">
+          <button class="button button-primary" type="submit">Sign in</button>
+        </div>
+      </form>
+    </section>
+  </main>
+</body>
+</html>"""
+
+
+def render_super_admin_page(
+    *,
+    base_domain: str,
+    schools: Sequence[SchoolRecord],
+    flash_message: Optional[str] = None,
+    flash_error: Optional[str] = None,
+) -> str:
+    rows = "".join(
+        f"<tr><td>{escape(item.name)}</td><td><code>{escape(item.slug)}</code></td><td><a href=\"https://{escape(item.slug)}.{escape(base_domain)}/admin\" target=\"_blank\">{escape(item.slug)}.{escape(base_domain)}</a></td><td>{'Active' if item.is_active else 'Inactive'}</td></tr>"
+        for item in schools
+    ) or '<tr><td colspan="4" class="mini-copy">No schools yet.</td></tr>'
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>BlueBird Super Admin</title>
+  <style>{_base_styles()}</style>
+</head>
+<body>
+  <main class="page-shell">
+    <div class="app-shell">
+      <aside class="sidebar">
+        <section class="brand-card hero-card">
+          <div class="stack">
+            <p class="eyebrow">BlueBird Platform</p>
+            <h2>Super admin</h2>
+            <p class="hero-copy">Manage school provisioning across <strong>{escape(base_domain)}</strong>.</p>
+          </div>
+          <nav class="nav-list">
+            <a class="nav-item" href="#schools">Schools</a>
+            <a class="nav-item" href="#create-school">Create school</a>
+          </nav>
+          <form method="post" action="/super-admin/logout">
+            <button class="button button-secondary" type="submit">Log out</button>
+          </form>
+        </section>
+      </aside>
+      <section class="content-stack">
+        {_render_flash(flash_message, "success")}
+        {_render_flash(flash_error, "error")}
+        <section class="panel" id="schools">
+          <div class="panel-header hero-band">
+            <div>
+              <p class="eyebrow">Tenant Registry</p>
+              <h1>Schools</h1>
+              <p class="hero-copy">Each school gets its own subdomain and isolated database. School admins still manage their own users from their tenant dashboard.</p>
+            </div>
+            <div class="status-row">
+              <span class="status-pill ok"><strong>Base domain</strong>{escape(base_domain)}</span>
+              <span class="status-pill"><strong>Schools</strong>{len(schools)}</span>
+            </div>
+          </div>
+          <table>
+            <thead>
+              <tr><th>Name</th><th>Slug</th><th>Admin URL</th><th>Status</th></tr>
+            </thead>
+            <tbody>{rows}</tbody>
+          </table>
+        </section>
+        <section class="panel" id="create-school">
+          <div class="panel-header">
+            <div>
+              <p class="eyebrow">Provisioning</p>
+              <h2>Create a new school</h2>
+              <p class="card-copy">This creates the school registry entry and reserves its subdomain. The first school admin is still created from that school's own admin portal.</p>
+            </div>
+          </div>
+          <form method="post" action="/super-admin/schools/create" class="stack">
+            <div class="form-grid">
+              <div class="field">
+                <label>School name</label>
+                <input name="name" placeholder="Northeast Nodaway" />
+              </div>
+              <div class="field">
+                <label>School slug</label>
+                <input name="slug" placeholder="nen" />
+              </div>
+            </div>
+            <div class="button-row">
+              <button class="button button-primary" type="submit">Create school</button>
+            </div>
+          </form>
+        </section>
+      </section>
+    </div>
+  </main>
+</body>
+</html>"""
+
+
 def _count_list(items: Mapping[str, int]) -> str:
     if not items:
         return '<span class="mini-copy">None yet</span>'
@@ -344,17 +526,41 @@ def _render_alert_rows(alerts: Sequence[AlertRecord]) -> str:
     return "".join(rows)
 
 
-def _render_device_rows(devices: Sequence[RegisteredDevice]) -> str:
+def _render_device_rows(devices: Sequence[RegisteredDevice], users: Sequence[UserRecord]) -> str:
     if not devices:
-        return '<tr><td colspan="4" class="mini-copy">No devices registered yet.</td></tr>'
+        return '<tr><td colspan="8" class="mini-copy">No devices registered yet.</td></tr>'
+    user_lookup = {user.id: user for user in users}
     rows = []
     for index, device in enumerate(devices, start=1):
+        linked_user = user_lookup.get(device.user_id) if device.user_id is not None else None
+        first_user = user_lookup.get(device.first_user_id) if device.first_user_id is not None else None
+        device_name = device.device_name or "Unnamed device"
+        owner = (
+            (linked_user.login_name or linked_user.name)
+            if linked_user
+            else ("Unassigned" if device.user_id is None else f"User #{device.user_id}")
+        )
+        first_owner = (
+            (first_user.login_name or first_user.name)
+            if first_user
+            else ("Unknown" if device.first_user_id is None else f"User #{device.first_user_id}")
+        )
         rows.append(
             "<tr>"
             f"<td>{index}</td>"
+            f"<td>{escape(device_name)}</td>"
             f"<td>{escape(device.platform)}</td>"
             f"<td>{escape(device.push_provider)}</td>"
+            f"<td>{escape(owner)}</td>"
+            f"<td>{escape(first_owner)}</td>"
             f"<td><code>...{escape(device.token[-12:])}</code></td>"
+            "<td>"
+            f"<form method=\"post\" action=\"/admin/devices/delete\" onsubmit=\"return confirm('Delete this registered device token?');\">"
+            f"<input type=\"hidden\" name=\"token\" value=\"{escape(device.token)}\" />"
+            f"<input type=\"hidden\" name=\"push_provider\" value=\"{escape(device.push_provider)}\" />"
+            "<button class=\"button button-danger-outline\" type=\"submit\">Delete</button>"
+            "</form>"
+            "</td>"
             "</tr>"
         )
     return "".join(rows)
@@ -481,11 +687,16 @@ def render_change_password_page(
 
 def render_admin_page(
     *,
+    school_name: str,
+    school_slug: str,
     current_user: UserRecord,
     users: Sequence[UserRecord],
     alerts: Sequence[AlertRecord],
     devices: Sequence[RegisteredDevice],
     alarm_state: AlarmStateRecord,
+    reports: Sequence[ReportRecord],
+    broadcasts: Sequence[BroadcastUpdateRecord],
+    quiet_periods: Sequence[QuietPeriodRecord],
     apns_configured: bool,
     twilio_configured: bool,
     server_info: Mapping[str, str],
@@ -516,11 +727,14 @@ def render_admin_page(
             <p class="eyebrow">BlueBird Alerts</p>
             <h2>Safety operations</h2>
             <p class="hero-copy">Signed in as <strong>{escape(current_user.name)}</strong> ({escape(current_user.login_name or 'admin')}).</p>
+            <p class="mini-copy">School: <strong>{escape(school_name)}</strong> ({escape(school_slug)})</p>
           </div>
           <nav class="nav-list">
             <a class="nav-item" href="#overview">Overview</a>
             <a class="nav-item" href="#users">Users</a>
             <a class="nav-item" href="#alarm">Alarm</a>
+            <a class="nav-item" href="#reports">Reports</a>
+            <a class="nav-item" href="#quiet-periods">Quiet Periods</a>
             <a class="nav-item" href="#alerts">Alert log</a>
             <a class="nav-item" href="#devices">Devices</a>
             <a class="nav-item" href="#server">Server</a>
@@ -540,7 +754,7 @@ def render_admin_page(
             <div>
               <p class="eyebrow">Command Deck</p>
               <h1>Admin dashboard</h1>
-              <p class="hero-copy">Manage users, see device readiness, review alerts, and control the active alarm state from one place.</p>
+              <p class="hero-copy">Manage users, see device readiness, review alerts, and control the active alarm state for <strong>{escape(school_name)}</strong> from one place.</p>
             </div>
             <div class="status-row">
               <span class="status-pill {alarm_status_class}"><strong>{alarm_status_label}</strong>{escape(alarm_state.message or 'No active alarm')}</span>
@@ -554,6 +768,8 @@ def render_admin_page(
             <article class="metric-card"><div class="meta">Login-enabled</div><div class="metric-value">{login_enabled}</div></article>
             <article class="metric-card"><div class="meta">Devices</div><div class="metric-value">{len(devices)}</div></article>
             <article class="metric-card"><div class="meta">Recent alerts</div><div class="metric-value">{len(alerts)}</div></article>
+            <article class="metric-card"><div class="meta">User reports</div><div class="metric-value">{len(reports)}</div></article>
+            <article class="metric-card"><div class="meta">Quiet periods</div><div class="metric-value">{len(quiet_periods)}</div></article>
           </div>
           <div class="status-row" style="margin-top:16px;">
             {_count_list(role_counts)}
@@ -645,6 +861,86 @@ def render_admin_page(
             </div>
           </section>
 
+          <section class="panel span-5" id="reports">
+            <div class="panel-header">
+              <div>
+                <p class="eyebrow">Admin Broadcasts</p>
+                <h2>Send official updates</h2>
+                <p class="card-copy">Post short verified updates that all signed-in mobile users will see on their app status screen.</p>
+              </div>
+            </div>
+            <form method="post" action="/admin/broadcasts/create" class="stack">
+              <div class="field">
+                <label for="broadcast_message">Broadcast message</label>
+                <textarea id="broadcast_message" name="message" placeholder="Police on site. Stay barricaded until further notice."></textarea>
+              </div>
+              <div class="button-row">
+                <button class="button button-primary" type="submit">Post update</button>
+              </div>
+            </form>
+            <table style="margin-top:16px;">
+              <thead>
+                <tr><th>Created</th><th>By</th><th>Message</th></tr>
+              </thead>
+              <tbody>
+                {_render_broadcast_rows(broadcasts)}
+              </tbody>
+            </table>
+          </section>
+
+          <section class="panel span-7">
+            <div class="panel-header">
+              <div>
+                <p class="eyebrow">Structured Reports</p>
+                <h2>Incoming user reports</h2>
+                <p class="card-copy">Users can send structured status updates without creating an open chat stream.</p>
+              </div>
+            </div>
+            <table>
+              <thead>
+                <tr><th>ID</th><th>Created</th><th>Category</th><th>Note</th></tr>
+              </thead>
+              <tbody>
+                {_render_report_rows(reports)}
+              </tbody>
+            </table>
+          </section>
+
+          <section class="panel span-12" id="quiet-periods">
+            <div class="panel-header">
+              <div>
+                <p class="eyebrow">Quiet Periods</p>
+                <h2>Grant a 24-hour notification pause</h2>
+                <p class="card-copy">Use this for approved temporary exceptions like weddings or funerals. Quiet periods expire automatically after 24 hours.</p>
+              </div>
+            </div>
+            <form method="post" action="/admin/quiet-periods/grant" class="stack">
+              <div class="form-grid">
+                <div class="field">
+                  <label>User</label>
+                  <select name="user_id">
+                    {''.join(f'<option value="{user.id}">{escape(user.name)} ({escape(user.role)})</option>' for user in users if user.is_active)}
+                  </select>
+                </div>
+                <div class="field">
+                  <label>Reason</label>
+                  <input name="reason" placeholder="Optional reason for the temporary pause" />
+                </div>
+              </div>
+              <div class="button-row">
+                <button class="button button-secondary" type="submit">Grant 24-hour quiet period</button>
+              </div>
+            </form>
+            <table style="margin-top:16px;">
+              <thead>
+                <tr><th>User</th><th>Status</th><th>Reason</th><th>Requested</th><th>Expires</th></tr>
+              </thead>
+              <tbody>
+                {_render_quiet_period_rows(quiet_periods, users)}
+              </tbody>
+            </table>
+          </section>
+
           <section class="panel span-7" id="alerts">
             <div class="panel-header">
               <div>
@@ -671,10 +967,10 @@ def render_admin_page(
             </div>
             <table>
               <thead>
-                <tr><th>#</th><th>Platform</th><th>Provider</th><th>Token</th></tr>
+                <tr><th>#</th><th>Device</th><th>Platform</th><th>Provider</th><th>Current user</th><th>First user</th><th>Token</th><th>Action</th></tr>
               </thead>
               <tbody>
-                {_render_device_rows(devices)}
+                {_render_device_rows(devices, users)}
               </tbody>
             </table>
           </section>
