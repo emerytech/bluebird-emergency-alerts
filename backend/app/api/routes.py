@@ -42,6 +42,7 @@ from app.models.schemas import (
     PanicResponse,
     PublicSchoolSummary,
     QuietPeriodRequestCreate,
+    QuietPeriodDeleteRequest,
     QuietPeriodStatusResponse,
     QuietPeriodSummary,
     RegisterDeviceRequest,
@@ -2202,11 +2203,43 @@ async def quiet_period_status(
     if record is None:
         return QuietPeriodStatusResponse(user_id=user_id)
     return QuietPeriodStatusResponse(
+        request_id=record.id,
         user_id=user_id,
         status=record.status,
         reason=record.reason,
         requested_at=record.requested_at,
         approved_at=record.approved_at,
+        approved_by_label=record.approved_by_label,
+        expires_at=record.expires_at,
+    )
+
+
+@router.post("/quiet-periods/{request_id}/delete", response_model=QuietPeriodSummary)
+async def delete_quiet_period_request(
+    request_id: int,
+    body: QuietPeriodDeleteRequest,
+    request: Request,
+    _: None = Depends(require_api_key),
+) -> QuietPeriodSummary:
+    user = await _users(request).get_user(body.user_id)
+    if user is None or not user.is_active:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found or inactive")
+    record = await _quiet_periods(request).cancel_for_user(
+        request_id=request_id,
+        user_id=body.user_id,
+    )
+    if record is None or record.user_id != body.user_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Quiet period request not found")
+    if record.status not in {"cancelled"}:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Quiet period request is not deletable")
+    return QuietPeriodSummary(
+        request_id=record.id,
+        user_id=record.user_id,
+        reason=record.reason,
+        status=record.status,
+        requested_at=record.requested_at,
+        approved_at=record.approved_at,
+        approved_by_user_id=record.approved_by_user_id,
         approved_by_label=record.approved_by_label,
         expires_at=record.expires_at,
     )

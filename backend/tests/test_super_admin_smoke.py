@@ -233,3 +233,53 @@ def test_admin_message_inbox_and_reply_flow(client: TestClient, login_super_admi
     teacher_item = next(row for row in teacher_payload["messages"] if int(row["message_id"]) == message_id)
     assert teacher_item["status"] == "answered"
     assert teacher_item["response_message"] == "Received. Help is on the way."
+
+
+def test_user_can_delete_own_quiet_period_request(client: TestClient, login_super_admin) -> None:
+    login_super_admin()
+    _create_school(client, name="Westfield", slug="westfield")
+    _enter_school(client, "westfield")
+
+    create_teacher = client.post(
+        "/westfield/admin/users/create",
+        data={
+            "name": "Jamie Teacher",
+            "role": "teacher",
+            "phone_e164": "",
+            "login_name": "",
+            "password": "",
+        },
+        follow_redirects=False,
+    )
+    assert create_teacher.status_code == 303
+
+    school = client.app.state.tenant_manager.school_for_slug("westfield")
+    assert school is not None
+    tenant = client.app.state.tenant_manager.get(school)
+    users = asyncio.run(tenant.user_store.list_users())
+    teacher = next(u for u in users if u.name == "Jamie Teacher")
+
+    requested = client.post(
+        "/westfield/quiet-periods/request",
+        json={"user_id": teacher.id, "reason": "Wedding day"},
+        headers={"X-API-Key": "test-api-key"},
+    )
+    assert requested.status_code == 200
+    request_id = int(requested.json()["request_id"])
+
+    deleted = client.post(
+        f"/westfield/quiet-periods/{request_id}/delete",
+        json={"user_id": teacher.id},
+        headers={"X-API-Key": "test-api-key"},
+    )
+    assert deleted.status_code == 200
+    payload = deleted.json()
+    assert payload["status"] == "cancelled"
+
+    status_resp = client.get(
+        f"/westfield/quiet-periods/status?user_id={teacher.id}",
+        headers={"X-API-Key": "test-api-key"},
+    )
+    assert status_resp.status_code == 200
+    status_body = status_resp.json()
+    assert status_body["status"] == "cancelled"

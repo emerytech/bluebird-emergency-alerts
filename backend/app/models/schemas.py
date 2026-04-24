@@ -284,6 +284,7 @@ class QuietPeriodSummary(BaseModel):
 
 
 class QuietPeriodStatusResponse(BaseModel):
+    request_id: Optional[int] = None
     user_id: int
     status: Optional[str] = None
     reason: Optional[str] = None
@@ -291,6 +292,10 @@ class QuietPeriodStatusResponse(BaseModel):
     approved_at: Optional[str] = None
     approved_by_label: Optional[str] = None
     expires_at: Optional[str] = None
+
+
+class QuietPeriodDeleteRequest(BaseModel):
+    user_id: int
 
 
 class AdminBroadcastRequest(BaseModel):

@@ -195,6 +195,7 @@ data class AdminInboxMessage(
 )
 
 data class QuietPeriodMobileStatus(
+    val requestId: Int? = null,
     val status: String? = null,
     val reason: String? = null,
     val requestedAt: String? = null,
@@ -428,6 +429,32 @@ class MainViewModel : ViewModel() {
                 }
                 .onFailure { e ->
                     _state.update { it.copy(isBusy = false, errorMsg = e.message ?: "Failed to request quiet period.") }
+                }
+        }
+    }
+
+    fun deleteQuietPeriodRequest(ctx: Context) {
+        val userId = getUserId(ctx).toIntOrNull()
+        val requestId = _state.value.quietPeriodStatus?.requestId
+        if (userId == null || requestId == null) {
+            _state.update { it.copy(errorMsg = "No active quiet period request to delete.") }
+            return
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            _state.update { it.copy(isBusy = true, errorMsg = null) }
+            runCatching { client!!.deleteQuietPeriodRequest(requestId = requestId, userId = userId) }
+                .onSuccess {
+                    val quiet = runCatching { client!!.quietPeriodStatus(userId = userId) }.getOrNull()
+                    _state.update {
+                        it.copy(
+                            isBusy = false,
+                            successMsg = "Quiet period request deleted.",
+                            quietPeriodStatus = quiet ?: QuietPeriodMobileStatus(),
+                        )
+                    }
+                }
+                .onFailure { e ->
+                    _state.update { it.copy(isBusy = false, errorMsg = e.message ?: "Failed to delete quiet period request.") }
                 }
         }
     }
@@ -940,7 +967,11 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                         FlashBanner(it, isError = true)
                     }
                     state.quietPeriodStatus?.let { quiet ->
-                        QuietPeriodStatusBanner(quiet)
+                        QuietPeriodStatusBanner(
+                            status = quiet,
+                            isBusy = state.isBusy,
+                            onDelete = { vm.deleteQuietPeriodRequest(ctx) },
+                        )
                     }
 
                     // ── Alarm banner ─────────────────────────────────────────
@@ -1161,7 +1192,11 @@ private fun FlashBanner(message: String, isError: Boolean) {
 }
 
 @Composable
-private fun QuietPeriodStatusBanner(status: QuietPeriodMobileStatus) {
+private fun QuietPeriodStatusBanner(
+    status: QuietPeriodMobileStatus,
+    isBusy: Boolean,
+    onDelete: () -> Unit,
+) {
     val normalized = status.status?.lowercase().orEmpty()
     if (normalized.isBlank()) return
     val bg: Color
@@ -1202,6 +1237,20 @@ private fun QuietPeriodStatusBanner(status: QuietPeriodMobileStatus) {
             Text(text, color = fg, fontSize = 14.sp, fontWeight = FontWeight.Bold)
             status.reason?.takeIf { it.isNotBlank() }?.let {
                 Text("Reason: $it", color = fg, fontSize = 12.sp)
+            }
+            if (normalized == "pending" || normalized == "approved") {
+                TextButton(
+                    onClick = onDelete,
+                    enabled = !isBusy,
+                    contentPadding = PaddingValues(0.dp),
+                ) {
+                    Text(
+                        if (isBusy) "Deleting..." else "Delete Request",
+                        color = fg,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                }
             }
         }
     }
@@ -2171,6 +2220,16 @@ private class BackendClient(baseUrl: String, private val apiKey: String) {
         http.newCall(req).execute().use { requireSuccess(it) }
     }
 
+    fun deleteQuietPeriodRequest(requestId: Int, userId: Int) {
+        val body = JSONObject().put("user_id", userId)
+        val req = Request.Builder()
+            .url("$base/quiet-periods/$requestId/delete")
+            .withAuth()
+            .post(body.toString().toRequestBody(json))
+            .build()
+        http.newCall(req).execute().use { requireSuccess(it) }
+    }
+
     fun quietPeriodStatus(userId: Int): QuietPeriodMobileStatus {
         val req = Request.Builder()
             .url("$base/quiet-periods/status?user_id=$userId")
@@ -2181,6 +2240,7 @@ private class BackendClient(baseUrl: String, private val apiKey: String) {
             val body = requireSuccess(res)
             val j = JSONObject(body)
             return QuietPeriodMobileStatus(
+                requestId = if (j.has("request_id") && !j.isNull("request_id")) j.optInt("request_id") else null,
                 status = j.optString("status").ifBlank { null },
                 reason = j.optString("reason").ifBlank { null },
                 requestedAt = j.optString("requested_at").ifBlank { null },

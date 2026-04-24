@@ -55,6 +55,8 @@ class QuietPeriodStore:
         cols = {str(row[1]) for row in conn.execute("PRAGMA table_info(quiet_period_requests);").fetchall()}
         if "approved_by_label" not in cols:
             conn.execute("ALTER TABLE quiet_period_requests ADD COLUMN approved_by_label TEXT NULL;")
+        if "expires_at" not in cols:
+            conn.execute("ALTER TABLE quiet_period_requests ADD COLUMN expires_at TEXT NULL;")
 
     def _row_to_record(self, row: sqlite3.Row | tuple) -> QuietPeriodRecord:
         return QuietPeriodRecord(
@@ -110,7 +112,7 @@ class QuietPeriodStore:
             )
             row = conn.execute(
                 """
-                SELECT id, user_id, reason, status, requested_at, approved_at, approved_by_user_id, expires_at
+                SELECT id, user_id, reason, status, requested_at, approved_at, approved_by_user_id, approved_by_label, expires_at
                 FROM quiet_period_requests
                 WHERE id = ?;
                 """,
@@ -317,3 +319,30 @@ class QuietPeriodStore:
 
     async def clear_quiet_period(self, *, request_id: int, admin_user_id: int, admin_label: Optional[str] = None) -> Optional[QuietPeriodRecord]:
         return await anyio.to_thread.run_sync(self._clear_quiet_period_sync, int(request_id), int(admin_user_id), admin_label)
+
+    def _cancel_for_user_sync(self, request_id: int, user_id: int) -> Optional[QuietPeriodRecord]:
+        self._expire_old_sync()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE quiet_period_requests
+                SET status = 'cancelled',
+                    expires_at = NULL
+                WHERE id = ?
+                  AND user_id = ?
+                  AND status IN ('pending', 'approved');
+                """,
+                (int(request_id), int(user_id)),
+            )
+            row = conn.execute(
+                """
+                SELECT id, user_id, reason, status, requested_at, approved_at, approved_by_user_id, approved_by_label, expires_at
+                FROM quiet_period_requests
+                WHERE id = ?;
+                """,
+                (int(request_id),),
+            ).fetchone()
+        return self._row_to_record(row) if row is not None else None
+
+    async def cancel_for_user(self, *, request_id: int, user_id: int) -> Optional[QuietPeriodRecord]:
+        return await anyio.to_thread.run_sync(self._cancel_for_user_sync, int(request_id), int(user_id))
