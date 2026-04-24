@@ -98,7 +98,7 @@ def test_quiet_period_removal_clears_active_pause_state(client: TestClient, logi
 
     response = client.post(f"/river-valley/admin/quiet-periods/{approved.id}/clear", follow_redirects=False)
     assert response.status_code == 303
-    assert response.headers.get("location") == "/river-valley/admin#quiet-periods"
+    assert response.headers.get("location") == "/river-valley/admin?section=quiet-periods#quiet-periods"
 
     active_after = set(asyncio.run(tenant.quiet_period_store.active_user_ids()))
     assert teacher.id not in active_after
@@ -139,7 +139,7 @@ def test_platform_audit_feed_endpoint_returns_labeled_human_readable_rows(client
         follow_redirects=False,
     )
     assert response.status_code == 303
-    assert response.headers.get("location") == "/north-point/admin#quiet-periods"
+    assert response.headers.get("location") == "/north-point/admin?section=quiet-periods#quiet-periods"
 
     response = client.get("/super-admin/audit-feed", follow_redirects=False)
     assert response.status_code == 200

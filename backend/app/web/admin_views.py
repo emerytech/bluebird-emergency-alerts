@@ -274,6 +274,11 @@ def _base_styles(theme: Optional[Mapping[str, str]] = None) -> str:
       border-color: rgba(59, 130, 246, 0.42);
       background: var(--accent-soft-strong);
     }
+    .nav-item-active {
+      border-color: rgba(147, 197, 253, 0.9);
+      background: rgba(255,255,255,0.14);
+      box-shadow: inset 0 0 0 1px rgba(147, 197, 253, 0.35);
+    }
     .signal-card {
       display: grid;
       gap: 14px;
@@ -446,24 +451,33 @@ def _render_admin_message_rows(messages: Sequence[AdminMessageRecord], school_pa
     return "".join(rows)
 
 
-def _render_quiet_period_rows(records: Sequence[QuietPeriodRecord], users: Sequence[UserRecord], school_path_prefix: str) -> str:
+def _render_quiet_period_rows(
+    records: Sequence[QuietPeriodRecord],
+    users: Sequence[UserRecord],
+    school_path_prefix: str,
+    *,
+    include_actions: bool = True,
+) -> str:
     if not records:
-        return '<tr><td colspan="7" class="mini-copy">No quiet periods yet.</td></tr>'
+        return '<tr><td colspan="7" class="mini-copy">No matching quiet period requests.</td></tr>'
     user_names = {user.id: user.name for user in users}
     prefix = escape(school_path_prefix)
     rows = []
     for item in records:
         approver = item.approved_by_label or (f"User #{item.approved_by_user_id}" if item.approved_by_user_id is not None else "—")
         action_html = "—"
-        if item.status == "approved":
+        if include_actions and item.status == "approved":
             action_html = f"""
-            <form method="post" action="{prefix}/admin/quiet-periods/{item.id}/clear" onsubmit="return confirm('Remove this quiet period?');">
-              <div class="button-row">
+            <div class="button-row">
+              <form method="post" action="{prefix}/admin/quiet-periods/{item.id}/clear" onsubmit="return confirm('Remove this quiet period?');">
                 <button class="button button-danger-outline" type="submit">Remove</button>
-              </div>
-            </form>
+              </form>
+              <form method="post" action="{prefix}/admin/quiet-periods/{item.id}/hide">
+                <button class="button button-secondary" type="submit">Hide from main view</button>
+              </form>
+            </div>
             """
-        elif item.status == "pending":
+        elif include_actions and item.status == "pending":
             action_html = f"""
             <div class="button-row">
               <form method="post" action="{prefix}/admin/quiet-periods/{item.id}/approve">
@@ -472,8 +486,13 @@ def _render_quiet_period_rows(records: Sequence[QuietPeriodRecord], users: Seque
               <form method="post" action="{prefix}/admin/quiet-periods/{item.id}/deny" onsubmit="return confirm('Deny this quiet period request?');">
                 <button class="button button-danger-outline" type="submit">Deny</button>
               </form>
+              <form method="post" action="{prefix}/admin/quiet-periods/{item.id}/hide">
+                <button class="button button-secondary" type="submit">Hide from main view</button>
+              </form>
             </div>
             """
+        elif not include_actions:
+            action_html = '<span class="mini-copy">History</span>'
         rows.append(
             f"<tr><td>{escape(user_names.get(item.user_id, f'User #{item.user_id}'))}</td><td>{escape(item.status)}</td><td>{escape(item.reason or '—')}</td><td>{escape(approver)}</td><td>{escape(item.requested_at)}</td><td>{escape(item.expires_at or '—')}</td><td>{action_html}</td></tr>"
         )
@@ -1212,7 +1231,9 @@ def render_admin_page(
     broadcasts: Sequence[BroadcastUpdateRecord],
     admin_messages: Sequence[AdminMessageRecord],
     unread_admin_messages: int,
-    quiet_periods: Sequence[QuietPeriodRecord],
+    quiet_periods_active: Sequence[QuietPeriodRecord],
+    quiet_periods_history: Sequence[QuietPeriodRecord],
+    quiet_periods_hidden_count: int,
     apns_configured: bool,
     twilio_configured: bool,
     server_info: Mapping[str, str],
@@ -1223,6 +1244,7 @@ def render_admin_page(
     flash_error: Optional[str] = None,
     super_admin_mode: bool = False,
     super_admin_actor_name: Optional[str] = None,
+    active_section: str = "dashboard",
 ) -> str:
     prefix = escape(school_path_prefix)
     role_counts = Counter(user.role for user in users)
@@ -1233,6 +1255,16 @@ def render_admin_page(
     alarm_status_class = "danger" if alarm_state.is_active else "ok"
     alarm_status_label = "ALARM ACTIVE" if alarm_state.is_active else "Alarm clear"
     security_feedback = f"{_render_flash(flash_message, 'success')}{_render_flash(flash_error, 'error')}"
+    section = active_section if active_section in {"dashboard", "quiet-periods", "audit-logs", "settings"} else "dashboard"
+    quiet_period_total = len(quiet_periods_active) + len(quiet_periods_history)
+
+    def _section_style(name: str) -> str:
+        return "" if section == name else ' style="display:none;"'
+
+    def _nav_item(name: str, label: str, badge: Optional[str] = None) -> str:
+        active_class = " nav-item-active" if section == name else ""
+        badge_html = f'<span class="nav-badge">{escape(str(badge))}</span>' if badge else ""
+        return f'<a class="nav-item{active_class}" href="{prefix}/admin?section={name}">{label}{badge_html}</a>'
     super_admin_shell_action_html = ""
     super_admin_banner_html = ""
     if super_admin_mode:
@@ -1349,15 +1381,10 @@ def render_admin_page(
           <div class="nav-group">
             <p class="nav-label">Command Deck</p>
           <nav class="nav-list">
-            <a class="nav-item" href="#overview">Overview</a>
-            <a class="nav-item" href="#security">Security</a>
-            <a class="nav-item" href="#users">Users</a>
-            <a class="nav-item" href="#alarm">Alarm</a>
-            <a class="nav-item" href="#messages">Messages {'<span class="nav-badge">' + str(unread_admin_messages) + '</span>' if unread_admin_messages > 0 else ''}</a>
-            <a class="nav-item" href="#reports">Reports</a>
-            <a class="nav-item" href="#quiet-periods">Quiet Periods</a>
-            <a class="nav-item" href="#alerts">Alert log</a>
-            <a class="nav-item" href="#devices">Devices</a>
+            {_nav_item("dashboard", "Dashboard")}
+            {_nav_item("quiet-periods", "Quiet Period Requests", str(len(quiet_periods_active)) if quiet_periods_active else None)}
+            {_nav_item("audit-logs", "Audit Logs")}
+            {_nav_item("settings", "Settings")}
           </nav>
           </div>
           <div class="shell-actions">
@@ -1375,7 +1402,7 @@ def render_admin_page(
         {_render_flash(flash_error, "error")}
         {super_admin_banner_html}
 
-        <section class="panel command-section" id="overview">
+        <section class="panel command-section" id="overview"{_section_style("dashboard")}>
           <div class="panel-header hero-band">
             <div>
               <p class="eyebrow">Command Deck</p>
@@ -1396,7 +1423,7 @@ def render_admin_page(
             <article class="metric-card"><div class="meta">Recent alerts</div><div class="metric-value">{len(alerts)}</div></article>
             <article class="metric-card"><div class="meta">User reports</div><div class="metric-value">{len(reports)}</div></article>
             <article class="metric-card"><div class="meta">Open messages</div><div class="metric-value">{unread_admin_messages}</div></article>
-            <article class="metric-card"><div class="meta">Quiet periods</div><div class="metric-value">{len(quiet_periods)}</div></article>
+            <article class="metric-card"><div class="meta">Quiet period requests</div><div class="metric-value">{len(quiet_periods_active)}</div></article>
           </div>
           <div class="status-row" style="margin-top:16px;">
             {_count_list(role_counts)}
@@ -1405,7 +1432,7 @@ def render_admin_page(
           </div>
         </section>
 
-        <section class="panel command-section" id="security">
+        <section class="panel command-section" id="security"{_section_style("settings")}>
           <div class="panel-header">
             <div>
               <p class="eyebrow">Security</p>
@@ -1431,7 +1458,7 @@ def render_admin_page(
         </section>
 
         <section class="grid">
-          <section class="panel command-section span-5" id="alarm">
+          <section class="panel command-section span-5" id="alarm"{_section_style("dashboard")}>
             <div class="panel-header">
               <div>
                 <p class="eyebrow">Alarm Control</p>
@@ -1462,7 +1489,7 @@ def render_admin_page(
             </p>
           </section>
 
-          <section class="panel command-section span-7" id="users">
+          <section class="panel command-section span-7" id="users"{_section_style("dashboard")}>
             <div class="panel-header">
               <div>
                 <p class="eyebrow">Accounts</p>
@@ -1506,7 +1533,7 @@ def render_admin_page(
             </form>
           </section>
 
-          <section class="panel command-section span-12">
+          <section class="panel command-section span-12"{_section_style("dashboard")}>
             <div class="panel-header">
               <div>
                 <p class="eyebrow">Account Editor</p>
@@ -1519,7 +1546,7 @@ def render_admin_page(
             </div>
           </section>
 
-          <section class="panel command-section span-5" id="reports">
+          <section class="panel command-section span-5" id="reports"{_section_style("dashboard")}>
             <div class="panel-header">
               <div>
                 <p class="eyebrow">Admin Broadcasts</p>
@@ -1551,7 +1578,7 @@ def render_admin_page(
             </table>
           </section>
 
-          <section class="panel command-section span-12" id="messages">
+          <section class="panel command-section span-12" id="messages"{_section_style("dashboard")}>
             <div class="panel-header">
               <div>
                 <p class="eyebrow">Messaging</p>
@@ -1569,7 +1596,7 @@ def render_admin_page(
             </table>
           </section>
 
-          <section class="panel command-section span-7">
+          <section class="panel command-section span-7"{_section_style("dashboard")}>
             <div class="panel-header">
               <div>
                 <p class="eyebrow">Structured Reports</p>
@@ -1587,15 +1614,20 @@ def render_admin_page(
             </table>
           </section>
 
-          <section class="panel command-section span-12" id="quiet-periods">
+          <section class="panel command-section span-12" id="quiet-periods"{_section_style("quiet-periods")}>
             <div class="panel-header">
               <div>
                 <p class="eyebrow">Quiet Periods</p>
                 <h2>Grant a 24-hour notification pause</h2>
-                <p class="card-copy">Use this for approved temporary exceptions like weddings or funerals. Quiet periods expire automatically after 24 hours.</p>
+                <p class="card-copy">This main view only shows active or pending requests. Resolved requests stay retained in audit history.</p>
               </div>
             </div>
             {super_admin_recorded_badge_html}
+            <div class="status-row" style="margin-bottom:14px;">
+              <span class="status-pill"><strong>Current queue</strong>{len(quiet_periods_active)}</span>
+              <span class="status-pill"><strong>Hidden from main view</strong>{quiet_periods_hidden_count}</span>
+              <span class="status-pill"><strong>Total stored</strong>{quiet_period_total}</span>
+            </div>
             <form method="post" action="{prefix}/admin/quiet-periods/grant" class="stack">
               <div class="form-grid">
                 <div class="field">
@@ -1618,12 +1650,18 @@ def render_admin_page(
                 <tr><th>User</th><th>Status</th><th>Reason</th><th>Approved By</th><th>Requested</th><th>Expires</th><th>Action</th></tr>
               </thead>
               <tbody>
-                {_render_quiet_period_rows(quiet_periods, users, school_path_prefix)}
+                {_render_quiet_period_rows(quiet_periods_active, users, school_path_prefix, include_actions=True)}
               </tbody>
             </table>
+            <div class="button-row" style="margin-top:12px;">
+              <form method="post" action="{prefix}/admin/quiet-periods/show-all">
+                <button class="button button-secondary" type="submit">Show hidden requests again</button>
+              </form>
+              <a class="button button-secondary" href="{prefix}/admin?section=audit-logs#audit-quiet-periods">View logs/history</a>
+            </div>
           </section>
 
-          <section class="panel span-7" id="alerts">
+          <section class="panel span-7" id="alerts"{_section_style("audit-logs")}>
             <div class="panel-header">
               <div>
                 <p class="eyebrow">Alert Log</p>
@@ -1640,7 +1678,7 @@ def render_admin_page(
             </table>
           </section>
 
-          <section class="panel span-5" id="devices">
+          <section class="panel span-5" id="devices"{_section_style("dashboard")}>
             <div class="panel-header">
               <div>
                 <p class="eyebrow">Devices</p>
@@ -1653,6 +1691,24 @@ def render_admin_page(
               </thead>
               <tbody>
                 {_render_device_rows(devices, users, school_path_prefix)}
+              </tbody>
+            </table>
+          </section>
+
+          <section class="panel command-section span-12" id="audit-quiet-periods"{_section_style("audit-logs")}>
+            <div class="panel-header">
+              <div>
+                <p class="eyebrow">Quiet Period Audit</p>
+                <h2>Resolved request history</h2>
+                <p class="card-copy">Historical requests are retained for audit review and excluded from the active queue.</p>
+              </div>
+            </div>
+            <table>
+              <thead>
+                <tr><th>User</th><th>Status</th><th>Reason</th><th>Approved By</th><th>Requested</th><th>Expires</th><th>Action</th></tr>
+              </thead>
+              <tbody>
+                {_render_quiet_period_rows(quiet_periods_history, users, school_path_prefix, include_actions=False)}
               </tbody>
             </table>
           </section>

@@ -171,6 +171,24 @@ def _pop_flash(request: Request) -> tuple[Optional[str], Optional[str]]:
     return message, error
 
 
+def _admin_section(value: Optional[str]) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"dashboard", "quiet-periods", "audit-logs", "settings"}:
+        return normalized
+    return "dashboard"
+
+
+def _quiet_hidden_ids(request: Request) -> set[int]:
+    raw = request.session.get("admin_quiet_period_hidden_ids", [])
+    if not isinstance(raw, list):
+        return set()
+    return {int(item) for item in raw if isinstance(item, (int, str)) and str(item).isdigit()}
+
+
+def _set_quiet_hidden_ids(request: Request, ids: set[int]) -> None:
+    request.session["admin_quiet_period_hidden_ids"] = sorted({int(item) for item in ids if int(item) > 0})
+
+
 def _super_admin_ok(request: Request) -> bool:
     return bool(request.session.get("super_admin_id"))
 
@@ -711,7 +729,10 @@ def _build_server_info(request: Request) -> dict:
 
 
 @router.get("/admin", response_class=HTMLResponse, include_in_schema=False)
-async def admin_dashboard(request: Request) -> HTMLResponse:
+async def admin_dashboard(
+    request: Request,
+    section: str = Query(default="dashboard"),
+) -> HTMLResponse:
     if _session_user_id(request) is None and not _super_admin_school_access_here(request):
         return RedirectResponse(url="/admin/login", status_code=status.HTTP_303_SEE_OTHER)
     await _require_dashboard_admin(request)
@@ -723,7 +744,13 @@ async def admin_dashboard(request: Request) -> HTMLResponse:
     broadcasts = await _reports(request).list_broadcast_updates(limit=10)
     admin_messages = await _reports(request).list_admin_messages(limit=40)
     unread_admin_messages = sum(1 for item in admin_messages if item.status == "open")
-    quiet_periods = await _quiet_periods(request).list_recent(limit=25)
+    quiet_periods_all = await _quiet_periods(request).list_recent(limit=200)
+    hidden_ids = _quiet_hidden_ids(request)
+    quiet_periods_active = [
+        item for item in quiet_periods_all if item.status in {"pending", "approved"} and item.id not in hidden_ids
+    ]
+    quiet_periods_history = [item for item in quiet_periods_all if item.status not in {"pending", "approved"}]
+    selected_section = _admin_section(section)
     flash_message, flash_error = _pop_flash(request)
     html = render_admin_page(
         school_name=request.state.school.name,
@@ -739,7 +766,9 @@ async def admin_dashboard(request: Request) -> HTMLResponse:
         broadcasts=broadcasts,
         admin_messages=admin_messages,
         unread_admin_messages=unread_admin_messages,
-        quiet_periods=quiet_periods,
+        quiet_periods_active=quiet_periods_active,
+        quiet_periods_history=quiet_periods_history,
+        quiet_periods_hidden_count=len(hidden_ids),
         apns_configured=_apns(request).is_configured(),
         twilio_configured=_broadcaster(request).twilio_configured(),
         server_info=_build_server_info(request),
@@ -762,6 +791,7 @@ async def admin_dashboard(request: Request) -> HTMLResponse:
             if getattr(request.state, "super_admin_school_access", False)
             else None
         ),
+        active_section=selected_section,
     )
     return HTMLResponse(content=html)
 
@@ -1862,7 +1892,7 @@ async def admin_grant_quiet_period(
     user = await _users(request).get_user(user_id)
     if user is None or not user.is_active:
         _set_flash(request, error="User was not found or is inactive.")
-        return RedirectResponse(url="/admin#quiet-periods", status_code=status.HTTP_303_SEE_OTHER)
+        return RedirectResponse(url="/admin?section=quiet-periods#quiet-periods", status_code=status.HTTP_303_SEE_OTHER)
     await _quiet_periods(request).grant_quiet_period(
         user_id=user_id,
         reason=reason.strip() or None,
@@ -1870,7 +1900,7 @@ async def admin_grant_quiet_period(
         admin_label=_current_school_actor_label(request),
     )
     _set_flash(request, message=f"Quiet period granted for {user.name} for 24 hours.")
-    return RedirectResponse(url="/admin#quiet-periods", status_code=status.HTTP_303_SEE_OTHER)
+    return RedirectResponse(url="/admin?section=quiet-periods#quiet-periods", status_code=status.HTTP_303_SEE_OTHER)
 
 
 @router.post("/admin/quiet-periods/{request_id}/approve", include_in_schema=False)
@@ -1886,11 +1916,11 @@ async def admin_approve_quiet_period(
     )
     if record is None or record.status != "approved":
         _set_flash(request, error="Quiet period request was not found or is no longer pending.")
-        return RedirectResponse(url="/admin#quiet-periods", status_code=status.HTTP_303_SEE_OTHER)
+        return RedirectResponse(url="/admin?section=quiet-periods#quiet-periods", status_code=status.HTTP_303_SEE_OTHER)
     user = await _users(request).get_user(record.user_id)
     label = user.name if user else f"User #{record.user_id}"
     _set_flash(request, message=f"Approved quiet period request for {label}.")
-    return RedirectResponse(url="/admin#quiet-periods", status_code=status.HTTP_303_SEE_OTHER)
+    return RedirectResponse(url="/admin?section=quiet-periods#quiet-periods", status_code=status.HTTP_303_SEE_OTHER)
 
 
 @router.post("/admin/quiet-periods/{request_id}/deny", include_in_schema=False)
@@ -1906,11 +1936,11 @@ async def admin_deny_quiet_period(
     )
     if record is None or record.status != "denied":
         _set_flash(request, error="Quiet period request was not found or is no longer pending.")
-        return RedirectResponse(url="/admin#quiet-periods", status_code=status.HTTP_303_SEE_OTHER)
+        return RedirectResponse(url="/admin?section=quiet-periods#quiet-periods", status_code=status.HTTP_303_SEE_OTHER)
     user = await _users(request).get_user(record.user_id)
     label = user.name if user else f"User #{record.user_id}"
     _set_flash(request, message=f"Denied quiet period request for {label}.")
-    return RedirectResponse(url="/admin#quiet-periods", status_code=status.HTTP_303_SEE_OTHER)
+    return RedirectResponse(url="/admin?section=quiet-periods#quiet-periods", status_code=status.HTTP_303_SEE_OTHER)
 
 
 @router.post("/admin/quiet-periods/{request_id}/clear", include_in_schema=False)
@@ -1926,11 +1956,34 @@ async def admin_clear_quiet_period(
     )
     if record is None or record.status != "cleared":
         _set_flash(request, error="Active quiet period was not found.")
-        return RedirectResponse(url="/admin#quiet-periods", status_code=status.HTTP_303_SEE_OTHER)
+        return RedirectResponse(url="/admin?section=quiet-periods#quiet-periods", status_code=status.HTTP_303_SEE_OTHER)
     user = await _users(request).get_user(record.user_id)
     label = user.name if user else f"User #{record.user_id}"
     _set_flash(request, message=f"Removed the quiet period for {label}.")
-    return RedirectResponse(url="/admin#quiet-periods", status_code=status.HTTP_303_SEE_OTHER)
+    return RedirectResponse(url="/admin?section=quiet-periods#quiet-periods", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.post("/admin/quiet-periods/{request_id}/hide", include_in_schema=False)
+async def admin_hide_quiet_period_from_main_view(
+    request: Request,
+    request_id: int,
+) -> RedirectResponse:
+    await _require_dashboard_admin(request)
+    hidden = _quiet_hidden_ids(request)
+    hidden.add(int(request_id))
+    _set_quiet_hidden_ids(request, hidden)
+    _set_flash(request, message="Request hidden from the main quiet-period queue. History is still retained.")
+    return RedirectResponse(url="/admin?section=quiet-periods#quiet-periods", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.post("/admin/quiet-periods/show-all", include_in_schema=False)
+async def admin_show_hidden_quiet_periods(
+    request: Request,
+) -> RedirectResponse:
+    await _require_dashboard_admin(request)
+    _set_quiet_hidden_ids(request, set())
+    _set_flash(request, message="Hidden quiet-period requests are visible again.")
+    return RedirectResponse(url="/admin?section=quiet-periods#quiet-periods", status_code=status.HTTP_303_SEE_OTHER)
 
 
 @router.post("/admin/devices/delete", include_in_schema=False)
