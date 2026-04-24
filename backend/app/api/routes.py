@@ -559,6 +559,24 @@ async def super_admin_dashboard(request: Request) -> HTMLResponse:
         school_prefix = f"/{school.slug}"
         admin_count = await request.app.state.tenant_manager.get(school).user_store.count_dashboard_admins()  # type: ignore[attr-defined]
         admin_url = f"https://{base_domain}{school_prefix}/admin"
+        pin_controls_html = (
+            f"""
+            <form method="post" action="/super-admin/schools/{school.slug}/setup-pin" class="stack" style="margin-top:10px;">
+              <div class="field">
+                <label>Update setup PIN</label>
+                <input name="setup_pin" type="password" placeholder="New PIN" />
+              </div>
+              <div class="button-row">
+                <button class="button button-secondary" type="submit">Save PIN</button>
+              </div>
+            </form>
+            <form method="post" action="/super-admin/schools/{school.slug}/setup-pin/clear" style="margin-top:10px;" onsubmit="return confirm('Clear the setup PIN for {school.name}?');">
+              <div class="button-row">
+                <button class="button button-danger-outline" type="submit">Clear PIN</button>
+              </div>
+            </form>
+            """
+        )
         school_rows.append(
             {
                 "name": school.name,
@@ -576,6 +594,7 @@ async def super_admin_dashboard(request: Request) -> HTMLResponse:
                         else "Open the admin URL to create the first school admin."
                     )
                 ),
+                "pin_controls_html": pin_controls_html,
                 "is_active": school.is_active,
             }
         )
@@ -630,6 +649,48 @@ async def super_admin_create_school(
             + (" A setup PIN was saved for first-admin creation." if school.setup_pin_required else "")
         ),
     )
+    return RedirectResponse(url="/super-admin#schools", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.post("/super-admin/schools/{slug}/setup-pin", include_in_schema=False)
+async def super_admin_update_setup_pin(
+    request: Request,
+    slug: str,
+    setup_pin: str = Form(...),
+) -> RedirectResponse:
+    _require_super_admin(request)
+    from app.services.tenant_manager import normalize_school_slug
+
+    normalized_slug = normalize_school_slug(slug)
+    normalized_pin = setup_pin.strip()
+    if not normalized_pin:
+        _set_flash(request, error="Enter a setup PIN to save, or use Clear PIN instead.")
+        return RedirectResponse(url="/super-admin#schools", status_code=status.HTTP_303_SEE_OTHER)
+    if len(normalized_pin) < 4:
+        _set_flash(request, error="Setup PIN must be at least 4 characters.")
+        return RedirectResponse(url="/super-admin#schools", status_code=status.HTTP_303_SEE_OTHER)
+    school = await _schools(request).set_setup_pin(slug=normalized_slug, setup_pin=normalized_pin)
+    if school is None:
+        _set_flash(request, error="School not found.")
+        return RedirectResponse(url="/super-admin#schools", status_code=status.HTTP_303_SEE_OTHER)
+    _set_flash(request, message=f"Updated the setup PIN for {school.name}.")
+    return RedirectResponse(url="/super-admin#schools", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.post("/super-admin/schools/{slug}/setup-pin/clear", include_in_schema=False)
+async def super_admin_clear_setup_pin(
+    request: Request,
+    slug: str,
+) -> RedirectResponse:
+    _require_super_admin(request)
+    from app.services.tenant_manager import normalize_school_slug
+
+    normalized_slug = normalize_school_slug(slug)
+    school = await _schools(request).set_setup_pin(slug=normalized_slug, setup_pin=None)
+    if school is None:
+        _set_flash(request, error="School not found.")
+        return RedirectResponse(url="/super-admin#schools", status_code=status.HTTP_303_SEE_OTHER)
+    _set_flash(request, message=f"Cleared the setup PIN for {school.name}.")
     return RedirectResponse(url="/super-admin#schools", status_code=status.HTTP_303_SEE_OTHER)
 
 

@@ -444,7 +444,7 @@ def render_super_admin_page(
             f"<td><code>{escape(str(item['slug']))}</code></td>"
             f"<td><a href=\"{escape(str(item['admin_url']))}\" target=\"_blank\">{escape(str(item['admin_url_label']))}</a>"
             f"<div class=\"mini-copy\">Mobile/API base: <code>{escape(str(item['api_base_label']))}</code></div></td>"
-            f"<td>{escape(str(item['setup_status']))}<div class=\"mini-copy\">{escape(str(item['setup_hint']))}</div></td>"
+            f"<td>{escape(str(item['setup_status']))}<div class=\"mini-copy\">{escape(str(item['setup_hint']))}</div>{str(item['pin_controls_html'])}</td>"
             f"<td>{'Active' if bool(item['is_active']) else 'Inactive'}</td>"
             "</tr>"
         )
@@ -557,6 +557,11 @@ def render_super_admin_page(
               <div class="meta">3. Hand off</div>
               <div style="margin-top:8px; font-weight:700;">Create first admin and sign in</div>
               <p class="mini-copy">If you set a setup PIN, share it with the school contact. After the initial admin account exists, the same URL becomes the ongoing school dashboard login.</p>
+            </article>
+            <article class="metric-card">
+              <div class="meta">4. Rotate access</div>
+              <div style="margin-top:8px; font-weight:700;">Update or clear setup PIN</div>
+              <p class="mini-copy">Use the controls in the schools table if you need to reset the first-admin handoff PIN for a school.</p>
             </article>
           </div>
         </section>

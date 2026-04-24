@@ -176,3 +176,33 @@ class SchoolRegistry:
 
     async def verify_setup_pin(self, *, slug: str, setup_pin: str) -> bool:
         return await anyio.to_thread.run_sync(self._verify_setup_pin_sync, slug, setup_pin)
+
+    def _set_setup_pin_sync(self, slug: str, setup_pin: Optional[str]) -> Optional[SchoolRecord]:
+        normalized_slug = slug.strip().lower()
+        pin_salt = None
+        pin_hash = None
+        if setup_pin:
+            pin_salt, pin_hash = hash_password(setup_pin.strip())
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE schools
+                SET setup_pin_salt = ?, setup_pin_hash = ?
+                WHERE slug = ?;
+                """,
+                (pin_salt, pin_hash, normalized_slug),
+            )
+            row = conn.execute(
+                """
+                SELECT id, created_at, slug, name, is_active, setup_pin_salt, setup_pin_hash
+                FROM schools
+                WHERE slug = ?
+                LIMIT 1;
+                """,
+                (normalized_slug,),
+            ).fetchone()
+        return self._row_to_record(row) if row is not None else None
+
+    async def set_setup_pin(self, *, slug: str, setup_pin: Optional[str]) -> Optional[SchoolRecord]:
+        normalized_pin = setup_pin.strip() if setup_pin else None
+        return await anyio.to_thread.run_sync(self._set_setup_pin_sync, slug, normalized_pin or None)
