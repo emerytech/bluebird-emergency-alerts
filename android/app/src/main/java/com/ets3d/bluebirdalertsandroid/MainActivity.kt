@@ -438,7 +438,7 @@ private fun LoginScreen(onDone: () -> Unit) {
                             unfocusedTextColor = TextPri,
                             cursorColor = BluePrimary,
                         ),
-                        modifier = Modifier.menuAnchor().fillMaxWidth(),
+                        modifier = Modifier.menuAnchor(MenuAnchorType.PrimaryNotEditable).fillMaxWidth(),
                     )
                     ExposedDropdownMenu(
                         expanded = schoolMenuExpanded,
