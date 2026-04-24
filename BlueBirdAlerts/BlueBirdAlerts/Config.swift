@@ -9,4 +9,11 @@ enum Config {
 
         return URL(string: "https://bluebird.ets3d.com")!
     }
+
+    static var backendApiKey: String {
+        if let value = Bundle.main.object(forInfoDictionaryKey: "BACKEND_API_KEY") as? String {
+            return value
+        }
+        return ""
+    }
 }

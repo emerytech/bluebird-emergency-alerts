@@ -328,6 +328,7 @@ data class UiState(
     val quietPeriodStatus: QuietPeriodMobileStatus? = null,
     val activeIncidents: List<IncidentFeedItem> = emptyList(),
     val activeTeamAssists: List<TeamAssistFeedItem> = emptyList(),
+    val isRefreshingFeed: Boolean = false,
 )
 
 // ── ViewModel ──────────────────────────────────────────────────────────────────
@@ -375,16 +376,28 @@ class MainViewModel : ViewModel() {
                             _state.update { it.copy(quietPeriodStatus = quiet) }
                         }
                 }
-                runCatching { client!!.activeIncidents() }
-                    .onSuccess { incidents ->
-                        _state.update { it.copy(activeIncidents = incidents) }
-                    }
-                runCatching { client!!.activeTeamAssists() }
-                    .onSuccess { teamAssists ->
-                        _state.update { it.copy(activeTeamAssists = teamAssists) }
-                    }
-                delay(4_000)
+                refreshIncidentFeedsOnce()
+                delay(10_000)
             }
+        }
+    }
+
+    private suspend fun refreshIncidentFeedsOnce() {
+        runCatching { client!!.activeIncidents() }
+            .onSuccess { incidents ->
+                _state.update { it.copy(activeIncidents = incidents) }
+            }
+        runCatching { client!!.activeTeamAssists() }
+            .onSuccess { teamAssists ->
+                _state.update { it.copy(activeTeamAssists = teamAssists) }
+            }
+    }
+
+    fun refreshIncidentFeeds() {
+        viewModelScope.launch(Dispatchers.IO) {
+            _state.update { it.copy(isRefreshingFeed = true) }
+            refreshIncidentFeedsOnce()
+            _state.update { it.copy(isRefreshingFeed = false) }
         }
     }
 
@@ -1198,6 +1211,8 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                         onSelectTab = { feedTab = it },
                         incidents = state.activeIncidents,
                         teamAssists = state.activeTeamAssists,
+                        isRefreshing = state.isRefreshingFeed,
+                        onRefresh = { vm.refreshIncidentFeeds() },
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(horizontal = 20.dp, vertical = 8.dp),
@@ -1470,6 +1485,8 @@ private fun ActiveSafetyFeedCard(
     onSelectTab: (Int) -> Unit,
     incidents: List<IncidentFeedItem>,
     teamAssists: List<TeamAssistFeedItem>,
+    isRefreshing: Boolean,
+    onRefresh: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Surface(
@@ -1479,7 +1496,16 @@ private fun ActiveSafetyFeedCard(
         shadowElevation = 4.dp,
     ) {
         Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Text("Active Feed", color = TextPri, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("Active Feed", color = TextPri, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                TextButton(onClick = onRefresh, enabled = !isRefreshing) {
+                    Text(if (isRefreshing) "Refreshing…" else "Refresh", color = BluePrimary)
+                }
+            }
             TabRow(
                 selectedTabIndex = selectedTab,
                 containerColor = Color.Transparent,

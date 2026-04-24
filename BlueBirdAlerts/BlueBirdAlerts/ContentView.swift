@@ -10,8 +10,11 @@ struct ContentView: View {
     @State private var isRegistering = false
     @State private var isLoadingDebugData = false
     @State private var showSettings = false
+    @State private var activeIncidents: [IncidentSummary] = []
+    @State private var activeTeamAssists: [TeamAssistSummary] = []
+    @State private var isRefreshingIncidentFeed = false
 
-    private let api = APIClient(baseURL: Config.backendBaseURL)
+    private let api = APIClient(baseURL: Config.backendBaseURL, apiKey: Config.backendApiKey)
 
     var body: some View {
         NavigationStack {
@@ -43,6 +46,8 @@ struct ContentView: View {
                                 .frame(maxWidth: .infinity, alignment: .leading)
                         }
                     }
+
+                    incidentsCard
 
                     VStack(spacing: 10) {
                         Button {
@@ -143,6 +148,16 @@ struct ContentView: View {
             .navigationDestination(isPresented: $showSettings) {
                 SettingsView()
             }
+            .refreshable {
+                await refreshIncidentFeed()
+            }
+            .task {
+                await refreshIncidentFeed()
+                while !Task.isCancelled {
+                    try? await Task.sleep(nanoseconds: 10_000_000_000)
+                    await refreshIncidentFeed()
+                }
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: .deviceTokenUpdated)) { note in
             guard let token = note.userInfo?["token"] as? String else { return }
@@ -206,6 +221,55 @@ struct ContentView: View {
         }
     }
 
+    private var incidentsCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Active Incidents")
+                    .font(.headline)
+                Spacer()
+                Button {
+                    Task { await refreshIncidentFeed() }
+                } label: {
+                    Text(isRefreshingIncidentFeed ? "Refreshing…" : "Refresh")
+                }
+                .buttonStyle(.bordered)
+                .disabled(isRefreshingIncidentFeed)
+            }
+
+            if activeIncidents.isEmpty {
+                Text("No active incidents.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(activeIncidents.prefix(8)) { incident in
+                    Text("• \(incident.type.uppercased()) · by #\(incident.createdBy)")
+                        .font(.subheadline)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+
+            Divider()
+
+            Text("Team Assists")
+                .font(.headline)
+            if activeTeamAssists.isEmpty {
+                Text("No active team assists.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(activeTeamAssists.prefix(8)) { item in
+                    Text("• \(item.type) · by #\(item.createdBy)")
+                        .font(.subheadline)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding()
+        .background(Color(.secondarySystemBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+
     private func row(_ label: String, _ value: String) -> some View {
         HStack(alignment: .firstTextBaseline) {
             Text(label)
@@ -215,6 +279,23 @@ struct ContentView: View {
                 .multilineTextAlignment(.trailing)
         }
         .font(.subheadline)
+    }
+
+    private func refreshIncidentFeed() async {
+        if isRefreshingIncidentFeed { return }
+        isRefreshingIncidentFeed = true
+        defer { isRefreshingIncidentFeed = false }
+
+        do {
+            async let incidentsResponse = api.activeIncidents()
+            async let teamAssistResponse = api.activeTeamAssists()
+            let (incidents, teamAssists) = try await (incidentsResponse, teamAssistResponse)
+            activeIncidents = incidents.incidents
+            activeTeamAssists = teamAssists.teamAssists
+            appState.lastError = nil
+        } catch {
+            appState.lastError = "Incident feed refresh failed: \(error.localizedDescription)"
+        }
     }
 
     private func registerDevice(token: String) async {

@@ -2,6 +2,19 @@ import Foundation
 
 struct APIClient {
     let baseURL: URL
+    let apiKey: String
+
+    init(baseURL: URL, apiKey: String = "") {
+        self.baseURL = baseURL
+        self.apiKey = apiKey
+    }
+
+    private func withAPIKey(_ request: inout URLRequest) {
+        let key = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !key.isEmpty {
+            request.setValue(key, forHTTPHeaderField: "X-API-Key")
+        }
+    }
 
     func health() async throws -> HealthResponse {
         let url = baseURL.appendingPathComponent("health")
@@ -36,7 +49,9 @@ struct APIClient {
 
     func devices() async throws -> DevicesResponse {
         let url = baseURL.appendingPathComponent("devices")
-        let (data, response) = try await URLSession.shared.data(from: url)
+        var request = URLRequest(url: url)
+        withAPIKey(&request)
+        let (data, response) = try await URLSession.shared.data(for: request)
         try requireSuccess(response: response, data: data)
         return try JSONDecoder().decode(DevicesResponse.self, from: data)
     }
@@ -47,9 +62,29 @@ struct APIClient {
         guard let url = components?.url else {
             throw NSError(domain: "BlueBird.API", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid alerts URL"])
         }
-        let (data, response) = try await URLSession.shared.data(from: url)
+        var request = URLRequest(url: url)
+        withAPIKey(&request)
+        let (data, response) = try await URLSession.shared.data(for: request)
         try requireSuccess(response: response, data: data)
         return try JSONDecoder().decode(AlertsResponse.self, from: data)
+    }
+
+    func activeIncidents() async throws -> IncidentListResponse {
+        let url = baseURL.appendingPathComponent("incidents/active")
+        var request = URLRequest(url: url)
+        withAPIKey(&request)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try requireSuccess(response: response, data: data)
+        return try JSONDecoder().decode(IncidentListResponse.self, from: data)
+    }
+
+    func activeTeamAssists() async throws -> TeamAssistListResponse {
+        let url = baseURL.appendingPathComponent("team-assist/active")
+        var request = URLRequest(url: url)
+        withAPIKey(&request)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try requireSuccess(response: response, data: data)
+        return try JSONDecoder().decode(TeamAssistListResponse.self, from: data)
     }
 
     private func requireSuccess(response: URLResponse, data: Data) throws {
@@ -176,5 +211,51 @@ struct AlertSummary: Decodable, Identifiable {
         case alertId = "alert_id"
         case createdAt = "created_at"
         case message
+    }
+}
+
+struct IncidentListResponse: Decodable {
+    let incidents: [IncidentSummary]
+}
+
+struct IncidentSummary: Decodable, Identifiable {
+    let id: Int
+    let type: String
+    let status: String
+    let createdBy: Int
+    let createdAt: String
+    let targetScope: String
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case type
+        case status
+        case createdBy = "created_by"
+        case createdAt = "created_at"
+        case targetScope = "target_scope"
+    }
+}
+
+struct TeamAssistListResponse: Decodable {
+    let teamAssists: [TeamAssistSummary]
+
+    enum CodingKeys: String, CodingKey {
+        case teamAssists = "team_assists"
+    }
+}
+
+struct TeamAssistSummary: Decodable, Identifiable {
+    let id: Int
+    let type: String
+    let status: String
+    let createdBy: Int
+    let createdAt: String
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case type
+        case status
+        case createdBy = "created_by"
+        case createdAt = "created_at"
     }
 }
