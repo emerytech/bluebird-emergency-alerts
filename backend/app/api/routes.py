@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import csv
+import anyio
 import hashlib
 import hmac
+import io
 import json
 import logging
 import os
@@ -18,7 +21,7 @@ from typing import Optional, cast
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Form, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi import HTTPException, status
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse, JSONResponse
 
 from app.api.deps import require_api_key
 from app.constants.labels import FEATURE_LABELS, get_feature_label
@@ -75,6 +78,8 @@ from app.services.alarm_store import AlarmStateRecord, AlarmStore
 from app.services.apns import APNsClient
 from app.services.alert_log import AlertLog
 from app.services.audit_log_service import AuditLogService, AuditEventRecord
+from app.services.drill_report_service import DrillReportService
+from app.services.drill_report_pdf import generate_pdf
 from app.services.device_registry import DeviceRegistry
 from app.services.fcm import FCMClient
 from app.services.incident_store import IncidentStore
@@ -167,6 +172,9 @@ def _alert_log(req: Request) -> AlertLog:
 
 def _audit_log_svc(req: Request) -> AuditLogService:
     return _tenant(req).audit_log_service  # type: ignore[attr-defined]
+
+def _drill_report_svc(req: Request) -> DrillReportService:
+    return _tenant(req).drill_report_service  # type: ignore[attr-defined]
 
 def _users(req: Request) -> UserStore:
     return _tenant(req).user_store  # type: ignore[attr-defined]
@@ -1529,6 +1537,82 @@ async def admin_dashboard(
         audit_event_type_filter=_audit_event_type_filter,
     )
     return HTMLResponse(content=html)
+
+
+@router.get("/admin/reports/{alert_id}", include_in_schema=False)
+async def admin_report_json(alert_id: int, request: Request) -> JSONResponse:
+    await _require_dashboard_admin(request)
+    report = await _drill_report_svc(request).build_report(
+        alert_id=alert_id, tenant_slug=_tenant(request).slug
+    )
+    if report is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Alert not found")
+    return JSONResponse(content=report.to_dict())
+
+
+@router.get("/admin/reports/{alert_id}/export.csv", include_in_schema=False)
+async def admin_report_csv(alert_id: int, request: Request) -> StreamingResponse:
+    await _require_dashboard_admin(request)
+    report = await _drill_report_svc(request).build_report(
+        alert_id=alert_id, tenant_slug=_tenant(request).slug
+    )
+    if report is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Alert not found")
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["BlueBird Alerts — Alert Report"])
+    writer.writerow(["School", request.state.school.name])
+    writer.writerow(["Alert ID", report.alert_id])
+    writer.writerow(["Type", "Training Drill" if report.is_training else "Live Alarm"])
+    writer.writerow(["Message", report.message])
+    writer.writerow(["Created at", report.created_at])
+    writer.writerow(["Activated by", report.activated_by or ""])
+    writer.writerow(["Deactivated at", report.deactivated_at or ""])
+    writer.writerow(["Deactivated by", report.deactivated_by or ""])
+    writer.writerow([])
+    writer.writerow(["Acknowledgement Summary"])
+    writer.writerow(["Users expected", report.total_users_expected])
+    writer.writerow(["Users acknowledged", report.total_acknowledged])
+    writer.writerow(["Acknowledgement rate", f"{report.acknowledgement_rate:.1f}%"])
+    writer.writerow(["First acknowledgement", report.first_ack_time or ""])
+    writer.writerow(["Last acknowledgement", report.last_ack_time or ""])
+    writer.writerow([])
+    writer.writerow(["Delivery Summary"])
+    writer.writerow(["Push attempts", report.delivery_total])
+    writer.writerow(["Delivered", report.delivery_ok])
+    writer.writerow(["Failed", report.delivery_failed])
+    writer.writerow([])
+    writer.writerow(["Acknowledgements"])
+    writer.writerow(["user_id", "user_name", "acknowledged_at"])
+    for ack in report.acknowledgements:
+        writer.writerow([ack.user_id, ack.user_label or "", ack.acknowledged_at])
+    csv_bytes = buf.getvalue().encode("utf-8-sig")
+    filename = f"bluebird-report-alert-{alert_id}.csv"
+    return StreamingResponse(
+        io.BytesIO(csv_bytes),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/admin/reports/{alert_id}/export.pdf", include_in_schema=False)
+async def admin_report_pdf(alert_id: int, request: Request) -> StreamingResponse:
+    await _require_dashboard_admin(request)
+    report = await _drill_report_svc(request).build_report(
+        alert_id=alert_id, tenant_slug=_tenant(request).slug
+    )
+    if report is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Alert not found")
+    school_name = request.state.school.name
+    pdf_bytes = await anyio.to_thread.run_sync(
+        lambda: generate_pdf(report, school_name)
+    )
+    filename = f"bluebird-report-alert-{alert_id}.pdf"
+    return StreamingResponse(
+        io.BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.get("/admin/login", response_class=HTMLResponse, include_in_schema=False)
