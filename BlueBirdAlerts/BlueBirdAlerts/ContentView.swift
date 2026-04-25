@@ -518,6 +518,7 @@ struct ContentView: View {
     @State private var holdFlashActive = false
     @State private var holdFlashProgress: Double = 0
     @State private var holdFlashColor: Color = DSColor.danger
+    @State private var showDeactivateConfirmation = false
 
     private var api: APIClient {
         APIClient(baseURL: appState.serverURL, apiKey: Config.backendApiKey)
@@ -712,6 +713,14 @@ struct ContentView: View {
                     }
                 }
                 Button("Cancel", role: .cancel) {}
+            }
+            .alert("End Active Alert?", isPresented: $showDeactivateConfirmation) {
+                Button("Cancel", role: .cancel) {}
+                Button("End Alert", role: .destructive) {
+                    Task { await deactivateAlarm() }
+                }
+            } message: {
+                Text("This will end the active emergency alert for all users.")
             }
             .sheet(
                 isPresented: Binding(
@@ -1727,7 +1736,11 @@ struct ContentView: View {
             appState.lastError = "Biometric verification was canceled."
             return
         }
-        await deactivateAlarm()
+        if appState.endAlertConfirmationEnabled && !alarmIsTraining {
+            showDeactivateConfirmation = true
+        } else {
+            await deactivateAlarm()
+        }
     }
 
     private func deactivateAlarm() async {
@@ -2317,6 +2330,11 @@ private struct SettingsView: View {
                     Toggle("Biometrics Allowed", isOn: $appState.biometricsAllowed)
                         .tint(DSColor.primary)
                     Text("Require Face ID / Touch ID before sending emergency alerts.")
+                        .font(.footnote)
+                        .foregroundStyle(DSColor.textSecondary)
+                    Toggle("Require confirmation before ending alerts", isOn: $appState.endAlertConfirmationEnabled)
+                        .tint(DSColor.primary)
+                    Text("Show a confirmation dialog before deactivating a live alarm. Training drills always skip confirmation.")
                         .font(.footnote)
                         .foregroundStyle(DSColor.textSecondary)
                 }

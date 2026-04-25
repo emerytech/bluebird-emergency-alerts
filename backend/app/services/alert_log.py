@@ -440,3 +440,26 @@ class AlertLog:
             status_code,
             error[:500] if error else None,
         )
+
+    def _delivery_stats_sync(self, alert_id: int) -> dict:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT
+                    COUNT(*),
+                    SUM(CASE WHEN ok=1 THEN 1 ELSE 0 END),
+                    MAX(CASE WHEN ok=0 THEN COALESCE(error,'Unknown error') ELSE NULL END)
+                FROM alert_deliveries
+                WHERE alert_id = ?;
+                """,
+                (int(alert_id),),
+            ).fetchone()
+        if not row or row[0] == 0:
+            return {"total": 0, "ok": 0, "failed": 0, "last_error": None}
+        total = int(row[0])
+        ok = int(row[1] or 0)
+        return {"total": total, "ok": ok, "failed": total - ok, "last_error": row[2]}
+
+    async def delivery_stats(self, alert_id: int) -> dict:
+        """Returns delivery attempt counts (total/ok/failed) for a given alert. Read-only."""
+        return await anyio.to_thread.run_sync(self._delivery_stats_sync, int(alert_id))

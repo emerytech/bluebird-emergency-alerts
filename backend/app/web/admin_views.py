@@ -1242,15 +1242,44 @@ def _tenant_selector(
 
 def _render_alert_rows(alerts: Sequence[AlertRecord]) -> str:
     if not alerts:
-        return '<tr><td colspan="4" class="mini-copy">No alerts logged yet.</td></tr>'
+        return '<tr><td colspan="5" class="mini-copy">No alerts logged yet.</td></tr>'
     rows = []
     for alert in alerts:
         actor = alert.triggered_by_label or (str(alert.triggered_by_user_id) if alert.triggered_by_user_id is not None else "Unknown")
+        type_badge = (
+            '<span class="status-pill warn">Training</span>'
+            if alert.is_training
+            else '<span class="status-pill ok">Live</span>'
+        )
         rows.append(
             "<tr>"
             f"<td>{alert.id}</td>"
+            f"<td>{type_badge}</td>"
             f"<td>{escape(alert.created_at)}</td>"
             f"<td>{escape(alert.message)}</td>"
+            f"<td>{escape(actor)}</td>"
+            "</tr>"
+        )
+    return "".join(rows)
+
+
+def _render_activity_rows(alerts: Sequence[AlertRecord]) -> str:
+    if not alerts:
+        return '<tr><td colspan="5" class="mini-copy">No alerts yet.</td></tr>'
+    rows = []
+    for alert in alerts:
+        actor = alert.triggered_by_label or (str(alert.triggered_by_user_id) if alert.triggered_by_user_id is not None else "System")
+        type_badge = (
+            '<span class="status-pill warn">Training</span>'
+            if alert.is_training
+            else '<span class="status-pill ok">Live</span>'
+        )
+        rows.append(
+            "<tr>"
+            f"<td>{alert.id}</td>"
+            f"<td>{type_badge}</td>"
+            f"<td class=\"mini-copy\">{escape(alert.created_at[:16] if len(alert.created_at) > 16 else alert.created_at)}</td>"
+            f"<td>{escape(alert.message[:60] + ('…' if len(alert.message) > 60 else ''))}</td>"
             f"<td>{escape(actor)}</td>"
             "</tr>"
         )
@@ -1497,6 +1526,9 @@ def render_admin_page(
     super_admin_mode: bool = False,
     super_admin_actor_name: Optional[str] = None,
     active_section: str = "dashboard",
+    acknowledgement_count: int = 0,
+    fcm_configured: bool = False,
+    delivery_stats: Optional[Mapping[str, object]] = None,
 ) -> str:
     prefix = escape(school_path_prefix)
     role_counts = Counter(user.role for user in users)
@@ -1509,6 +1541,25 @@ def render_admin_page(
     security_feedback = f"{_render_flash(flash_message, 'success')}{_render_flash(flash_error, 'error')}"
     section = active_section if active_section in {"dashboard", "user-management", "quiet-periods", "audit-logs", "settings"} else "dashboard"
     quiet_period_total = len(quiet_periods_active) + len(quiet_periods_history)
+    refresh_meta = '<meta http-equiv="refresh" content="30">' if section == "dashboard" else ""
+    ack_pill = (
+        f'<span class="status-pill ok"><strong>Acknowledged</strong>{acknowledgement_count} user{"s" if acknowledgement_count != 1 else ""}</span>'
+        if alarm_state.is_active and acknowledgement_count > 0
+        else ""
+    )
+
+    # Phase 2 panel computed values
+    _ds = delivery_stats or {}
+    _ds_total = int(_ds.get("total", 0))
+    _ds_ok = int(_ds.get("ok", 0))
+    _ds_failed = int(_ds.get("failed", 0))
+    _ds_last_error = str(_ds.get("last_error") or "") if _ds.get("last_error") else ""
+    _push_configured = apns_configured or fcm_configured
+    _ios_count = platform_counts.get("ios", 0)
+    _android_count = platform_counts.get("android", 0)
+    _apns_token_count = provider_counts.get("apns", 0)
+    _fcm_token_count = provider_counts.get("fcm", 0)
+    _total_device_count = len(devices)
 
     def _section_style(name: str) -> str:
         return "" if section == name else ' style="display:none;"'
@@ -1620,7 +1671,41 @@ def render_admin_page(
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>BlueBird Admin</title>
   {_favicon_tags()}
+  {refresh_meta}
   <style>{_base_styles(theme)}</style>
+  <script>
+  document.addEventListener('DOMContentLoaded', function() {{
+    // Training mode warning — show a red banner when training is unchecked
+    var cb = document.getElementById('is_training');
+    var warning = document.getElementById('live_alert_warning');
+    if (cb && warning) {{
+      function syncWarning() {{
+        warning.style.display = cb.checked ? 'none' : 'block';
+      }}
+      cb.addEventListener('change', syncWarning);
+      syncWarning();
+    }}
+    // Alarm activate confirmation
+    var activateForm = document.getElementById('alarm_activate_form');
+    if (activateForm) {{
+      activateForm.addEventListener('submit', function(e) {{
+        var isTraining = document.getElementById('is_training') && document.getElementById('is_training').checked;
+        var msg = isTraining
+          ? 'Start a training drill?\\n\\nDrill alerts will be delivered in training mode (no live SMS delivery).'
+          : '\\u26a0 LIVE ALERT\\n\\nThis will send real emergency notifications to all registered devices for this school.\\n\\nContinue?';
+        if (!confirm(msg)) {{ e.preventDefault(); }}
+      }});
+    }}
+    // Alarm deactivate confirmation
+    document.querySelectorAll('[data-confirm-deactivate]').forEach(function(form) {{
+      form.addEventListener('submit', function(e) {{
+        if (!confirm('End the active alarm?\\n\\nThis will clear the emergency state for all staff devices.')) {{
+          e.preventDefault();
+        }}
+      }});
+    }});
+  }});
+  </script>
 </head>
 <body>
   <main class="page-shell">
@@ -1673,6 +1758,7 @@ def render_admin_page(
             <div class="status-row">
               <span class="status-pill {alarm_status_class}"><strong>{alarm_status_label}</strong>{escape(alarm_state.message or 'No active alarm')}</span>
               {"<span class='status-pill warn'><strong>TRAINING</strong>" + escape(alarm_state.training_label or "This is a drill") + "</span>" if alarm_state.is_active and alarm_state.is_training else ""}
+              {ack_pill}
               <span class="status-pill {'ok' if apns_configured else 'danger'}"><strong>APNs</strong>{'ready' if apns_configured else 'not configured'}</span>
               <span class="status-pill {'ok' if twilio_configured else 'danger'}"><strong>SMS</strong>{'ready' if twilio_configured else 'not configured'}</span>
             </div>
@@ -1725,23 +1811,41 @@ def render_admin_page(
             <div class="panel-header">
               <div>
                 <p class="eyebrow">Alarm Control</p>
-                <h2>Activate or clear the alarm</h2>
+                <h2>{"End active alarm" if alarm_state.is_active else "Activate alarm"}</h2>
                 <p class="card-copy">Dashboard actions are attributed to your logged-in admin account automatically.</p>
               </div>
             </div>
+            {f'''
+            <div class="flash {'warn' if alarm_state.is_training else 'error'}" style="margin-bottom:14px;">
+              <strong>{"TRAINING DRILL ACTIVE" if alarm_state.is_training else "ALARM ACTIVE"}</strong><br />
+              {escape(alarm_state.message or "No message")}
+              {(" — by " + escape(alarm_state.activated_by_label or (f"User #{alarm_state.activated_by_user_id}" if alarm_state.activated_by_user_id is not None else "system"))) if alarm_state.activated_at else ""}
+              {(" at " + escape(alarm_state.activated_at)) if alarm_state.activated_at else ""}
+              {(" — Training label: " + escape(alarm_state.training_label or "This is a drill")) if alarm_state.is_training else ""}
+            </div>
+            <form method="post" action="{prefix}/admin/alarm/deactivate" class="stack" data-confirm-deactivate>
+              <div class="button-row">
+                <button class="button button-danger" type="submit">End alarm now</button>
+              </div>
+            </form>
+            ''' if alarm_state.is_active else f'''
             {super_admin_recorded_badge_html}
-            <form method="post" action="{prefix}/admin/alarm/activate" class="stack">
+            <div id="live_alert_warning" class="flash error" style="display:none; margin-bottom:12px;">
+              <strong>&#9888; Live alert mode.</strong> Training mode is off.
+              This will send real emergency notifications to all registered devices for this school.
+            </div>
+            <form id="alarm_activate_form" method="post" action="{prefix}/admin/alarm/activate" class="stack">
+              <div class="checkbox-row" style="background:color-mix(in srgb,var(--warning) 10%,white);border-color:color-mix(in srgb,var(--warning) 25%,transparent);">
+                <input type="checkbox" name="is_training" value="1" id="is_training" checked />
+                <label for="is_training">Training mode — no real push/SMS delivery</label>
+              </div>
               <div class="field">
                 <label for="alarm_message">Alarm message</label>
-                <textarea id="alarm_message" name="message">{escape(alarm_state.message or 'Emergency alert. Please follow school procedures.')}</textarea>
+                <textarea id="alarm_message" name="message">Emergency alert. Please follow school procedures.</textarea>
               </div>
               <div class="field">
                 <label for="training_label">Training label (optional)</label>
                 <input id="training_label" name="training_label" placeholder="This is a drill" />
-              </div>
-              <div class="checkbox-row">
-                <input type="checkbox" name="is_training" value="1" id="is_training" />
-                <label for="is_training">Training mode (no real push/SMS delivery)</label>
               </div>
               <div class="button-row">
                 <button class="button button-danger" type="submit">Activate alarm</button>
@@ -1749,15 +1853,105 @@ def render_admin_page(
             </form>
             <form method="post" action="{prefix}/admin/alarm/deactivate" class="stack" style="margin-top:14px;">
               <div class="button-row">
-                <button class="button button-secondary" type="submit">Deactivate alarm</button>
+                <button class="button button-secondary" type="submit" disabled>Deactivate alarm</button>
               </div>
             </form>
+            '''}
             <p class="mini-copy">
               Activated at: {escape(alarm_state.activated_at or 'Never')}
               {" • by " + escape(alarm_state.activated_by_label or (f"User #{alarm_state.activated_by_user_id}" if alarm_state.activated_by_user_id is not None else "system")) if alarm_state.activated_at else ""}
               {" • mode: TRAINING (" + escape(alarm_state.training_label or "This is a drill") + ")" if alarm_state.is_active and alarm_state.is_training else " • mode: LIVE" if alarm_state.is_active else ""}
               • Deactivated at: {escape(alarm_state.deactivated_at or 'Not yet')}
               {" • by " + escape(alarm_state.deactivated_by_label or (f"User #{alarm_state.deactivated_by_user_id}" if alarm_state.deactivated_by_user_id is not None else "system")) if alarm_state.deactivated_at else ""}
+            </p>
+          </section>
+
+          <section class="panel span-7" id="system-health"{_section_style("dashboard")}>
+            <div class="panel-header">
+              <div>
+                <p class="eyebrow">System Health</p>
+                <h2>Platform status</h2>
+              </div>
+            </div>
+            <table class="data-table" style="margin-bottom:12px;">
+              <tbody>
+                <tr><td><strong>School</strong></td><td>{escape(school_name)} <span class="mini-copy">({escape(school_slug)})</span></td></tr>
+                <tr><td><strong>Alarm state</strong></td><td><span class="status-pill {alarm_status_class}">{escape(alarm_status_label)}</span></td></tr>
+                <tr><td><strong>APNs (iOS push)</strong></td><td><span class="status-pill {"ok" if apns_configured else "warn"}">{("Configured" if apns_configured else "Not configured")}</span></td></tr>
+                <tr><td><strong>FCM (Android push)</strong></td><td><span class="status-pill {"ok" if fcm_configured else "warn"}">{("Configured" if fcm_configured else "Not configured")}</span></td></tr>
+                <tr><td><strong>SMS (Twilio)</strong></td><td><span class="status-pill {"ok" if twilio_configured else "warn"}">{("Configured" if twilio_configured else "Not configured")}</span></td></tr>
+                <tr><td><strong>Registered devices</strong></td><td>{_total_device_count}</td></tr>
+                <tr><td><strong>Acknowledgements (current)</strong></td><td>{acknowledgement_count if alarm_state.is_active else "—"}</td></tr>
+                <tr><td><strong>Last alarm activated</strong></td><td>{escape(alarm_state.activated_at or "Never")}</td></tr>
+                <tr><td><strong>Last alarm deactivated</strong></td><td>{escape(alarm_state.deactivated_at or "Never")}</td></tr>
+              </tbody>
+            </table>
+          </section>
+
+          <section class="panel span-5" id="device-status"{_section_style("dashboard")}>
+            <div class="panel-header">
+              <div>
+                <p class="eyebrow">Device &amp; Notification Status</p>
+                <h2>Registered devices</h2>
+              </div>
+            </div>
+            <table class="data-table" style="margin-bottom:12px;">
+              <tbody>
+                <tr><td><strong>iOS</strong></td><td>{_ios_count}</td></tr>
+                <tr><td><strong>Android</strong></td><td>{_android_count}</td></tr>
+                <tr><td><strong>APNs tokens</strong></td><td>{_apns_token_count}</td></tr>
+                <tr><td><strong>FCM tokens</strong></td><td>{_fcm_token_count}</td></tr>
+              </tbody>
+            </table>
+            <p class="eyebrow" style="margin-bottom:6px;">Most recent alert deliveries</p>
+            {f'''
+            <table class="data-table">
+              <tbody>
+                <tr><td><strong>Attempts</strong></td><td>{_ds_total}</td></tr>
+                <tr><td><strong>Delivered</strong></td><td><span class="status-pill ok">{_ds_ok}</span></td></tr>
+                <tr><td><strong>Failed</strong></td><td><span class="status-pill {"danger" if _ds_failed > 0 else "ok"}">{_ds_failed}</span></td></tr>
+                {f'<tr><td><strong>Last error</strong></td><td class="mini-copy">{escape(_ds_last_error[:120])}</td></tr>' if _ds_last_error else ""}
+              </tbody>
+            </table>
+            ''' if _ds_total > 0 else '<p class="mini-copy">No delivery records for the most recent alert.</p>'}
+          </section>
+
+          <section class="panel span-7" id="recent-activity"{_section_style("dashboard")}>
+            <div class="panel-header">
+              <div>
+                <p class="eyebrow">Recent Activity</p>
+                <h2>Last 5 alerts</h2>
+              </div>
+            </div>
+            <table class="data-table">
+              <thead><tr><th>ID</th><th>Type</th><th>Time</th><th>Message</th><th>By</th></tr></thead>
+              <tbody>
+                {_render_activity_rows(alerts[:5])}
+              </tbody>
+            </table>
+          </section>
+
+          <section class="panel span-5" id="drill-readiness"{_section_style("dashboard")}>
+            <div class="panel-header">
+              <div>
+                <p class="eyebrow">Drill Readiness</p>
+                <h2>Ready to drill?</h2>
+              </div>
+            </div>
+            <table class="data-table" style="margin-bottom:12px;">
+              <tbody>
+                <tr><td><strong>Push configured</strong></td><td><span class="status-pill {"ok" if _push_configured else "warn"}">{("Yes" if _push_configured else "No — set up APNs or FCM")}</span></td></tr>
+                <tr><td><strong>Devices registered</strong></td><td><span class="status-pill {"ok" if _total_device_count > 0 else "warn"}">{(_total_device_count if _total_device_count > 0 else "None registered")}</span></td></tr>
+                <tr><td><strong>Training mode</strong></td><td><span class="status-pill ok">Available</span></td></tr>
+                <tr><td><strong>Alarm currently</strong></td><td><span class="status-pill {alarm_status_class}">{escape(alarm_status_label)}</span></td></tr>
+              </tbody>
+            </table>
+            <p class="mini-copy">
+              {
+                "Ready for a training drill. Use the Alarm Control panel with Training mode on." if _push_configured and _total_device_count > 0 and not alarm_state.is_active
+                else "Alarm is currently active — complete or end it before starting a drill." if alarm_state.is_active
+                else "Register at least one device and configure push before running a drill."
+              }
             </p>
           </section>
 
@@ -1985,7 +2179,7 @@ def render_admin_page(
             </div>
             <table>
               <thead>
-                <tr><th>ID</th><th>Created</th><th>Message</th><th>Triggered by</th></tr>
+                <tr><th>ID</th><th>Type</th><th>Created</th><th>Message</th><th>Triggered by</th></tr>
               </thead>
               <tbody>
                 {_render_alert_rows(alerts)}

@@ -1748,6 +1748,13 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                                         fontSize = 12.sp,
                                         color = TextMuted,
                                     )
+                                    if (schoolName.isNotBlank()) {
+                                        Text(
+                                            schoolName,
+                                            fontSize = 11.sp,
+                                            color = TextMuted.copy(alpha = 0.65f),
+                                        )
+                                    }
                                 }
                             }
                             ConnectionDot(state.connected)
@@ -2061,7 +2068,7 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                     canDeactivate = canDeactivate,
                     isBusy = state.isBusy,
                     onDeactivate = {
-                        runProtectedAction(true) { vm.deactivateAlarm(ctx) }
+                        showDeactivateDialog = true
                     },
                     onViewDashboard = {
                         showAlarmTakeover = false
@@ -3868,6 +3875,7 @@ private fun SettingsScreen(
     val loginName = remember { getLoginName(ctx) }
     val userRole = remember { getUserRole(ctx) }
     val userId = remember { getUserId(ctx) }
+    val schoolName = remember { getSchoolName(ctx) }
     val activeServerUrl = remember { normalizeServerUrl(getServerUrl(ctx)) }
 
     Column(
@@ -3890,6 +3898,9 @@ private fun SettingsScreen(
                 Text(userName.ifBlank { "BlueBird user" }, color = TextPri, fontWeight = FontWeight.Bold, fontSize = 18.sp)
                 Text("@${loginName.ifBlank { "unknown" }}", color = BlueLight, fontSize = 13.sp)
                 HorizontalDivider(color = BorderSoft)
+                if (schoolName.isNotBlank()) {
+                    Text("School: $schoolName", color = TextPri, fontSize = 14.sp)
+                }
                 Text("Role: ${userRole.replaceFirstChar { it.uppercase() }}", color = TextPri, fontSize = 14.sp)
                 Text("User ID: $userId", color = TextPri, fontSize = 14.sp)
                 Text("Server: $activeServerUrl", color = TextMuted, fontSize = 12.sp)
