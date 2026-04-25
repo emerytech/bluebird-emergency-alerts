@@ -13,6 +13,7 @@ class AckRecord:
     user_id: int
     user_label: Optional[str]
     acknowledged_at: str
+    title: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -91,6 +92,7 @@ class DrillReport:
                 {
                     "user_id": a.user_id,
                     "user_label": a.user_label,
+                    "title": a.title,
                     "acknowledged_at": a.acknowledged_at,
                 }
                 for a in self.acknowledgements
@@ -132,13 +134,14 @@ class DrillReportService:
             deactivated_at = str(state_row[2]) if state_row and state_row[2] else None
             deactivated_by = str(state_row[3]) if state_row and state_row[3] else None
 
-            # 3. Acknowledgements
+            # 3. Acknowledgements — LEFT JOIN users to include title
             ack_rows = conn.execute(
                 """
-                SELECT user_id, user_label, acknowledged_at
-                FROM alert_acknowledgements
-                WHERE alert_id = ?
-                ORDER BY acknowledged_at ASC;
+                SELECT aa.user_id, aa.user_label, aa.acknowledged_at, u.title
+                FROM alert_acknowledgements aa
+                LEFT JOIN users u ON u.id = aa.user_id
+                WHERE aa.alert_id = ?
+                ORDER BY aa.acknowledged_at ASC;
                 """,
                 (int(alert_id),),
             ).fetchall()
@@ -182,6 +185,7 @@ class DrillReportService:
                 user_id=int(r[0]),
                 user_label=str(r[1]) if r[1] else None,
                 acknowledged_at=str(r[2]),
+                title=str(r[3]) if r[3] else None,
             )
             for r in ack_rows
         ]

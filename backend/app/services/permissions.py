@@ -114,6 +114,24 @@ def valid_tenant_roles() -> set[str]:
     }
 
 
+def can_trigger_alarm(role: str | None) -> bool:
+    # The alarm-trigger API gate only checks is_active, not a specific permission.
+    # Any user with a known tenant role can trigger.
+    return is_known_role(role)
+
+
+def can_deactivate_alarm(role: str | None) -> bool:
+    return can_any(role, {PERM_TRIGGER_OWN_TENANT_ALERTS, PERM_MANAGE_ASSIGNED_TENANT_INCIDENTS})
+
+
+def can_manage_users(role: str | None) -> bool:
+    return can_any(role, {PERM_MANAGE_OWN_TENANT_USERS, PERM_MANAGE_ASSIGNED_TENANT_USERS, PERM_FULL_ACCESS})
+
+
+def can_view_reports(role: str | None) -> bool:
+    return is_dashboard_role(role) or normalize_role(role) == ROLE_SUPER_ADMIN
+
+
 @dataclass(frozen=True)
 class PermissionCheck:
     role: str

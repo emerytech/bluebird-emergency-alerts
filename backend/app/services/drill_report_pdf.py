@@ -218,14 +218,15 @@ def generate_pdf(report: "DrillReport", school_name: str) -> bytes:
     # ── Acknowledgement list ──────────────────────────────────────────
     story.append(Paragraph("Acknowledgement List", section_style))
     if report.acknowledgements:
-        ack_list = [["User ID", "User", "Acknowledged At"]]
+        ack_list = [["User ID", "User", "Title", "Acknowledged At"]]
         for ack in report.acknowledgements:
             ack_list.append([
                 str(ack.user_id),
                 ack.user_label or "—",
+                ack.title or "—",
                 ack.acknowledged_at[:19].replace("T", " "),
             ])
-        t5 = Table(ack_list, colWidths=[0.8 * inch, 2.5 * inch, 3.3 * inch])
+        t5 = Table(ack_list, colWidths=[0.7 * inch, 1.9 * inch, 1.5 * inch, 2.5 * inch])
         t5.setStyle(TableStyle([
             ("BACKGROUND", (0, 0), (-1, 0), _BLUE),
             ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),

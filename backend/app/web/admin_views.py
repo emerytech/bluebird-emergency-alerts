@@ -1419,6 +1419,7 @@ def _render_user_cards(
         checked_clear_login = ""
         login_name = escape(user.login_name or "")
         phone = escape(user.phone_e164 or "")
+        user_title = escape(user.title or "")
         last_login = escape(user.last_login_at or "Never")
         tenant_badge = f'<p class="mini-copy">Tenant: <strong>{escape(tenant_label)}</strong></p>' if tenant_label else ""
         assigned_labels = list((user_tenant_assignments or {}).get(user.id, []))
@@ -1443,13 +1444,14 @@ def _render_user_cards(
             """
         elif user.role in {"district_admin", "law_enforcement"}:
             assignment_block = f'<p class="mini-copy">Assigned tenants: {assignment_label}</p>'
+        title_display = f' <span class="mini-copy">— {escape(user.title)}</span>' if user.title else ""
         cards.append(
             f"""
             <article class="user-card">
               <form method="post" action="{prefix}/admin/users/{user.id}/update" class="stack">
                 <div class="panel-header">
                   <div>
-                    <h3>{escape(user.name)}</h3>
+                    <h3>{escape(user.name)}{title_display}</h3>
                     <p class="mini-copy">User #{user.id} • created {escape(user.created_at)}</p>
                     {tenant_badge}
                   </div>
@@ -1468,6 +1470,10 @@ def _render_user_cards(
                       <option value="admin" {'selected' if user.role == 'admin' else ''}>admin</option>
                       <option value="district_admin" {'selected' if user.role == 'district_admin' else ''}>district admin</option>
                     </select>
+                  </div>
+                  <div class="field">
+                    <label>Title</label>
+                    <input name="title" value="{user_title}" placeholder="optional job title, e.g. Principal" />
                   </div>
                   <div class="field">
                     <label>Phone</label>
@@ -2099,6 +2105,10 @@ def render_admin_page(
                     <option value="admin">admin</option>
                     <option value="district_admin">district admin</option>
                   </select>
+                </div>
+                <div class="field">
+                  <label>Title</label>
+                  <input name="title" placeholder="optional job title, e.g. Principal" />
                 </div>
                 <div class="field">
                   <label>Phone</label>

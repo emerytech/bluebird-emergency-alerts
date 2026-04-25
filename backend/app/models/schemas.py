@@ -107,6 +107,7 @@ class CreateUserRequest(BaseModel):
 
     name: str = Field(..., min_length=1, max_length=120, description="Display name for the user.")
     role: UserRole = Field(..., description="Role used for later role-based alerting.")
+    title: Optional[str] = Field(default=None, max_length=120, description="Optional job title, e.g. Principal.")
     phone_e164: Optional[str] = Field(
         default=None,
         description="Optional E.164 phone number for SMS delivery, e.g. +15551234567.",
@@ -132,6 +133,7 @@ class UserSummary(BaseModel):
     role: str
     phone_e164: Optional[str] = None
     is_active: bool
+    title: Optional[str] = None
 
 
 class UsersResponse(BaseModel):
@@ -163,6 +165,7 @@ class MobileLoginResponse(BaseModel):
     name: str
     role: str
     login_name: str
+    title: Optional[str] = None
     must_change_password: bool = False
     can_deactivate_alarm: bool = False
     quiet_period_expires_at: Optional[str] = None
