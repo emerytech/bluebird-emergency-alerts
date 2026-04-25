@@ -1,8 +1,21 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("com.google.gms.google-services")
     id("org.jetbrains.kotlin.android")
 }
+
+val localProperties = Properties()
+val localPropertiesFile = rootProject.file("local.properties")
+if (localPropertiesFile.exists()) {
+    localPropertiesFile.inputStream().use { stream ->
+        localProperties.load(stream)
+    }
+}
+
+fun String.asBuildConfigString(): String =
+    "\"${replace("\\", "\\\\").replace("\"", "\\\"")}\""
 
 android {
     namespace = "com.ets3d.bluebirdalertsandroid"
@@ -17,7 +30,11 @@ android {
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         buildConfigField("String", "BACKEND_BASE_URL", "\"https://bluebird.ets3d.com\"")
-        buildConfigField("String", "BACKEND_API_KEY", "\"\"")
+        buildConfigField(
+            "String",
+            "BACKEND_API_KEY",
+            (localProperties.getProperty("bluebirdBackendApiKey") ?: "").asBuildConfigString(),
+        )
     }
 
     buildTypes {

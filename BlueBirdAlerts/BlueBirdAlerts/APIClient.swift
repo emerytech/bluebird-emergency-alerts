@@ -40,6 +40,7 @@ struct APIClient {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        withAPIKey(&request)
         request.httpBody = try JSONEncoder().encode(
             PanicRequest(
                 userID: userID,
@@ -496,6 +497,14 @@ struct AlarmStatusResponse: Decodable {
         case message
         case isTraining = "is_training"
         case trainingLabel = "training_label"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        isActive = try container.decodeIfPresent(Bool.self, forKey: .isActive) ?? false
+        message = try container.decodeIfPresent(String.self, forKey: .message)
+        isTraining = try container.decodeIfPresent(Bool.self, forKey: .isTraining) ?? false
+        trainingLabel = try container.decodeIfPresent(String.self, forKey: .trainingLabel)
     }
 }
 

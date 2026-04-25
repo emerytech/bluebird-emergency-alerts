@@ -11,9 +11,17 @@ enum Config {
     }
 
     static var backendApiKey: String {
-        if let value = Bundle.main.object(forInfoDictionaryKey: "BACKEND_API_KEY") as? String {
-            return value
+        if let value = Bundle.main.object(forInfoDictionaryKey: "BACKEND_API_KEY") as? String,
+           !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           !value.contains("$(") {
+            return value.trimmingCharacters(in: .whitespacesAndNewlines)
         }
+
+        if let value = ProcessInfo.processInfo.environment["BACKEND_API_KEY"],
+           !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return value.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
         return ""
     }
 }

@@ -4,6 +4,8 @@
 <dict>
 	<key>BACKEND_BASE_URL</key>
 	<string>https://bluebird.ets3d.com</string>
+	<key>BACKEND_API_KEY</key>
+	<string>$(BACKEND_API_KEY)</string>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
