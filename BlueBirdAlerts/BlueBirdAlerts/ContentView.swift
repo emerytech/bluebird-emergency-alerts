@@ -523,10 +523,19 @@ struct ContentView: View {
                         let wave = (sin(t * Double.pi * 2 * 1.6) + 1) / 2
                         let base = 0.035 + holdFlashProgress * 0.09
                         let pulse = (0.03 + holdFlashProgress * 0.07) * wave
-                        Rectangle()
-                            .fill(holdFlashColor)
-                            .opacity(min(0.22, base + pulse))
-                            .ignoresSafeArea()
+                        let countdown = max(1, Int(ceil((1.0 - holdFlashProgress) * 3.0)))
+                        ZStack {
+                            Rectangle()
+                                .fill(holdFlashColor)
+                                .opacity(min(0.22, base + pulse))
+                                .ignoresSafeArea()
+                            Text("\(countdown)")
+                                .font(.system(size: 118, weight: .black, design: .rounded))
+                                .foregroundStyle(.white)
+                                .shadow(color: .black.opacity(0.35), radius: 10, x: 0, y: 4)
+                                .opacity(0.45 + pulse * 0.85)
+                                .scaleEffect(0.9 + pulse * 0.2)
+                        }
                     }
                     .allowsHitTesting(false)
                 }
@@ -1424,6 +1433,7 @@ struct ContentView: View {
             alarmMessage = trimmed
             alarmIsTraining = isAdminSession && trainingModeEnabled
             alarmTrainingLabel = alarmIsTraining ? trainingLabel : nil
+            alertController.startAlarmAudio()
             appState.registeredDeviceCount = response.deviceCount
             if isAdminSession && trainingModeEnabled {
                 appState.lastStatus = "Training alert #\(response.alertId) started. Local recipients: \(response.attempted)."
@@ -1777,13 +1787,23 @@ struct ContentView: View {
     private func authenticateIfNeeded(reason: String) async -> Bool {
         if !appState.biometricsAllowed { return true }
         let context = LAContext()
+        context.localizedFallbackTitle = "Use Passcode"
         var error: NSError?
-        let policy: LAPolicy = .deviceOwnerAuthentication
-        guard context.canEvaluatePolicy(policy, error: &error) else {
+        let biometricPolicy: LAPolicy = .deviceOwnerAuthenticationWithBiometrics
+        if context.canEvaluatePolicy(biometricPolicy, error: &error) {
+            return await withCheckedContinuation { continuation in
+                context.evaluatePolicy(biometricPolicy, localizedReason: reason) { success, _ in
+                    continuation.resume(returning: success)
+                }
+            }
+        }
+
+        let fallbackPolicy: LAPolicy = .deviceOwnerAuthentication
+        guard context.canEvaluatePolicy(fallbackPolicy, error: &error) else {
             return true
         }
         return await withCheckedContinuation { continuation in
-            context.evaluatePolicy(policy, localizedReason: reason) { success, _ in
+            context.evaluatePolicy(fallbackPolicy, localizedReason: reason) { success, _ in
                 continuation.resume(returning: success)
             }
         }
