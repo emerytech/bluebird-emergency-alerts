@@ -365,11 +365,15 @@ class AdminBroadcastRequest(BaseModel):
 class PanicRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=240, description="Alert message to broadcast.")
     user_id: Optional[int] = Field(default=None, description="Optional user_id attribution (who triggered).")
+    is_training: bool = Field(default=False)
+    training_label: Optional[str] = Field(default=None, max_length=120)
 
 
 class AlarmStatusResponse(BaseModel):
     is_active: bool
     message: Optional[str] = None
+    is_training: bool = False
+    training_label: Optional[str] = None
     activated_at: Optional[str] = None
     activated_by_user_id: Optional[int] = None
     activated_by_label: Optional[str] = None
@@ -382,6 +386,8 @@ class AlarmStatusResponse(BaseModel):
 class AlarmActivateRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=240)
     user_id: Optional[int] = Field(default=None)
+    is_training: bool = Field(default=False)
+    training_label: Optional[str] = Field(default=None, max_length=120)
 
 
 class AlarmDeactivateRequest(BaseModel):
@@ -405,6 +411,9 @@ class AlertSummary(BaseModel):
     alert_id: int
     created_at: str
     message: str
+    is_training: bool = False
+    training_label: Optional[str] = None
+    created_by_user_id: Optional[int] = None
     triggered_by_user_id: Optional[int] = None
     triggered_by_label: Optional[str] = None
 

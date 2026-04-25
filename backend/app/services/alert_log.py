@@ -14,6 +14,9 @@ class AlertRecord:
     id: int
     created_at: str
     message: str
+    is_training: bool = False
+    training_label: Optional[str] = None
+    created_by_user_id: Optional[int] = None
     triggered_by_user_id: Optional[int] = None
     triggered_by_label: Optional[str] = None
 
@@ -64,6 +67,9 @@ class AlertLog:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     created_at TEXT NOT NULL,
                     message TEXT NOT NULL,
+                    is_training INTEGER NOT NULL DEFAULT 0,
+                    training_label TEXT NULL,
+                    created_by_user_id INTEGER NULL,
                     triggered_by_user_id INTEGER NULL,
                     triggered_by_label TEXT NULL,
                     trigger_ip TEXT NULL,
@@ -104,6 +110,12 @@ class AlertLog:
         cols = {str(row[1]) for row in conn.execute("PRAGMA table_info(alerts);").fetchall()}
         if "triggered_by_user_id" not in cols:
             conn.execute("ALTER TABLE alerts ADD COLUMN triggered_by_user_id INTEGER NULL;")
+        if "is_training" not in cols:
+            conn.execute("ALTER TABLE alerts ADD COLUMN is_training INTEGER NOT NULL DEFAULT 0;")
+        if "training_label" not in cols:
+            conn.execute("ALTER TABLE alerts ADD COLUMN training_label TEXT NULL;")
+        if "created_by_user_id" not in cols:
+            conn.execute("ALTER TABLE alerts ADD COLUMN created_by_user_id INTEGER NULL;")
         if "triggered_by_label" not in cols:
             conn.execute("ALTER TABLE alerts ADD COLUMN triggered_by_label TEXT NULL;")
         if "trigger_ip" not in cols:
@@ -115,6 +127,9 @@ class AlertLog:
         self,
         created_at: str,
         message: str,
+        is_training: bool,
+        training_label: Optional[str],
+        created_by_user_id: Optional[int],
         triggered_by_user_id: Optional[int],
         triggered_by_label: Optional[str],
         trigger_ip: Optional[str],
@@ -123,10 +138,30 @@ class AlertLog:
         with self._connect() as conn:
             cur = conn.execute(
                 """
-                INSERT INTO alerts (created_at, message, triggered_by_user_id, triggered_by_label, trigger_ip, trigger_user_agent)
-                VALUES (?, ?, ?, ?, ?, ?);
+                INSERT INTO alerts (
+                    created_at,
+                    message,
+                    is_training,
+                    training_label,
+                    created_by_user_id,
+                    triggered_by_user_id,
+                    triggered_by_label,
+                    trigger_ip,
+                    trigger_user_agent
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
                 """,
-                (created_at, message, triggered_by_user_id, triggered_by_label, trigger_ip, trigger_user_agent),
+                (
+                    created_at,
+                    message,
+                    1 if is_training else 0,
+                    training_label,
+                    created_by_user_id,
+                    triggered_by_user_id,
+                    triggered_by_label,
+                    trigger_ip,
+                    trigger_user_agent,
+                ),
             )
             return int(cur.lastrowid)
 
@@ -134,6 +169,9 @@ class AlertLog:
         self,
         message: str,
         *,
+        is_training: bool = False,
+        training_label: Optional[str] = None,
+        created_by_user_id: Optional[int] = None,
         triggered_by_user_id: Optional[int] = None,
         triggered_by_label: Optional[str] = None,
         trigger_ip: Optional[str] = None,
@@ -150,6 +188,9 @@ class AlertLog:
             self._log_alert_sync,
             created_at,
             message,
+            bool(is_training),
+            training_label.strip() if training_label else None,
+            created_by_user_id,
             triggered_by_user_id,
             triggered_by_label,
             trigger_ip,
@@ -160,7 +201,15 @@ class AlertLog:
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT id, created_at, message, triggered_by_user_id, triggered_by_label
+                SELECT
+                    id,
+                    created_at,
+                    message,
+                    is_training,
+                    training_label,
+                    created_by_user_id,
+                    triggered_by_user_id,
+                    triggered_by_label
                 FROM alerts
                 ORDER BY id DESC
                 LIMIT ?;
@@ -173,8 +222,11 @@ class AlertLog:
                 id=int(row[0]),
                 created_at=str(row[1]),
                 message=str(row[2]),
-                triggered_by_user_id=int(row[3]) if row[3] is not None else None,
-                triggered_by_label=str(row[4]) if row[4] is not None else None,
+                is_training=bool(int(row[3])),
+                training_label=str(row[4]) if row[4] is not None else None,
+                created_by_user_id=int(row[5]) if row[5] is not None else None,
+                triggered_by_user_id=int(row[6]) if row[6] is not None else None,
+                triggered_by_label=str(row[7]) if row[7] is not None else None,
             )
             for row in rows
         ]
