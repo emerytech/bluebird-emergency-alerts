@@ -75,6 +75,7 @@ class IncidentStore:
                 );
                 """
             )
+            self._migrate_incidents_table(conn)
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS team_assists (
@@ -107,6 +108,15 @@ class IncidentStore:
                 );
                 """
             )
+
+    def _migrate_incidents_table(self, conn: sqlite3.Connection) -> None:
+        cols = {str(row[1]) for row in conn.execute("PRAGMA table_info(incidents);").fetchall()}
+        if "target_scope" not in cols:
+            conn.execute("ALTER TABLE incidents ADD COLUMN target_scope TEXT NULL;")
+            conn.execute("UPDATE incidents SET target_scope = 'ALL' WHERE target_scope IS NULL OR trim(target_scope) = '';")
+        if "metadata_json" not in cols:
+            conn.execute("ALTER TABLE incidents ADD COLUMN metadata_json TEXT NULL;")
+            conn.execute("UPDATE incidents SET metadata_json = '{}' WHERE metadata_json IS NULL OR trim(metadata_json) = '';")
 
     def _migrate_team_assists_table(self, conn: sqlite3.Connection) -> None:
         cols = {str(row[1]) for row in conn.execute("PRAGMA table_info(team_assists);").fetchall()}
@@ -201,19 +211,26 @@ class IncidentStore:
                 """,
                 (int(limit),),
             ).fetchall()
-        return [
-            IncidentRecord(
-                id=int(row[0]),
-                type=str(row[1]),
-                status=str(row[2]),
-                created_by=int(row[3]),
-                school_id=str(row[4]),
-                created_at=str(row[5]),
-                target_scope=str(row[6]),
-                metadata=json.loads(str(row[7]) or "{}"),
+        incidents: list[IncidentRecord] = []
+        for row in rows:
+            metadata_raw = str(row[7]) if row[7] is not None else "{}"
+            try:
+                metadata = json.loads(metadata_raw)
+            except Exception:
+                metadata = {}
+            incidents.append(
+                IncidentRecord(
+                    id=int(row[0]),
+                    type=str(row[1]),
+                    status=str(row[2]),
+                    created_by=int(row[3]) if row[3] is not None else 0,
+                    school_id=str(row[4]),
+                    created_at=str(row[5]),
+                    target_scope=str(row[6] or "ALL"),
+                    metadata=metadata if isinstance(metadata, dict) else {},
+                )
             )
-            for row in rows
-        ]
+        return incidents
 
     async def list_active_incidents(self, *, limit: int = 50) -> List[IncidentRecord]:
         return await anyio.to_thread.run_sync(self._list_active_incidents_sync, int(limit))

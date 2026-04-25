@@ -1339,24 +1339,42 @@ struct ContentView: View {
         if isRefreshingIncidentFeed { return }
         isRefreshingIncidentFeed = true
         defer { isRefreshingIncidentFeed = false }
+        var errors: [String] = []
+        var anySuccess = false
 
         do {
-            async let incidentsResponse = api.activeIncidents()
-            async let teamAssistResponse = api.activeRequestHelp()
-            async let alarmResponse = api.alarmStatus()
-            let (incidents, teamAssists, alarm) = try await (incidentsResponse, teamAssistResponse, alarmResponse)
+            let incidents = try await api.activeIncidents()
             activeIncidents = incidents.incidents
+            anySuccess = true
+        } catch {
+            errors.append("Incidents: \(error.localizedDescription)")
+        }
+
+        do {
+            let teamAssists = try await api.activeRequestHelp()
             activeTeamAssists = teamAssists.teamAssists
+            syncAdminRequestHelpPrompt()
+            anySuccess = true
+        } catch {
+            errors.append("Request Help: \(error.localizedDescription)")
+        }
+
+        do {
+            let alarm = try await api.alarmStatus()
             alarmIsActive = alarm.isActive
             alarmMessage = alarm.message
             alarmIsTraining = alarm.isTraining
             alarmTrainingLabel = alarm.trainingLabel
-            syncAdminRequestHelpPrompt()
-            appState.lastError = nil
-            appState.backendReachable = true
+            anySuccess = true
         } catch {
-            appState.backendReachable = false
-            appState.lastError = "Incident feed refresh failed: \(error.localizedDescription)"
+            errors.append("Alarm status: \(error.localizedDescription)")
+        }
+
+        appState.backendReachable = anySuccess
+        if errors.isEmpty {
+            appState.lastError = nil
+        } else {
+            appState.lastError = "Incident feed refresh failed: \(errors.joined(separator: " | "))"
         }
     }
 
