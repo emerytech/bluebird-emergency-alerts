@@ -1357,6 +1357,14 @@ async def admin_dashboard(
     alerts = await _alert_log(request).list_recent(limit=20)
     users = await _users(request).list_users()
     alarm_state = await _alarm_store(request).get_state()
+    _latest_alert = await _alert_log(request).latest_alert()
+    _dashboard_ack_count = 0
+    if alarm_state.is_active and _latest_alert is not None:
+        _dashboard_ack_count = await _alert_log(request).acknowledgement_count(_latest_alert.id)
+    fcm_configured = _fcm(request).is_configured()
+    _dashboard_delivery_stats: dict = {}
+    if _latest_alert is not None:
+        _dashboard_delivery_stats = await _alert_log(request).delivery_stats(_latest_alert.id)
     reports = await _reports(request).list_reports(limit=25)
     broadcasts = await _reports(request).list_broadcast_updates(limit=10)
     admin_messages = await _reports(request).list_admin_messages(limit=40)
@@ -1429,6 +1437,9 @@ async def admin_dashboard(
             else None
         ),
         active_section=selected_section,
+        acknowledgement_count=_dashboard_ack_count,
+        fcm_configured=fcm_configured,
+        delivery_stats=_dashboard_delivery_stats,
     )
     return HTMLResponse(content=html)
 
