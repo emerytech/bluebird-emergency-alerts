@@ -41,14 +41,20 @@ from app.models.schemas import (
     AdminBroadcastRequest,
     AlertsResponse,
     AlertSummary,
+    DistrictOverviewResponse,
     IncidentCreateRequest,
     IncidentListResponse,
     IncidentSummary,
+    MeResponse,
+    SelectTenantRequest,
+    SelectTenantResponse,
     TeamAssistCreateRequest,
     TeamAssistActionRequest,
     TeamAssistCancelConfirmRequest,
     TeamAssistListResponse,
     TeamAssistSummary,
+    TenantOverviewItem,
+    TenantSummaryForUser,
     BroadcastUpdateSummary,
     CreateUserRequest,
     DevicesResponse,
@@ -86,8 +92,10 @@ from app.services.incident_store import IncidentStore
 from app.services.permissions import (
     PERM_APPROVE_ASSIGNED_TENANT_QUIET_REQUESTS,
     PERM_APPROVE_OWN_TENANT_QUIET_REQUESTS,
+    PERM_FULL_ACCESS,
     PERM_MANAGE_ASSIGNED_TENANT_INCIDENTS,
     PERM_MANAGE_ASSIGNED_TENANT_USERS,
+    PERM_MANAGE_ASSIGNED_TENANTS,
     PERM_MANAGE_OWN_TENANT_USERS,
     PERM_REQUEST_HELP,
     PERM_SUBMIT_QUIET_REQUEST,
@@ -3651,6 +3659,181 @@ async def create_user(body: CreateUserRequest, request: Request, _: None = Depen
         is_active=created.is_active,
         title=created.title,
     )
+
+
+@router.get("/me", response_model=MeResponse)
+async def get_me(
+    request: Request,
+    user_id: int = Query(...),
+    _: None = Depends(require_api_key),
+) -> MeResponse:
+    user = await _users(request).get_user(user_id)
+    if user is None or not user.is_active:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Active user not found")
+
+    current_school = request.state.school
+    all_schools = await _schools(request).list_schools()
+    school_by_id: dict[int, object] = {int(s.id): s for s in all_schools}
+
+    tenants: list[TenantSummaryForUser] = []
+    if str(user.role).strip().lower() == "super_admin":
+        for school in all_schools:
+            if school.is_active:
+                tenants.append(TenantSummaryForUser(
+                    tenant_slug=str(school.slug),
+                    tenant_name=str(school.name),
+                    role="super_admin",
+                ))
+    else:
+        tenants.append(TenantSummaryForUser(
+            tenant_slug=str(current_school.slug),
+            tenant_name=str(current_school.name),
+            role=str(user.role),
+        ))
+        if str(user.role).strip().lower() == "district_admin":
+            assignments = await _user_tenants(request).list_assignments(
+                user_id=int(user.id),
+                home_tenant_id=int(current_school.id),
+            )
+            seen_slugs = {str(current_school.slug)}
+            for assignment in assignments:
+                school = school_by_id.get(int(assignment.tenant_id))
+                if school is None:
+                    continue
+                slug = str(getattr(school, "slug", ""))
+                if slug and slug not in seen_slugs:
+                    seen_slugs.add(slug)
+                    tenants.append(TenantSummaryForUser(
+                        tenant_slug=slug,
+                        tenant_name=str(getattr(school, "name", slug)),
+                        role=str(assignment.role_for_tenant) if assignment.role_for_tenant else str(user.role),
+                    ))
+
+    tenants.sort(key=lambda t: t.tenant_name.lower())
+    return MeResponse(
+        user_id=user.id,
+        name=user.name,
+        login_name=user.login_name or "",
+        role=user.role,
+        title=user.title,
+        can_deactivate_alarm=_can_deactivate_alarm(user.role),
+        tenants=tenants,
+        selected_tenant=str(current_school.slug),
+    )
+
+
+@router.post("/me/selected-tenant", response_model=SelectTenantResponse)
+async def select_tenant(
+    body: SelectTenantRequest,
+    request: Request,
+    user_id: int = Query(...),
+    _: None = Depends(require_api_key),
+) -> SelectTenantResponse:
+    user = await _users(request).get_user(user_id)
+    if user is None or not user.is_active:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Active user not found")
+
+    target_slug = str(body.tenant_slug).strip().lower()
+    all_schools = await _schools(request).list_schools()
+    target_school = next(
+        (s for s in all_schools if str(getattr(s, "slug", "")).strip().lower() == target_slug),
+        None,
+    )
+    if target_school is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
+
+    current_school = request.state.school
+    role_for_tenant: Optional[str] = None
+
+    if str(user.role).strip().lower() == "super_admin":
+        role_for_tenant = "super_admin"
+    elif str(getattr(target_school, "slug", "")) == str(current_school.slug):
+        role_for_tenant = str(user.role)
+    elif str(user.role).strip().lower() == "district_admin":
+        assignments = await _user_tenants(request).list_assignments(
+            user_id=int(user.id),
+            home_tenant_id=int(current_school.id),
+        )
+        school_by_id: dict[int, object] = {int(s.id): s for s in all_schools}
+        for assignment in assignments:
+            school = school_by_id.get(int(assignment.tenant_id))
+            if school is None:
+                continue
+            if str(getattr(school, "slug", "")).strip().lower() == target_slug:
+                role_for_tenant = str(assignment.role_for_tenant) if assignment.role_for_tenant else str(user.role)
+                break
+        if role_for_tenant is None:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User is not assigned to requested tenant")
+    else:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User is not assigned to requested tenant")
+
+    return SelectTenantResponse(
+        tenant_slug=str(getattr(target_school, "slug", target_slug)),
+        tenant_name=str(getattr(target_school, "name", target_slug)),
+        role=role_for_tenant,
+    )
+
+
+@router.get("/district/overview", response_model=DistrictOverviewResponse)
+async def district_overview(
+    request: Request,
+    user_id: int = Query(...),
+    _: None = Depends(require_api_key),
+) -> DistrictOverviewResponse:
+    user = await _users(request).get_user(user_id)
+    if user is None or not user.is_active:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Active user not found")
+    if not can_any(user.role, {PERM_MANAGE_ASSIGNED_TENANTS, PERM_FULL_ACCESS}):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only district or platform admins can access district overview")
+
+    current_school = request.state.school
+    all_schools = await _schools(request).list_schools()
+
+    if str(user.role).strip().lower() == "super_admin":
+        accessible_schools = [s for s in all_schools if s.is_active]
+    else:
+        school_by_id: dict[int, object] = {int(s.id): s for s in all_schools}
+        accessible: dict[str, object] = {str(current_school.slug): current_school}
+        assignments = await _user_tenants(request).list_assignments(
+            user_id=int(user.id),
+            home_tenant_id=int(current_school.id),
+        )
+        for assignment in assignments:
+            school = school_by_id.get(int(assignment.tenant_id))
+            if school is not None:
+                slug = str(getattr(school, "slug", ""))
+                if slug:
+                    accessible[slug] = school
+        accessible_schools = sorted(accessible.values(), key=lambda s: str(getattr(s, "name", "")).lower())
+
+    items: list[TenantOverviewItem] = []
+    for school in accessible_schools:
+        tenant_ctx = request.app.state.tenant_manager.get(school)  # type: ignore[attr-defined]
+        alarm_state = await tenant_ctx.alarm_store.get_state()
+        latest_alert = await tenant_ctx.alert_log.latest_alert()
+
+        ack_count = 0
+        if latest_alert is not None and bool(getattr(alarm_state, "is_active", False)):
+            ack_count = await tenant_ctx.alert_log.acknowledgement_count(latest_alert.id)
+
+        school_users = await tenant_ctx.user_store.list_users()
+        expected_users = sum(1 for u in school_users if u.is_active)
+        ack_rate = round((ack_count / expected_users * 100.0) if expected_users > 0 else 0.0, 1)
+
+        items.append(TenantOverviewItem(
+            tenant_slug=str(getattr(school, "slug", "")),
+            tenant_name=str(getattr(school, "name", "")),
+            alarm_is_active=bool(getattr(alarm_state, "is_active", False)),
+            alarm_message=cast(Optional[str], getattr(alarm_state, "message", None)),
+            alarm_is_training=bool(getattr(alarm_state, "is_training", False)),
+            last_alert_at=latest_alert.created_at if latest_alert else None,
+            acknowledgement_count=ack_count,
+            expected_user_count=expected_users,
+            acknowledgement_rate=ack_rate,
+        ))
+
+    items.sort(key=lambda i: i.tenant_name.lower())
+    return DistrictOverviewResponse(tenant_count=len(items), tenants=items)
 
 
 @router.post("/register-device", response_model=RegisterDeviceResponse)
