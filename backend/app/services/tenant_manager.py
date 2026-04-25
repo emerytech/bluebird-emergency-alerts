@@ -10,6 +10,7 @@ from app.services.alert_broadcaster import AlertBroadcaster
 from app.services.alarm_store import AlarmStore
 from app.services.alert_log import AlertLog
 from app.services.audit_log_service import AuditLogService
+from app.services.drill_report_service import DrillReportService
 from app.services.device_registry import DeviceRegistry
 from app.services.fcm import FCMClient
 from app.services.quiet_period_store import QuietPeriodStore
@@ -43,6 +44,7 @@ class TenantContext:
     user_store: UserStore
     broadcaster: AlertBroadcaster
     audit_log_service: AuditLogService
+    drill_report_service: DrillReportService
 
 
 class TenantManager:
@@ -113,6 +115,7 @@ class TenantManager:
                     alert_log=alert_log,
                 ),
                 audit_log_service=AuditLogService(db_path),
+                drill_report_service=DrillReportService(db_path),
             )
             self._cache[normalized] = tenant
             return tenant

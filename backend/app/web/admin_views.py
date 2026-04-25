@@ -1264,6 +1264,38 @@ def _render_alert_rows(alerts: Sequence[AlertRecord]) -> str:
     return "".join(rows)
 
 
+def _render_drill_report_rows(alerts: Sequence[AlertRecord], prefix: str) -> str:
+    if not alerts:
+        return '<tr><td colspan="5" class="mini-copy">No alerts logged yet.</td></tr>'
+    rows = []
+    for alert in alerts:
+        type_badge = (
+            '<span class="status-pill warn">Training</span>'
+            if alert.is_training
+            else '<span class="status-pill ok">Live</span>'
+        )
+        msg = escape(alert.message[:80] + ("…" if len(alert.message) > 80 else ""))
+        p = escape(prefix)
+        actions = (
+            f'<a class="button button-secondary" style="font-size:11px;padding:4px 10px;" '
+            f'href="{p}/admin/reports/{alert.id}" target="_blank">View JSON</a> '
+            f'<a class="button button-secondary" style="font-size:11px;padding:4px 10px;" '
+            f'href="{p}/admin/reports/{alert.id}/export.csv">CSV</a> '
+            f'<a class="button button-secondary" style="font-size:11px;padding:4px 10px;" '
+            f'href="{p}/admin/reports/{alert.id}/export.pdf">PDF</a>'
+        )
+        rows.append(
+            "<tr>"
+            f"<td>{alert.id}</td>"
+            f"<td>{type_badge}</td>"
+            f"<td class=\"mini-copy\">{escape(alert.created_at[:16])}</td>"
+            f"<td>{msg}</td>"
+            f"<td style=\"text-align:right;white-space:nowrap;\">{actions}</td>"
+            "</tr>"
+        )
+    return "".join(rows)
+
+
 def _render_audit_event_rows(events: Sequence[AuditEventRecord]) -> str:
     if not events:
         return '<tr><td colspan="5" class="mini-copy">No audit events recorded yet.</td></tr>'
@@ -1584,7 +1616,7 @@ def render_admin_page(
     alarm_status_class = "danger" if alarm_state.is_active and not alarm_state.is_training else ("warn" if alarm_state.is_active else "ok")
     alarm_status_label = "TRAINING ACTIVE" if alarm_state.is_active and alarm_state.is_training else ("ALARM ACTIVE" if alarm_state.is_active else "Alarm clear")
     security_feedback = f"{_render_flash(flash_message, 'success')}{_render_flash(flash_error, 'error')}"
-    section = active_section if active_section in {"dashboard", "user-management", "quiet-periods", "audit-logs", "settings"} else "dashboard"
+    section = active_section if active_section in {"dashboard", "user-management", "quiet-periods", "audit-logs", "settings", "drill-reports"} else "dashboard"
     quiet_period_total = len(quiet_periods_active) + len(quiet_periods_history)
     refresh_meta = '<meta http-equiv="refresh" content="30">' if section == "dashboard" else ""
     ack_pill = (
@@ -1774,6 +1806,7 @@ def render_admin_page(
             {_nav_item("dashboard", "Dashboard")}
             {_nav_item("user-management", "User Management")}
             {_nav_item("quiet-periods", "Quiet Period Requests", str(len(quiet_periods_active)) if quiet_periods_active else None)}
+            {_nav_item("drill-reports", "Drill Reports")}
             {_nav_item("audit-logs", "Audit Logs")}
             {_nav_item("settings", "Settings")}
           </nav>
@@ -1998,6 +2031,34 @@ def render_admin_page(
                 else "Register at least one device and configure push before running a drill."
               }
             </p>
+            {f'''
+            <div class="button-row" style="margin-top:10px;">
+              <a class="button button-secondary" href="{escape(prefix)}/admin/reports/{alerts[0].id}/export.pdf" style="font-size:12px;">
+                Export last drill PDF
+              </a>
+              <a class="button button-secondary" href="{escape(prefix)}/admin?section=drill-reports" style="font-size:12px;">
+                View all reports
+              </a>
+            </div>
+            ''' if alerts else ""}
+          </section>
+
+          <section class="panel span-12" id="drill-reports"{_section_style("drill-reports")}>
+            <div class="panel-header">
+              <div>
+                <p class="eyebrow">Drill Reports</p>
+                <h2>Alert &amp; drill history</h2>
+                <p class="card-copy">Download official compliance reports for past alerts and training drills. Reports include acknowledgement stats, timelines, and delivery data.</p>
+              </div>
+            </div>
+            <table class="data-table">
+              <thead>
+                <tr><th>ID</th><th>Type</th><th>Date</th><th>Message</th><th style="text-align:right;">Actions</th></tr>
+              </thead>
+              <tbody>
+                {_render_drill_report_rows(alerts, prefix)}
+              </tbody>
+            </table>
           </section>
 
           <section class="panel command-section span-12" id="user-management"{_section_style("user-management")}>

@@ -382,6 +382,33 @@ class AlertLog:
     async def has_acknowledged(self, *, alert_id: int, user_id: int) -> bool:
         return await anyio.to_thread.run_sync(self._has_ack_sync, int(alert_id), int(user_id))
 
+    def _list_acknowledgements_sync(self, alert_id: int) -> List[AlertAcknowledgementRecord]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, alert_id, user_id, acknowledged_at, user_label, tenant_slug
+                FROM alert_acknowledgements
+                WHERE alert_id = ?
+                ORDER BY acknowledged_at ASC;
+                """,
+                (int(alert_id),),
+            ).fetchall()
+        return [
+            AlertAcknowledgementRecord(
+                id=int(row[0]),
+                alert_id=int(row[1]),
+                user_id=int(row[2]),
+                acknowledged_at=str(row[3]),
+                user_label=str(row[4]) if row[4] is not None else None,
+                tenant_slug=str(row[5]) if row[5] is not None else "",
+            )
+            for row in rows
+        ]
+
+    async def list_acknowledgements(self, alert_id: int) -> List[AlertAcknowledgementRecord]:
+        """Returns all acknowledgement records for a given alert, ordered oldest first."""
+        return await anyio.to_thread.run_sync(self._list_acknowledgements_sync, int(alert_id))
+
     def _log_delivery_sync(
         self,
         alert_id: int,
