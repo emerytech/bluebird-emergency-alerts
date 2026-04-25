@@ -67,23 +67,18 @@ class FCMClient:
         messages = [
             messaging.Message(
                 token=token,
-                notification=messaging.Notification(
-                    title="BlueBird Alert",
-                    body=message,
-                ),
                 data={
                     "title": "BlueBird Alert",
                     "body": message,
                     "message": message,
+                    "sound": "bluebird_alarm",
+                    "channel_id": "bluebird_alerts",
+                    "full_screen": "1",
+                    "open_alarm": "1",
+                    "category": "alarm",
                 },
                 android=messaging.AndroidConfig(
                     priority="high",
-                    notification=messaging.AndroidNotification(
-                        channel_id="bluebird_alerts",
-                        sound="default",
-                        priority="max",
-                        default_sound=True,
-                    ),
                 ),
             )
             for token in tokens

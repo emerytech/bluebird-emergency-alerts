@@ -1,6 +1,7 @@
 package com.ets3d.bluebirdalertsandroid
 
 import android.Manifest
+import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.BroadcastReceiver
@@ -12,8 +13,10 @@ import android.content.pm.PackageManager
 import android.media.AudioManager
 import android.media.AudioAttributes
 import android.media.MediaPlayer
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.view.WindowManager
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
@@ -111,6 +114,9 @@ private const val KEY_CAN_DEACTIVATE = "can_deactivate"
 private const val KEY_SERVER_URL = "server_url"
 private const val KEY_BIOMETRICS_ALLOWED = "biometrics_allowed"
 private const val TAG_ACTIVATION = "BluebirdActivation"
+internal const val EXTRA_OPEN_ALARM = "bluebird_open_alarm"
+internal const val EXTRA_ALARM_TITLE = "bluebird_alarm_title"
+internal const val EXTRA_ALARM_MESSAGE = "bluebird_alarm_message"
 
 private enum class HoldActivationUiState {
     Idle,
@@ -119,6 +125,21 @@ private enum class HoldActivationUiState {
     NearComplete,
     Triggered,
     Canceled,
+}
+
+data class AlarmLaunchEvent(
+    val title: String,
+    val body: String,
+    val receivedAtMillis: Long = System.currentTimeMillis(),
+)
+
+object AlarmLaunchCoordinator {
+    private val _event = MutableStateFlow<AlarmLaunchEvent?>(null)
+    val event: StateFlow<AlarmLaunchEvent?> get() = _event
+
+    fun publish(title: String, body: String) {
+        _event.value = AlarmLaunchEvent(title = title, body = body)
+    }
 }
 
 private class AndroidHoldHaptics(context: Context) {
@@ -272,7 +293,10 @@ private fun formatIsoForBanner(value: String?): String? {
 internal fun ensureNotificationChannel(context: Context) {
     val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
     val existing = manager.getNotificationChannel(NOTIF_CH)
-    val needsRecreate = existing == null || existing.sound != null
+    val soundUri = Uri.parse("android.resource://${context.packageName}/${R.raw.bluebird_alarm}")
+    val needsRecreate = existing == null ||
+        existing.importance < NotificationManager.IMPORTANCE_HIGH ||
+        existing.sound?.toString() != soundUri.toString()
     if (needsRecreate && existing != null) {
         manager.deleteNotificationChannel(NOTIF_CH)
     }
@@ -284,7 +308,15 @@ internal fun ensureNotificationChannel(context: Context) {
         ).apply {
             description = "Emergency school alerts"
             enableVibration(true)
-            setSound(null, null)
+            vibrationPattern = longArrayOf(0L, 900L, 350L, 900L, 350L, 1200L)
+            lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+            setSound(
+                soundUri,
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_ALARM)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                    .build(),
+            )
         }
         manager.createNotificationChannel(channel)
     }
@@ -566,6 +598,21 @@ class MainViewModel : ViewModel() {
             refreshIncidentFeedsOnce()
             _state.update { it.copy(isRefreshingFeed = false) }
         }
+    }
+
+    fun handleAlarmLaunch(message: String) {
+        val normalized = message.trim()
+        _state.update {
+            it.copy(
+                alarm = it.alarm.copy(
+                    isActive = true,
+                    message = normalized.ifBlank { it.alarm.message ?: "Emergency alert received." },
+                ),
+                successMsg = null,
+                errorMsg = null,
+            )
+        }
+        refreshIncidentFeeds()
     }
 
     fun activateAlarm(ctx: Context, message: String, isTraining: Boolean = false, trainingLabel: String? = null) {
@@ -980,6 +1027,7 @@ class MainActivity : FragmentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        applyAlarmLaunchFlags(intent)
         DSTokenStore.loadIfNeeded(this)
         ensureNotificationChannel(this)
         askNotificationPermission()
@@ -988,6 +1036,33 @@ class MainActivity : FragmentActivity() {
                 App()
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        applyAlarmLaunchFlags(intent)
+    }
+
+    private fun applyAlarmLaunchFlags(intent: Intent?) {
+        if (intent?.getBooleanExtra(EXTRA_OPEN_ALARM, false) != true) return
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+            setShowWhenLocked(true)
+            setTurnScreenOn(true)
+        } else {
+            @Suppress("DEPRECATION")
+            window.addFlags(
+                WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                    WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
+                    WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON,
+            )
+        }
+
+        AlarmLaunchCoordinator.publish(
+            title = intent.getStringExtra(EXTRA_ALARM_TITLE).orEmpty().ifBlank { "BlueBird Alert" },
+            body = intent.getStringExtra(EXTRA_ALARM_MESSAGE).orEmpty().ifBlank { "Emergency alert received." },
+        )
     }
 
     private fun askNotificationPermission() {
@@ -1398,6 +1473,7 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
     var biometricsEnabled by remember { mutableStateOf(biometricsAllowed(ctx)) }
     val safetyActions = remember(state.featureLabels) { buildSafetyActions(state.featureLabels) }
     val requestHelpLabel = AppLabels.labelForFeatureKey(AppLabels.KEY_REQUEST_HELP, state.featureLabels)
+    val launchEvent by AlarmLaunchCoordinator.event.collectAsState()
 
     val runProtectedAction: (Boolean, () -> Unit) -> Unit = { adminFeature, action ->
         if (!biometricsEnabled) {
@@ -1457,6 +1533,19 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
         if (promptRequestHelpId != null && state.activeTeamAssists.none { it.id == promptRequestHelpId }) {
             promptRequestHelpId = null
         }
+    }
+
+    LaunchedEffect(launchEvent?.receivedAtMillis) {
+        val event = launchEvent ?: return@LaunchedEffect
+        activePanel = DashboardPanel.Home
+        showSettingsScreen = false
+        showDeactivateDialog = false
+        showReportDialog = false
+        showQuietRequestOverlay = false
+        showQuietDeleteConfirmOverlay = false
+        showTeamAssistDialog = false
+        replyTarget = null
+        vm.handleAlarmLaunch(event.body)
     }
 
     // Dismiss flash messages after 3s
@@ -3607,7 +3696,7 @@ private object AlarmAudioController {
         appContext = ctx.applicationContext
         ensureAudioFocus()
         runCatching {
-            MediaPlayer.create(appContext, R.raw.bluebird_alarm_asset)?.apply {
+            MediaPlayer.create(appContext, R.raw.bluebird_alarm)?.apply {
                 setAudioAttributes(
                     AudioAttributes.Builder()
                         .setUsage(AudioAttributes.USAGE_ALARM)
@@ -3629,7 +3718,7 @@ private object AlarmAudioController {
             }
         }.onSuccess { created ->
             if (created == null) {
-                Log.e(TAG, "Unable to create MediaPlayer for bluebird_alarm_asset.mp3")
+                Log.e(TAG, "Unable to create MediaPlayer for bluebird_alarm.mp3")
                 return@onSuccess
             }
             player = created

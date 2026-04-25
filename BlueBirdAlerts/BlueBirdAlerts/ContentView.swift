@@ -142,8 +142,8 @@ private final class AlertController: ObservableObject {
             Self.enableVolumeLock()
             return
         }
-        guard let fileURL = Bundle.main.url(forResource: "bluebird-alarm-asset", withExtension: "mp3") else {
-            print("Audio failed: bluebird-alarm-asset.mp3 not found in app bundle")
+        guard let fileURL = Bundle.main.url(forResource: "bluebird_alarm", withExtension: "caf") else {
+            print("Audio failed: bluebird_alarm.caf not found in app bundle")
             return
         }
         print("Alarm file URL: \(fileURL)")
@@ -568,6 +568,9 @@ struct ContentView: View {
             .task {
                 await loadFeatureLabels()
                 await refreshIncidentFeed()
+                if let pendingAlarmUserInfo = AlarmPushBridge.consumePendingUserInfo() {
+                    handleIncomingAlarmNotification(pendingAlarmUserInfo)
+                }
                 if isAdminSession {
                     await loadAdminRecipients()
                     await loadTeamAssistForwardRecipients()
@@ -664,6 +667,9 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: .deviceTokenUpdateFailed)) { note in
             appState.lastError = note.userInfo?["error"] as? String
         }
+        .onReceive(NotificationCenter.default.publisher(for: .alarmPushReceived)) { note in
+            handleIncomingAlarmNotification(note.userInfo)
+        }
         .onChange(of: alarmIsActive) { _, isActive in
             if isActive {
                 alertController.startAlarmAudio()
@@ -673,6 +679,31 @@ struct ContentView: View {
         }
         .onDisappear {
             alertController.stopAlarmAudio()
+        }
+    }
+
+    private func handleIncomingAlarmNotification(_ userInfo: [AnyHashable: Any]?) {
+        let aps = userInfo?["aps"] as? [AnyHashable: Any]
+        let alert = aps?["alert"] as? [AnyHashable: Any]
+        let title = (alert?["title"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let body =
+            (alert?["body"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            ?? (userInfo?["message"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            ?? (userInfo?["body"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        showSettings = false
+        showMessagingCenter = false
+        showQuietPeriodCenter = false
+        if let title, !title.isEmpty {
+            appState.lastStatus = title
+        }
+        if let body, !body.isEmpty {
+            alarmMessage = body
+        }
+        alarmIsActive = true
+        alertController.startAlarmAudio()
+        Task {
+            await refreshIncidentFeed()
         }
     }
 

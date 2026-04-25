@@ -146,8 +146,10 @@ class APNsClient:
 
         payload = {
             "aps": {
-                "alert": {"title": "🚨 BlueBird Alert", "body": message},
-                "sound": "default",
+                "alert": {"title": "BlueBird Alert", "body": message},
+                "sound": "bluebird_alarm.caf",
+                "badge": 1,
+                "interruption-level": "time-sensitive",
             }
         }
 
