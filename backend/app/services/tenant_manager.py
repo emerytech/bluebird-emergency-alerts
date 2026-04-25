@@ -9,6 +9,7 @@ from app.core.config import Settings
 from app.services.alert_broadcaster import AlertBroadcaster
 from app.services.alarm_store import AlarmStore
 from app.services.alert_log import AlertLog
+from app.services.audit_log_service import AuditLogService
 from app.services.device_registry import DeviceRegistry
 from app.services.fcm import FCMClient
 from app.services.quiet_period_store import QuietPeriodStore
@@ -41,6 +42,7 @@ class TenantContext:
     quiet_period_store: QuietPeriodStore
     user_store: UserStore
     broadcaster: AlertBroadcaster
+    audit_log_service: AuditLogService
 
 
 class TenantManager:
@@ -110,6 +112,7 @@ class TenantManager:
                     twilio=self._twilio,
                     alert_log=alert_log,
                 ),
+                audit_log_service=AuditLogService(db_path),
             )
             self._cache[normalized] = tenant
             return tenant
