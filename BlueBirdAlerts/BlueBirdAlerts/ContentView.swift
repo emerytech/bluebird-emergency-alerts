@@ -5,6 +5,7 @@ import QuartzCore
 import AVFoundation
 import Foundation
 import Combine
+import MediaPlayer
 
 private let appBg = DSColor.background
 private let appBgDeep = DSColor.backgroundDeep
@@ -47,12 +48,19 @@ private final class AlertController: ObservableObject {
     private var holdTask: Task<Void, Never>?
     private var hapticTask: Task<Void, Never>?
     private var didTrigger = false
+    private var isTouchDown = false
     private static var audioPlayer: AVAudioPlayer?
+    private static var volumeObserver: NSKeyValueObservation?
+    private static weak var volumeSlider: UISlider?
+    private static var volumeView: MPVolumeView?
+    private static var isVolumeLockActive = false
+    private static var isAdjustingVolume = false
 
     func beginHold(duration: Double = 3.0) {
         guard holdState != .holding, !didTrigger else { return }
         print("Press detected")
         print("Hold started")
+        isTouchDown = true
         holdState = .holding
         holdProgress = 0
         didTrigger = false
@@ -62,7 +70,7 @@ private final class AlertController: ObservableObject {
         holdTask = Task {
             let start = CACurrentMediaTime()
             var lastLoggedStep = -1
-            while !Task.isCancelled, !didTrigger {
+            while !Task.isCancelled, !didTrigger, isTouchDown {
                 let elapsed = CACurrentMediaTime() - start
                 let progress = min(1.0, elapsed / duration)
                 holdProgress = progress
@@ -77,8 +85,9 @@ private final class AlertController: ObservableObject {
     }
 
     func completeHold(onActivate: @escaping () -> Void) {
-        guard holdState == .holding, !didTrigger else { return }
+        guard holdState == .holding, !didTrigger, isTouchDown else { return }
         didTrigger = true
+        isTouchDown = false
         holdProgress = 1.0
         holdState = .triggered
         holdTask?.cancel()
@@ -87,9 +96,18 @@ private final class AlertController: ObservableObject {
         fireCompletionHaptic()
         print("Hold completed; triggering alert")
         onActivate()
+        Task {
+            try? await Task.sleep(nanoseconds: 240_000_000)
+            withAnimation(.easeOut(duration: 0.18)) {
+                holdProgress = 0
+            }
+            holdState = .idle
+            didTrigger = false
+        }
     }
 
     func cancelHold() {
+        isTouchDown = false
         guard holdState == .holding, !didTrigger else { return }
         holdTask?.cancel()
         holdTask = nil
@@ -114,12 +132,14 @@ private final class AlertController: ObservableObject {
         stopHapticLoop()
         holdProgress = 0
         didTrigger = false
+        isTouchDown = false
         holdState = .idle
     }
 
     func startAlarmAudio() {
         if Self.audioPlayer?.isPlaying == true {
             print("Audio already playing")
+            Self.enableVolumeLock()
             return
         }
         guard let fileURL = Bundle.main.url(forResource: "bluebird-alarm-asset", withExtension: "mp3") else {
@@ -133,9 +153,11 @@ private final class AlertController: ObservableObject {
             try session.setActive(true)
             let player = try AVAudioPlayer(contentsOf: fileURL)
             player.numberOfLoops = -1
+            player.volume = 1.0
             player.prepareToPlay()
             if player.play() {
                 Self.audioPlayer = player
+                Self.enableVolumeLock()
                 print("Audio started")
             } else {
                 print("Audio failed: AVAudioPlayer returned play() == false")
@@ -146,6 +168,7 @@ private final class AlertController: ObservableObject {
     }
 
     func stopAlarmAudio() {
+        Self.disableVolumeLock()
         if let player = Self.audioPlayer {
             if player.isPlaying {
                 player.stop()
@@ -158,6 +181,63 @@ private final class AlertController: ObservableObject {
             try AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
         } catch {
             print("Audio session deactivate error: \(error.localizedDescription)")
+        }
+    }
+
+    private static func enableVolumeLock() {
+        guard !isVolumeLockActive else {
+            setSystemVolumeToMax()
+            return
+        }
+        isVolumeLockActive = true
+        ensureSystemVolumeSlider()
+        setSystemVolumeToMax()
+
+        volumeObserver = AVAudioSession.sharedInstance().observe(\.outputVolume, options: [.new]) { _, change in
+            guard let newValue = change.newValue else { return }
+            Task { @MainActor in
+                guard Self.isVolumeLockActive else { return }
+                if newValue < 0.995 {
+                    Self.setSystemVolumeToMax()
+                }
+            }
+        }
+    }
+
+    private static func disableVolumeLock() {
+        isVolumeLockActive = false
+        volumeObserver?.invalidate()
+        volumeObserver = nil
+    }
+
+    private static func ensureSystemVolumeSlider() {
+        guard volumeSlider == nil else { return }
+        guard
+            let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+            let window = windowScene.windows.first
+        else {
+            print("Volume lock: no window available for MPVolumeView")
+            return
+        }
+
+        let mpView = MPVolumeView(frame: CGRect(x: -1000, y: -1000, width: 1, height: 1))
+        mpView.isHidden = true
+        window.addSubview(mpView)
+        volumeView = mpView
+        volumeSlider = mpView.subviews.compactMap { $0 as? UISlider }.first
+        if volumeSlider == nil {
+            print("Volume lock: could not find MPVolumeView slider")
+        }
+    }
+
+    private static func setSystemVolumeToMax() {
+        guard !isAdjustingVolume else { return }
+        isAdjustingVolume = true
+        DispatchQueue.main.async {
+            ensureSystemVolumeSlider()
+            volumeSlider?.value = 1.0
+            volumeSlider?.sendActions(for: .valueChanged)
+            isAdjustingVolume = false
         }
     }
 
@@ -267,25 +347,24 @@ private struct SafetyHoldButton: View {
             }
             .frame(width: 122, height: 122)
             .contentShape(Circle())
-            .simultaneousGesture(
-                LongPressGesture(minimumDuration: 3.0, maximumDistance: 44)
-                    .onEnded { _ in
-                        controller.completeHold {
-                            onHoldVisual(false, 0, action.color)
-                            onActivate()
-                        }
-                    }
-            )
-            .simultaneousGesture(
-                DragGesture(minimumDistance: 0)
-                    .onChanged { _ in
-                        guard isEnabled else { return }
+            .onLongPressGesture(
+                minimumDuration: 3.0,
+                maximumDistance: 44,
+                pressing: { pressing in
+                    guard isEnabled else { return }
+                    if pressing {
                         controller.beginHold(duration: 3.0)
-                    }
-                    .onEnded { _ in
+                    } else {
                         controller.cancelHold()
                         onHoldVisual(false, 0, action.color)
                     }
+                },
+                perform: {
+                    controller.completeHold {
+                        onHoldVisual(false, 0, action.color)
+                        onActivate()
+                    }
+                }
             )
             .opacity(isEnabled ? 1 : 0.5)
 
