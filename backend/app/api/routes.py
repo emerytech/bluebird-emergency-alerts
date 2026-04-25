@@ -74,6 +74,7 @@ from app.services.alert_broadcaster import BroadcastPlan, AlertBroadcaster
 from app.services.alarm_store import AlarmStateRecord, AlarmStore
 from app.services.apns import APNsClient
 from app.services.alert_log import AlertLog
+from app.services.audit_log_service import AuditLogService, AuditEventRecord
 from app.services.device_registry import DeviceRegistry
 from app.services.fcm import FCMClient
 from app.services.incident_store import IncidentStore
@@ -163,6 +164,9 @@ def _quiet_periods(req: Request) -> QuietPeriodStore:
 
 def _alert_log(req: Request) -> AlertLog:
     return _tenant(req).alert_log  # type: ignore[attr-defined]
+
+def _audit_log_svc(req: Request) -> AuditLogService:
+    return _tenant(req).audit_log_service  # type: ignore[attr-defined]
 
 def _users(req: Request) -> UserStore:
     return _tenant(req).user_store  # type: ignore[attr-defined]
@@ -477,6 +481,40 @@ async def _deactivate_law_enforcement_quiet_state_for_user(
 
 def _super_admin_school_access_here(request: Request) -> bool:
     return _super_admin_ok(request) and _super_admin_school_slug(request) == str(getattr(request.state.school, "slug", "") or "")
+
+
+def _fire_audit(
+    request: Request,
+    event_type: str,
+    *,
+    actor_user_id: Optional[int] = None,
+    actor_label: Optional[str] = None,
+    target_type: Optional[str] = None,
+    target_id: Optional[str] = None,
+    metadata: Optional[dict] = None,
+) -> None:
+    """Fire-and-forget audit event. Never raises, never blocks the response."""
+    svc = _audit_log_svc(request)
+    slug = _tenant(request).slug
+
+    async def _task() -> None:
+        try:
+            await svc.log_event(
+                tenant_slug=slug,
+                event_type=event_type,
+                actor_user_id=actor_user_id,
+                actor_label=actor_label,
+                target_type=target_type,
+                target_id=target_id,
+                metadata=metadata,
+            )
+        except Exception:
+            logger.debug("Audit log write failed event_type=%s tenant=%s", event_type, slug, exc_info=True)
+
+    try:
+        asyncio.create_task(_task())
+    except RuntimeError:
+        pass
 
 
 def _current_school_actor_label(request: Request) -> Optional[str]:
@@ -1094,6 +1132,15 @@ async def mobile_login(body: MobileLoginRequest, request: Request) -> MobileLogi
             detail="Invalid username or password",
         )
     await _users(request).mark_login(user.id)
+    _fire_audit(
+        request,
+        "user_login",
+        actor_user_id=user.id,
+        actor_label=user.login_name or user.name,
+        target_type="user",
+        target_id=str(user.id),
+        metadata={"login_name": body.login_name, "channel": "mobile"},
+    )
     quiet_period = await _quiet_periods(request).active_for_user(user_id=user.id)
     quiet_mode_active = await _is_effective_quiet_user(request, user_id=user.id)
     return MobileLoginResponse(
@@ -1265,6 +1312,23 @@ async def activate_alarm(
         len(paused_user_ids),
         body.message,
     )
+    _fire_audit(
+        request,
+        "training_started" if is_training else "alarm_activated",
+        actor_user_id=triggered_by_user_id,
+        actor_label=_current_school_actor_label(request),
+        target_type="alert",
+        target_id=str(alert_id),
+        metadata={
+            "alert_id": alert_id,
+            "message": body.message,
+            "is_training": is_training,
+            "training_label": training_label,
+            "apns_count": len(apns_tokens),
+            "fcm_count": len(fcm_tokens),
+            "sms_count": len(sms_numbers),
+        },
+    )
     await _publish_alert_event(request, event="alert_triggered", alert_id=alert_id)
 
     return AlarmStatusResponse(
@@ -1292,12 +1356,25 @@ async def deactivate_alarm(
 ) -> AlarmStatusResponse:
     _assert_tenant_resolved(request)
     admin_user_id = await _require_admin_user(_users(request), body.user_id)
+    pre_state = await _alarm_store(request).get_state()
     state = await _alarm_store(request).deactivate(
         tenant_slug=_tenant(request).slug,
         deactivated_by_user_id=admin_user_id,
         deactivated_by_label=_current_school_actor_label(request),
     )
     logger.warning("ALARM DEACTIVATED by_user=%s", admin_user_id)
+    _fire_audit(
+        request,
+        "training_ended" if pre_state.is_training else "alarm_deactivated",
+        actor_user_id=admin_user_id,
+        actor_label=_current_school_actor_label(request),
+        target_type="alert",
+        metadata={
+            "message": pre_state.message,
+            "is_training": pre_state.is_training,
+            "training_label": pre_state.training_label,
+        },
+    )
     await _publish_alert_event(request, event="alert_cleared")
     return AlarmStatusResponse(
         is_active=bool(_state_field(state, "is_active", False)),
@@ -1347,6 +1424,7 @@ async def admin_dashboard(
     request: Request,
     section: str = Query(default="dashboard"),
     tenant: Optional[str] = Query(default=None),
+    audit_event_type: str = Query(default=""),
 ) -> HTMLResponse:
     if _session_user_id(request) is None and not _super_admin_school_access_here(request):
         return RedirectResponse(url="/admin/login", status_code=status.HTTP_303_SEE_OTHER)
@@ -1365,6 +1443,12 @@ async def admin_dashboard(
     _dashboard_delivery_stats: dict = {}
     if _latest_alert is not None:
         _dashboard_delivery_stats = await _alert_log(request).delivery_stats(_latest_alert.id)
+    _audit_event_type_filter = audit_event_type.strip()
+    _audit_events = await _audit_log_svc(request).list_recent(
+        limit=100,
+        event_type=_audit_event_type_filter or None,
+    )
+    _audit_event_types = await _audit_log_svc(request).distinct_event_types()
     reports = await _reports(request).list_reports(limit=25)
     broadcasts = await _reports(request).list_broadcast_updates(limit=10)
     admin_messages = await _reports(request).list_admin_messages(limit=40)
@@ -1440,6 +1524,9 @@ async def admin_dashboard(
         acknowledgement_count=_dashboard_ack_count,
         fcm_configured=fcm_configured,
         delivery_stats=_dashboard_delivery_stats,
+        audit_events=_audit_events,
+        audit_event_types=_audit_event_types,
+        audit_event_type_filter=_audit_event_type_filter,
     )
     return HTMLResponse(content=html)
 
@@ -1517,6 +1604,15 @@ async def admin_login(
             request.session["admin_user_id"] = user.id
             _clear_pending_admin(request)
             await _users(request).mark_login(user.id)
+            _fire_audit(
+                request,
+                "user_login",
+                actor_user_id=user.id,
+                actor_label=user.login_name or user.name,
+                target_type="user",
+                target_id=str(user.id),
+                metadata={"login_name": login_name, "channel": "web_admin", "totp": "trusted_device"},
+            )
             response = RedirectResponse(
                 url=_school_url(request, "/admin/change-password") if user.must_change_password else _school_url(request, "/admin"),
                 status_code=status.HTTP_303_SEE_OTHER,
@@ -1528,6 +1624,15 @@ async def admin_login(
     request.session["admin_user_id"] = user.id
     _clear_pending_admin(request)
     await _users(request).mark_login(user.id)
+    _fire_audit(
+        request,
+        "user_login",
+        actor_user_id=user.id,
+        actor_label=user.login_name or user.name,
+        target_type="user",
+        target_id=str(user.id),
+        metadata={"login_name": login_name, "channel": "web_admin"},
+    )
     if user.must_change_password:
         return RedirectResponse(url="/admin/change-password", status_code=status.HTTP_303_SEE_OTHER)
     _set_flash(request, message=f"Welcome back, {user.name}.")
@@ -1578,6 +1683,15 @@ async def admin_totp_submit(
     request.session["admin_user_id"] = user.id
     _clear_pending_admin(request)
     await _users(request).mark_login(user.id)
+    _fire_audit(
+        request,
+        "user_login",
+        actor_user_id=user.id,
+        actor_label=user.login_name or user.name,
+        target_type="user",
+        target_id=str(user.id),
+        metadata={"channel": "web_admin", "totp": "verified"},
+    )
     response = RedirectResponse(
         url=_school_url(request, "/admin/change-password") if user.must_change_password else _school_url(request, "/admin"),
         status_code=status.HTTP_303_SEE_OTHER,
@@ -2549,6 +2663,14 @@ async def admin_create_user(
     except Exception as exc:
         _set_flash(request, error=f"Could not create user: {exc}")
         return RedirectResponse(url="/admin?section=user-management#users", status_code=status.HTTP_303_SEE_OTHER)
+    _fire_audit(
+        request,
+        "user_created",
+        actor_user_id=_session_user_id(request),
+        actor_label=_current_school_actor_label(request),
+        target_type="user",
+        metadata={"name": normalized_name, "role": normalized_role},
+    )
     _set_flash(request, message=f"Created user {normalized_name}.")
     return RedirectResponse(url="/admin?section=user-management#users", status_code=status.HTTP_303_SEE_OTHER)
 
@@ -2921,6 +3043,21 @@ async def admin_update_user(
     except Exception as exc:
         _set_flash(request, error=f"Could not update user #{user_id}: {exc}")
         return RedirectResponse(url="/admin?section=user-management#users", status_code=status.HTTP_303_SEE_OTHER)
+    _fire_audit(
+        request,
+        "user_updated",
+        actor_user_id=_session_user_id(request),
+        actor_label=_current_school_actor_label(request),
+        target_type="user",
+        target_id=str(user_id),
+        metadata={
+            "name": normalized_name,
+            "old_role": existing_user.role,
+            "new_role": normalized_role,
+            "role_changed": existing_user.role != normalized_role,
+            "is_active": is_active is not None,
+        },
+    )
     _set_flash(request, message=f"Updated user {normalized_name}.")
     return RedirectResponse(url="/admin?section=user-management#users", status_code=status.HTTP_303_SEE_OTHER)
 
@@ -2982,6 +3119,15 @@ async def admin_delete_user(
             _set_flash(request, error="You cannot delete the last active admin with dashboard login access.")
             return RedirectResponse(url="/admin?section=user-management#users", status_code=status.HTTP_303_SEE_OTHER)
 
+    _fire_audit(
+        request,
+        "user_deleted",
+        actor_user_id=_session_user_id(request),
+        actor_label=_current_school_actor_label(request),
+        target_type="user",
+        target_id=str(user_id),
+        metadata={"name": user.name, "role": user.role},
+    )
     await _users(request).delete_user(user_id)
 
     if current_admin_id is not None and current_admin_id == user_id:
@@ -3072,6 +3218,19 @@ async def acknowledge_alert(
         tenant_slug=tenant_slug,
     )
     acknowledgement_count = await _alert_log(request).acknowledgement_count(alert_id)
+    _fire_audit(
+        request,
+        "alert_acknowledged",
+        actor_user_id=user_id,
+        actor_label=record.user_label,
+        target_type="alert",
+        target_id=str(alert_id),
+        metadata={
+            "alert_id": alert_id,
+            "already_acknowledged": already_acknowledged,
+            "total_acknowledgements": acknowledgement_count,
+        },
+    )
     await _publish_alert_event(
         request,
         event="alert_acknowledged",
@@ -3365,6 +3524,13 @@ async def users(request: Request, _: None = Depends(require_api_key)) -> UsersRe
 @router.post("/users", response_model=UserSummary)
 async def create_user(body: CreateUserRequest, request: Request, _: None = Depends(require_api_key)) -> UserSummary:
     user_id = await _users(request).create_user(name=body.name, role=body.role.value, phone_e164=body.phone_e164)
+    _fire_audit(
+        request,
+        "user_created",
+        target_type="user",
+        target_id=str(user_id),
+        metadata={"name": body.name, "role": body.role.value, "channel": "api"},
+    )
     # Return the created record by re-listing. For MVP simplicity this avoids extra query code paths.
     all_users = await _users(request).list_users()
     created = next(u for u in all_users if u.id == user_id)
@@ -3406,6 +3572,18 @@ async def register_device(
         body.push_provider.value,
         device_count,
         body.device_token[-8:],
+    )
+    _fire_audit(
+        request,
+        "device_registered",
+        actor_user_id=body.user_id,
+        target_type="device",
+        metadata={
+            "platform": body.platform.value,
+            "provider": body.push_provider.value,
+            "device_name": body.device_name,
+            "registered": registered,
+        },
     )
     return RegisterDeviceResponse(
         registered=registered,

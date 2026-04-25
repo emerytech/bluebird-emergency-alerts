@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Mapping, Optional, Sequence
 
 from app.services.alert_log import AlertRecord
+from app.services.audit_log_service import AuditEventRecord
 from app.services.alarm_store import AlarmStateRecord
 from app.services.device_registry import RegisteredDevice
 from app.services.incident_store import TeamAssistRecord
@@ -1263,6 +1264,47 @@ def _render_alert_rows(alerts: Sequence[AlertRecord]) -> str:
     return "".join(rows)
 
 
+def _render_audit_event_rows(events: Sequence[AuditEventRecord]) -> str:
+    if not events:
+        return '<tr><td colspan="5" class="mini-copy">No audit events recorded yet.</td></tr>'
+    rows = []
+    for evt in events:
+        actor = escape(evt.actor_label or (f"User #{evt.actor_user_id}" if evt.actor_user_id is not None else "System"))
+        target = ""
+        if evt.target_type:
+            target = escape(evt.target_type)
+            if evt.target_id:
+                target += f" #{escape(evt.target_id)}"
+        ts = evt.timestamp[:16] if len(evt.timestamp) > 16 else evt.timestamp
+        meta = evt.metadata or {}
+        summary_parts = []
+        if "message" in meta:
+            summary_parts.append(escape(str(meta["message"])[:60]))
+        if "name" in meta:
+            summary_parts.append(escape(str(meta["name"])))
+        if "role" in meta and "old_role" not in meta:
+            summary_parts.append(f"role={escape(str(meta['role']))}")
+        if "old_role" in meta and "new_role" in meta:
+            old, new = str(meta["old_role"]), str(meta["new_role"])
+            if old != new:
+                summary_parts.append(f"{escape(old)} → {escape(new)}")
+        if "platform" in meta:
+            summary_parts.append(escape(str(meta["platform"])))
+        if "channel" in meta:
+            summary_parts.append(f"via {escape(str(meta['channel']))}")
+        summary = ", ".join(summary_parts) if summary_parts else "—"
+        rows.append(
+            "<tr>"
+            f"<td class=\"mini-copy\">{escape(ts)}</td>"
+            f"<td><code>{escape(evt.event_type)}</code></td>"
+            f"<td>{actor}</td>"
+            f"<td>{target}</td>"
+            f"<td class=\"mini-copy\">{summary}</td>"
+            "</tr>"
+        )
+    return "".join(rows)
+
+
 def _render_activity_rows(alerts: Sequence[AlertRecord]) -> str:
     if not alerts:
         return '<tr><td colspan="5" class="mini-copy">No alerts yet.</td></tr>'
@@ -1529,6 +1571,9 @@ def render_admin_page(
     acknowledgement_count: int = 0,
     fcm_configured: bool = False,
     delivery_stats: Optional[Mapping[str, object]] = None,
+    audit_events: Sequence[AuditEventRecord] = (),
+    audit_event_types: Sequence[str] = (),
+    audit_event_type_filter: str = "",
 ) -> str:
     prefix = escape(school_path_prefix)
     role_counts = Counter(user.role for user in users)
@@ -2200,6 +2245,38 @@ def render_admin_page(
               </thead>
               <tbody>
                 {_render_device_rows(devices, users, school_path_prefix)}
+              </tbody>
+            </table>
+          </section>
+
+          <section class="panel span-12" id="audit-events"{_section_style("audit-logs")}>
+            <div class="panel-header">
+              <div>
+                <p class="eyebrow">Audit Log</p>
+                <h2>System event trail</h2>
+                <p class="card-copy">Complete record of critical actions for accountability and incident review. Showing last 100 entries.</p>
+              </div>
+            </div>
+            <form method="get" action="{prefix}/admin" style="display:flex;gap:10px;align-items:flex-end;margin-bottom:14px;flex-wrap:wrap;">
+              <input type="hidden" name="section" value="audit-logs" />
+              <div class="field" style="margin:0;flex:1;min-width:160px;">
+                <label style="font-size:11px;">Filter by event type</label>
+                <select name="audit_event_type" style="width:100%;">
+                  <option value="">— All events —</option>
+                  {''.join(f'<option value="{escape(et)}"{" selected" if et == audit_event_type_filter else ""}>{escape(et)}</option>' for et in audit_event_types)}
+                </select>
+              </div>
+              <div class="button-row" style="margin:0;">
+                <button class="button button-secondary" type="submit">Filter</button>
+                {"" if not audit_event_type_filter else f'<a class="button button-secondary" href="{prefix}/admin?section=audit-logs">Clear</a>'}
+              </div>
+            </form>
+            <table class="data-table">
+              <thead>
+                <tr><th>Timestamp</th><th>Event</th><th>Actor</th><th>Target</th><th>Summary</th></tr>
+              </thead>
+              <tbody>
+                {_render_audit_event_rows(audit_events)}
               </tbody>
             </table>
           </section>
