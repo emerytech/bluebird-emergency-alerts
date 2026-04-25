@@ -94,6 +94,7 @@ from app.services.permissions import (
     PERM_TRIGGER_OWN_TENANT_ALERTS,
     can,
     can_any,
+    can_deactivate_alarm as _can_deactivate_alarm,
     is_dashboard_role,
     valid_tenant_roles,
 )
@@ -535,11 +536,11 @@ def _current_school_actor_label(request: Request) -> Optional[str]:
         return None
     login_name = getattr(admin_user, "login_name", None)
     name = getattr(admin_user, "name", None)
-    if login_name:
-        return str(login_name)
-    if name:
-        return str(name)
-    return None
+    title = getattr(admin_user, "title", None)
+    base = str(login_name) if login_name else (str(name) if name else None)
+    if base and title:
+        return f"{base} ({title})"
+    return base
 
 
 def _is_platform_actor_label(label: Optional[str]) -> bool:
@@ -1096,6 +1097,23 @@ async def alerts_websocket(websocket: WebSocket, tenant_slug: str) -> None:
         logger.warning("WebSocket rejected: invalid API key for tenant=%s", tenant_candidate)
         await websocket.close(code=4401)
         return
+
+    # Optional user identity — if provided, validate that the user exists and is active in this tenant.
+    raw_user_id = websocket.query_params.get("user_id")
+    if raw_user_id is not None:
+        try:
+            ws_user_id = int(raw_user_id)
+        except (ValueError, TypeError):
+            logger.warning("WebSocket rejected: invalid user_id=%r for tenant=%s", raw_user_id, tenant_candidate)
+            await websocket.close(code=4400)
+            return
+        tenant_ctx = websocket.app.state.tenant_manager.get(school)  # type: ignore[attr-defined]
+        ws_user = await tenant_ctx.user_store.get_user(ws_user_id)
+        if ws_user is None or not ws_user.is_active:
+            logger.warning("WebSocket rejected: user_id=%d not active in tenant=%s", ws_user_id, tenant_candidate)
+            await websocket.close(code=4403)
+            return
+
     hub = websocket.app.state.alert_hub  # type: ignore[attr-defined]
     await hub.connect(school.slug, websocket)
     try:
@@ -1140,11 +1158,12 @@ async def mobile_login(body: MobileLoginRequest, request: Request) -> MobileLogi
             detail="Invalid username or password",
         )
     await _users(request).mark_login(user.id)
+    _mobile_actor_label = (user.login_name or user.name) + (f" ({user.title})" if user.title else "")
     _fire_audit(
         request,
         "user_login",
         actor_user_id=user.id,
-        actor_label=user.login_name or user.name,
+        actor_label=_mobile_actor_label,
         target_type="user",
         target_id=str(user.id),
         metadata={"login_name": body.login_name, "channel": "mobile"},
@@ -1156,11 +1175,9 @@ async def mobile_login(body: MobileLoginRequest, request: Request) -> MobileLogi
         name=user.name,
         role=user.role,
         login_name=user.login_name or body.login_name,
+        title=user.title,
         must_change_password=user.must_change_password,
-        can_deactivate_alarm=can_any(
-            user.role,
-            {PERM_TRIGGER_OWN_TENANT_ALERTS, PERM_MANAGE_ASSIGNED_TENANT_INCIDENTS},
-        ),
+        can_deactivate_alarm=_can_deactivate_alarm(user.role),
         quiet_period_expires_at=quiet_period.expires_at if quiet_period else None,
         quiet_mode_active=quiet_mode_active,
     )
@@ -2721,11 +2738,13 @@ async def admin_create_user(
     login_name: str = Form(default=""),
     password: str = Form(default=""),
     must_change_password: Optional[str] = Form(default=None),
+    title: str = Form(default=""),
 ) -> RedirectResponse:
     await _require_dashboard_admin(request)
     normalized_name = name.strip()
     normalized_role = role.strip().lower()
     normalized_phone = phone_e164.strip() or None
+    normalized_title = title.strip() or None
     if not normalized_name:
         _set_flash(request, error="Name is required.")
         return RedirectResponse(url="/admin?section=user-management#users", status_code=status.HTTP_303_SEE_OTHER)
@@ -2743,6 +2762,7 @@ async def admin_create_user(
             login_name=login_name.strip() or None,
             password=password.strip() or None,
             must_change_password=must_change_password == "1",
+            title=normalized_title,
         )
     except Exception as exc:
         _set_flash(request, error=f"Could not create user: {exc}")
@@ -3096,6 +3116,7 @@ async def admin_update_user(
     password: str = Form(default=""),
     is_active: Optional[str] = Form(default=None),
     clear_login: Optional[str] = Form(default=None),
+    title: str = Form(default=""),
 ) -> RedirectResponse:
     await _require_dashboard_admin(request)
     existing_user = await _users(request).get_user(user_id)
@@ -3104,6 +3125,7 @@ async def admin_update_user(
         return RedirectResponse(url="/admin?section=user-management#users", status_code=status.HTTP_303_SEE_OTHER)
     normalized_name = name.strip()
     normalized_role = role.strip().lower()
+    normalized_title = title.strip() or None
     if not normalized_name:
         _set_flash(request, error="User name cannot be empty.")
         return RedirectResponse(url="/admin?section=user-management#users", status_code=status.HTTP_303_SEE_OTHER)
@@ -3123,6 +3145,7 @@ async def admin_update_user(
             login_name=(login_name.strip() or existing_user.login_name),
             password=password.strip() or None,
             clear_login=clear_login is not None,
+            title=normalized_title,
         )
     except Exception as exc:
         _set_flash(request, error=f"Could not update user #{user_id}: {exc}")
@@ -3599,6 +3622,7 @@ async def users(request: Request, _: None = Depends(require_api_key)) -> UsersRe
                 role=u.role,
                 phone_e164=u.phone_e164,
                 is_active=u.is_active,
+                title=u.title,
             )
             for u in all_users
         ]
@@ -3607,7 +3631,7 @@ async def users(request: Request, _: None = Depends(require_api_key)) -> UsersRe
 
 @router.post("/users", response_model=UserSummary)
 async def create_user(body: CreateUserRequest, request: Request, _: None = Depends(require_api_key)) -> UserSummary:
-    user_id = await _users(request).create_user(name=body.name, role=body.role.value, phone_e164=body.phone_e164)
+    user_id = await _users(request).create_user(name=body.name, role=body.role.value, phone_e164=body.phone_e164, title=body.title)
     _fire_audit(
         request,
         "user_created",
@@ -3625,6 +3649,7 @@ async def create_user(body: CreateUserRequest, request: Request, _: None = Depen
         role=created.role,
         phone_e164=created.phone_e164,
         is_active=created.is_active,
+        title=created.title,
     )
 
 

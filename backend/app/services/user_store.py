@@ -25,6 +25,7 @@ class UserRecord:
     last_login_at: Optional[str]
     must_change_password: bool = False
     totp_enabled: bool = False
+    title: Optional[str] = None
 
 
 class UserStore:
@@ -84,6 +85,8 @@ class UserStore:
             conn.execute("ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0;")
         if "totp_secret" not in cols:
             conn.execute("ALTER TABLE users ADD COLUMN totp_secret TEXT NULL;")
+        if "title" not in cols:
+            conn.execute("ALTER TABLE users ADD COLUMN title TEXT NULL;")
 
     def _create_user_sync(
         self,
@@ -95,14 +98,15 @@ class UserStore:
         password_salt: Optional[str],
         password_hash: Optional[str],
         must_change_password: bool,
+        title: Optional[str],
     ) -> int:
         with self._connect() as conn:
             cur = conn.execute(
                 """
-                INSERT INTO users (created_at, name, role, phone_e164, is_active, login_name, password_salt, password_hash, must_change_password)
-                VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?);
+                INSERT INTO users (created_at, name, role, phone_e164, is_active, login_name, password_salt, password_hash, must_change_password, title)
+                VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?);
                 """,
-                (created_at, name, role, phone_e164, login_name, password_salt, password_hash, 1 if must_change_password else 0),
+                (created_at, name, role, phone_e164, login_name, password_salt, password_hash, 1 if must_change_password else 0, title),
             )
             return int(cur.lastrowid)
 
@@ -115,6 +119,7 @@ class UserStore:
         login_name: Optional[str] = None,
         password: Optional[str] = None,
         must_change_password: bool = False,
+        title: Optional[str] = None,
     ) -> int:
         created_at = datetime.now(timezone.utc).isoformat()
         normalized_login = login_name.strip().lower() if login_name else None
@@ -122,6 +127,7 @@ class UserStore:
         password_hash = None
         if normalized_login and password:
             password_salt, password_hash = hash_password(password)
+        normalized_title = title.strip() if title else None
         return await anyio.to_thread.run_sync(
             self._create_user_sync,
             created_at,
@@ -132,13 +138,14 @@ class UserStore:
             password_salt,
             password_hash,
             must_change_password,
+            normalized_title,
         )
 
     def _list_users_sync(self) -> List[UserRecord]:
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT id, created_at, name, role, phone_e164, is_active, login_name, password_hash, last_login_at, must_change_password, totp_secret
+                SELECT id, created_at, name, role, phone_e164, is_active, login_name, password_hash, last_login_at, must_change_password, totp_secret, title
                 FROM users
                 ORDER BY id ASC;
                 """
@@ -157,6 +164,7 @@ class UserStore:
                 last_login_at=str(row[8]) if row[8] is not None else None,
                 must_change_password=bool(int(row[9])) if row[9] is not None else False,
                 totp_enabled=bool(row[10]),
+                title=str(row[11]) if row[11] is not None else None,
             )
             for row in rows
         ]
@@ -228,7 +236,7 @@ class UserStore:
         with self._connect() as conn:
             row = conn.execute(
                 """
-                SELECT id, created_at, name, role, phone_e164, is_active, login_name, password_hash, last_login_at, must_change_password, totp_secret
+                SELECT id, created_at, name, role, phone_e164, is_active, login_name, password_hash, last_login_at, must_change_password, totp_secret, title
                 FROM users
                 WHERE id = ?
                 LIMIT 1;
@@ -249,6 +257,7 @@ class UserStore:
             last_login_at=str(row[8]) if row[8] is not None else None,
             must_change_password=bool(int(row[9])) if row[9] is not None else False,
             totp_enabled=bool(row[10]),
+            title=str(row[11]) if row[11] is not None else None,
         )
 
     async def get_user(self, user_id: int) -> Optional[UserRecord]:
@@ -265,16 +274,17 @@ class UserStore:
         password_salt: Optional[str],
         password_hash: Optional[str],
         clear_login: bool,
+        title: Optional[str],
     ) -> None:
         with self._connect() as conn:
             if clear_login:
                 conn.execute(
                     """
                     UPDATE users
-                    SET name = ?, role = ?, phone_e164 = ?, is_active = ?, login_name = NULL, password_salt = NULL, password_hash = NULL
+                    SET name = ?, role = ?, phone_e164 = ?, is_active = ?, login_name = NULL, password_salt = NULL, password_hash = NULL, title = ?
                     WHERE id = ?;
                     """,
-                    (name, role, phone_e164, 1 if is_active else 0, int(user_id)),
+                    (name, role, phone_e164, 1 if is_active else 0, title, int(user_id)),
                 )
                 return
 
@@ -282,7 +292,7 @@ class UserStore:
                 conn.execute(
                     """
                     UPDATE users
-                    SET name = ?, role = ?, phone_e164 = ?, is_active = ?, login_name = ?, password_salt = ?, password_hash = ?
+                    SET name = ?, role = ?, phone_e164 = ?, is_active = ?, login_name = ?, password_salt = ?, password_hash = ?, title = ?
                     WHERE id = ?;
                     """,
                     (
@@ -293,6 +303,7 @@ class UserStore:
                         login_name,
                         password_salt,
                         password_hash,
+                        title,
                         int(user_id),
                     ),
                 )
@@ -301,10 +312,10 @@ class UserStore:
             conn.execute(
                 """
                 UPDATE users
-                SET name = ?, role = ?, phone_e164 = ?, is_active = ?, login_name = ?
+                SET name = ?, role = ?, phone_e164 = ?, is_active = ?, login_name = ?, title = ?
                 WHERE id = ?;
                 """,
-                (name, role, phone_e164, 1 if is_active else 0, login_name, int(user_id)),
+                (name, role, phone_e164, 1 if is_active else 0, login_name, title, int(user_id)),
             )
 
     async def update_user(
@@ -318,12 +329,14 @@ class UserStore:
         login_name: Optional[str],
         password: Optional[str],
         clear_login: bool,
+        title: Optional[str] = None,
     ) -> None:
         normalized_login = login_name.strip().lower() if login_name else None
         password_salt = None
         password_hash = None
         if normalized_login and password:
             password_salt, password_hash = hash_password(password)
+        normalized_title = title.strip() if title else None
         await anyio.to_thread.run_sync(
             self._update_user_sync,
             int(user_id),
@@ -335,6 +348,7 @@ class UserStore:
             password_salt,
             password_hash,
             bool(clear_login),
+            normalized_title,
         )
 
     def _count_dashboard_admins_sync(self) -> int:
@@ -379,7 +393,7 @@ class UserStore:
         with self._connect() as conn:
             row = conn.execute(
                 """
-                SELECT id, created_at, name, role, phone_e164, is_active, login_name, password_salt, password_hash, last_login_at, must_change_password, totp_secret
+                SELECT id, created_at, name, role, phone_e164, is_active, login_name, password_salt, password_hash, last_login_at, must_change_password, totp_secret, title
                 FROM users
                 WHERE login_name = ?
                 LIMIT 1;
@@ -408,6 +422,7 @@ class UserStore:
             last_login_at=str(row[9]) if row[9] is not None else None,
             must_change_password=bool(int(row[10])) if row[10] is not None else False,
             totp_enabled=bool(row[11]),
+            title=str(row[12]) if row[12] is not None else None,
         )
 
     async def authenticate_user(self, login_name: str, password: str) -> Optional[UserRecord]:
