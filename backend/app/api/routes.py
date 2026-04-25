@@ -69,7 +69,7 @@ from app.models.schemas import (
     UsersResponse,
 )
 from app.services.alert_broadcaster import BroadcastPlan, AlertBroadcaster
-from app.services.alarm_store import AlarmStore
+from app.services.alarm_store import AlarmStateRecord, AlarmStore
 from app.services.apns import APNsClient
 from app.services.alert_log import AlertLog
 from app.services.device_registry import DeviceRegistry
@@ -987,8 +987,27 @@ async def mobile_login(body: MobileLoginRequest, request: Request) -> MobileLogi
 
 @router.get("/alarm/status", response_model=AlarmStatusResponse)
 async def alarm_status(request: Request) -> AlarmStatusResponse:
-    state = await _alarm_store(request).get_state()
-    broadcasts = await _reports(request).list_broadcast_updates(limit=5)
+    try:
+        state = await _alarm_store(request).get_state()
+    except Exception:
+        logger.exception("alarm_status: failed to read alarm_state; returning safe default")
+        state = AlarmStateRecord(
+            is_active=False,
+            message=None,
+            is_training=False,
+            training_label=None,
+            activated_at=None,
+            activated_by_user_id=None,
+            activated_by_label=None,
+            deactivated_at=None,
+            deactivated_by_user_id=None,
+            deactivated_by_label=None,
+        )
+    try:
+        broadcasts = await _reports(request).list_broadcast_updates(limit=5)
+    except Exception:
+        logger.exception("alarm_status: failed to read broadcast updates; returning empty list")
+        broadcasts = []
     return AlarmStatusResponse(
         is_active=state.is_active,
         message=state.message,
