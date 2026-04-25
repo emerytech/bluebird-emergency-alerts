@@ -195,7 +195,15 @@ private fun getUserName(ctx: Context) = prefs(ctx).getString(KEY_NAME, "") ?: ""
 private fun getUserRole(ctx: Context) = prefs(ctx).getString(KEY_ROLE, "") ?: ""
 private fun getLoginName(ctx: Context) = prefs(ctx).getString(KEY_LOGIN, "") ?: ""
 private fun canDeactivateAlarm(ctx: Context) = prefs(ctx).getBoolean(KEY_CAN_DEACTIVATE, false)
-private fun getServerUrl(ctx: Context) = prefs(ctx).getString(KEY_SERVER_URL, "") ?: ""
+private fun getServerUrl(ctx: Context): String {
+    val stored = prefs(ctx).getString(KEY_SERVER_URL, "") ?: ""
+    if (stored.isBlank()) return stored
+    val normalized = normalizeServerUrl(stored)
+    if (normalized != stored) {
+        prefs(ctx).edit().putString(KEY_SERVER_URL, normalized).apply()
+    }
+    return normalized
+}
 private fun biometricsAllowed(ctx: Context) = prefs(ctx).getBoolean(KEY_BIOMETRICS_ALLOWED, false)
 private fun setBiometricsAllowed(ctx: Context, allowed: Boolean) {
     prefs(ctx).edit().putBoolean(KEY_BIOMETRICS_ALLOWED, allowed).apply()
@@ -226,10 +234,20 @@ private fun schoolBaseUrl(slug: String): String {
 private fun normalizeServerUrl(value: String): String {
     val trimmed = value.trim().removeSuffix("/")
     if (trimmed.isBlank()) return BuildConfig.BACKEND_BASE_URL
-    if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) return trimmed
+    if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
+        return runCatching {
+            val uri = java.net.URI(trimmed)
+            val path = uri.path?.trim('/').orEmpty()
+            if (path.isBlank()) {
+                "$trimmed/default"
+            } else {
+                trimmed
+            }
+        }.getOrDefault(trimmed)
+    }
     if (!trimmed.contains(".") && !trimmed.contains("/")) return schoolBaseUrl(trimmed)
-    if (trimmed.startsWith("/")) return BuildConfig.BACKEND_BASE_URL + trimmed
-    return "https://$trimmed"
+    if (trimmed.startsWith("/")) return normalizeServerUrl(BuildConfig.BACKEND_BASE_URL + trimmed)
+    return normalizeServerUrl("https://$trimmed")
 }
 private fun currentDeviceName(): String {
     val manufacturer = Build.MANUFACTURER?.trim().orEmpty()
@@ -496,20 +514,23 @@ class MainViewModel : ViewModel() {
         viewModelScope.launch(Dispatchers.IO) {
             var tick = 0
             while (isActive) {
+                var cycleHadSuccess = false
                 runCatching { client!!.alarmStatus() }
                     .onSuccess { alarm ->
+                        cycleHadSuccess = true
                         _state.update { it.copy(alarm = alarm, connected = true) }
-                    }
-                    .onFailure {
-                        _state.update { it.copy(connected = false) }
                     }
                 if (userId != null) {
                     runCatching { client!!.quietPeriodStatus(userId = userId) }
                         .onSuccess { quiet ->
+                            cycleHadSuccess = true
                             _state.update { it.copy(quietPeriodStatus = quiet) }
                         }
                 }
-                refreshIncidentFeedsOnce()
+                if (refreshIncidentFeedsOnce()) {
+                    cycleHadSuccess = true
+                }
+                _state.update { it.copy(connected = cycleHadSuccess) }
                 tick += 1
                 if (tick % 18 == 0) {
                     runCatching { client!!.configLabels() }
@@ -524,15 +545,19 @@ class MainViewModel : ViewModel() {
         }
     }
 
-    private suspend fun refreshIncidentFeedsOnce() {
+    private suspend fun refreshIncidentFeedsOnce(): Boolean {
+        var success = false
         runCatching { client!!.activeIncidents() }
             .onSuccess { incidents ->
+                success = true
                 _state.update { it.copy(activeIncidents = incidents) }
             }
         runCatching { client!!.activeRequestHelp() }
             .onSuccess { teamAssists ->
+                success = true
                 _state.update { it.copy(activeTeamAssists = teamAssists) }
             }
+        return success
     }
 
     fun refreshIncidentFeeds() {
@@ -1820,11 +1845,27 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                     label = "flashPulse",
                 )
                 val flashAlpha = (0.035f + holdFlashProgress * 0.09f) + ((0.03f + holdFlashProgress * 0.07f) * pulse)
+                val countdown = maxOf(1, kotlin.math.ceil((1f - holdFlashProgress).coerceIn(0f, 1f) * 3f).toInt())
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
                         .background(holdFlashColor.copy(alpha = flashAlpha.coerceAtMost(0.22f))),
-                )
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        text = countdown.toString(),
+                        fontSize = 118.sp,
+                        fontWeight = FontWeight.Black,
+                        color = Color.White.copy(alpha = (0.45f + pulse * 0.40f).coerceAtMost(0.9f)),
+                        modifier = Modifier.graphicsLayer {
+                            val scale = 0.9f + pulse * 0.2f
+                            scaleX = scale
+                            scaleY = scale
+                            shadowElevation = 16f
+                        },
+                        textAlign = TextAlign.Center,
+                    )
+                }
             }
         }
     }
@@ -3465,6 +3506,7 @@ private fun SettingsScreen(
     val loginName = remember { getLoginName(ctx) }
     val userRole = remember { getUserRole(ctx) }
     val userId = remember { getUserId(ctx) }
+    val activeServerUrl = remember { normalizeServerUrl(getServerUrl(ctx)) }
 
     Column(
         modifier = Modifier
@@ -3488,7 +3530,7 @@ private fun SettingsScreen(
                 HorizontalDivider(color = BorderSoft)
                 Text("Role: ${userRole.replaceFirstChar { it.uppercase() }}", color = TextPri, fontSize = 14.sp)
                 Text("User ID: $userId", color = TextPri, fontSize = 14.sp)
-                Text("Server: ${BuildConfig.BACKEND_BASE_URL}", color = TextMuted, fontSize = 12.sp)
+                Text("Server: $activeServerUrl", color = TextMuted, fontSize = 12.sp)
             }
         }
         Surface(

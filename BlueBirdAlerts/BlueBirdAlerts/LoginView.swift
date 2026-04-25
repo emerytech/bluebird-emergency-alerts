@@ -65,11 +65,11 @@ struct LoginView: View {
                                         Image(systemName: "chevron.right")
                                     }
                                     .font(.footnote.weight(.semibold))
-                                    .foregroundStyle(Color(red: 0.10, green: 0.33, blue: 0.73))
+                                    .foregroundStyle(DSColor.primary)
                                     .padding(.horizontal, 14)
                                     .padding(.vertical, 12)
                                     .frame(maxWidth: .infinity, alignment: .leading)
-                                    .background(Color(red: 0.93, green: 0.96, blue: 1.0))
+                                    .background(DSColor.background)
                                     .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                                 }
                             }
@@ -89,7 +89,7 @@ struct LoginView: View {
                     if let errorMessage {
                         Text(errorMessage)
                             .font(.footnote)
-                            .foregroundStyle(Color(red: 0.68, green: 0.12, blue: 0.12))
+                            .foregroundStyle(DSColor.danger)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
 
@@ -148,7 +148,7 @@ struct LoginView: View {
                 showPassword.toggle()
             }
             .font(.footnote.weight(.semibold))
-            .foregroundStyle(Color(red: 0.74, green: 0.83, blue: 1.0))
+            .foregroundStyle(DSColor.primary.opacity(0.85))
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
@@ -212,14 +212,27 @@ struct LoginView: View {
         if trimmed.isEmpty { return nil }
 
         if trimmed.hasPrefix("http://") || trimmed.hasPrefix("https://") {
-            return URL(string: trimmed)
+            guard let raw = URL(string: trimmed) else { return nil }
+            return ensureTenantPath(on: raw)
         }
 
         if trimmed.contains(".") || trimmed.contains("/") {
-            return URL(string: "https://\(trimmed)")
+            guard let raw = URL(string: "https://\(trimmed)") else { return nil }
+            return ensureTenantPath(on: raw)
         }
 
         let base = Config.backendBaseURL.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         return URL(string: "\(base)/\(trimmed.lowercased())")
+    }
+
+    private func ensureTenantPath(on url: URL) -> URL {
+        guard var comps = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            return url
+        }
+        let normalizedPath = comps.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        if normalizedPath.isEmpty {
+            comps.path = "/default"
+        }
+        return comps.url ?? url
     }
 }

@@ -44,10 +44,15 @@ final class AppState: ObservableObject {
         userID = storedUserID > 0 ? storedUserID : nil
         let storedInitialUserID = UserDefaults.standard.integer(forKey: Self.initialDeviceAuthUserIDKey)
         initialDeviceAuthUserID = storedInitialUserID > 0 ? storedInitialUserID : nil
+        let normalizedServer = Self.normalizedServerURLString(serverURLString)
+        if normalizedServer != serverURLString {
+            serverURLString = normalizedServer
+            UserDefaults.standard.set(normalizedServer, forKey: Self.serverURLKey)
+        }
     }
 
     var serverURL: URL {
-        URL(string: serverURLString) ?? Config.backendBaseURL
+        URL(string: Self.normalizedServerURLString(serverURLString)) ?? Self.defaultTenantURL
     }
 
     func completeLogin(
@@ -63,7 +68,8 @@ final class AppState: ObservableObject {
         self.userRole = role
         self.loginName = loginName
         self.canDeactivateAlarm = canDeactivateAlarm
-        self.serverURLString = serverURL.absoluteString
+        let normalizedServerURLString = Self.normalizedServerURLString(serverURL.absoluteString)
+        self.serverURLString = normalizedServerURLString
         self.setupDone = true
 
         let defaults = UserDefaults.standard
@@ -73,7 +79,7 @@ final class AppState: ObservableObject {
         defaults.set(role, forKey: Self.userRoleKey)
         defaults.set(loginName, forKey: Self.loginNameKey)
         defaults.set(canDeactivateAlarm, forKey: Self.canDeactivateKey)
-        defaults.set(serverURL.absoluteString, forKey: Self.serverURLKey)
+        defaults.set(normalizedServerURLString, forKey: Self.serverURLKey)
     }
 
     func logout() {
@@ -111,5 +117,28 @@ final class AppState: ObservableObject {
         let defaults = UserDefaults.standard
         defaults.set(userID, forKey: Self.initialDeviceAuthUserIDKey)
         defaults.set(name, forKey: Self.initialDeviceAuthUserNameKey)
+    }
+
+    private static var defaultTenantURL: URL {
+        ensureTenantPath(on: Config.backendBaseURL)
+    }
+
+    private static func normalizedServerURLString(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let parsed = URL(string: trimmed) {
+            return ensureTenantPath(on: parsed).absoluteString
+        }
+        return defaultTenantURL.absoluteString
+    }
+
+    private static func ensureTenantPath(on url: URL) -> URL {
+        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            return url
+        }
+        let normalizedPath = components.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        if normalizedPath.isEmpty {
+            components.path = "/default"
+        }
+        return components.url ?? url
     }
 }
