@@ -422,7 +422,6 @@ struct ContentView: View {
     @State private var alarmTrainingLabel: String?
     @State private var isRefreshingIncidentFeed = false
     @State private var isUpdatingAlarm = false
-    @State private var showDeactivateAlarmConfirm = false
     @State private var adminOutboundMessage = ""
     @State private var adminRecipients: [MessageRecipient] = []
     @State private var selectedRecipientIDs: Set<Int> = []
@@ -609,14 +608,6 @@ struct ContentView: View {
                 }
                 Button("Cancel", role: .cancel) {}
             }
-            .confirmationDialog("Disable active alarm?", isPresented: $showDeactivateAlarmConfirm, titleVisibility: .visible) {
-                Button("Disable Alarm", role: .destructive) {
-                    Task { await authenticateThenDeactivateAlarm() }
-                }
-                Button("Cancel", role: .cancel) {}
-            } message: {
-                Text("This will clear the currently active alarm for this school.")
-            }
             .sheet(
                 isPresented: Binding(
                     get: { isAdminSession && adminPromptRequestHelpItem != nil },
@@ -750,7 +741,7 @@ struct ContentView: View {
                     )
 
                     Button {
-                        showDeactivateAlarmConfirm = true
+                        Task { await authenticateThenDeactivateAlarm() }
                     } label: {
                         HStack(spacing: 8) {
                             Image(systemName: "bell.slash.fill")
@@ -1440,15 +1431,27 @@ struct ContentView: View {
     }
 
     private func deactivateAlarm() async {
-        guard appState.canDeactivateAlarm else { return }
+        guard appState.canDeactivateAlarm else {
+            appState.lastError = "Your role does not have permission to disable alarms."
+            return
+        }
+        guard alarmIsActive else {
+            appState.lastStatus = "No active alarm to disable."
+            return
+        }
         guard let adminUserID = appState.userID else {
             appState.lastError = "No active admin session found."
             return
         }
-        guard !isUpdatingAlarm else { return }
+        guard !isUpdatingAlarm else {
+            appState.lastStatus = "Alarm update already in progress."
+            return
+        }
 
         isUpdatingAlarm = true
         defer { isUpdatingAlarm = false }
+        appState.lastStatus = "Disabling alarm..."
+        appState.lastError = nil
 
         do {
             let response = try await api.deactivateAlarm(adminUserID: adminUserID)
@@ -1458,6 +1461,9 @@ struct ContentView: View {
             alarmTrainingLabel = response.trainingLabel
             appState.lastStatus = response.isActive ? "Alarm remains active." : "Alarm disabled."
             appState.lastError = nil
+            if !response.isActive {
+                alertController.stopAlarmAudio()
+            }
             await refreshIncidentFeed()
         } catch {
             appState.lastError = "Disable alarm failed: \(error.localizedDescription)"

@@ -40,7 +40,7 @@ class BlueBirdFirebaseMessagingService : FirebaseMessagingService() {
         }
         val pendingIntent = PendingIntent.getActivity(
             this,
-            1001,
+            ALERT_PUSH_NOTIFICATION_ID,
             launchIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
@@ -58,7 +58,7 @@ class BlueBirdFirebaseMessagingService : FirebaseMessagingService() {
             .build()
 
         (getSystemService(NOTIFICATION_SERVICE) as NotificationManager)
-            .notify((System.currentTimeMillis() % Int.MAX_VALUE).toInt(), notification)
+            .notify(ALERT_PUSH_NOTIFICATION_ID, notification)
     }
 }
 

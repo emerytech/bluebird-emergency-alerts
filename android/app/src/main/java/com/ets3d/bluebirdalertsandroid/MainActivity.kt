@@ -3,20 +3,29 @@ package com.ets3d.bluebirdalertsandroid
 import android.Manifest
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.ContextWrapper
+import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.media.AudioManager
 import android.media.AudioAttributes
 import android.media.MediaPlayer
-import android.media.RingtoneManager
 import android.os.Build
 import android.os.Bundle
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
+import android.util.Log
 import android.widget.Toast
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -33,6 +42,8 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
@@ -55,6 +66,7 @@ import androidx.biometric.BiometricPrompt
 import androidx.fragment.app.FragmentActivity
 import com.google.firebase.messaging.FirebaseMessaging
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -73,20 +85,20 @@ import java.time.format.DateTimeFormatter
 import java.util.concurrent.TimeUnit
 
 // ── Brand colours ─────────────────────────────────────────────────────────────
-private val AppBg       = Color(0xFFEEF5FF)
-private val AppBgDeep   = Color(0xFFDCE9FF)
-private val SurfaceMain = Color(0xFFFFFFFF)
-private val SurfaceSoft = Color(0xFFF6FAFF)
-private val BorderSoft  = Color(0x1A123478)
-private val BluePrimary = Color(0xFF1B5FE4)
-private val BlueLight   = Color(0xFF2F84FF)
-private val BlueDark    = Color(0xFF092054)
-private val QuietPurple = Color(0xFF8E3BEB)
-private val AlarmRed    = Color(0xFFDC2626)
-private val AlarmGreen  = Color(0xFF16A34A)
-private val TextPri     = Color(0xFF10203F)
-private val TextMuted   = Color(0xFF5D7398)
-private val TextOnDark  = Color(0xFFF8FAFC)
+private val AppBg       = DSColor.Background
+private val AppBgDeep   = DSColor.BackgroundDeep
+private val SurfaceMain = DSColor.Card
+private val SurfaceSoft = DSColor.Background
+private val BorderSoft  = DSColor.Border
+private val BluePrimary = DSColor.Primary
+private val BlueLight   = DSColor.Info
+private val BlueDark    = DSColor.Primary
+private val QuietPurple = DSColor.QuietAccent
+private val AlarmRed    = DSColor.Danger
+private val AlarmGreen  = DSColor.Success
+private val TextPri     = DSColor.TextPrimary
+private val TextMuted   = DSColor.TextSecondary
+private val TextOnDark  = DSColor.Background
 
 // ── Prefs ──────────────────────────────────────────────────────────────────────
 private const val PREFS      = "bluebird_prefs"
@@ -98,7 +110,83 @@ private const val KEY_LOGIN  = "login_name"
 private const val KEY_CAN_DEACTIVATE = "can_deactivate"
 private const val KEY_SERVER_URL = "server_url"
 private const val KEY_BIOMETRICS_ALLOWED = "biometrics_allowed"
+private const val TAG_ACTIVATION = "BluebirdActivation"
+
+private enum class HoldActivationUiState {
+    Idle,
+    Pressing,
+    Holding,
+    NearComplete,
+    Triggered,
+    Canceled,
+}
+
+private class AndroidHoldHaptics(context: Context) {
+    private val vibrator: Vibrator? =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val manager = context.getSystemService(VibratorManager::class.java)
+            manager?.defaultVibrator
+        } else {
+            @Suppress("DEPRECATION")
+            context.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
+        }
+
+    private val canVibrate: Boolean =
+        ContextCompat.checkSelfPermission(context, Manifest.permission.VIBRATE) == PackageManager.PERMISSION_GRANTED
+
+    private fun oneShot(durationMs: Long, amplitude: Int) {
+        if (!canVibrate) return
+        val v = vibrator ?: return
+        if (!v.hasVibrator()) return
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                v.vibrate(VibrationEffect.createOneShot(durationMs, amplitude))
+            } else {
+                @Suppress("DEPRECATION")
+                v.vibrate(durationMs)
+            }
+        } catch (_: SecurityException) {
+            // Ignore haptics when permission/capability isn't available.
+        } catch (_: Throwable) {
+            // Defensive: never crash activation flow because of haptics.
+        }
+    }
+
+    fun touchDown() = oneShot(18L, 55)
+
+    fun progressTick(strong: Boolean) = oneShot(
+        if (strong) 24L else 14L,
+        if (strong) 95 else 55,
+    )
+
+    fun cancel() = oneShot(22L, 48)
+
+    fun success() {
+        if (!canVibrate) return
+        val v = vibrator ?: return
+        if (!v.hasVibrator()) return
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                v.vibrate(
+                    VibrationEffect.createWaveform(
+                        longArrayOf(0L, 26L, 30L, 42L),
+                        intArrayOf(0, 110, 0, 190),
+                        -1,
+                    ),
+                )
+            } else {
+                @Suppress("DEPRECATION")
+                v.vibrate(45L)
+            }
+        } catch (_: SecurityException) {
+            // Ignore haptic issues and keep alert flow alive.
+        } catch (_: Throwable) {
+            // Defensive no-op.
+        }
+    }
+}
 internal const val NOTIF_CH   = "bluebird_alerts"
+internal const val ALERT_PUSH_NOTIFICATION_ID = 1001
 
 private fun prefs(ctx: Context) = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 private fun isSetupDone(ctx: Context) = prefs(ctx).getBoolean(KEY_SETUP, false)
@@ -164,23 +252,24 @@ private fun formatIsoForBanner(value: String?): String? {
 }
 
 internal fun ensureNotificationChannel(context: Context) {
-    val channel = NotificationChannel(
-        NOTIF_CH,
-        "BlueBird Alerts",
-        NotificationManager.IMPORTANCE_HIGH,
-    ).apply {
-        description = "Emergency school alerts"
-        enableVibration(true)
-        setSound(
-            RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM),
-            AudioAttributes.Builder()
-                .setUsage(AudioAttributes.USAGE_ALARM)
-                .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                .build(),
-        )
+    val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+    val existing = manager.getNotificationChannel(NOTIF_CH)
+    val needsRecreate = existing == null || existing.sound != null
+    if (needsRecreate && existing != null) {
+        manager.deleteNotificationChannel(NOTIF_CH)
     }
-    (context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
-        .createNotificationChannel(channel)
+    if (needsRecreate) {
+        val channel = NotificationChannel(
+            NOTIF_CH,
+            "BlueBird Alerts",
+            NotificationManager.IMPORTANCE_HIGH,
+        ).apply {
+            description = "Emergency school alerts"
+            enableVibration(true)
+            setSound(null, null)
+        }
+        manager.createNotificationChannel(channel)
+    }
 }
 
 private data class AuthUser(
@@ -270,35 +359,35 @@ private fun buildSafetyActions(featureLabels: Map<String, String>): List<SafetyA
         key = AppLabels.KEY_SECURE,
         title = AppLabels.labelForFeatureKey(AppLabels.KEY_SECURE, featureLabels).uppercase(),
         symbol = "\uD83D\uDD10",
-        color = Color(0xFF5EA8F2),
+        color = DSColor.Info,
         message = "SECURE emergency initiated. Follow school secure procedures.",
     ),
     SafetyAction(
         key = AppLabels.KEY_LOCKDOWN,
         title = AppLabels.labelForFeatureKey(AppLabels.KEY_LOCKDOWN, featureLabels).uppercase(),
         symbol = "\uD83D\uDD12",
-        color = Color(0xFFE0524D),
+        color = DSColor.Danger,
         message = "LOCKDOWN emergency initiated. Follow lockdown procedures immediately.",
     ),
     SafetyAction(
         key = AppLabels.KEY_EVACUATION,
         title = AppLabels.labelForFeatureKey(AppLabels.KEY_EVACUATION, featureLabels).uppercase(),
         symbol = "\uD83D\uDEB6",
-        color = Color(0xFF93CB43),
+        color = DSColor.Success,
         message = "EVACUATE emergency initiated. Move to evacuation locations now.",
     ),
     SafetyAction(
         key = AppLabels.KEY_SHELTER,
         title = AppLabels.labelForFeatureKey(AppLabels.KEY_SHELTER, featureLabels).uppercase(),
         symbol = "\uD83C\uDFE0",
-        color = Color(0xFFE6A23C),
+        color = DSColor.Warning,
         message = "SHELTER emergency initiated. Move into shelter protocol.",
     ),
     SafetyAction(
         key = "hold",
         title = "HOLD",
         symbol = "\u23F8",
-        color = Color(0xFF8E3BEB),
+        color = DSColor.QuietAccent,
         message = "HOLD emergency initiated. Keep current position until cleared.",
     ),
 )
@@ -315,6 +404,8 @@ private val TeamAssistTypes = listOf(
 data class AlarmStatus(
     val isActive: Boolean = false,
     val message: String?  = null,
+    val isTraining: Boolean = false,
+    val trainingLabel: String? = null,
     val activatedAt: String? = null,
     val activatedByUserId: Int? = null,
     val broadcasts: List<BroadcastUpdate> = emptyList(),
@@ -452,13 +543,19 @@ class MainViewModel : ViewModel() {
         }
     }
 
-    fun activateAlarm(ctx: Context, message: String) {
+    fun activateAlarm(ctx: Context, message: String, isTraining: Boolean = false, trainingLabel: String? = null) {
         val userId = getUserId(ctx).toIntOrNull()
         viewModelScope.launch(Dispatchers.IO) {
             _state.update { it.copy(isBusy = true, errorMsg = null) }
-            runCatching { client!!.activateAlarm(message, userId) }
+            runCatching { client!!.activateAlarm(message, userId, isTraining = isTraining, trainingLabel = trainingLabel) }
                 .onSuccess { alarm ->
-                    _state.update { it.copy(alarm = alarm, isBusy = false, successMsg = "Alarm activated.") }
+                    _state.update {
+                        it.copy(
+                            alarm = alarm,
+                            isBusy = false,
+                            successMsg = if (isTraining) "Training alert activated." else "Alarm activated.",
+                        )
+                    }
                 }
                 .onFailure { e ->
                     _state.update { it.copy(isBusy = false, errorMsg = e.message ?: "Failed to activate alarm.") }
@@ -472,6 +569,7 @@ class MainViewModel : ViewModel() {
             _state.update { it.copy(isBusy = true, errorMsg = null) }
             runCatching { client!!.deactivateAlarm(userId) }
                 .onSuccess { alarm ->
+                    AlarmAudioController.stop()
                     _state.update { it.copy(alarm = alarm, isBusy = false, successMsg = "Alarm cleared.") }
                 }
                 .onFailure { e ->
@@ -857,6 +955,7 @@ class MainActivity : FragmentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        DSTokenStore.loadIfNeeded(this)
         ensureNotificationChannel(this)
         askNotificationPermission()
         setContent {
@@ -1252,7 +1351,6 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
     var showDeactivateDialog by remember { mutableStateOf(false) }
     var showReportDialog by remember { mutableStateOf(false) }
     var showSettingsScreen by remember { mutableStateOf(false) }
-    var pendingSafetyAction by remember { mutableStateOf<SafetyAction?>(null) }
     var showQuietRequestOverlay by remember { mutableStateOf(false) }
     var showQuietDeleteConfirmOverlay by remember { mutableStateOf(false) }
     var showTeamAssistDialog by remember { mutableStateOf(false) }
@@ -1261,6 +1359,12 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
     var activePanel by remember { mutableStateOf(DashboardPanel.Home) }
     var replyTarget by remember { mutableStateOf<AdminInboxMessage?>(null) }
     var feedTab by remember { mutableStateOf(0) }
+    var activationInFlight by remember { mutableStateOf(false) }
+    var holdFlashActive by remember { mutableStateOf(false) }
+    var holdFlashProgress by remember { mutableStateOf(0f) }
+    var holdFlashColor by remember { mutableStateOf(AlarmRed) }
+    var trainingModeEnabled by remember { mutableStateOf(false) }
+    var trainingLabel by remember { mutableStateOf("This is a drill") }
     val userName = remember { getUserName(ctx) }
     val userRole = remember { getUserRole(ctx) }
     val currentUserId = remember { getUserId(ctx).toIntOrNull() }
@@ -1337,8 +1441,14 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
             vm.clearMessages()
         }
     }
+    LaunchedEffect(state.isBusy) {
+        if (!state.isBusy) activationInFlight = false
+    }
 
-    AlarmSoundEffect(isAlarmActive = state.alarm.isActive)
+    AlarmSoundEffect(
+        isAlarmActive = state.alarm.isActive,
+        isTrainingAlarm = state.alarm.isTraining,
+    )
 
     Scaffold(
         containerColor = Color.Transparent,
@@ -1493,10 +1603,77 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                                 .padding(horizontal = 20.dp, vertical = 8.dp),
                         )
                     }
+                    if (isAdmin) {
+                        Surface(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 20.dp, vertical = 8.dp),
+                            color = SurfaceMain,
+                            shape = RoundedCornerShape(20.dp),
+                            shadowElevation = 3.dp,
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(16.dp),
+                                verticalArrangement = Arrangement.spacedBy(10.dp),
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Column {
+                                        Text("Training Mode", color = TextPri, fontWeight = FontWeight.Bold)
+                                        Text(
+                                            "Drill alerts stay local and skip live push/SMS.",
+                                            color = TextMuted,
+                                            fontSize = 12.sp,
+                                        )
+                                    }
+                                    Switch(
+                                        checked = trainingModeEnabled,
+                                        onCheckedChange = { trainingModeEnabled = it },
+                                    )
+                                }
+                                if (trainingModeEnabled) {
+                                    OutlinedTextField(
+                                        value = trainingLabel,
+                                        onValueChange = { trainingLabel = it },
+                                        modifier = Modifier.fillMaxWidth(),
+                                        label = { Text("Training Label") },
+                                        placeholder = { Text("This is a drill") },
+                                        singleLine = true,
+                                    )
+                                }
+                            }
+                        }
+                    }
                     SafetyActionGrid(
                         actions = safetyActions,
                         enabled = !state.isBusy && !state.alarm.isActive,
-                        onSelect = { action -> pendingSafetyAction = action },
+                        onActivate = { action ->
+                            if (activationInFlight || state.isBusy || state.alarm.isActive) return@SafetyActionGrid
+                            activationInFlight = true
+                            runProtectedAction(false) {
+                                runCatching {
+                                    vm.activateAlarm(
+                                        ctx,
+                                        action.message,
+                                        isTraining = trainingModeEnabled,
+                                        trainingLabel = trainingLabel,
+                                    )
+                                }
+                                    .onFailure { err ->
+                                        activationInFlight = false
+                                        Log.e(TAG_ACTIVATION, "activateAlarm failed", err)
+                                        vm.setErrorMessage("Failed to activate alarm.")
+                                }
+                            }
+                        },
+                        onHoldVisual = { active, progress, color ->
+                            holdFlashActive = active
+                            holdFlashProgress = progress.coerceIn(0f, 1f)
+                            holdFlashColor = color
+                        },
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(horizontal = 20.dp, vertical = 8.dp),
@@ -1630,20 +1807,28 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                     }
                 }
             }
+
+            if (holdFlashActive) {
+                val transition = rememberInfiniteTransition(label = "holdFlash")
+                val pulse by transition.animateFloat(
+                    initialValue = 0f,
+                    targetValue = 1f,
+                    animationSpec = infiniteRepeatable(
+                        animation = tween(durationMillis = 560, easing = FastOutSlowInEasing),
+                        repeatMode = RepeatMode.Reverse,
+                    ),
+                    label = "flashPulse",
+                )
+                val flashAlpha = (0.035f + holdFlashProgress * 0.09f) + ((0.03f + holdFlashProgress * 0.07f) * pulse)
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(holdFlashColor.copy(alpha = flashAlpha.coerceAtMost(0.22f))),
+                )
+            }
         }
     }
 
-    pendingSafetyAction?.let { action ->
-        ActionInitiateOverlay(
-            action = action,
-            isBusy = state.isBusy,
-            onCancel = { pendingSafetyAction = null },
-            onInitiate = {
-                pendingSafetyAction = null
-                runProtectedAction(false) { vm.activateAlarm(ctx, action.message) }
-            },
-        )
-    }
     if (showQuietRequestOverlay) {
         QuietPeriodRequestOverlay(
             isBusy = state.isBusy,
@@ -1792,7 +1977,7 @@ private fun ConnectionDot(connected: Boolean?) {
     val color = when (connected) {
         true  -> AlarmGreen
         false -> AlarmRed
-        null  -> Color(0xFF64748B)
+        null  -> TextMuted
     }
     val label = when (connected) {
         true  -> "Connected"
@@ -1812,14 +1997,15 @@ private fun ConnectionDot(connected: Boolean?) {
 
 @Composable
 private fun FlashBanner(message: String, isError: Boolean) {
-    val bg = if (isError) Color(0xFFFFE8E8) else Color(0xFFEAF8EF)
-    val fg = if (isError) Color(0xFFB91C1C) else Color(0xFF166534)
+    val bg = if (isError) AlarmRed.copy(alpha = 0.12f) else AlarmGreen.copy(alpha = 0.12f)
+    val fg = if (isError) AlarmRed else AlarmGreen
+    val border = if (isError) AlarmRed.copy(alpha = 0.28f) else AlarmGreen.copy(alpha = 0.28f)
     Box(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 20.dp, vertical = 4.dp)
             .background(bg, RoundedCornerShape(12.dp))
-            .border(1.dp, if (isError) Color(0xFFF5B5B5) else Color(0xFFB7E4C7), RoundedCornerShape(12.dp))
+            .border(1.dp, border, RoundedCornerShape(12.dp))
             .padding(14.dp),
     ) {
         Text(message, color = fg, fontSize = 14.sp)
@@ -2168,21 +2354,21 @@ private fun QuietPeriodStatusBanner(
     when (normalized) {
         "approved" -> {
             val until = formatIsoForBanner(status.expiresAt)?.let { " until $it" } ?: ""
-            bg = Color(0xFFFEE2E2)
-            border = Color(0xFFFCA5A5)
-            fg = Color(0xFF991B1B)
+            bg = AlarmRed.copy(alpha = 0.14f)
+            border = AlarmRed.copy(alpha = 0.32f)
+            fg = AlarmRed
             text = "Quiet period ACTIVE$until"
         }
         "pending" -> {
-            bg = Color(0xFFEFF6FF)
-            border = Color(0xFF93C5FD)
-            fg = Color(0xFF1D4ED8)
+            bg = DSColor.Info.copy(alpha = 0.12f)
+            border = DSColor.Info.copy(alpha = 0.28f)
+            fg = DSColor.Info
             text = "Quiet period request pending admin approval"
         }
         "denied" -> {
-            bg = Color(0xFFFFF7ED)
-            border = Color(0xFFFDBA74)
-            fg = Color(0xFF9A3412)
+            bg = DSColor.Warning.copy(alpha = 0.14f)
+            border = DSColor.Warning.copy(alpha = 0.32f)
+            fg = DSColor.Warning
             text = "Quiet period request denied"
         }
         else -> return
@@ -2208,9 +2394,9 @@ private fun QuietPeriodStatusBanner(
                     enabled = !isBusy,
                     shape = RoundedCornerShape(10.dp),
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = Color(0xFFB91C1C),
+                        containerColor = AlarmRed,
                         contentColor = Color.White,
-                        disabledContainerColor = Color(0xFF94A3B8),
+                        disabledContainerColor = TextMuted.copy(alpha = 0.7f),
                         disabledContentColor = Color.White,
                     ),
                 ) {
@@ -2246,7 +2432,7 @@ private fun AdminQuietPeriodRequestsCard(
             } else {
                 requests.take(10).forEach { item ->
                     Surface(
-                        color = Color(0xFFF8FAFF),
+                        color = SurfaceSoft,
                         shape = RoundedCornerShape(12.dp),
                         modifier = Modifier.fillMaxWidth(),
                     ) {
@@ -2274,7 +2460,7 @@ private fun AdminQuietPeriodRequestsCard(
                                     onClick = { onApprove(item.requestId) },
                                     enabled = !isBusy && item.status.equals("pending", ignoreCase = true),
                                     colors = ButtonDefaults.buttonColors(
-                                        containerColor = Color(0xFF166534),
+                                        containerColor = AlarmGreen,
                                         contentColor = Color.White,
                                     ),
                                     shape = RoundedCornerShape(10.dp),
@@ -2285,7 +2471,7 @@ private fun AdminQuietPeriodRequestsCard(
                                     onClick = { onDeny(item.requestId) },
                                     enabled = !isBusy && item.status.equals("pending", ignoreCase = true),
                                     colors = ButtonDefaults.buttonColors(
-                                        containerColor = Color(0xFFB91C1C),
+                                        containerColor = AlarmRed,
                                         contentColor = Color.White,
                                     ),
                                     shape = RoundedCornerShape(10.dp),
@@ -2423,7 +2609,11 @@ private fun AlarmBanner(alarm: AlarmStatus, modifier: Modifier = Modifier) {
         label = "pulseAlpha",
     )
 
-    val bg = if (alarm.isActive) AlarmRed else SurfaceMain
+    val bg = when {
+        alarm.isActive && alarm.isTraining -> Color(0xFFD97706)
+        alarm.isActive -> AlarmRed
+        else -> SurfaceMain
+    }
 
     Surface(
         modifier = modifier.alpha(if (alarm.isActive) pulseAlpha else 1f),
@@ -2442,15 +2632,15 @@ private fun AlarmBanner(alarm: AlarmStatus, modifier: Modifier = Modifier) {
                 )
                 Column {
                     Text(
-                        if (alarm.isActive) "ALARM ACTIVE" else "All Clear",
+                        if (alarm.isActive && alarm.isTraining) "TRAINING DRILL" else if (alarm.isActive) "ALARM ACTIVE" else "All Clear",
                         fontWeight = FontWeight.ExtraBold,
                         fontSize = 26.sp,
                         color = if (alarm.isActive) TextOnDark else TextPri,
                     )
                     Text(
-                        if (alarm.isActive) "Emergency alert in progress" else "No active school alarm",
+                        if (alarm.isActive && alarm.isTraining) (alarm.trainingLabel ?: "This is a drill") else if (alarm.isActive) "Emergency alert in progress" else "No active school alarm",
                         fontSize = 14.sp,
-                        color = if (alarm.isActive) Color(0xFFFFCDD2) else TextMuted,
+                        color = if (alarm.isActive && alarm.isTraining) Color(0xFFFFF3E0) else if (alarm.isActive) Color(0xFFFFCDD2) else TextMuted,
                     )
                 }
             }
@@ -2501,7 +2691,8 @@ private fun BroadcastsCard(broadcasts: List<BroadcastUpdate>, modifier: Modifier
 private fun SafetyActionGrid(
     actions: List<SafetyAction>,
     enabled: Boolean,
-    onSelect: (SafetyAction) -> Unit,
+    onActivate: (SafetyAction) -> Unit,
+    onHoldVisual: (Boolean, Float, Color) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Surface(
@@ -2523,7 +2714,8 @@ private fun SafetyActionGrid(
                         SafetyActionButton(
                             action = action,
                             enabled = enabled,
-                            onClick = { onSelect(action) },
+                            onActivate = { onActivate(action) },
+                            onHoldVisual = onHoldVisual,
                             modifier = Modifier.weight(1f),
                         )
                     }
@@ -2540,32 +2732,136 @@ private fun SafetyActionGrid(
 private fun SafetyActionButton(
     action: SafetyAction,
     enabled: Boolean,
-    onClick: () -> Unit,
+    onActivate: () -> Unit,
+    onHoldVisual: (Boolean, Float, Color) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    Button(
-        onClick = onClick,
-        enabled = enabled,
-        colors = ButtonDefaults.buttonColors(
-            containerColor = Color.Transparent,
-            disabledContainerColor = Color.Transparent,
-            contentColor = TextPri,
-            disabledContentColor = TextMuted,
-        ),
-        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 4.dp),
+    val scope = rememberCoroutineScope()
+    val context = LocalContext.current
+    val haptics = remember { AndroidHoldHaptics(context) }
+    val holdProgress = remember(action.key) { Animatable(0f) }
+    var holdState by remember(action.key) { mutableStateOf(HoldActivationUiState.Idle) }
+    var holdJob by remember(action.key) { mutableStateOf<Job?>(null) }
+    var triggered by remember(action.key) { mutableStateOf(false) }
+
+    val ringColor by animateColorAsState(
+        targetValue = when {
+            holdProgress.value >= 0.8f -> AlarmRed
+            holdProgress.value >= 0.55f -> DSColor.Warning
+            else -> Color.White.copy(alpha = 0.88f)
+        },
+        animationSpec = tween(durationMillis = 150),
+        label = "actionRingColor",
+    )
+    val actionScale by animateFloatAsState(
+        targetValue = when (holdState) {
+            HoldActivationUiState.Idle, HoldActivationUiState.Canceled -> 1f
+            HoldActivationUiState.Triggered -> 1.12f
+            HoldActivationUiState.Pressing, HoldActivationUiState.Holding, HoldActivationUiState.NearComplete ->
+                0.97f + (holdProgress.value * 0.11f)
+        },
+        animationSpec = spring(dampingRatio = 0.82f, stiffness = Spring.StiffnessMediumLow),
+        label = "actionScale",
+    )
+
+    fun cancelHold(userCancelled: Boolean) {
+        holdJob?.cancel()
+        holdJob = null
+        if (userCancelled && !triggered && holdProgress.value > 0.01f) {
+            haptics.cancel()
+            holdState = HoldActivationUiState.Canceled
+        }
+        scope.launch {
+            holdProgress.animateTo(0f, tween(durationMillis = 200, easing = FastOutSlowInEasing))
+            if (holdState != HoldActivationUiState.Triggered) {
+                holdState = HoldActivationUiState.Idle
+            }
+            triggered = false
+            onHoldVisual(false, 0f, action.color)
+        }
+    }
+
+    Column(
         modifier = modifier.fillMaxWidth(),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Column(
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            Surface(
-                shape = CircleShape,
-                color = action.color,
-                modifier = Modifier.size(106.dp),
+            Box(
+                contentAlignment = Alignment.Center,
+                modifier = Modifier
+                    .size(122.dp)
+                    .pointerInput(action.key, enabled) {
+                        detectTapGestures(
+                            onPress = {
+                                if (!enabled || holdJob?.isActive == true) return@detectTapGestures
+                                holdState = HoldActivationUiState.Pressing
+                                haptics.touchDown()
+                                holdJob = scope.launch {
+                                    val holdDurationMs = 3_000L
+                                    val start = withFrameNanos { it }
+                                    var nextTickMs = 750L
+                                    holdProgress.snapTo(0f)
+                                    onHoldVisual(true, 0f, action.color)
+                                    while (isActive) {
+                                        val now = withFrameNanos { it }
+                                        val elapsedMs = ((now - start) / 1_000_000L).coerceAtLeast(0L)
+                                        val progress = (elapsedMs.toFloat() / holdDurationMs.toFloat()).coerceIn(0f, 1f)
+                                        holdProgress.snapTo(progress)
+                                        onHoldVisual(true, progress, action.color)
+                                        holdState = when {
+                                            progress >= 1f -> HoldActivationUiState.Triggered
+                                            progress >= 0.8f -> HoldActivationUiState.NearComplete
+                                            progress > 0.02f -> HoldActivationUiState.Holding
+                                            else -> HoldActivationUiState.Pressing
+                                        }
+                                        if (elapsedMs >= nextTickMs) {
+                                            haptics.progressTick(strong = progress >= 0.8f)
+                                            nextTickMs += 750L
+                                        }
+                                        if (progress >= 1f && !triggered) {
+                                            triggered = true
+                                            haptics.success()
+                                            onHoldVisual(false, 0f, action.color)
+                                            onActivate()
+                                            return@launch
+                                        }
+                                    }
+                                }
+                                val released = tryAwaitRelease()
+                                if (!triggered) {
+                                    cancelHold(userCancelled = released)
+                                }
+                            },
+                        )
+                    }
+                    .alpha(if (enabled) 1f else 0.55f),
             ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Text(action.symbol, fontSize = 34.sp, color = Color.White)
+                CircularProgressIndicator(
+                    progress = { 1f },
+                    color = Color.White.copy(alpha = 0.14f),
+                    strokeWidth = 6.dp,
+                    modifier = Modifier.fillMaxSize(),
+                )
+                CircularProgressIndicator(
+                    progress = { holdProgress.value },
+                    color = ringColor,
+                    strokeWidth = 6.dp,
+                    modifier = Modifier.fillMaxSize(),
+                )
+                Surface(
+                    shape = CircleShape,
+                    color = action.color,
+                    modifier = Modifier
+                        .size(106.dp)
+                        .graphicsLayer {
+                            scaleX = actionScale
+                            scaleY = actionScale
+                        },
+                    shadowElevation = (6f + holdProgress.value * 14f).dp,
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Text(action.symbol, fontSize = 34.sp, color = Color.White)
+                    }
                 }
             }
             Text(
@@ -2581,108 +2877,23 @@ private fun SafetyActionButton(
                     .fillMaxWidth()
                     .heightIn(min = 34.dp),
             )
-        }
+            Text(
+                when (holdState) {
+                    HoldActivationUiState.Idle, HoldActivationUiState.Pressing -> "Hold to Activate"
+                    HoldActivationUiState.Holding -> "Keep Holding…"
+                    HoldActivationUiState.NearComplete -> "Release to Cancel"
+                    HoldActivationUiState.Triggered -> "Activating…"
+                    HoldActivationUiState.Canceled -> "Hold to Activate"
+                },
+                color = Color.White.copy(alpha = 0.86f),
+                fontSize = 11.sp,
+                fontWeight = FontWeight.SemiBold,
+            )
     }
-}
-
-@Composable
-private fun ActionInitiateOverlay(
-    action: SafetyAction,
-    isBusy: Boolean,
-    onCancel: () -> Unit,
-    onInitiate: () -> Unit,
-) {
-    var slideValue by remember(action.key) { mutableStateOf(0f) }
-
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color(0xCC0B1220))
-            .navigationBarsPadding()
-            .statusBarsPadding(),
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(horizontal = 24.dp, vertical = 20.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            Text("BlueBird Alerts", color = Color(0xFFD4DCEE), fontSize = 16.sp, fontWeight = FontWeight.Bold)
-            Spacer(modifier = Modifier.height(22.dp))
-            Surface(
-                shape = CircleShape,
-                color = action.color,
-                modifier = Modifier.size(86.dp),
-            ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Text(action.symbol, fontSize = 34.sp, color = Color.White)
-                }
-            }
-            Spacer(modifier = Modifier.height(14.dp))
-            Text(
-                "${action.title} EMERGENCY",
-                color = Color.White,
-                fontWeight = FontWeight.ExtraBold,
-                fontSize = 26.sp,
-                textAlign = TextAlign.Center,
-            )
-            Spacer(modifier = Modifier.height(34.dp))
-            Surface(
-                shape = RoundedCornerShape(28.dp),
-                color = Color(0xFF5B616B),
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
-                    Text(
-                        if (isBusy) "Initiating…" else "Slide to Initiate →",
-                        color = Color.White,
-                        fontWeight = FontWeight.SemiBold,
-                        fontSize = 16.sp,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    Slider(
-                        value = slideValue,
-                        onValueChange = { slideValue = it },
-                        onValueChangeFinished = {
-                            if (!isBusy && slideValue >= 0.95f) {
-                                onInitiate()
-                            }
-                            slideValue = 0f
-                        },
-                        enabled = !isBusy,
-                        colors = SliderDefaults.colors(
-                            thumbColor = Color.White,
-                            activeTrackColor = Color(0xFF9AA0AA),
-                            inactiveTrackColor = Color(0xFF6D747F),
-                        ),
-                        valueRange = 0f..1f,
-                    )
-                }
-            }
-            Spacer(modifier = Modifier.weight(1f))
-            Surface(
-                shape = CircleShape,
-                color = Color(0xCC9CA3AF),
-                modifier = Modifier.size(68.dp),
-            ) {
-                Button(
-                    onClick = onCancel,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = Color.Transparent,
-                        contentColor = Color.White,
-                    ),
-                    modifier = Modifier.fillMaxSize(),
-                ) {
-                    Text("✕", fontSize = 26.sp, fontWeight = FontWeight.Bold)
-                }
-            }
-            Text(
-                "Cancel",
-                color = Color.White,
-                fontSize = 14.sp,
-                modifier = Modifier.padding(top = 6.dp),
-            )
+    DisposableEffect(action.key) {
+        onDispose {
+            holdJob?.cancel()
+            onHoldVisual(false, 0f, action.color)
         }
     }
 }
@@ -3318,47 +3529,196 @@ private fun SettingsScreen(
 
 // ── Alarm sound ────────────────────────────────────────────────────────────────
 @Composable
-private fun AlarmSoundEffect(isAlarmActive: Boolean) {
+private fun AlarmSoundEffect(isAlarmActive: Boolean, isTrainingAlarm: Boolean) {
     val ctx = LocalContext.current
-    val player = remember { AlarmPlayer(ctx.applicationContext) }
+    val appCtx = remember { ctx.applicationContext }
 
-    DisposableEffect(isAlarmActive) {
-        if (isAlarmActive) player.start() else player.stop()
+    DisposableEffect(isAlarmActive, isTrainingAlarm) {
+        if (isAlarmActive) {
+            AlarmAudioController.start(appCtx, isTraining = isTrainingAlarm)
+        } else {
+            AlarmAudioController.stop()
+        }
         onDispose {}
     }
     DisposableEffect(Unit) {
-        onDispose { player.release() }
+        onDispose { AlarmAudioController.release() }
     }
 }
 
-private class AlarmPlayer(private val ctx: Context) {
-    private var player: MediaPlayer? = null
+private object AlarmAudioController {
+    private const val TAG = "BlueBirdAlarmAudio"
 
-    fun start() {
-        if (player?.isPlaying == true) return
-        val uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
-            ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
-            ?: return
-        player = MediaPlayer().apply {
-            setAudioAttributes(
-                AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_ALARM)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                    .build()
-            )
-            setDataSource(ctx, uri)
-            isLooping = true
-            prepare()
-            start()
+    private var player: MediaPlayer? = null
+    private var appContext: Context? = null
+    private var vibrator: Vibrator? = null
+    private var audioManager: AudioManager? = null
+    private var hasAudioFocus = false
+    private var volumeGuardReceiver: BroadcastReceiver? = null
+
+    @Synchronized
+    fun start(ctx: Context, isTraining: Boolean) {
+        if (player?.isPlaying == true) {
+            Log.d(TAG, "start ignored: already playing")
+            return
+        }
+        appContext = ctx.applicationContext
+        ensureAudioFocus()
+        runCatching {
+            MediaPlayer.create(appContext, R.raw.bluebird_alarm_asset)?.apply {
+                setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_ALARM)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                        .build(),
+                )
+                isLooping = true
+                val level = if (isTraining) 0.35f else 1.0f
+                setVolume(level, level)
+                setOnErrorListener { mp, what, extra ->
+                    Log.e(TAG, "player error what=$what extra=$extra")
+                    runCatching { mp.stop() }
+                    runCatching { mp.reset() }
+                    runCatching { mp.release() }
+                    player = null
+                    false
+                }
+                start()
+            }
+        }.onSuccess { created ->
+            if (created == null) {
+                Log.e(TAG, "Unable to create MediaPlayer for bluebird_alarm_asset.mp3")
+                return@onSuccess
+            }
+            player = created
+            enforceMaxAlarmVolume()
+            registerVolumeGuard()
+            startVibration(isTraining = isTraining)
+            Log.i(TAG, "alarm playback started (training=$isTraining)")
+        }.onFailure { err ->
+            Log.e(TAG, "Failed to start alarm playback", err)
+            stop()
         }
     }
 
+    @Synchronized
     fun stop() {
-        player?.run { if (isPlaying) stop(); reset(); release() }
+        Log.i(TAG, "alarm stop requested")
+        player?.let { p ->
+            runCatching { p.setOnErrorListener(null) }
+            runCatching {
+                if (p.isPlaying) {
+                    p.pause()
+                }
+            }
+            runCatching { p.seekTo(0) }
+            runCatching { p.stop() }
+            runCatching { p.reset() }
+            runCatching { p.release() }.onFailure { err ->
+                Log.w(TAG, "Error while releasing player", err)
+            }
+        }
         player = null
+        stopVibration()
+        runCatching {
+            val nm = appContext?.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+            nm?.cancel(ALERT_PUSH_NOTIFICATION_ID)
+        }
+        unregisterVolumeGuard()
+        abandonAudioFocus()
+        Log.i(TAG, "alarm playback stopped")
     }
 
-    fun release() = stop()
+    @Synchronized
+    fun release() {
+        stop()
+        appContext = null
+    }
+
+    private fun ensureAudioFocus() {
+        val ctx = appContext ?: return
+        val am = audioManager ?: (ctx.getSystemService(Context.AUDIO_SERVICE) as? AudioManager).also { audioManager = it }
+        if (am == null || hasAudioFocus) return
+        val result = am.requestAudioFocus(
+            null,
+            AudioManager.STREAM_ALARM,
+            AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE,
+        )
+        hasAudioFocus = (result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED)
+        Log.d(TAG, "audio focus granted=$hasAudioFocus")
+    }
+
+    private fun abandonAudioFocus() {
+        val am = audioManager ?: return
+        if (!hasAudioFocus) return
+        runCatching { am.abandonAudioFocus(null) }
+        hasAudioFocus = false
+    }
+
+    private fun resolveVibrator(): Vibrator? {
+        val ctx = appContext ?: return null
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val mgr = ctx.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as? VibratorManager
+            mgr?.defaultVibrator
+        } else {
+            @Suppress("DEPRECATION")
+            ctx.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
+        }
+    }
+
+    private fun startVibration(isTraining: Boolean) {
+        val vib = vibrator ?: resolveVibrator().also { vibrator = it } ?: return
+        val pattern = if (isTraining) longArrayOf(0, 120, 980) else longArrayOf(0, 220, 780)
+        runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                vib.vibrate(VibrationEffect.createWaveform(pattern, 0))
+            } else {
+                @Suppress("DEPRECATION")
+                vib.vibrate(pattern, 0)
+            }
+        }.onFailure { err ->
+            Log.w(TAG, "Failed to start vibration", err)
+        }
+    }
+
+    private fun stopVibration() {
+        runCatching { vibrator?.cancel() }
+    }
+
+    private fun enforceMaxAlarmVolume() {
+        val am = audioManager ?: return
+        val maxVolume = am.getStreamMaxVolume(AudioManager.STREAM_ALARM)
+        if (maxVolume <= 0) return
+        val current = am.getStreamVolume(AudioManager.STREAM_ALARM)
+        if (current != maxVolume) {
+            am.setStreamVolume(AudioManager.STREAM_ALARM, maxVolume, 0)
+            Log.w(TAG, "Alarm stream volume forced to max ($maxVolume)")
+        }
+    }
+
+    private fun registerVolumeGuard() {
+        val ctx = appContext ?: return
+        if (volumeGuardReceiver != null) return
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                if (intent?.action != "android.media.VOLUME_CHANGED_ACTION") return
+                val streamType = intent.getIntExtra("android.media.EXTRA_VOLUME_STREAM_TYPE", -1)
+                if (streamType == AudioManager.STREAM_ALARM && player?.isPlaying == true) {
+                    enforceMaxAlarmVolume()
+                }
+            }
+        }
+        volumeGuardReceiver = receiver
+        ctx.registerReceiver(receiver, IntentFilter("android.media.VOLUME_CHANGED_ACTION"))
+        Log.d(TAG, "Volume guard receiver registered")
+    }
+
+    private fun unregisterVolumeGuard() {
+        val ctx = appContext ?: return
+        val receiver = volumeGuardReceiver ?: return
+        runCatching { ctx.unregisterReceiver(receiver) }
+        volumeGuardReceiver = null
+    }
 }
 
 // ── Backend client ─────────────────────────────────────────────────────────────
@@ -3902,8 +4262,22 @@ private class BackendClient(baseUrl: String, private val apiKey: String) {
         }
     }
 
-    fun activateAlarm(message: String, userId: Int?): AlarmStatus {
-        val body = JSONObject().put("message", message).apply { userId?.let { put("user_id", it) } }
+    fun activateAlarm(
+        message: String,
+        userId: Int?,
+        isTraining: Boolean = false,
+        trainingLabel: String? = null,
+    ): AlarmStatus {
+        val body = JSONObject()
+            .put("message", message)
+            .put("is_training", isTraining)
+            .apply {
+                userId?.let { put("user_id", it) }
+                val cleanedLabel = trainingLabel?.trim().orEmpty()
+                if (cleanedLabel.isNotEmpty()) {
+                    put("training_label", cleanedLabel)
+                }
+            }
         val req = Request.Builder()
             .url("$base/alarm/activate")
             .withAuth()
@@ -3944,6 +4318,8 @@ private class BackendClient(baseUrl: String, private val apiKey: String) {
         return AlarmStatus(
             isActive          = j.optBoolean("is_active"),
             message           = j.optString("message").ifBlank { null },
+            isTraining        = j.optBoolean("is_training", false),
+            trainingLabel     = j.optNullableString("training_label"),
             activatedAt       = j.optString("activated_at").ifBlank { null },
             activatedByUserId = if (j.has("activated_by_user_id") && !j.isNull("activated_by_user_id"))
                 j.optInt("activated_by_user_id") else null,
