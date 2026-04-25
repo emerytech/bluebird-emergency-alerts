@@ -1387,12 +1387,17 @@ struct ContentView: View {
     private func sendPanic() async {
         let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
+        guard let userID = appState.userID else {
+            appState.lastError = "No active signed-in user found."
+            return
+        }
 
         isSending = true
         defer { isSending = false }
 
         do {
             let response = try await api.panic(
+                userID: userID,
                 message: trimmed,
                 isTraining: isAdminSession && trainingModeEnabled,
                 trainingLabel: isAdminSession && trainingModeEnabled ? trainingLabel : nil

@@ -35,12 +35,19 @@ struct APIClient {
         return try JSONDecoder().decode(RegisterDeviceResponse.self, from: data)
     }
 
-    func panic(message: String) async throws -> PanicResponse {
+    func panic(userID: Int, message: String, isTraining: Bool = false, trainingLabel: String? = nil) async throws -> PanicResponse {
         let url = baseURL.appendingPathComponent("panic")
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONEncoder().encode(PanicRequest(message: message))
+        request.httpBody = try JSONEncoder().encode(
+            PanicRequest(
+                userID: userID,
+                message: message,
+                isTraining: isTraining,
+                trainingLabel: trainingLabel?.trimmingCharacters(in: .whitespacesAndNewlines)
+            )
+        )
 
         let (data, response) = try await URLSession.shared.data(for: request)
         try requireSuccess(response: response, data: data)
@@ -407,7 +414,17 @@ struct DeviceSummary: Decodable, Identifiable {
 }
 
 private struct PanicRequest: Encodable {
+    let userID: Int
     let message: String
+    let isTraining: Bool
+    let trainingLabel: String?
+
+    enum CodingKeys: String, CodingKey {
+        case userID = "user_id"
+        case message
+        case isTraining = "is_training"
+        case trainingLabel = "training_label"
+    }
 }
 
 struct PanicResponse: Decodable {
@@ -471,10 +488,14 @@ struct IncidentSummary: Decodable, Identifiable {
 struct AlarmStatusResponse: Decodable {
     let isActive: Bool
     let message: String?
+    let isTraining: Bool
+    let trainingLabel: String?
 
     enum CodingKeys: String, CodingKey {
         case isActive = "is_active"
         case message
+        case isTraining = "is_training"
+        case trainingLabel = "training_label"
     }
 }
 

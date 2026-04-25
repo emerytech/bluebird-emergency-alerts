@@ -774,6 +774,22 @@ async def _require_admin_user(users: UserStore, user_id: Optional[int]) -> int:
     return user.id
 
 
+async def _require_alarm_trigger_user(users: UserStore, user_id: Optional[int]) -> int:
+    if user_id is None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Authorized user_id is required to activate alarm")
+    user = await users.get_user(int(user_id))
+    if user is None or not user.is_active or not can_any(
+        user.role, {PERM_TRIGGER_OWN_TENANT_ALERTS, PERM_MANAGE_ASSIGNED_TENANT_INCIDENTS}
+    ):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only authorized active users can activate alarm")
+    return user.id
+
+
+async def _ensure_no_active_alarm(request: Request) -> None:
+    if (await _alarm_store(request).get_state()).is_active:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="An alarm is already active")
+
+
 async def _require_dashboard_admin_id(users: UserStore, user_id: int) -> int:
     user = await users.get_user(int(user_id))
     if user is None or not user.is_active or not can_any(user.role, {PERM_MANAGE_OWN_TENANT_USERS, PERM_MANAGE_ASSIGNED_TENANT_USERS}):
@@ -976,6 +992,8 @@ async def alarm_status(request: Request) -> AlarmStatusResponse:
     return AlarmStatusResponse(
         is_active=state.is_active,
         message=state.message,
+        is_training=state.is_training,
+        training_label=state.training_label,
         activated_at=state.activated_at,
         activated_by_user_id=state.activated_by_user_id,
         activated_by_label=state.activated_by_label,
@@ -1003,12 +1021,21 @@ async def activate_alarm(
     _: None = Depends(require_api_key),
 ) -> AlarmStatusResponse:
     users = _users(request)
-    triggered_by_user_id = await _validated_user_id(users, body.user_id)
+    triggered_by_user_id = await _require_alarm_trigger_user(users, body.user_id)
+    is_training = bool(body.is_training)
+    training_label = body.training_label.strip() if body.training_label else None
+    if is_training:
+        await _require_dashboard_admin_id(users, triggered_by_user_id)
+
+    await _ensure_no_active_alarm(request)
 
     trigger_ip = request.client.host if request.client else None
     trigger_user_agent = request.headers.get("user-agent")
     alert_id = await _alert_log(request).log_alert(
         body.message,
+        is_training=is_training,
+        training_label=training_label,
+        created_by_user_id=triggered_by_user_id,
         triggered_by_user_id=triggered_by_user_id,
         triggered_by_label=_current_school_actor_label(request),
         trigger_ip=trigger_ip,
@@ -1018,43 +1045,50 @@ async def activate_alarm(
         message=body.message,
         activated_by_user_id=triggered_by_user_id,
         activated_by_label=_current_school_actor_label(request),
+        is_training=is_training,
+        training_label=training_label,
     )
-
-    apns_devices = await _registry(request).list_by_provider("apns")
-    fcm_devices = await _registry(request).list_by_provider("fcm")
-    candidate_user_ids = {
-        int(device.user_id)
-        for device in (*apns_devices, *fcm_devices)
-        if device.user_id is not None and int(device.user_id) > 0
-    }
-    candidate_user_ids.update(int(user.id) for user in await users.list_users() if int(user.id) > 0)
-    paused_user_ids = await _quiet_suppressed_user_ids(request, candidate_user_ids=candidate_user_ids)
-    apns_tokens = list(
-        dict.fromkeys(
-            [
-                device.token
-                for device in apns_devices
-                if device.user_id is None or device.user_id not in paused_user_ids
-            ]
+    apns_tokens: list[str] = []
+    fcm_tokens: list[str] = []
+    sms_numbers: list[str] = []
+    if not is_training:
+        apns_devices = await _registry(request).list_by_provider("apns")
+        fcm_devices = await _registry(request).list_by_provider("fcm")
+        candidate_user_ids = {
+            int(device.user_id)
+            for device in (*apns_devices, *fcm_devices)
+            if device.user_id is not None and int(device.user_id) > 0
+        }
+        candidate_user_ids.update(int(user.id) for user in await users.list_users() if int(user.id) > 0)
+        paused_user_ids = await _quiet_suppressed_user_ids(request, candidate_user_ids=candidate_user_ids)
+        apns_tokens = list(
+            dict.fromkeys(
+                [
+                    device.token
+                    for device in apns_devices
+                    if device.user_id is None or device.user_id not in paused_user_ids
+                ]
+            )
         )
-    )
-    fcm_tokens = list(
-        dict.fromkeys(
-            [
-                device.token
-                for device in fcm_devices
-                if device.user_id is None or device.user_id not in paused_user_ids
-            ]
+        fcm_tokens = list(
+            dict.fromkeys(
+                [
+                    device.token
+                    for device in fcm_devices
+                    if device.user_id is None or device.user_id not in paused_user_ids
+                ]
+            )
         )
-    )
-    sms_numbers = await users.list_sms_targets(excluded_user_ids=sorted(paused_user_ids))
-    plan = BroadcastPlan(apns_tokens=apns_tokens, fcm_tokens=fcm_tokens, sms_numbers=sms_numbers)
-    background_tasks.add_task(_broadcaster(request).broadcast_panic, alert_id=alert_id, message=body.message, plan=plan)
+        sms_numbers = await users.list_sms_targets(excluded_user_ids=sorted(paused_user_ids))
+        plan = BroadcastPlan(apns_tokens=apns_tokens, fcm_tokens=fcm_tokens, sms_numbers=sms_numbers)
+        background_tasks.add_task(_broadcaster(request).broadcast_panic, alert_id=alert_id, message=body.message, plan=plan)
 
     logger.warning(
-        "ALARM ACTIVATED alert_id=%s by_user=%s apns=%s fcm=%s sms_targets=%s message=%r",
+        "ALARM ACTIVATED alert_id=%s by_user=%s training=%s label=%r apns=%s fcm=%s sms_targets=%s message=%r",
         alert_id,
         triggered_by_user_id,
+        is_training,
+        training_label,
         len(apns_tokens),
         len(fcm_tokens),
         len(sms_numbers),
@@ -1064,6 +1098,8 @@ async def activate_alarm(
     return AlarmStatusResponse(
         is_active=state.is_active,
         message=state.message,
+        is_training=state.is_training,
+        training_label=state.training_label,
         activated_at=state.activated_at,
         activated_by_user_id=state.activated_by_user_id,
         activated_by_label=state.activated_by_label,
@@ -1088,6 +1124,8 @@ async def deactivate_alarm(
     return AlarmStatusResponse(
         is_active=state.is_active,
         message=state.message,
+        is_training=state.is_training,
+        training_label=state.training_label,
         activated_at=state.activated_at,
         activated_by_user_id=state.activated_by_user_id,
         activated_by_label=state.activated_by_label,
@@ -2328,14 +2366,21 @@ async def admin_activate_alarm(
     request: Request,
     background_tasks: BackgroundTasks,
     message: str = Form(...),
+    is_training: Optional[str] = Form(default=None),
+    training_label: str = Form(default=""),
 ) -> RedirectResponse:
     await _require_dashboard_admin(request)
     await activate_alarm(
-        AlarmActivateRequest(message=message.strip(), user_id=_session_user_id(request)),
+        AlarmActivateRequest(
+            message=message.strip(),
+            user_id=_session_user_id(request),
+            is_training=(is_training == "1"),
+            training_label=training_label.strip() or None,
+        ),
         request,
         background_tasks,
     )
-    _set_flash(request, message="Alarm activated.")
+    _set_flash(request, message="Training alert activated." if is_training == "1" else "Alarm activated.")
     return RedirectResponse(url="/admin", status_code=status.HTTP_303_SEE_OTHER)
 
 
@@ -2772,6 +2817,9 @@ async def alerts(
                 alert_id=alert.id,
                 created_at=alert.created_at,
                 message=alert.message,
+                is_training=alert.is_training,
+                training_label=alert.training_label,
+                created_by_user_id=alert.created_by_user_id,
                 triggered_by_user_id=alert.triggered_by_user_id,
                 triggered_by_label=alert.triggered_by_label,
             )
@@ -3422,14 +3470,23 @@ async def panic(
       - Deliver redundantly (push + SMS) when configured.
     """
 
-    triggered_by_user_id = body.user_id
-    triggered_by_user_id = await _validated_user_id(_users(request), triggered_by_user_id)
+    users = _users(request)
+    triggered_by_user_id = await _require_alarm_trigger_user(users, body.user_id)
+    is_training = bool(body.is_training)
+    training_label = body.training_label.strip() if body.training_label else None
+    if is_training:
+        await _require_dashboard_admin_id(users, triggered_by_user_id)
+
+    await _ensure_no_active_alarm(request)
 
     trigger_ip = request.client.host if request.client else None
     trigger_user_agent = request.headers.get("user-agent")
 
     alert_id = await _alert_log(request).log_alert(
         body.message,
+        is_training=is_training,
+        training_label=training_label,
+        created_by_user_id=triggered_by_user_id,
         triggered_by_user_id=triggered_by_user_id,
         triggered_by_label=_current_school_actor_label(request),
         trigger_ip=trigger_ip,
@@ -3439,10 +3496,12 @@ async def panic(
         message=body.message,
         activated_by_user_id=triggered_by_user_id,
         activated_by_label=_current_school_actor_label(request),
+        is_training=is_training,
+        training_label=training_label,
     )
 
-    apns_devices = await _registry(request).list_by_provider("apns")
-    fcm_devices = await _registry(request).list_by_provider("fcm")
+    apns_devices = [] if is_training else await _registry(request).list_by_provider("apns")
+    fcm_devices = [] if is_training else await _registry(request).list_by_provider("fcm")
     provider_counts = await _registry(request).provider_counts()
     device_count = await _registry(request).count()
     candidate_user_ids = {
@@ -3450,7 +3509,7 @@ async def panic(
         for device in (*apns_devices, *fcm_devices)
         if device.user_id is not None and int(device.user_id) > 0
     }
-    candidate_user_ids.update(int(user.id) for user in await _users(request).list_users() if int(user.id) > 0)
+    candidate_user_ids.update(int(user.id) for user in await users.list_users() if int(user.id) > 0)
     paused_user_ids = await _quiet_suppressed_user_ids(request, candidate_user_ids=candidate_user_ids)
     apns_tokens = list(
         dict.fromkeys(
@@ -3470,19 +3529,22 @@ async def panic(
             ]
         )
     )
-    sms_numbers = await _users(request).list_sms_targets(excluded_user_ids=sorted(paused_user_ids))
+    sms_numbers = [] if is_training else await users.list_sms_targets(excluded_user_ids=sorted(paused_user_ids))
 
     logger.warning(
-        "PANIC alert_id=%s devices=%s providers=%s sms_targets=%s message=%r",
+        "PANIC alert_id=%s training=%s label=%r devices=%s providers=%s sms_targets=%s message=%r",
         alert_id,
+        is_training,
+        training_label,
         device_count,
         provider_counts,
         len(sms_numbers),
         body.message,
     )
 
-    plan = BroadcastPlan(apns_tokens=apns_tokens, fcm_tokens=fcm_tokens, sms_numbers=sms_numbers)
-    background_tasks.add_task(_broadcaster(request).broadcast_panic, alert_id=alert_id, message=body.message, plan=plan)
+    if not is_training:
+        plan = BroadcastPlan(apns_tokens=apns_tokens, fcm_tokens=fcm_tokens, sms_numbers=sms_numbers)
+        background_tasks.add_task(_broadcaster(request).broadcast_panic, alert_id=alert_id, message=body.message, plan=plan)
 
     return PanicResponse(
         alert_id=alert_id,
