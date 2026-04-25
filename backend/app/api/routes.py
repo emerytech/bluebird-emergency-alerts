@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from html import escape
 from types import SimpleNamespace
-from typing import Optional
+from typing import Optional, cast
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Form, Query, Request
 from fastapi import HTTPException, status
@@ -113,6 +113,15 @@ logger = logging.getLogger("bluebird.routes")
 TRUST_DEVICE_TTL_SECONDS = 14 * 24 * 60 * 60
 ADMIN_TRUST_COOKIE = "bluebird_admin_trusted_device"
 SUPER_ADMIN_TRUST_COOKIE = "bluebird_super_admin_trusted_device"
+
+
+def _state_field(state: object, field: str, default: object = None) -> object:
+    """
+    Backward-compatible alarm-state accessor.
+    Some legacy records may not have newer fields (e.g. is_training); this
+    keeps runtime endpoints stable while still logging upstream read failures.
+    """
+    return getattr(state, field, default)
 
 
 def _registry(req: Request) -> DeviceRegistry:
@@ -1009,16 +1018,16 @@ async def alarm_status(request: Request) -> AlarmStatusResponse:
         logger.exception("alarm_status: failed to read broadcast updates; returning empty list")
         broadcasts = []
     return AlarmStatusResponse(
-        is_active=state.is_active,
-        message=state.message,
-        is_training=state.is_training,
-        training_label=state.training_label,
-        activated_at=state.activated_at,
-        activated_by_user_id=state.activated_by_user_id,
-        activated_by_label=state.activated_by_label,
-        deactivated_at=state.deactivated_at,
-        deactivated_by_user_id=state.deactivated_by_user_id,
-        deactivated_by_label=state.deactivated_by_label,
+        is_active=bool(_state_field(state, "is_active", False)),
+        message=cast(Optional[str], _state_field(state, "message", None)),
+        is_training=bool(_state_field(state, "is_training", False)),
+        training_label=cast(Optional[str], _state_field(state, "training_label", None)),
+        activated_at=cast(Optional[str], _state_field(state, "activated_at", None)),
+        activated_by_user_id=cast(Optional[int], _state_field(state, "activated_by_user_id", None)),
+        activated_by_label=cast(Optional[str], _state_field(state, "activated_by_label", None)),
+        deactivated_at=cast(Optional[str], _state_field(state, "deactivated_at", None)),
+        deactivated_by_user_id=cast(Optional[int], _state_field(state, "deactivated_by_user_id", None)),
+        deactivated_by_label=cast(Optional[str], _state_field(state, "deactivated_by_label", None)),
         broadcasts=[
             BroadcastUpdateSummary(
                 update_id=item.id,
@@ -1115,16 +1124,16 @@ async def activate_alarm(
     )
 
     return AlarmStatusResponse(
-        is_active=state.is_active,
-        message=state.message,
-        is_training=state.is_training,
-        training_label=state.training_label,
-        activated_at=state.activated_at,
-        activated_by_user_id=state.activated_by_user_id,
-        activated_by_label=state.activated_by_label,
-        deactivated_at=state.deactivated_at,
-        deactivated_by_user_id=state.deactivated_by_user_id,
-        deactivated_by_label=state.deactivated_by_label,
+        is_active=bool(_state_field(state, "is_active", False)),
+        message=cast(Optional[str], _state_field(state, "message", None)),
+        is_training=bool(_state_field(state, "is_training", False)),
+        training_label=cast(Optional[str], _state_field(state, "training_label", None)),
+        activated_at=cast(Optional[str], _state_field(state, "activated_at", None)),
+        activated_by_user_id=cast(Optional[int], _state_field(state, "activated_by_user_id", None)),
+        activated_by_label=cast(Optional[str], _state_field(state, "activated_by_label", None)),
+        deactivated_at=cast(Optional[str], _state_field(state, "deactivated_at", None)),
+        deactivated_by_user_id=cast(Optional[int], _state_field(state, "deactivated_by_user_id", None)),
+        deactivated_by_label=cast(Optional[str], _state_field(state, "deactivated_by_label", None)),
     )
 
 
@@ -1141,16 +1150,16 @@ async def deactivate_alarm(
     )
     logger.warning("ALARM DEACTIVATED by_user=%s", admin_user_id)
     return AlarmStatusResponse(
-        is_active=state.is_active,
-        message=state.message,
-        is_training=state.is_training,
-        training_label=state.training_label,
-        activated_at=state.activated_at,
-        activated_by_user_id=state.activated_by_user_id,
-        activated_by_label=state.activated_by_label,
-        deactivated_at=state.deactivated_at,
-        deactivated_by_user_id=state.deactivated_by_user_id,
-        deactivated_by_label=state.deactivated_by_label,
+        is_active=bool(_state_field(state, "is_active", False)),
+        message=cast(Optional[str], _state_field(state, "message", None)),
+        is_training=bool(_state_field(state, "is_training", False)),
+        training_label=cast(Optional[str], _state_field(state, "training_label", None)),
+        activated_at=cast(Optional[str], _state_field(state, "activated_at", None)),
+        activated_by_user_id=cast(Optional[int], _state_field(state, "activated_by_user_id", None)),
+        activated_by_label=cast(Optional[str], _state_field(state, "activated_by_label", None)),
+        deactivated_at=cast(Optional[str], _state_field(state, "deactivated_at", None)),
+        deactivated_by_user_id=cast(Optional[int], _state_field(state, "deactivated_by_user_id", None)),
+        deactivated_by_label=cast(Optional[str], _state_field(state, "deactivated_by_label", None)),
     )
 
 

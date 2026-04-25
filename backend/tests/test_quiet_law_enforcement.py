@@ -139,6 +139,7 @@ def test_quiet_mode_suppresses_assigned_tenant_alerts_for_user_only_without_dupl
     _create_user(client, "quiet-assigned", name="Assigned Filler 2", role="teacher")
     mirrored_officer_id = _create_user(client, "quiet-assigned", name="Assigned Officer", role="teacher")
     other_user_id = _create_user(client, "quiet-assigned", name="Other User", role="teacher")
+    assigned_admin_id = _create_user(client, "quiet-assigned", name="Assigned Admin", role="admin")
     assert mirrored_officer_id == officer_id
 
     home_school = client.app.state.tenant_manager.school_for_slug("quiet-home")
@@ -174,10 +175,9 @@ def test_quiet_mode_suppresses_assigned_tenant_alerts_for_user_only_without_dupl
     panic = client.post(
         "/quiet-assigned/panic",
         headers={"X-API-Key": "test-api-key"},
-        json={"message": "Assigned tenant alert"},
+        json={"message": "Assigned tenant alert", "user_id": assigned_admin_id},
     )
     assert panic.status_code == 200, panic.text
     payload = panic.json()
     assert payload["provider_attempts"]["fcm"] == 2
     assert payload["attempted"] == 2
-
