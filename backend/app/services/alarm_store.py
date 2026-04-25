@@ -12,6 +12,7 @@ import anyio
 @dataclass(frozen=True)
 class AlarmStateRecord:
     is_active: bool = False
+    tenant_slug: str = ""
     message: Optional[str] = None
     is_training: bool = False
     training_label: Optional[str] = None
@@ -47,6 +48,7 @@ class AlarmStore:
                 CREATE TABLE IF NOT EXISTS alarm_state (
                     id INTEGER PRIMARY KEY CHECK (id = 1),
                     is_active INTEGER NOT NULL DEFAULT 0,
+                    tenant_slug TEXT NOT NULL DEFAULT '',
                     message TEXT NULL,
                     is_training INTEGER NOT NULL DEFAULT 0,
                     training_label TEXT NULL,
@@ -63,9 +65,11 @@ class AlarmStore:
             conn.execute(
                 """
                 INSERT INTO alarm_state (
-                    id, is_active, message, is_training, training_label, activated_at, activated_by_user_id, activated_by_label, deactivated_at, deactivated_by_user_id, deactivated_by_label
+                    id, is_active, tenant_slug, message, is_training, training_label,
+                    activated_at, activated_by_user_id, activated_by_label,
+                    deactivated_at, deactivated_by_user_id, deactivated_by_label
                 )
-                VALUES (1, 0, NULL, 0, NULL, NULL, NULL, NULL, NULL, NULL, NULL)
+                VALUES (1, 0, '', NULL, 0, NULL, NULL, NULL, NULL, NULL, NULL, NULL)
                 ON CONFLICT(id) DO NOTHING;
                 """
             )
@@ -80,29 +84,34 @@ class AlarmStore:
             conn.execute("ALTER TABLE alarm_state ADD COLUMN activated_by_label TEXT NULL;")
         if "deactivated_by_label" not in cols:
             conn.execute("ALTER TABLE alarm_state ADD COLUMN deactivated_by_label TEXT NULL;")
+        if "tenant_slug" not in cols:
+            conn.execute("ALTER TABLE alarm_state ADD COLUMN tenant_slug TEXT NOT NULL DEFAULT '';")
 
     def _fetch_state_sync(self) -> AlarmStateRecord:
         with self._connect() as conn:
             row = conn.execute(
                 """
-                SELECT is_active, message, is_training, training_label, activated_at, activated_by_user_id, activated_by_label, deactivated_at, deactivated_by_user_id, deactivated_by_label
+                SELECT is_active, tenant_slug, message, is_training, training_label,
+                       activated_at, activated_by_user_id, activated_by_label,
+                       deactivated_at, deactivated_by_user_id, deactivated_by_label
                 FROM alarm_state
                 WHERE id = 1;
                 """
             ).fetchone()
         if row is None:
-            return AlarmStateRecord(False, None, False, None, None, None, None, None, None, None)
+            return AlarmStateRecord()
         return AlarmStateRecord(
             is_active=bool(int(row[0])),
-            message=str(row[1]) if row[1] is not None else None,
-            is_training=bool(int(row[2])),
-            training_label=str(row[3]) if row[3] is not None else None,
-            activated_at=str(row[4]) if row[4] is not None else None,
-            activated_by_user_id=int(row[5]) if row[5] is not None else None,
-            activated_by_label=str(row[6]) if row[6] is not None else None,
-            deactivated_at=str(row[7]) if row[7] is not None else None,
-            deactivated_by_user_id=int(row[8]) if row[8] is not None else None,
-            deactivated_by_label=str(row[9]) if row[9] is not None else None,
+            tenant_slug=str(row[1]) if row[1] is not None else "",
+            message=str(row[2]) if row[2] is not None else None,
+            is_training=bool(int(row[3])),
+            training_label=str(row[4]) if row[4] is not None else None,
+            activated_at=str(row[5]) if row[5] is not None else None,
+            activated_by_user_id=int(row[6]) if row[6] is not None else None,
+            activated_by_label=str(row[7]) if row[7] is not None else None,
+            deactivated_at=str(row[8]) if row[8] is not None else None,
+            deactivated_by_user_id=int(row[9]) if row[9] is not None else None,
+            deactivated_by_label=str(row[10]) if row[10] is not None else None,
         )
 
     async def get_state(self) -> AlarmStateRecord:
@@ -115,6 +124,7 @@ class AlarmStore:
         activated_by_label: Optional[str],
         is_training: bool,
         training_label: Optional[str],
+        tenant_slug: str,
     ) -> AlarmStateRecord:
         activated_at = datetime.now(timezone.utc).isoformat()
         with self._connect() as conn:
@@ -122,6 +132,7 @@ class AlarmStore:
                 """
                 UPDATE alarm_state
                 SET is_active = 1,
+                    tenant_slug = ?,
                     message = ?,
                     is_training = ?,
                     training_label = ?,
@@ -134,6 +145,7 @@ class AlarmStore:
                 WHERE id = 1;
                 """,
                 (
+                    tenant_slug,
                     message,
                     1 if is_training else 0,
                     training_label,
@@ -147,6 +159,7 @@ class AlarmStore:
     async def activate(
         self,
         *,
+        tenant_slug: str,
         message: str,
         activated_by_user_id: Optional[int],
         activated_by_label: Optional[str] = None,
@@ -160,15 +173,22 @@ class AlarmStore:
             activated_by_label,
             bool(is_training),
             training_label.strip() if training_label else None,
+            str(tenant_slug).strip().lower(),
         )
 
-    def _deactivate_sync(self, deactivated_by_user_id: Optional[int], deactivated_by_label: Optional[str]) -> AlarmStateRecord:
+    def _deactivate_sync(
+        self,
+        deactivated_by_user_id: Optional[int],
+        deactivated_by_label: Optional[str],
+        tenant_slug: str,
+    ) -> AlarmStateRecord:
         deactivated_at = datetime.now(timezone.utc).isoformat()
         with self._connect() as conn:
             conn.execute(
                 """
                 UPDATE alarm_state
                 SET is_active = 0,
+                    tenant_slug = ?,
                     is_training = 0,
                     training_label = NULL,
                     deactivated_at = ?,
@@ -176,9 +196,20 @@ class AlarmStore:
                     deactivated_by_label = ?
                 WHERE id = 1;
                 """,
-                (deactivated_at, deactivated_by_user_id, deactivated_by_label),
+                (tenant_slug, deactivated_at, deactivated_by_user_id, deactivated_by_label),
             )
         return self._fetch_state_sync()
 
-    async def deactivate(self, *, deactivated_by_user_id: Optional[int], deactivated_by_label: Optional[str] = None) -> AlarmStateRecord:
-        return await anyio.to_thread.run_sync(self._deactivate_sync, deactivated_by_user_id, deactivated_by_label)
+    async def deactivate(
+        self,
+        *,
+        tenant_slug: str,
+        deactivated_by_user_id: Optional[int],
+        deactivated_by_label: Optional[str] = None,
+    ) -> AlarmStateRecord:
+        return await anyio.to_thread.run_sync(
+            self._deactivate_sync,
+            deactivated_by_user_id,
+            deactivated_by_label,
+            str(tenant_slug).strip().lower(),
+        )

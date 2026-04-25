@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from collections import Counter
+from functools import lru_cache
 from html import escape
+import json
+from pathlib import Path
 from typing import Mapping, Optional, Sequence
 
 from app.services.alert_log import AlertRecord
@@ -28,41 +31,108 @@ def _brand_mark() -> str:
     return f'<div class="brand-mark"><img src="{LOGO_PATH}" alt="BlueBird Alerts logo" /></div>'
 
 
+@lru_cache(maxsize=1)
+def _load_design_tokens() -> Mapping[str, object]:
+    token_path = Path(__file__).resolve().parents[3] / "design" / "tokens.json"
+    if not token_path.exists():
+        return {}
+    try:
+        parsed = json.loads(token_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    if isinstance(parsed, dict):
+        return parsed
+    return {}
+
+
+def _token_lookup(path: str) -> Optional[str]:
+    source = _load_design_tokens()
+    current: object = source
+    for segment in path.split("."):
+        if not isinstance(current, Mapping):
+            return None
+        key_candidates = (
+            segment,
+            segment.replace("-", "_"),
+            segment.replace("_", "-"),
+        )
+        next_key = next((candidate for candidate in key_candidates if candidate in current), None)
+        if next_key is None:
+            return None
+        current = current[next_key]
+    if isinstance(current, str):
+        value = current.strip()
+        return value or None
+    if isinstance(current, Mapping):
+        for key in ("light", "default", "value", "base"):
+            value = current.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return None
+
+
 def _theme_vars(theme: Optional[Mapping[str, str]] = None) -> str:
     resolved = {
-        "accent": "#1b5fe4",
-        "accent_strong": "#2f84ff",
-        "sidebar_start": "#092054",
-        "sidebar_end": "#071536",
+        "background_light": _token_lookup("colors.background.light") or _token_lookup("color.background.light") or "#eef5ff",
+        "background_dark": _token_lookup("colors.background.dark") or _token_lookup("color.background.dark") or "#dce9ff",
+        "card": _token_lookup("colors.card") or _token_lookup("color.card") or "#ffffff",
+        "input_bg": _token_lookup("colors.input_background") or _token_lookup("color.input_background") or "#39404f",
+        "text_primary": _token_lookup("colors.text_primary") or _token_lookup("color.text_primary") or "#10203f",
+        "text_secondary": _token_lookup("colors.text_secondary") or _token_lookup("color.text_secondary") or "#5d7398",
+        "border": _token_lookup("colors.border") or _token_lookup("color.border") or "rgba(18, 52, 120, 0.10)",
+        "accent": _token_lookup("colors.primary") or _token_lookup("color.primary") or "#1b5fe4",
+        "accent_strong": _token_lookup("colors.primary_strong") or _token_lookup("color.primary_strong") or "#2f84ff",
+        "sidebar_start": _token_lookup("colors.sidebar.start") or _token_lookup("color.sidebar.start") or "#092054",
+        "sidebar_end": _token_lookup("colors.sidebar.end") or _token_lookup("color.sidebar.end") or "#071536",
+        "status_success": _token_lookup("colors.status.success") or _token_lookup("color.status.success") or "#16a34a",
+        "status_warning": _token_lookup("colors.status.warning") or _token_lookup("color.status.warning") or "#b45309",
+        "status_info": _token_lookup("colors.status.info") or _token_lookup("color.status.info") or "#1d4ed8",
+        "status_quiet": _token_lookup("colors.status.quiet") or _token_lookup("color.status.quiet") or "#8e3beb",
+        "status_danger": _token_lookup("colors.button.danger") or _token_lookup("color.button.danger") or _token_lookup("colors.danger") or _token_lookup("color.danger") or "#dc2626",
     }
     if theme:
-        for key in resolved:
+        for key in ("accent", "accent_strong", "sidebar_start", "sidebar_end"):
             value = str(theme.get(key, "") or "").strip()
             if value:
                 resolved[key] = value
     return f"""
     :root {{
-      --bg: #eef5ff;
-      --bg-deep: #dce9ff;
-      --panel: rgba(255, 255, 255, 0.9);
+      --color-background-light: {resolved["background_light"]};
+      --color-background-dark: {resolved["background_dark"]};
+      --color-card: {resolved["card"]};
+      --color-input-background: {resolved["input_bg"]};
+      --color-text-primary: {resolved["text_primary"]};
+      --color-text-secondary: {resolved["text_secondary"]};
+      --color-border: {resolved["border"]};
+      --color-primary: {resolved["accent"]};
+      --color-primary-strong: {resolved["accent_strong"]};
+      --color-sidebar-start: {resolved["sidebar_start"]};
+      --color-sidebar-end: {resolved["sidebar_end"]};
+      --bg: var(--color-background-light);
+      --bg-deep: var(--color-background-dark);
+      --panel: color-mix(in srgb, var(--color-card) 90%, transparent);
       --panel-strong: rgba(255, 255, 255, 0.98);
-      --border: rgba(18, 52, 120, 0.10);
-      --text: #10203f;
-      --muted: #5d7398;
-      --accent: {resolved["accent"]};
-      --accent-strong: {resolved["accent_strong"]};
+      --border: var(--color-border);
+      --text: var(--color-text-primary);
+      --muted: var(--color-text-secondary);
+      --accent: var(--color-primary);
+      --accent-strong: var(--color-primary-strong);
       --accent-soft: color-mix(in srgb, var(--accent) 14%, transparent);
       --accent-soft-strong: color-mix(in srgb, var(--accent) 22%, transparent);
-      --nav-bg: linear-gradient(180deg, {resolved["sidebar_start"]} 0%, {resolved["sidebar_end"]} 100%);
+      --nav-bg: linear-gradient(180deg, var(--color-sidebar-start) 0%, var(--color-sidebar-end) 100%);
       --nav-border: rgba(255, 255, 255, 0.10);
       --nav-text: rgba(248, 250, 252, 0.96);
       --nav-muted: rgba(148, 163, 184, 0.82);
       --brand-glow: color-mix(in srgb, var(--accent-strong) 18%, transparent);
       --brand-glow-soft: color-mix(in srgb, var(--accent) 10%, transparent);
-      --success: #16a34a;
-      --success-soft: rgba(22, 163, 74, 0.12);
-      --danger: #dc2626;
-      --danger-soft: rgba(220, 38, 38, 0.12);
+      --success: {resolved["status_success"]};
+      --success-soft: color-mix(in srgb, var(--success) 16%, transparent);
+      --danger: {resolved["status_danger"]};
+      --danger-soft: color-mix(in srgb, var(--danger) 16%, transparent);
+      --warning: {resolved["status_warning"]};
+      --info: {resolved["status_info"]};
+      --quiet: {resolved["status_quiet"]};
+      --danger-strong: color-mix(in srgb, var(--danger) 78%, #000 22%);
       --shadow: 0 14px 36px rgba(22, 53, 117, 0.12);
       --radius: 24px;
       --radius-soft: 18px;
@@ -137,6 +207,7 @@ def _base_styles(theme: Optional[Mapping[str, str]] = None) -> str:
     }
     .status-pill.ok { color: var(--success); background: var(--success-soft); }
     .status-pill.danger { color: var(--danger); background: var(--danger-soft); }
+    .status-pill.warn { color: var(--warning); background: color-mix(in srgb, var(--warning) 15%, white); }
     .login-panel { padding: 28px; display: grid; gap: 18px; align-content: center; }
     .stack { display: grid; gap: 14px; }
     .field { display: grid; gap: 6px; }
@@ -165,11 +236,11 @@ def _base_styles(theme: Optional[Mapping[str, str]] = None) -> str:
     }
     .button-primary { background: linear-gradient(180deg, var(--accent-strong), var(--accent)); color: #fff; }
     .button-secondary { background: rgba(255,255,255,0.9); color: var(--text); border: 1px solid var(--border); }
-    .button-danger { background: linear-gradient(180deg, #ef4444, var(--danger)); color: #fff; }
+    .button-danger { background: linear-gradient(180deg, color-mix(in srgb, var(--danger) 82%, #fff 18%), var(--danger-strong)); color: #fff; }
     .button-danger-outline {
-      background: rgba(254, 242, 242, 0.98);
+      background: color-mix(in srgb, var(--danger) 10%, #fff 90%);
       color: var(--danger);
-      border: 1px solid rgba(220, 38, 38, 0.18);
+      border: 1px solid color-mix(in srgb, var(--danger) 20%, transparent);
     }
     .flash {
       padding: 14px 16px;
@@ -178,8 +249,16 @@ def _base_styles(theme: Optional[Mapping[str, str]] = None) -> str:
       background: rgba(255,255,255,0.95);
       color: var(--text);
     }
-    .flash.error { border-color: rgba(220,38,38,0.2); background: rgba(254,242,242,0.96); color: #991b1b; }
-    .flash.success { border-color: rgba(22,163,74,0.2); background: rgba(240,253,244,0.96); color: #166534; }
+    .flash.error {
+      border-color: color-mix(in srgb, var(--danger) 24%, transparent);
+      background: color-mix(in srgb, var(--danger) 10%, #fff 90%);
+      color: color-mix(in srgb, var(--danger) 72%, #000 28%);
+    }
+    .flash.success {
+      border-color: color-mix(in srgb, var(--success) 24%, transparent);
+      background: color-mix(in srgb, var(--success) 10%, #fff 90%);
+      color: color-mix(in srgb, var(--success) 72%, #000 28%);
+    }
     .app-shell {
       display: grid;
       grid-template-columns: 320px minmax(0, 1fr);
@@ -264,7 +343,7 @@ def _base_styles(theme: Optional[Mapping[str, str]] = None) -> str:
       justify-content: center;
       padding: 0 6px;
       border-radius: 999px;
-      background: #dc2626;
+      background: var(--danger);
       color: #fff;
       font-size: 0.72rem;
       font-weight: 800;
@@ -1425,8 +1504,8 @@ def render_admin_page(
     provider_counts = Counter(device.push_provider for device in devices)
     active_users = sum(1 for user in users if user.is_active)
     login_enabled = sum(1 for user in users if user.can_login)
-    alarm_status_class = "danger" if alarm_state.is_active else "ok"
-    alarm_status_label = "ALARM ACTIVE" if alarm_state.is_active else "Alarm clear"
+    alarm_status_class = "danger" if alarm_state.is_active and not alarm_state.is_training else ("warn" if alarm_state.is_active else "ok")
+    alarm_status_label = "TRAINING ACTIVE" if alarm_state.is_active and alarm_state.is_training else ("ALARM ACTIVE" if alarm_state.is_active else "Alarm clear")
     security_feedback = f"{_render_flash(flash_message, 'success')}{_render_flash(flash_error, 'error')}"
     section = active_section if active_section in {"dashboard", "user-management", "quiet-periods", "audit-logs", "settings"} else "dashboard"
     quiet_period_total = len(quiet_periods_active) + len(quiet_periods_history)
@@ -1593,6 +1672,7 @@ def render_admin_page(
             </div>
             <div class="status-row">
               <span class="status-pill {alarm_status_class}"><strong>{alarm_status_label}</strong>{escape(alarm_state.message or 'No active alarm')}</span>
+              {"<span class='status-pill warn'><strong>TRAINING</strong>" + escape(alarm_state.training_label or "This is a drill") + "</span>" if alarm_state.is_active and alarm_state.is_training else ""}
               <span class="status-pill {'ok' if apns_configured else 'danger'}"><strong>APNs</strong>{'ready' if apns_configured else 'not configured'}</span>
               <span class="status-pill {'ok' if twilio_configured else 'danger'}"><strong>SMS</strong>{'ready' if twilio_configured else 'not configured'}</span>
             </div>
@@ -1655,6 +1735,14 @@ def render_admin_page(
                 <label for="alarm_message">Alarm message</label>
                 <textarea id="alarm_message" name="message">{escape(alarm_state.message or 'Emergency alert. Please follow school procedures.')}</textarea>
               </div>
+              <div class="field">
+                <label for="training_label">Training label (optional)</label>
+                <input id="training_label" name="training_label" placeholder="This is a drill" />
+              </div>
+              <div class="checkbox-row">
+                <input type="checkbox" name="is_training" value="1" id="is_training" />
+                <label for="is_training">Training mode (no real push/SMS delivery)</label>
+              </div>
               <div class="button-row">
                 <button class="button button-danger" type="submit">Activate alarm</button>
               </div>
@@ -1667,6 +1755,7 @@ def render_admin_page(
             <p class="mini-copy">
               Activated at: {escape(alarm_state.activated_at or 'Never')}
               {" • by " + escape(alarm_state.activated_by_label or (f"User #{alarm_state.activated_by_user_id}" if alarm_state.activated_by_user_id is not None else "system")) if alarm_state.activated_at else ""}
+              {" • mode: TRAINING (" + escape(alarm_state.training_label or "This is a drill") + ")" if alarm_state.is_active and alarm_state.is_training else " • mode: LIVE" if alarm_state.is_active else ""}
               • Deactivated at: {escape(alarm_state.deactivated_at or 'Not yet')}
               {" • by " + escape(alarm_state.deactivated_by_label or (f"User #{alarm_state.deactivated_by_user_id}" if alarm_state.deactivated_by_user_id is not None else "system")) if alarm_state.deactivated_at else ""}
             </p>

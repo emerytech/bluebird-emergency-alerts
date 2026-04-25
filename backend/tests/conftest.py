@@ -12,6 +12,11 @@ from fastapi.testclient import TestClient
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 
+# Ensure the backend root is on sys.path so `app.*` imports work when any
+# subset of tests is run in isolation (not just the full suite).
+if str(BACKEND_ROOT) not in sys.path:
+    sys.path.insert(0, str(BACKEND_ROOT))
+
 
 @pytest.fixture()
 def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:

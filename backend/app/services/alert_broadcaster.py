@@ -16,6 +16,7 @@ class BroadcastPlan:
     apns_tokens: List[str]
     fcm_tokens: List[str]
     sms_numbers: List[str]
+    tenant_slug: str = ""
 
 
 class AlertBroadcaster:
@@ -42,16 +43,25 @@ class AlertBroadcaster:
 
     async def broadcast_panic(self, *, alert_id: int, message: str, plan: BroadcastPlan) -> None:
         """
-        Sends APNs + SMS concurrently and logs per-target delivery outcomes.
+        Sends APNs + FCM + SMS concurrently and logs per-target delivery outcomes.
         """
-
-        apns_task = asyncio.create_task(self._send_apns(alert_id=alert_id, message=message, tokens=plan.apns_tokens))
-        fcm_task = asyncio.create_task(self._send_fcm(alert_id=alert_id, message=message, tokens=plan.fcm_tokens))
-        sms_task = asyncio.create_task(self._send_sms(alert_id=alert_id, message=message, numbers=plan.sms_numbers))
-
+        self._logger.info(
+            "broadcast_panic tenant=%s alert_id=%s apns=%d fcm=%d sms=%d",
+            plan.tenant_slug, alert_id,
+            len(plan.apns_tokens), len(plan.fcm_tokens), len(plan.sms_numbers),
+        )
+        apns_task = asyncio.create_task(
+            self._send_apns(alert_id=alert_id, message=message, tokens=plan.apns_tokens, tenant_slug=plan.tenant_slug)
+        )
+        fcm_task = asyncio.create_task(
+            self._send_fcm(alert_id=alert_id, message=message, tokens=plan.fcm_tokens, tenant_slug=plan.tenant_slug)
+        )
+        sms_task = asyncio.create_task(
+            self._send_sms(alert_id=alert_id, message=message, numbers=plan.sms_numbers, tenant_slug=plan.tenant_slug)
+        )
         await asyncio.gather(apns_task, fcm_task, sms_task)
 
-    async def _send_apns(self, *, alert_id: int, message: str, tokens: List[str]) -> None:
+    async def _send_apns(self, *, alert_id: int, message: str, tokens: List[str], tenant_slug: str = "") -> None:
         if not tokens:
             return
 
@@ -69,9 +79,11 @@ class AlertBroadcaster:
 
         succeeded = sum(1 for r in results if r.ok)
         failed = len(results) - succeeded
-        self._logger.info("APNs delivered alert_id=%s ok=%s failed=%s", alert_id, succeeded, failed)
+        self._logger.info(
+            "APNs delivered tenant=%s alert_id=%s ok=%s failed=%s", tenant_slug, alert_id, succeeded, failed
+        )
 
-    async def _send_fcm(self, *, alert_id: int, message: str, tokens: List[str]) -> None:
+    async def _send_fcm(self, *, alert_id: int, message: str, tokens: List[str], tenant_slug: str = "") -> None:
         if not tokens:
             return
 
@@ -89,9 +101,11 @@ class AlertBroadcaster:
 
         succeeded = sum(1 for r in results if r.ok)
         failed = len(results) - succeeded
-        self._logger.info("FCM delivered alert_id=%s ok=%s failed=%s", alert_id, succeeded, failed)
+        self._logger.info(
+            "FCM delivered tenant=%s alert_id=%s ok=%s failed=%s", tenant_slug, alert_id, succeeded, failed
+        )
 
-    async def _send_sms(self, *, alert_id: int, message: str, numbers: List[str]) -> None:
+    async def _send_sms(self, *, alert_id: int, message: str, numbers: List[str], tenant_slug: str = "") -> None:
         if not numbers:
             return
 
@@ -110,4 +124,6 @@ class AlertBroadcaster:
 
         succeeded = sum(1 for r in results if r.ok)
         failed = len(results) - succeeded
-        self._logger.info("SMS delivered alert_id=%s ok=%s failed=%s", alert_id, succeeded, failed)
+        self._logger.info(
+            "SMS delivered tenant=%s alert_id=%s ok=%s failed=%s", tenant_slug, alert_id, succeeded, failed
+        )

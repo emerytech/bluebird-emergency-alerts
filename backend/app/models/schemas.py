@@ -374,6 +374,9 @@ class AlarmStatusResponse(BaseModel):
     message: Optional[str] = None
     is_training: bool = False
     training_label: Optional[str] = None
+    current_alert_id: Optional[int] = None
+    acknowledgement_count: int = 0
+    current_user_acknowledged: bool = False
     activated_at: Optional[str] = None
     activated_by_user_id: Optional[int] = None
     activated_by_label: Optional[str] = None
@@ -420,6 +423,18 @@ class AlertSummary(BaseModel):
 
 class AlertsResponse(BaseModel):
     alerts: List[AlertSummary]
+
+
+class AlertAcknowledgeRequest(BaseModel):
+    user_id: int
+
+
+class AlertAcknowledgeResponse(BaseModel):
+    alert_id: int
+    user_id: int
+    acknowledged_at: str
+    already_acknowledged: bool = False
+    acknowledgement_count: int = 0
 
 
 class IncidentCreateRequest(BaseModel):

@@ -4,6 +4,10 @@ import Combine
 @MainActor
 final class AppState: ObservableObject {
     private static let biometricsAllowedKey = "biometrics_allowed"
+    private static let hapticAlertsEnabledKey = "haptic_alerts_enabled"
+    private static let screenFlashAlertsEnabledKey = "screen_flash_alerts_enabled"
+    private static let flashlightAlertsEnabledKey = "flashlight_alerts_enabled"
+    private static let endAlertConfirmationEnabledKey = "end_alert_confirmation_enabled"
     private static let setupDoneKey = "setup_done"
     private static let serverURLKey = "server_url"
     private static let userIDKey = "user_id"
@@ -11,6 +15,7 @@ final class AppState: ObservableObject {
     private static let userRoleKey = "user_role"
     private static let loginNameKey = "login_name"
     private static let canDeactivateKey = "can_deactivate"
+    private static let schoolNameKey = "school_name"
     private static let initialDeviceAuthUserIDKey = "initial_device_auth_user_id"
     private static let initialDeviceAuthUserNameKey = "initial_device_auth_user_name"
 
@@ -25,6 +30,7 @@ final class AppState: ObservableObject {
     @Published var userRole: String = UserDefaults.standard.string(forKey: userRoleKey) ?? ""
     @Published var loginName: String = UserDefaults.standard.string(forKey: loginNameKey) ?? ""
     @Published var canDeactivateAlarm: Bool = UserDefaults.standard.bool(forKey: canDeactivateKey)
+    @Published var schoolName: String = UserDefaults.standard.string(forKey: schoolNameKey) ?? ""
     @Published var initialDeviceAuthUserID: Int?
     @Published var initialDeviceAuthUserName: String = UserDefaults.standard.string(forKey: initialDeviceAuthUserNameKey) ?? ""
     @Published var backendReachable: Bool?
@@ -36,6 +42,46 @@ final class AppState: ObservableObject {
     @Published var biometricsAllowed: Bool = UserDefaults.standard.bool(forKey: biometricsAllowedKey) {
         didSet {
             UserDefaults.standard.set(biometricsAllowed, forKey: Self.biometricsAllowedKey)
+        }
+    }
+    @Published var hapticAlertsEnabled: Bool = {
+        if let stored = UserDefaults.standard.object(forKey: hapticAlertsEnabledKey) as? Bool {
+            return stored
+        }
+        return true
+    }() {
+        didSet {
+            UserDefaults.standard.set(hapticAlertsEnabled, forKey: Self.hapticAlertsEnabledKey)
+        }
+    }
+    @Published var screenFlashAlertsEnabled: Bool = {
+        if let stored = UserDefaults.standard.object(forKey: screenFlashAlertsEnabledKey) as? Bool {
+            return stored
+        }
+        return true
+    }() {
+        didSet {
+            UserDefaults.standard.set(screenFlashAlertsEnabled, forKey: Self.screenFlashAlertsEnabledKey)
+        }
+    }
+    @Published var flashlightAlertsEnabled: Bool = {
+        if let stored = UserDefaults.standard.object(forKey: flashlightAlertsEnabledKey) as? Bool {
+            return stored
+        }
+        return true
+    }() {
+        didSet {
+            UserDefaults.standard.set(flashlightAlertsEnabled, forKey: Self.flashlightAlertsEnabledKey)
+        }
+    }
+    @Published var endAlertConfirmationEnabled: Bool = {
+        if let stored = UserDefaults.standard.object(forKey: endAlertConfirmationEnabledKey) as? Bool {
+            return stored
+        }
+        return true
+    }() {
+        didSet {
+            UserDefaults.standard.set(endAlertConfirmationEnabled, forKey: Self.endAlertConfirmationEnabledKey)
         }
     }
 
@@ -62,12 +108,14 @@ final class AppState: ObservableObject {
         loginName: String,
         canDeactivateAlarm: Bool,
         serverURL: URL,
+        schoolName: String = "",
     ) {
         self.userID = userID
         self.userName = name
         self.userRole = role
         self.loginName = loginName
         self.canDeactivateAlarm = canDeactivateAlarm
+        self.schoolName = schoolName
         let normalizedServerURLString = Self.normalizedServerURLString(serverURL.absoluteString)
         self.serverURLString = normalizedServerURLString
         self.setupDone = true
@@ -79,6 +127,7 @@ final class AppState: ObservableObject {
         defaults.set(role, forKey: Self.userRoleKey)
         defaults.set(loginName, forKey: Self.loginNameKey)
         defaults.set(canDeactivateAlarm, forKey: Self.canDeactivateKey)
+        defaults.set(schoolName, forKey: Self.schoolNameKey)
         defaults.set(normalizedServerURLString, forKey: Self.serverURLKey)
     }
 
@@ -91,6 +140,7 @@ final class AppState: ObservableObject {
         defaults.removeObject(forKey: Self.userRoleKey)
         defaults.removeObject(forKey: Self.loginNameKey)
         defaults.removeObject(forKey: Self.canDeactivateKey)
+        defaults.removeObject(forKey: Self.schoolNameKey)
 
         setupDone = false
         userID = nil
@@ -98,6 +148,7 @@ final class AppState: ObservableObject {
         userRole = ""
         loginName = ""
         canDeactivateAlarm = false
+        schoolName = ""
         deviceRegistered = false
         backendReachable = nil
         registeredDeviceCount = 0

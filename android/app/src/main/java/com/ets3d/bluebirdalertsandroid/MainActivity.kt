@@ -10,6 +10,7 @@ import android.content.ContextWrapper
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.hardware.camera2.CameraManager
 import android.media.AudioManager
 import android.media.AudioAttributes
 import android.media.MediaPlayer
@@ -26,6 +27,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.*
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -60,6 +62,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.zIndex
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -70,6 +73,8 @@ import androidx.fragment.app.FragmentActivity
 import com.google.firebase.messaging.FirebaseMessaging
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -111,8 +116,12 @@ private const val KEY_NAME   = "user_name"
 private const val KEY_ROLE   = "user_role"
 private const val KEY_LOGIN  = "login_name"
 private const val KEY_CAN_DEACTIVATE = "can_deactivate"
+private const val KEY_SCHOOL_NAME = "school_name"
 private const val KEY_SERVER_URL = "server_url"
 private const val KEY_BIOMETRICS_ALLOWED = "biometrics_allowed"
+private const val KEY_HAPTIC_ALERTS_ENABLED = "haptic_alerts_enabled"
+private const val KEY_FLASHLIGHT_ALERTS_ENABLED = "flashlight_alerts_enabled"
+private const val KEY_SCREEN_FLASH_ALERTS_ENABLED = "screen_flash_alerts_enabled"
 private const val TAG_ACTIVATION = "BluebirdActivation"
 internal const val EXTRA_OPEN_ALARM = "bluebird_open_alarm"
 internal const val EXTRA_ALARM_TITLE = "bluebird_alarm_title"
@@ -215,6 +224,7 @@ private fun getUserId(ctx: Context)   = prefs(ctx).getString(KEY_UID, "") ?: ""
 private fun getUserName(ctx: Context) = prefs(ctx).getString(KEY_NAME, "") ?: ""
 private fun getUserRole(ctx: Context) = prefs(ctx).getString(KEY_ROLE, "") ?: ""
 private fun getLoginName(ctx: Context) = prefs(ctx).getString(KEY_LOGIN, "") ?: ""
+private fun getSchoolName(ctx: Context) = prefs(ctx).getString(KEY_SCHOOL_NAME, "") ?: ""
 private fun canDeactivateAlarm(ctx: Context) = prefs(ctx).getBoolean(KEY_CAN_DEACTIVATE, false)
 private fun getServerUrl(ctx: Context): String {
     val stored = prefs(ctx).getString(KEY_SERVER_URL, "") ?: ""
@@ -229,12 +239,50 @@ private fun biometricsAllowed(ctx: Context) = prefs(ctx).getBoolean(KEY_BIOMETRI
 private fun setBiometricsAllowed(ctx: Context, allowed: Boolean) {
     prefs(ctx).edit().putBoolean(KEY_BIOMETRICS_ALLOWED, allowed).apply()
 }
+private fun hapticAlertsEnabled(ctx: Context) = prefs(ctx).getBoolean(KEY_HAPTIC_ALERTS_ENABLED, true)
+private fun setHapticAlertsEnabled(ctx: Context, enabled: Boolean) {
+    prefs(ctx).edit().putBoolean(KEY_HAPTIC_ALERTS_ENABLED, enabled).apply()
+}
+private fun flashlightAlertsEnabled(ctx: Context) = prefs(ctx).getBoolean(KEY_FLASHLIGHT_ALERTS_ENABLED, true)
+private fun setFlashlightAlertsEnabled(ctx: Context, enabled: Boolean) {
+    prefs(ctx).edit().putBoolean(KEY_FLASHLIGHT_ALERTS_ENABLED, enabled).apply()
+}
+private fun screenFlashAlertsEnabled(ctx: Context) = prefs(ctx).getBoolean(KEY_SCREEN_FLASH_ALERTS_ENABLED, true)
+private fun setScreenFlashAlertsEnabled(ctx: Context, enabled: Boolean) {
+    prefs(ctx).edit().putBoolean(KEY_SCREEN_FLASH_ALERTS_ENABLED, enabled).apply()
+}
 
 private fun Context.findActivity(): FragmentActivity? = when (this) {
     is FragmentActivity -> this
     is ContextWrapper -> baseContext.findActivity()
     else -> null
 }
+
+private fun FragmentActivity.applyAlarmWindowFlags(active: Boolean) {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+        setShowWhenLocked(active)
+        setTurnScreenOn(active)
+    } else {
+        @Suppress("DEPRECATION")
+        if (active) {
+            window.addFlags(
+                WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                    WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON,
+            )
+        } else {
+            window.clearFlags(
+                WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                    WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON,
+            )
+        }
+    }
+    if (active) {
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+    } else {
+        window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+    }
+}
+
 private fun extractSchoolSlug(value: String): String {
     val trimmed = value.trim().removeSuffix("/")
     if (trimmed.isBlank()) return ""
@@ -1047,18 +1095,7 @@ class MainActivity : FragmentActivity() {
     private fun applyAlarmLaunchFlags(intent: Intent?) {
         if (intent?.getBooleanExtra(EXTRA_OPEN_ALARM, false) != true) return
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
-            setShowWhenLocked(true)
-            setTurnScreenOn(true)
-        } else {
-            @Suppress("DEPRECATION")
-            window.addFlags(
-                WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
-                    WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
-                    WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON,
-            )
-        }
-
+        applyAlarmWindowFlags(active = true)
         AlarmLaunchCoordinator.publish(
             title = intent.getStringExtra(EXTRA_ALARM_TITLE).orEmpty().ifBlank { "BlueBird Alert" },
             body = intent.getStringExtra(EXTRA_ALARM_MESSAGE).orEmpty().ifBlank { "Emergency alert received." },
@@ -1162,11 +1199,15 @@ private fun LoginScreen(onDone: () -> Unit) {
             kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch {
                 runCatching { client.login(normalizedUsername, password) }
                     .onSuccess { user ->
+                        val schoolName = schoolOptions.firstOrNull { it.slug == selectedSchoolSlug }?.name
+                            ?: selectedSchoolSlug.replace("-", " ")
+                                .replaceFirstChar { it.uppercase() }
                         prefs(ctx).edit()
                             .putString(KEY_UID, user.userId.toString())
                             .putString(KEY_NAME, user.name)
                             .putString(KEY_ROLE, user.role)
                             .putString(KEY_LOGIN, user.loginName)
+                            .putString(KEY_SCHOOL_NAME, schoolName)
                             .putString(KEY_SERVER_URL, normalizedServerUrl)
                             .putBoolean(KEY_CAN_DEACTIVATE, user.canDeactivateAlarm)
                             .putBoolean(KEY_SETUP, true)
@@ -1463,14 +1504,19 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
     var holdFlashActive by remember { mutableStateOf(false) }
     var holdFlashProgress by remember { mutableStateOf(0f) }
     var holdFlashColor by remember { mutableStateOf(AlarmRed) }
+    var showAlarmTakeover by remember { mutableStateOf(false) }
     var trainingModeEnabled by remember { mutableStateOf(false) }
     var trainingLabel by remember { mutableStateOf("This is a drill") }
     val userName = remember { getUserName(ctx) }
     val userRole = remember { getUserRole(ctx) }
+    val schoolName = remember { getSchoolName(ctx) }
     val currentUserId = remember { getUserId(ctx).toIntOrNull() }
     val canDeactivate = remember { canDeactivateAlarm(ctx) }
     val isAdmin = remember(userRole) { userRole.equals("admin", ignoreCase = true) }
     var biometricsEnabled by remember { mutableStateOf(biometricsAllowed(ctx)) }
+    var hapticAlertsOn by remember { mutableStateOf(hapticAlertsEnabled(ctx)) }
+    var flashlightAlertsOn by remember { mutableStateOf(flashlightAlertsEnabled(ctx)) }
+    var screenFlashAlertsOn by remember { mutableStateOf(screenFlashAlertsEnabled(ctx)) }
     val safetyActions = remember(state.featureLabels) { buildSafetyActions(state.featureLabels) }
     val requestHelpLabel = AppLabels.labelForFeatureKey(AppLabels.KEY_REQUEST_HELP, state.featureLabels)
     val launchEvent by AlarmLaunchCoordinator.event.collectAsState()
@@ -1538,6 +1584,7 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
     LaunchedEffect(launchEvent?.receivedAtMillis) {
         val event = launchEvent ?: return@LaunchedEffect
         activePanel = DashboardPanel.Home
+        showAlarmTakeover = true
         showSettingsScreen = false
         showDeactivateDialog = false
         showReportDialog = false
@@ -1546,6 +1593,10 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
         showTeamAssistDialog = false
         replyTarget = null
         vm.handleAlarmLaunch(event.body)
+    }
+
+    LaunchedEffect(state.alarm.isActive) {
+        showAlarmTakeover = state.alarm.isActive
     }
 
     // Dismiss flash messages after 3s
@@ -1563,17 +1614,52 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
         isAlarmActive = state.alarm.isActive,
         isTrainingAlarm = state.alarm.isTraining,
     )
+    val alertFeedbackState = AlertFeedbackEffect(
+        isAlarmActive = state.alarm.isActive,
+        isTrainingAlarm = state.alarm.isTraining,
+        hapticsEnabled = hapticAlertsOn,
+        flashlightEnabled = flashlightAlertsOn,
+        screenFlashEnabled = screenFlashAlertsOn,
+    )
+    DisposableEffect(state.alarm.isActive) {
+        val activity = ctx.findActivity()
+        activity?.applyAlarmWindowFlags(active = state.alarm.isActive)
+        onDispose {
+            if (!state.alarm.isActive) {
+                activity?.applyAlarmWindowFlags(active = false)
+            }
+        }
+    }
 
     Scaffold(
         containerColor = Color.Transparent,
         topBar = {
             TopAppBar(
                 title = {
-                    Text(
-                        if (showSettingsScreen) "Settings" else "BlueBird Alerts",
-                        fontWeight = FontWeight.Bold,
-                        color = TextPri,
-                    )
+                    if (showSettingsScreen || schoolName.isBlank()) {
+                        Text(
+                            if (showSettingsScreen) "Settings" else "BlueBird Alerts",
+                            fontWeight = FontWeight.Bold,
+                            color = TextPri,
+                        )
+                    } else {
+                        Column(verticalArrangement = Arrangement.Center) {
+                            Text(
+                                "BlueBird Alerts",
+                                fontWeight = FontWeight.Bold,
+                                color = TextPri,
+                                fontSize = 18.sp,
+                                lineHeight = 20.sp,
+                            )
+                            Text(
+                                schoolName,
+                                fontWeight = FontWeight.Medium,
+                                color = TextPri.copy(alpha = 0.65f),
+                                fontSize = 12.sp,
+                                lineHeight = 14.sp,
+                            )
+                        }
+                    }
                 },
                 actions = {
                     TextButton(
@@ -1604,6 +1690,9 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                 SettingsScreen(
                     onLogout = onLogout,
                     biometricsEnabled = biometricsEnabled,
+                    hapticAlertsEnabled = hapticAlertsOn,
+                    flashlightAlertsEnabled = flashlightAlertsOn,
+                    screenFlashAlertsEnabled = screenFlashAlertsOn,
                     onBiometricsChanged = { enabled ->
                         biometricsEnabled = enabled
                         setBiometricsAllowed(ctx, enabled)
@@ -1614,6 +1703,18 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                                 Toast.LENGTH_LONG,
                             ).show()
                         }
+                    },
+                    onHapticAlertsChanged = { enabled ->
+                        hapticAlertsOn = enabled
+                        setHapticAlertsEnabled(ctx, enabled)
+                    },
+                    onFlashlightAlertsChanged = { enabled ->
+                        flashlightAlertsOn = enabled
+                        setFlashlightAlertsEnabled(ctx, enabled)
+                    },
+                    onScreenFlashAlertsChanged = { enabled ->
+                        screenFlashAlertsOn = enabled
+                        setScreenFlashAlertsEnabled(ctx, enabled)
                     },
                 )
             } else {
@@ -1672,6 +1773,8 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                     ActiveSafetyFeedCard(
                         selectedTab = feedTab,
                         onSelectTab = { feedTab = it },
+                        alarm = state.alarm,
+                        canDeactivate = canDeactivate,
                         incidents = state.activeIncidents,
                         teamAssists = state.activeTeamAssists,
                         featureLabels = state.featureLabels,
@@ -1681,6 +1784,9 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                         isBusy = state.isBusy,
                         isRefreshing = state.isRefreshingFeed,
                         onRefresh = { vm.refreshIncidentFeeds() },
+                        onDeactivateAlarm = {
+                            showDeactivateDialog = true
+                        },
                         onTeamAssistAction = { teamAssistId, action, forwardToUserId ->
                             runProtectedAction(true) {
                                 vm.updateRequestHelpAction(
@@ -1716,50 +1822,6 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                                 .fillMaxWidth()
                                 .padding(horizontal = 20.dp, vertical = 8.dp),
                         )
-                    }
-                    if (isAdmin) {
-                        Surface(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 20.dp, vertical = 8.dp),
-                            color = SurfaceMain,
-                            shape = RoundedCornerShape(20.dp),
-                            shadowElevation = 3.dp,
-                        ) {
-                            Column(
-                                modifier = Modifier.padding(16.dp),
-                                verticalArrangement = Arrangement.spacedBy(10.dp),
-                            ) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically,
-                                ) {
-                                    Column {
-                                        Text("Training Mode", color = TextPri, fontWeight = FontWeight.Bold)
-                                        Text(
-                                            "Drill alerts stay local and skip live push/SMS.",
-                                            color = TextMuted,
-                                            fontSize = 12.sp,
-                                        )
-                                    }
-                                    Switch(
-                                        checked = trainingModeEnabled,
-                                        onCheckedChange = { trainingModeEnabled = it },
-                                    )
-                                }
-                                if (trainingModeEnabled) {
-                                    OutlinedTextField(
-                                        value = trainingLabel,
-                                        onValueChange = { trainingLabel = it },
-                                        modifier = Modifier.fillMaxWidth(),
-                                        label = { Text("Training Label") },
-                                        placeholder = { Text("This is a drill") },
-                                        singleLine = true,
-                                    )
-                                }
-                            }
-                        }
                     }
                     SafetyActionGrid(
                         actions = safetyActions,
@@ -1873,22 +1935,6 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                             .padding(horizontal = 20.dp, vertical = 24.dp),
                         verticalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
-                        // Deactivate (only when active)
-                        if (state.alarm.isActive && canDeactivate) {
-                            OutlinedButton(
-                                onClick = { showDeactivateDialog = true },
-                                modifier = Modifier.fillMaxWidth().height(52.dp),
-                                shape = RoundedCornerShape(14.dp),
-                                enabled = !state.isBusy,
-                                colors = ButtonDefaults.outlinedButtonColors(contentColor = TextPri),
-                            ) {
-                                Text(
-                                    if (state.isBusy) "Working…" else "Deactivate Alarm",
-                                    fontWeight = FontWeight.SemiBold,
-                                )
-                            }
-                        }
-
                         if (state.alarm.isActive) {
                             OutlinedButton(
                                 onClick = { showReportDialog = true },
@@ -1897,7 +1943,7 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                                 enabled = !state.isBusy,
                                 colors = ButtonDefaults.outlinedButtonColors(contentColor = BlueLight),
                             ) {
-                                Text("Send Update To Admins", fontWeight = FontWeight.SemiBold)
+                            Text("Send Update To Admins", fontWeight = FontWeight.SemiBold)
                             }
                         }
 
@@ -1909,6 +1955,49 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                             colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFF0F766E)),
                         ) {
                             Text(requestHelpLabel, fontWeight = FontWeight.SemiBold)
+                        }
+
+                        if (isAdmin) {
+                            Surface(
+                                color = SurfaceMain,
+                                shape = RoundedCornerShape(18.dp),
+                                shadowElevation = 2.dp,
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+                                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                                ) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically,
+                                    ) {
+                                        Column {
+                                            Text("Training Mode", color = TextPri, fontWeight = FontWeight.Bold)
+                                            Text(
+                                                "Drill alerts stay local and skip live push/SMS.",
+                                                color = TextMuted,
+                                                fontSize = 12.sp,
+                                            )
+                                        }
+                                        Switch(
+                                            checked = trainingModeEnabled,
+                                            onCheckedChange = { trainingModeEnabled = it },
+                                        )
+                                    }
+                                    if (trainingModeEnabled) {
+                                        OutlinedTextField(
+                                            value = trainingLabel,
+                                            onValueChange = { trainingLabel = it },
+                                            modifier = Modifier.fillMaxWidth(),
+                                            label = { Text("Training Label") },
+                                            placeholder = { Text("This is a drill") },
+                                            singleLine = true,
+                                        )
+                                    }
+                                }
+                            }
                         }
 
                         Text(
@@ -1955,6 +2044,32 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                         textAlign = TextAlign.Center,
                     )
                 }
+            }
+
+            if (alertFeedbackState.screenFlashAlpha > 0f) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(alertFeedbackState.screenFlashColor.copy(alpha = alertFeedbackState.screenFlashAlpha))
+                        .zIndex(18f),
+                )
+            }
+
+            if (state.alarm.isActive && showAlarmTakeover) {
+                EmergencyAlarmTakeover(
+                    alarm = state.alarm,
+                    canDeactivate = canDeactivate,
+                    isBusy = state.isBusy,
+                    onDeactivate = {
+                        runProtectedAction(true) { vm.deactivateAlarm(ctx) }
+                    },
+                    onViewDashboard = {
+                        showAlarmTakeover = false
+                    },
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .zIndex(20f),
+                )
             }
         }
     }
@@ -2256,6 +2371,8 @@ private fun UserMessageAdminCard(
 private fun ActiveSafetyFeedCard(
     selectedTab: Int,
     onSelectTab: (Int) -> Unit,
+    alarm: AlarmStatus,
+    canDeactivate: Boolean,
     incidents: List<IncidentFeedItem>,
     teamAssists: List<TeamAssistFeedItem>,
     featureLabels: Map<String, String>,
@@ -2265,6 +2382,7 @@ private fun ActiveSafetyFeedCard(
     isBusy: Boolean,
     isRefreshing: Boolean,
     onRefresh: () -> Unit,
+    onDeactivateAlarm: () -> Unit,
     onTeamAssistAction: (Int, String, Int?) -> Unit,
     onTeamAssistCancelConfirm: (Int) -> Unit,
     modifier: Modifier = Modifier,
@@ -2284,6 +2402,20 @@ private fun ActiveSafetyFeedCard(
                 Text("Active Feed", color = TextPri, fontWeight = FontWeight.Bold, fontSize = 16.sp)
                 TextButton(onClick = onRefresh, enabled = !isRefreshing) {
                     Text(if (isRefreshing) "Refreshing…" else "Refresh", color = BluePrimary)
+                }
+            }
+            if (alarm.isActive && canDeactivate) {
+                OutlinedButton(
+                    onClick = onDeactivateAlarm,
+                    modifier = Modifier.fillMaxWidth().height(52.dp),
+                    shape = RoundedCornerShape(14.dp),
+                    enabled = !isBusy,
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = TextPri),
+                ) {
+                    Text(
+                        if (isBusy) "Working…" else if (alarm.isTraining) "End Training Alert" else "Deactivate Alarm",
+                        fontWeight = FontWeight.SemiBold,
+                    )
                 }
             }
             TabRow(
@@ -2785,6 +2917,141 @@ private fun AlarmBanner(alarm: AlarmStatus, modifier: Modifier = Modifier) {
                 }
                 alarm.activatedByUserId?.let {
                     Text("Triggered by user #$it", fontSize = 12.sp, color = Color(0xFFFFCDD2))
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun EmergencyAlarmTakeover(
+    alarm: AlarmStatus,
+    canDeactivate: Boolean,
+    isBusy: Boolean,
+    onDeactivate: () -> Unit,
+    onViewDashboard: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val accent = if (alarm.isTraining) DSColor.Warning else AlarmRed
+    val title = if (alarm.isTraining) "TRAINING DRILL" else "EMERGENCY ALERT"
+    val subtitle = if (alarm.isTraining) {
+        alarm.trainingLabel?.takeIf { it.isNotBlank() } ?: "This is a drill"
+    } else {
+        "School alarm is active"
+    }
+    val message = alarm.message?.takeIf { it.isNotBlank() } ?: "Follow school emergency procedures immediately."
+    val pulse = rememberInfiniteTransition(label = "alarmTakeoverPulse")
+    val pulseScale by pulse.animateFloat(
+        initialValue = 0.96f,
+        targetValue = 1.04f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(820, easing = EaseInOut),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "takeoverIconScale",
+    )
+
+    Box(
+        modifier = modifier
+            .background(
+                Brush.verticalGradient(
+                    listOf(accent, Color(0xFF111827)),
+                ),
+            )
+            .padding(horizontal = 24.dp, vertical = 28.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(
+            modifier = Modifier.fillMaxSize(),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Spacer(Modifier.height(8.dp))
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(22.dp),
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(150.dp)
+                        .graphicsLayer {
+                            scaleX = pulseScale
+                            scaleY = pulseScale
+                            shadowElevation = 28f
+                        }
+                        .border(9.dp, Color.White.copy(alpha = 0.26f), CircleShape),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        if (alarm.isTraining) "!" else "⚠",
+                        color = Color.White,
+                        fontSize = 70.sp,
+                        fontWeight = FontWeight.Black,
+                        textAlign = TextAlign.Center,
+                    )
+                }
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    Text(
+                        title,
+                        color = Color.White,
+                        fontSize = 34.sp,
+                        fontWeight = FontWeight.Black,
+                        textAlign = TextAlign.Center,
+                    )
+                    Text(
+                        subtitle,
+                        color = Color.White.copy(alpha = 0.9f),
+                        fontSize = 19.sp,
+                        fontWeight = FontWeight.Bold,
+                        textAlign = TextAlign.Center,
+                    )
+                    Text(
+                        message,
+                        color = Color.White.copy(alpha = 0.9f),
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.padding(horizontal = 8.dp),
+                    )
+                }
+            }
+
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                if (canDeactivate) {
+                    Button(
+                        onClick = onDeactivate,
+                        enabled = !isBusy,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = Color.White,
+                            contentColor = accent,
+                            disabledContainerColor = Color.White.copy(alpha = 0.7f),
+                            disabledContentColor = accent.copy(alpha = 0.65f),
+                        ),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(58.dp),
+                        shape = RoundedCornerShape(16.dp),
+                    ) {
+                        Text(
+                            if (isBusy) "Disabling Alarm..." else "Disable Alarm",
+                            fontWeight = FontWeight.Black,
+                            fontSize = 16.sp,
+                        )
+                    }
+                }
+                OutlinedButton(
+                    onClick = onViewDashboard,
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
+                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.36f)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(54.dp),
+                    shape = RoundedCornerShape(16.dp),
+                ) {
+                    Text("View Dashboard", fontWeight = FontWeight.Bold)
                 }
             }
         }
@@ -3588,7 +3855,13 @@ private fun ConfirmDialog(title: String, body: String, confirmLabel: String, onC
 private fun SettingsScreen(
     onLogout: () -> Unit,
     biometricsEnabled: Boolean,
+    hapticAlertsEnabled: Boolean,
+    flashlightAlertsEnabled: Boolean,
+    screenFlashAlertsEnabled: Boolean,
     onBiometricsChanged: (Boolean) -> Unit,
+    onHapticAlertsChanged: (Boolean) -> Unit,
+    onFlashlightAlertsChanged: (Boolean) -> Unit,
+    onScreenFlashAlertsChanged: (Boolean) -> Unit,
 ) {
     val ctx = LocalContext.current
     val userName = remember { getUserName(ctx) }
@@ -3649,6 +3922,44 @@ private fun SettingsScreen(
                 )
             }
         }
+        Surface(
+            color = SurfaceMain,
+            shape = RoundedCornerShape(20.dp),
+            shadowElevation = 4.dp,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 18.dp, vertical = 14.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
+                Text("Emergency Feedback", color = TextPri, fontWeight = FontWeight.Bold)
+                SettingsToggleRow(
+                    title = "Enable Haptic Alerts",
+                    subtitle = "Pulse vibration with each active emergency cycle.",
+                    checked = hapticAlertsEnabled,
+                    onCheckedChange = onHapticAlertsChanged,
+                )
+                SettingsToggleRow(
+                    title = "Enable Flashlight Alerts",
+                    subtitle = "Flash the device torch while the alert screen is active.",
+                    checked = flashlightAlertsEnabled,
+                    onCheckedChange = onFlashlightAlertsChanged,
+                )
+                SettingsToggleRow(
+                    title = "Enable Screen Flash Alerts",
+                    subtitle = "Pulse a full-screen warning overlay during emergencies.",
+                    checked = screenFlashAlertsEnabled,
+                    onCheckedChange = onScreenFlashAlertsChanged,
+                )
+                Text(
+                    "Enable LED Flash Alerts in device settings for enhanced visibility.",
+                    color = TextMuted,
+                    fontSize = 12.sp,
+                )
+            }
+        }
         Button(
             onClick = onLogout,
             colors = ButtonDefaults.buttonColors(containerColor = AlarmRed),
@@ -3658,7 +3969,72 @@ private fun SettingsScreen(
     }
 }
 
+@Composable
+private fun SettingsToggleRow(
+    title: String,
+    subtitle: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Text(title, color = TextPri, fontWeight = FontWeight.SemiBold)
+            Text(subtitle, color = TextMuted, fontSize = 12.sp)
+        }
+        Spacer(Modifier.width(12.dp))
+        Switch(
+            checked = checked,
+            onCheckedChange = onCheckedChange,
+        )
+    }
+}
+
 // ── Alarm sound ────────────────────────────────────────────────────────────────
+@Composable
+private fun AlertFeedbackEffect(
+    isAlarmActive: Boolean,
+    isTrainingAlarm: Boolean,
+    hapticsEnabled: Boolean,
+    flashlightEnabled: Boolean,
+    screenFlashEnabled: Boolean,
+): AlertFeedbackState {
+    val ctx = LocalContext.current
+    val appCtx = remember { ctx.applicationContext }
+    val feedbackState by AlertFeedbackController.state.collectAsState()
+
+    DisposableEffect(isAlarmActive, isTrainingAlarm, hapticsEnabled, flashlightEnabled, screenFlashEnabled) {
+        if (isAlarmActive) {
+            AlertFeedbackController.start(
+                appCtx,
+                isTraining = isTrainingAlarm,
+                hapticsEnabled = hapticsEnabled,
+                flashlightEnabled = flashlightEnabled,
+                screenFlashEnabled = screenFlashEnabled,
+            )
+        } else {
+            AlertFeedbackController.stop()
+        }
+        onDispose {
+            if (!isAlarmActive) {
+                AlertFeedbackController.stop()
+            }
+        }
+    }
+
+    DisposableEffect(Unit) {
+        onDispose { AlertFeedbackController.stop() }
+    }
+
+    return feedbackState
+}
+
 @Composable
 private fun AlarmSoundEffect(isAlarmActive: Boolean, isTrainingAlarm: Boolean) {
     val ctx = LocalContext.current
@@ -3677,12 +4053,120 @@ private fun AlarmSoundEffect(isAlarmActive: Boolean, isTrainingAlarm: Boolean) {
     }
 }
 
+private data class AlertFeedbackState(
+    val screenFlashAlpha: Float = 0f,
+    val screenFlashColor: Color = AlarmRed,
+)
+
+private object AlertFeedbackController {
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val _state = MutableStateFlow(AlertFeedbackState())
+    val state: StateFlow<AlertFeedbackState> get() = _state
+
+    private var job: Job? = null
+    private var appContext: Context? = null
+    private var vibrator: Vibrator? = null
+    private var cameraManager: CameraManager? = null
+    private var torchCameraId: String? = null
+
+    @Synchronized
+    fun start(
+        ctx: Context,
+        isTraining: Boolean,
+        hapticsEnabled: Boolean,
+        flashlightEnabled: Boolean,
+        screenFlashEnabled: Boolean,
+    ) {
+        stop()
+        appContext = ctx.applicationContext
+        vibrator = resolveVibrator(appContext)
+        cameraManager = appContext?.getSystemService(CameraManager::class.java)
+        torchCameraId = resolveTorchCameraId(cameraManager)
+        val flashColor = if (isTraining) Color(0xFFFFB84D) else AlarmRed
+        _state.value = AlertFeedbackState(screenFlashAlpha = 0f, screenFlashColor = flashColor)
+        job = scope.launch {
+            while (isActive) {
+                if (screenFlashEnabled) {
+                    _state.value = AlertFeedbackState(
+                        screenFlashAlpha = if (isTraining) 0.14f else 0.18f,
+                        screenFlashColor = flashColor,
+                    )
+                } else {
+                    _state.value = AlertFeedbackState(screenFlashAlpha = 0f, screenFlashColor = flashColor)
+                }
+                if (flashlightEnabled) {
+                    setTorch(true)
+                }
+                if (hapticsEnabled) {
+                    pulseVibration(isTraining = isTraining)
+                }
+                delay(300)
+                _state.value = AlertFeedbackState(screenFlashAlpha = 0f, screenFlashColor = flashColor)
+                if (flashlightEnabled) {
+                    setTorch(false)
+                }
+                if (hapticsEnabled) {
+                    runCatching { vibrator?.cancel() }
+                }
+                delay(300)
+            }
+        }
+    }
+
+    @Synchronized
+    fun stop() {
+        job?.cancel()
+        job = null
+        _state.value = AlertFeedbackState()
+        runCatching { vibrator?.cancel() }
+        setTorch(false)
+    }
+
+    private fun resolveVibrator(ctx: Context?): Vibrator? {
+        ctx ?: return null
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val mgr = ctx.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as? VibratorManager
+            mgr?.defaultVibrator
+        } else {
+            @Suppress("DEPRECATION")
+            ctx.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
+        }
+    }
+
+    private fun pulseVibration(isTraining: Boolean) {
+        val vib = vibrator ?: return
+        runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                vib.vibrate(VibrationEffect.createOneShot(300L, if (isTraining) 120 else 255))
+            } else {
+                @Suppress("DEPRECATION")
+                vib.vibrate(300L)
+            }
+        }
+    }
+
+    private fun resolveTorchCameraId(manager: CameraManager?): String? {
+        manager ?: return null
+        return runCatching {
+            manager.cameraIdList.firstOrNull { id ->
+                val chars = manager.getCameraCharacteristics(id)
+                chars.get(android.hardware.camera2.CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
+            }
+        }.getOrNull()
+    }
+
+    private fun setTorch(enabled: Boolean) {
+        val manager = cameraManager ?: return
+        val cameraId = torchCameraId ?: return
+        runCatching { manager.setTorchMode(cameraId, enabled) }
+    }
+}
+
 private object AlarmAudioController {
     private const val TAG = "BlueBirdAlarmAudio"
 
     private var player: MediaPlayer? = null
     private var appContext: Context? = null
-    private var vibrator: Vibrator? = null
     private var audioManager: AudioManager? = null
     private var hasAudioFocus = false
     private var volumeGuardReceiver: BroadcastReceiver? = null
@@ -3724,7 +4208,6 @@ private object AlarmAudioController {
             player = created
             enforceMaxAlarmVolume()
             registerVolumeGuard()
-            startVibration(isTraining = isTraining)
             Log.i(TAG, "alarm playback started (training=$isTraining)")
         }.onFailure { err ->
             Log.e(TAG, "Failed to start alarm playback", err)
@@ -3750,7 +4233,6 @@ private object AlarmAudioController {
             }
         }
         player = null
-        stopVibration()
         runCatching {
             val nm = appContext?.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
             nm?.cancel(ALERT_PUSH_NOTIFICATION_ID)
@@ -3784,36 +4266,6 @@ private object AlarmAudioController {
         if (!hasAudioFocus) return
         runCatching { am.abandonAudioFocus(null) }
         hasAudioFocus = false
-    }
-
-    private fun resolveVibrator(): Vibrator? {
-        val ctx = appContext ?: return null
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            val mgr = ctx.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as? VibratorManager
-            mgr?.defaultVibrator
-        } else {
-            @Suppress("DEPRECATION")
-            ctx.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
-        }
-    }
-
-    private fun startVibration(isTraining: Boolean) {
-        val vib = vibrator ?: resolveVibrator().also { vibrator = it } ?: return
-        val pattern = if (isTraining) longArrayOf(0, 120, 980) else longArrayOf(0, 220, 780)
-        runCatching {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                vib.vibrate(VibrationEffect.createWaveform(pattern, 0))
-            } else {
-                @Suppress("DEPRECATION")
-                vib.vibrate(pattern, 0)
-            }
-        }.onFailure { err ->
-            Log.w(TAG, "Failed to start vibration", err)
-        }
-    }
-
-    private fun stopVibration() {
-        runCatching { vibrator?.cancel() }
     }
 
     private fun enforceMaxAlarmVolume() {

@@ -5,6 +5,7 @@ import UserNotifications
 struct BlueBirdAlertsApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var appState = AppState()
+    @AppStorage(DSThemePreference.storageKey) private var themeModeRaw = DSThemeMode.system.rawValue
 
     var body: some Scene {
         WindowGroup {
@@ -16,7 +17,9 @@ struct BlueBirdAlertsApp: App {
                 }
             }
                 .environmentObject(appState)
+                .preferredColorScheme(DSThemeMode(rawValue: themeModeRaw)?.colorScheme)
                 .task {
+                    DSTokenStore.shared.loadIfNeeded()
                     await requestNotificationsAndRegister()
                 }
         }

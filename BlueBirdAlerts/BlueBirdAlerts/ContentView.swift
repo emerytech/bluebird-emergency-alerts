@@ -283,6 +283,74 @@ private final class AlertController: ObservableObject {
     }
 }
 
+@MainActor
+private final class AlertFeedbackController: ObservableObject {
+    @Published var screenFlashOpacity: Double = 0
+    @Published var screenFlashColor: Color = DSColor.danger
+
+    private var feedbackTask: Task<Void, Never>?
+    private let impactGenerator = UIImpactFeedbackGenerator(style: .heavy)
+
+    func start(isTraining: Bool, hapticsEnabled: Bool, flashlightEnabled: Bool, screenFlashEnabled: Bool) {
+        stop()
+        screenFlashColor = isTraining ? DSColor.warning : DSColor.danger
+        impactGenerator.prepare()
+        feedbackTask = Task { @MainActor in
+            while !Task.isCancelled {
+                if screenFlashEnabled {
+                    withAnimation(.easeOut(duration: 0.12)) {
+                        screenFlashOpacity = isTraining ? 0.12 : 0.18
+                    }
+                }
+                if hapticsEnabled {
+                    impactGenerator.impactOccurred(intensity: isTraining ? 0.6 : 1.0)
+                    impactGenerator.prepare()
+                }
+                if flashlightEnabled {
+                    Self.setTorch(enabled: true)
+                }
+                try? await Task.sleep(nanoseconds: 300_000_000)
+                if screenFlashEnabled {
+                    withAnimation(.easeOut(duration: 0.16)) {
+                        screenFlashOpacity = 0
+                    }
+                } else {
+                    screenFlashOpacity = 0
+                }
+                if flashlightEnabled {
+                    Self.setTorch(enabled: false)
+                }
+                try? await Task.sleep(nanoseconds: 300_000_000)
+            }
+        }
+    }
+
+    func stop() {
+        feedbackTask?.cancel()
+        feedbackTask = nil
+        screenFlashOpacity = 0
+        Self.setTorch(enabled: false)
+    }
+
+    private static func setTorch(enabled: Bool) {
+        guard let device = AVCaptureDevice.default(for: .video), device.hasTorch else { return }
+        do {
+            try device.lockForConfiguration()
+            if enabled {
+                let level = min(AVCaptureDevice.maxAvailableTorchLevel, 1.0)
+                try device.setTorchModeOn(level: level)
+            } else {
+                device.torchMode = .off
+            }
+            device.unlockForConfiguration()
+        } catch {
+            #if DEBUG
+            print("Torch update failed: \(error.localizedDescription)")
+            #endif
+        }
+    }
+}
+
 private struct SafetyHoldButton: View {
     let action: SafetyActionItem
     let titleColor: Color
@@ -408,8 +476,10 @@ private let teamAssistTypes = [
 ]
 
 struct ContentView: View {
+    @Environment(\.scenePhase) private var scenePhase
     @EnvironmentObject private var appState: AppState
     @StateObject private var alertController = AlertController()
+    @StateObject private var alertFeedbackController = AlertFeedbackController()
     @State private var message = "Emergency alert. Please follow school procedures."
     @State private var isSending = false
     @State private var isRegistering = false
@@ -420,6 +490,7 @@ struct ContentView: View {
     @State private var alarmMessage: String?
     @State private var alarmIsTraining = false
     @State private var alarmTrainingLabel: String?
+    @State private var showAlarmTakeover = false
     @State private var isRefreshingIncidentFeed = false
     @State private var isUpdatingAlarm = false
     @State private var adminOutboundMessage = ""
@@ -484,6 +555,10 @@ struct ContentView: View {
         return activeTeamAssists.first(where: { $0.id == id })
     }
 
+    private var shouldRunAlertFeedback: Bool {
+        alarmIsActive && scenePhase == .active
+    }
+
     var body: some View {
         NavigationStack {
             ZStack {
@@ -512,6 +587,9 @@ struct ContentView: View {
                         dashboardTabsCard
                         customPanicCard
                         supportActionsCard
+                        if isAdminSession {
+                            trainingModeCard
+                        }
                     }
                     .padding(.horizontal, 16)
                     .padding(.vertical, 14)
@@ -538,6 +616,21 @@ struct ContentView: View {
                         }
                     }
                     .allowsHitTesting(false)
+                }
+
+                if alertFeedbackController.screenFlashOpacity > 0 {
+                    Rectangle()
+                        .fill(alertFeedbackController.screenFlashColor)
+                        .opacity(alertFeedbackController.screenFlashOpacity)
+                        .ignoresSafeArea()
+                        .allowsHitTesting(false)
+                        .zIndex(18)
+                }
+
+                if alarmIsActive, showAlarmTakeover {
+                    alarmTakeoverOverlay
+                        .transition(.opacity.combined(with: .scale(scale: 1.02)))
+                        .zIndex(20)
                 }
             }
             .simultaneousGesture(
@@ -671,14 +764,43 @@ struct ContentView: View {
             handleIncomingAlarmNotification(note.userInfo)
         }
         .onChange(of: alarmIsActive) { _, isActive in
+            UIApplication.shared.isIdleTimerDisabled = isActive
             if isActive {
+                showAlarmTakeover = true
                 alertController.startAlarmAudio()
             } else {
+                showAlarmTakeover = false
                 alertController.stopAlarmAudio()
             }
+            updateAlertFeedbackState()
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active {
+                if let pendingAlarmUserInfo = AlarmPushBridge.consumePendingUserInfo() {
+                    handleIncomingAlarmNotification(pendingAlarmUserInfo)
+                } else if alarmIsActive {
+                    showAlarmTakeover = true
+                    alertController.startAlarmAudio()
+                }
+            }
+            updateAlertFeedbackState()
+        }
+        .onChange(of: appState.hapticAlertsEnabled) { _, _ in
+            updateAlertFeedbackState()
+        }
+        .onChange(of: appState.flashlightAlertsEnabled) { _, _ in
+            updateAlertFeedbackState()
+        }
+        .onChange(of: appState.screenFlashAlertsEnabled) { _, _ in
+            updateAlertFeedbackState()
+        }
+        .onChange(of: alarmIsTraining) { _, _ in
+            updateAlertFeedbackState()
         }
         .onDisappear {
+            UIApplication.shared.isIdleTimerDisabled = false
             alertController.stopAlarmAudio()
+            alertFeedbackController.stop()
         }
     }
 
@@ -701,9 +823,113 @@ struct ContentView: View {
             alarmMessage = body
         }
         alarmIsActive = true
+        showAlarmTakeover = true
         alertController.startAlarmAudio()
+        updateAlertFeedbackState()
         Task {
             await refreshIncidentFeed()
+        }
+    }
+
+    private func updateAlertFeedbackState() {
+        guard shouldRunAlertFeedback else {
+            alertFeedbackController.stop()
+            return
+        }
+        alertFeedbackController.start(
+            isTraining: alarmIsTraining,
+            hapticsEnabled: appState.hapticAlertsEnabled,
+            flashlightEnabled: appState.flashlightAlertsEnabled,
+            screenFlashEnabled: appState.screenFlashAlertsEnabled,
+        )
+    }
+
+    private var alarmTakeoverOverlay: some View {
+        let isTraining = alarmIsTraining
+        let accent = isTraining ? DSColor.warning : DSColor.danger
+        let title = isTraining ? "TRAINING DRILL" : "EMERGENCY ALERT"
+        let subtitle = isTraining ? (alarmTrainingLabel ?? "This is a drill") : "School alarm is active"
+        let body = alarmMessage?.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        return ZStack {
+            LinearGradient(
+                colors: [accent, Color.black],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            .ignoresSafeArea()
+
+            VStack(spacing: 28) {
+                Spacer(minLength: 20)
+
+                ZStack {
+                    Circle()
+                        .stroke(Color.white.opacity(0.24), lineWidth: 10)
+                        .frame(width: 154, height: 154)
+                    Image(systemName: isTraining ? "exclamationmark.triangle.fill" : "bell.and.waves.left.and.right.fill")
+                        .font(.system(size: 66, weight: .black))
+                        .foregroundStyle(.white)
+                }
+                .shadow(color: .black.opacity(0.35), radius: 18, x: 0, y: 8)
+
+                VStack(spacing: 12) {
+                    Text(title)
+                        .font(.system(size: 38, weight: .black, design: .rounded))
+                        .multilineTextAlignment(.center)
+                        .foregroundStyle(.white)
+
+                    Text(subtitle)
+                        .font(.title3.weight(.bold))
+                        .multilineTextAlignment(.center)
+                        .foregroundStyle(.white.opacity(0.88))
+
+                    if let body, !body.isEmpty {
+                        Text(body)
+                            .font(.body.weight(.semibold))
+                            .multilineTextAlignment(.center)
+                            .foregroundStyle(.white.opacity(0.9))
+                            .padding(.top, 4)
+                            .padding(.horizontal, 12)
+                    }
+                }
+
+                Spacer()
+
+                VStack(spacing: 12) {
+                    if appState.canDeactivateAlarm {
+                        Button {
+                            Task { await authenticateThenDeactivateAlarm() }
+                        } label: {
+                            Label(isUpdatingAlarm ? "Disabling Alarm..." : "Disable Alarm", systemImage: "bell.slash.fill")
+                                .font(.headline.weight(.bold))
+                                .foregroundStyle(accent)
+                                .frame(maxWidth: .infinity, minHeight: 58)
+                                .background(Color.white)
+                                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                        }
+                        .buttonStyle(PressableScaleButtonStyle())
+                        .disabled(isUpdatingAlarm)
+                    }
+
+                    Button {
+                        showAlarmTakeover = false
+                    } label: {
+                        Text("View Dashboard")
+                            .font(.headline.weight(.bold))
+                            .foregroundStyle(.white)
+                            .frame(maxWidth: .infinity, minHeight: 54)
+                            .background(Color.white.opacity(0.18))
+                            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                    .stroke(Color.white.opacity(0.32), lineWidth: 1)
+                            )
+                    }
+                    .buttonStyle(PressableScaleButtonStyle())
+                }
+                .padding(.horizontal, 22)
+                .padding(.bottom, 26)
+            }
         }
     }
 
@@ -721,10 +947,15 @@ struct ContentView: View {
                 }
                 .frame(width: 48, height: 48)
 
-                VStack(alignment: .leading, spacing: 3) {
+                VStack(alignment: .leading, spacing: 2) {
                     Text("BlueBird Alerts")
                         .font(.headline)
                         .foregroundStyle(textPrimary)
+                    if !appState.schoolName.isEmpty {
+                        Text(appState.schoolName)
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(textPrimary.opacity(0.75))
+                    }
                     Text(appState.userName.isEmpty ? "School Safety" : "\(appState.userName) • \(appState.userRole.capitalized)")
                         .font(.caption)
                         .foregroundStyle(textMuted)
@@ -1056,33 +1287,6 @@ struct ContentView: View {
     private var customPanicCard: some View {
         card {
             VStack(spacing: 14) {
-                if isAdminSession {
-                    HStack(spacing: 10) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Training Mode")
-                                .font(.subheadline.weight(.semibold))
-                                .foregroundStyle(textPrimary)
-                            Text("Drill-only alert. No live push or SMS.")
-                                .font(.caption)
-                                .foregroundStyle(textMuted)
-                        }
-                        Spacer()
-                        Toggle("", isOn: $trainingModeEnabled)
-                            .labelsHidden()
-                    }
-                    if trainingModeEnabled {
-                        TextField("", text: $trainingLabel, prompt: Text("Training label (e.g., This is a drill)").foregroundStyle(placeholderMuted))
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 10)
-                            .background(fieldDarkBg)
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                    .stroke(fieldDarkBorder, lineWidth: 1)
-                            )
-                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                    }
-                }
                 TextField("", text: $message, prompt: Text("Custom emergency message").foregroundStyle(placeholderMuted), axis: .vertical)
                     .foregroundStyle(.white)
                     .padding(.horizontal, 14)
@@ -1117,6 +1321,38 @@ struct ContentView: View {
                 .buttonStyle(PressableScaleButtonStyle())
                 .shadow(color: DSColor.danger.opacity(0.24), radius: 8, x: 0, y: 3)
                 .disabled(isSending || message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+    }
+
+    private var trainingModeCard: some View {
+        card {
+            VStack(spacing: 14) {
+                HStack(spacing: 10) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Training Mode")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(textPrimary)
+                        Text("Drill-only alert. No live push or SMS.")
+                            .font(.caption)
+                            .foregroundStyle(textMuted)
+                    }
+                    Spacer()
+                    Toggle("", isOn: $trainingModeEnabled)
+                        .labelsHidden()
+                }
+                if trainingModeEnabled {
+                    TextField("", text: $trainingLabel, prompt: Text("Training label (e.g., This is a drill)").foregroundStyle(placeholderMuted))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 10)
+                        .background(fieldDarkBg)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .stroke(fieldDarkBorder, lineWidth: 1)
+                        )
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                }
             }
         }
     }
@@ -2081,6 +2317,19 @@ private struct SettingsView: View {
                     Toggle("Biometrics Allowed", isOn: $appState.biometricsAllowed)
                         .tint(DSColor.primary)
                     Text("Require Face ID / Touch ID before sending emergency alerts.")
+                        .font(.footnote)
+                        .foregroundStyle(DSColor.textSecondary)
+                }
+                .listRowBackground(DSColor.card)
+
+                Section("Emergency Feedback") {
+                    Toggle("Enable Haptic Alerts", isOn: $appState.hapticAlertsEnabled)
+                        .tint(DSColor.primary)
+                    Toggle("Enable Flashlight Alerts", isOn: $appState.flashlightAlertsEnabled)
+                        .tint(DSColor.primary)
+                    Toggle("Enable Screen Flash Alerts", isOn: $appState.screenFlashAlertsEnabled)
+                        .tint(DSColor.primary)
+                    Text("Enable LED Flash Alerts in device settings for enhanced visibility.")
                         .font(.footnote)
                         .foregroundStyle(DSColor.textSecondary)
                 }

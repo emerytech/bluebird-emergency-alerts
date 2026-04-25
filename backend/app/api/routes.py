@@ -16,7 +16,7 @@ from html import escape
 from types import SimpleNamespace
 from typing import Optional, cast
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Form, Query, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, Form, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi import HTTPException, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 
@@ -33,6 +33,8 @@ from app.models.schemas import (
     AlarmActivateRequest,
     AlarmDeactivateRequest,
     AlarmStatusResponse,
+    AlertAcknowledgeRequest,
+    AlertAcknowledgeResponse,
     AdminBroadcastRequest,
     AlertsResponse,
     AlertSummary,
@@ -122,6 +124,14 @@ def _state_field(state: object, field: str, default: object = None) -> object:
     keeps runtime endpoints stable while still logging upstream read failures.
     """
     return getattr(state, field, default)
+
+
+def _websocket_api_key_valid(websocket: WebSocket) -> bool:
+    required = getattr(websocket.app.state.settings, "API_KEY", None)  # type: ignore[attr-defined]
+    if not required:
+        return True
+    presented = str(websocket.headers.get("X-API-Key", "") or "")
+    return bool(presented) and hmac.compare_digest(presented, required)
 
 
 def _registry(req: Request) -> DeviceRegistry:
@@ -501,6 +511,75 @@ def _quiet_period_action_label(status: str) -> str:
     if normalized == "expired":
         return "Quiet period expired"
     return f"Quiet period {normalized or 'updated'}"
+
+
+def _alert_hub(request: Request):
+    return request.app.state.alert_hub  # type: ignore[attr-defined]
+
+
+def _assert_tenant_resolved(request: Request) -> None:
+    """
+    Belt-and-suspenders guard: raise 400 if tenant context was not bound by the
+    school middleware.  The middleware already rejects unresolvable tenants, so
+    this check should never fire for normal HTTP traffic — it protects against
+    middleware bypass or future mis-wiring.
+    """
+    tenant_id = getattr(request.state, "tenant_id", None)
+    if not isinstance(tenant_id, int) or tenant_id <= 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Tenant could not be resolved for this request.",
+        )
+
+
+async def _active_alert_metadata(request: Request, *, user_id: Optional[int] = None) -> tuple[Optional[int], int, bool]:
+    state = await _alarm_store(request).get_state()
+    if not bool(_state_field(state, "is_active", False)):
+        return None, 0, False
+    latest = await _alert_log(request).latest_alert()
+    if latest is None:
+        return None, 0, False
+    ack_count = await _alert_log(request).acknowledgement_count(latest.id)
+    user_ack = False
+    if user_id is not None and int(user_id) > 0:
+        user_ack = await _alert_log(request).has_acknowledged(alert_id=latest.id, user_id=int(user_id))
+    return latest.id, ack_count, user_ack
+
+
+async def _publish_alert_event(
+    request: Request,
+    *,
+    event: str,
+    alert_id: Optional[int] = None,
+    extra: Optional[dict[str, object]] = None,
+) -> None:
+    state = await _alarm_store(request).get_state()
+    active_alert_id, acknowledgement_count, _ = await _active_alert_metadata(request)
+    # Use the effective tenant's slug so that district-admin operations on a
+    # different school publish to the correct WebSocket channel, not the
+    # routing-school's channel.
+    effective_slug = _tenant(request).slug
+    payload: dict[str, object] = {
+        "event": event,
+        "tenant_slug": effective_slug,
+        "alarm": {
+            "is_active": bool(_state_field(state, "is_active", False)),
+            "message": cast(Optional[str], _state_field(state, "message", None)),
+            "is_training": bool(_state_field(state, "is_training", False)),
+            "training_label": cast(Optional[str], _state_field(state, "training_label", None)),
+            "current_alert_id": active_alert_id,
+            "acknowledgement_count": acknowledgement_count,
+            "activated_at": cast(Optional[str], _state_field(state, "activated_at", None)),
+            "activated_by_label": cast(Optional[str], _state_field(state, "activated_by_label", None)),
+            "deactivated_at": cast(Optional[str], _state_field(state, "deactivated_at", None)),
+            "deactivated_by_label": cast(Optional[str], _state_field(state, "deactivated_by_label", None)),
+        },
+    }
+    if alert_id is not None:
+        payload["alert_id"] = int(alert_id)
+    if extra:
+        payload.update(extra)
+    await _alert_hub(request).publish(effective_slug, payload)
 
 
 async def _platform_activity_feed(
@@ -888,6 +967,7 @@ async def _push_tokens_for_scope(
     *,
     target_user_ids: Optional[set[int]] = None,
 ) -> tuple[list[str], list[str]]:
+    tenant_slug = _tenant(request).slug
     apns_devices = await _registry(request).list_by_provider("apns")
     fcm_devices = await _registry(request).list_by_provider("fcm")
     candidate_user_ids = {
@@ -908,7 +988,13 @@ async def _push_tokens_for_scope(
 
     apns_tokens = [device.token for device in apns_devices if _allow_user(device.user_id)]
     fcm_tokens = [device.token for device in fcm_devices if _allow_user(device.user_id)]
-    return list(dict.fromkeys(apns_tokens)), list(dict.fromkeys(fcm_tokens))
+    apns_tokens = list(dict.fromkeys(apns_tokens))
+    fcm_tokens = list(dict.fromkeys(fcm_tokens))
+    logger.debug(
+        "push_tokens_for_scope tenant=%s apns=%d fcm=%d paused_users=%d",
+        tenant_slug, len(apns_tokens), len(fcm_tokens), len(paused_user_ids),
+    )
+    return apns_tokens, fcm_tokens
 
 
 async def _send_basic_push(
@@ -950,6 +1036,29 @@ async def root(request: Request) -> RedirectResponse:
 @router.get("/health")
 async def health() -> dict:
     return {"ok": True}
+
+
+@router.websocket("/ws/{tenant_slug}/alerts")
+async def alerts_websocket(websocket: WebSocket, tenant_slug: str) -> None:
+    tenant_candidate = str(tenant_slug or "").strip().lower()
+    school = websocket.app.state.tenant_manager.school_for_slug(tenant_candidate)  # type: ignore[attr-defined]
+    if school is None:
+        logger.warning("WebSocket rejected: unknown tenant slug=%r", tenant_candidate)
+        await websocket.close(code=4404)
+        return
+    if not _websocket_api_key_valid(websocket):
+        logger.warning("WebSocket rejected: invalid API key for tenant=%s", tenant_candidate)
+        await websocket.close(code=4401)
+        return
+    hub = websocket.app.state.alert_hub  # type: ignore[attr-defined]
+    await hub.connect(school.slug, websocket)
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        pass
+    finally:
+        await hub.disconnect(school.slug, websocket)
 
 
 @router.get("/schools", response_model=SchoolsCatalogResponse)
@@ -1003,7 +1112,10 @@ async def mobile_login(body: MobileLoginRequest, request: Request) -> MobileLogi
 
 
 @router.get("/alarm/status", response_model=AlarmStatusResponse)
-async def alarm_status(request: Request) -> AlarmStatusResponse:
+async def alarm_status(
+    request: Request,
+    user_id: Optional[int] = Query(default=None),
+) -> AlarmStatusResponse:
     try:
         state = await _alarm_store(request).get_state()
     except Exception:
@@ -1025,11 +1137,18 @@ async def alarm_status(request: Request) -> AlarmStatusResponse:
     except Exception:
         logger.exception("alarm_status: failed to read broadcast updates; returning empty list")
         broadcasts = []
+    current_alert_id, acknowledgement_count, current_user_acknowledged = await _active_alert_metadata(
+        request,
+        user_id=user_id,
+    )
     return AlarmStatusResponse(
         is_active=bool(_state_field(state, "is_active", False)),
         message=cast(Optional[str], _state_field(state, "message", None)),
         is_training=bool(_state_field(state, "is_training", False)),
         training_label=cast(Optional[str], _state_field(state, "training_label", None)),
+        current_alert_id=current_alert_id,
+        acknowledgement_count=acknowledgement_count,
+        current_user_acknowledged=current_user_acknowledged,
         activated_at=cast(Optional[str], _state_field(state, "activated_at", None)),
         activated_by_user_id=cast(Optional[int], _state_field(state, "activated_by_user_id", None)),
         activated_by_label=cast(Optional[str], _state_field(state, "activated_by_label", None)),
@@ -1056,6 +1175,7 @@ async def activate_alarm(
     background_tasks: BackgroundTasks,
     _: None = Depends(require_api_key),
 ) -> AlarmStatusResponse:
+    _assert_tenant_resolved(request)
     users = _users(request)
     allow_platform_super_admin = bool(getattr(request.state, "super_admin_school_access", False))
     triggered_by_user_id = await _require_alarm_trigger_user(
@@ -1070,6 +1190,7 @@ async def activate_alarm(
 
     await _ensure_no_active_alarm(request)
 
+    effective_slug = _tenant(request).slug
     trigger_ip = request.client.host if request.client else None
     trigger_user_agent = request.headers.get("user-agent")
     alert_id = await _alert_log(request).log_alert(
@@ -1083,6 +1204,7 @@ async def activate_alarm(
         trigger_user_agent=trigger_user_agent,
     )
     state = await _alarm_store(request).activate(
+        tenant_slug=effective_slug,
         message=body.message,
         activated_by_user_id=triggered_by_user_id,
         activated_by_label=_current_school_actor_label(request),
@@ -1092,6 +1214,7 @@ async def activate_alarm(
     apns_tokens: list[str] = []
     fcm_tokens: list[str] = []
     sms_numbers: list[str] = []
+    paused_user_ids: set[int] = set()
     if not is_training:
         apns_devices = await _registry(request).list_by_provider("apns")
         fcm_devices = await _registry(request).list_by_provider("fcm")
@@ -1121,11 +1244,17 @@ async def activate_alarm(
             )
         )
         sms_numbers = await users.list_sms_targets(excluded_user_ids=sorted(paused_user_ids))
-        plan = BroadcastPlan(apns_tokens=apns_tokens, fcm_tokens=fcm_tokens, sms_numbers=sms_numbers)
+        plan = BroadcastPlan(
+            apns_tokens=apns_tokens,
+            fcm_tokens=fcm_tokens,
+            sms_numbers=sms_numbers,
+            tenant_slug=effective_slug,
+        )
         background_tasks.add_task(_broadcaster(request).broadcast_panic, alert_id=alert_id, message=body.message, plan=plan)
 
     logger.warning(
-        "ALARM ACTIVATED alert_id=%s by_user=%s training=%s label=%r apns=%s fcm=%s sms_targets=%s message=%r",
+        "ALARM ACTIVATED tenant=%s alert_id=%s by_user=%s training=%s label=%r apns=%s fcm=%s sms_targets=%s skipped_users=%s message=%r",
+        effective_slug,
         alert_id,
         triggered_by_user_id,
         is_training,
@@ -1133,14 +1262,19 @@ async def activate_alarm(
         len(apns_tokens),
         len(fcm_tokens),
         len(sms_numbers),
+        len(paused_user_ids),
         body.message,
     )
+    await _publish_alert_event(request, event="alert_triggered", alert_id=alert_id)
 
     return AlarmStatusResponse(
         is_active=bool(_state_field(state, "is_active", False)),
         message=cast(Optional[str], _state_field(state, "message", None)),
         is_training=bool(_state_field(state, "is_training", False)),
         training_label=cast(Optional[str], _state_field(state, "training_label", None)),
+        current_alert_id=alert_id,
+        acknowledgement_count=0,
+        current_user_acknowledged=False,
         activated_at=cast(Optional[str], _state_field(state, "activated_at", None)),
         activated_by_user_id=cast(Optional[int], _state_field(state, "activated_by_user_id", None)),
         activated_by_label=cast(Optional[str], _state_field(state, "activated_by_label", None)),
@@ -1156,17 +1290,23 @@ async def deactivate_alarm(
     request: Request,
     _: None = Depends(require_api_key),
 ) -> AlarmStatusResponse:
+    _assert_tenant_resolved(request)
     admin_user_id = await _require_admin_user(_users(request), body.user_id)
     state = await _alarm_store(request).deactivate(
+        tenant_slug=_tenant(request).slug,
         deactivated_by_user_id=admin_user_id,
         deactivated_by_label=_current_school_actor_label(request),
     )
     logger.warning("ALARM DEACTIVATED by_user=%s", admin_user_id)
+    await _publish_alert_event(request, event="alert_cleared")
     return AlarmStatusResponse(
         is_active=bool(_state_field(state, "is_active", False)),
         message=cast(Optional[str], _state_field(state, "message", None)),
         is_training=bool(_state_field(state, "is_training", False)),
         training_label=cast(Optional[str], _state_field(state, "training_label", None)),
+        current_alert_id=None,
+        acknowledgement_count=0,
+        current_user_acknowledged=False,
         activated_at=cast(Optional[str], _state_field(state, "activated_at", None)),
         activated_by_user_id=cast(Optional[int], _state_field(state, "activated_by_user_id", None)),
         activated_by_label=cast(Optional[str], _state_field(state, "activated_by_label", None)),
@@ -2411,10 +2551,20 @@ async def admin_activate_alarm(
     training_label: str = Form(default=""),
 ) -> RedirectResponse:
     await _require_dashboard_admin(request)
+    # When a district admin is managing a different school than the one they
+    # authenticated against, the session user_id belongs to the routing school's
+    # user store — not the effective tenant's.  Treat this the same way super-admin
+    # access is treated: set the school-access flag so activate_alarm bypasses the
+    # user-store lookup and relies on the actor label for attribution instead.
+    effective_slug = _tenant(request).slug
+    routing_slug = str(getattr(request.state, "school_slug", "") or "")
+    is_cross_tenant = effective_slug != routing_slug
+    if is_cross_tenant:
+        request.state.super_admin_school_access = True
     await activate_alarm(
         AlarmActivateRequest(
             message=message.strip(),
-            user_id=_session_user_id(request),
+            user_id=None if is_cross_tenant else _session_user_id(request),
             is_training=(is_training == "1"),
             training_label=training_label.strip() or None,
         ),
@@ -2430,8 +2580,14 @@ async def admin_deactivate_alarm(
     request: Request,
 ) -> RedirectResponse:
     await _require_dashboard_admin(request)
-    if bool(getattr(request.state, "super_admin_school_access", False)):
+    effective_slug = _tenant(request).slug
+    routing_slug = str(getattr(request.state, "school_slug", "") or "")
+    is_cross_tenant = effective_slug != routing_slug
+    # Super-admin school access OR district-admin managing a different school:
+    # bypass user-store lookup and deactivate directly with actor label only.
+    if bool(getattr(request.state, "super_admin_school_access", False)) or is_cross_tenant:
         await _alarm_store(request).deactivate(
+            tenant_slug=effective_slug,
             deactivated_by_user_id=None,
             deactivated_by_label=_current_school_actor_label(request),
         )
@@ -2490,7 +2646,12 @@ async def admin_create_broadcast(
                 [device.token for device in fcm_devices if device.user_id is None or device.user_id not in paused_user_ids]
             )
         )
-        plan = BroadcastPlan(apns_tokens=apns_tokens, fcm_tokens=fcm_tokens, sms_numbers=[])
+        plan = BroadcastPlan(
+            apns_tokens=apns_tokens,
+            fcm_tokens=fcm_tokens,
+            sms_numbers=[],
+            tenant_slug=_tenant(request).slug,
+        )
         background_tasks.add_task(
             _broadcaster(request).broadcast_panic,
             alert_id=alert_id,
@@ -2866,6 +3027,59 @@ async def alerts(
             )
             for alert in recent_alerts
         ]
+    )
+
+
+@router.post("/alerts/{alert_id}/ack", response_model=AlertAcknowledgeResponse)
+async def acknowledge_alert(
+    alert_id: int,
+    body: AlertAcknowledgeRequest,
+    request: Request,
+    _: None = Depends(require_api_key),
+) -> AlertAcknowledgeResponse:
+    _assert_tenant_resolved(request)
+    user_id = await _require_active_user_with_any_permission(
+        _users(request),
+        body.user_id,
+        permissions={
+            PERM_REQUEST_HELP,
+            PERM_SUBMIT_QUIET_REQUEST,
+            PERM_TRIGGER_OWN_TENANT_ALERTS,
+            PERM_MANAGE_ASSIGNED_TENANT_INCIDENTS,
+        },
+    )
+    alert = await _alert_log(request).get_alert(alert_id)
+    if alert is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Alert not found")
+    already_acknowledged = await _alert_log(request).has_acknowledged(alert_id=alert_id, user_id=user_id)
+    user = await _users(request).get_user(user_id)
+    tenant_slug = _tenant(request).slug
+    record = await _alert_log(request).acknowledge(
+        alert_id=alert_id,
+        user_id=user_id,
+        user_label=getattr(user, "login_name", None) or getattr(user, "name", None),
+        tenant_slug=tenant_slug,
+    )
+    acknowledgement_count = await _alert_log(request).acknowledgement_count(alert_id)
+    await _publish_alert_event(
+        request,
+        event="alert_acknowledged",
+        alert_id=alert_id,
+        extra={
+            "acknowledgement": {
+                "user_id": user_id,
+                "user_label": record.user_label,
+                "acknowledged_at": record.acknowledged_at,
+                "acknowledgement_count": acknowledgement_count,
+            }
+        },
+    )
+    return AlertAcknowledgeResponse(
+        alert_id=alert_id,
+        user_id=user_id,
+        acknowledged_at=record.acknowledged_at,
+        already_acknowledged=already_acknowledged,
+        acknowledgement_count=acknowledgement_count,
     )
 
 
@@ -3534,6 +3748,7 @@ async def panic(
         trigger_user_agent=trigger_user_agent,
     )
     await _alarm_store(request).activate(
+        tenant_slug=_tenant(request).slug,
         message=body.message,
         activated_by_user_id=triggered_by_user_id,
         activated_by_label=_current_school_actor_label(request),
@@ -3572,19 +3787,23 @@ async def panic(
     )
     sms_numbers = [] if is_training else await users.list_sms_targets(excluded_user_ids=sorted(paused_user_ids))
 
+    _panic_tenant_slug = _tenant(request).slug
     logger.warning(
-        "PANIC alert_id=%s training=%s label=%r devices=%s providers=%s sms_targets=%s message=%r",
+        "PANIC tenant=%s alert_id=%s training=%s label=%r devices=%s apns=%s fcm=%s sms_targets=%s skipped_users=%s message=%r",
+        _panic_tenant_slug,
         alert_id,
         is_training,
         training_label,
         device_count,
-        provider_counts,
+        len(apns_tokens),
+        len(fcm_tokens),
         len(sms_numbers),
+        len(paused_user_ids),
         body.message,
     )
 
     if not is_training:
-        plan = BroadcastPlan(apns_tokens=apns_tokens, fcm_tokens=fcm_tokens, sms_numbers=sms_numbers)
+        plan = BroadcastPlan(apns_tokens=apns_tokens, fcm_tokens=fcm_tokens, sms_numbers=sms_numbers, tenant_slug=_panic_tenant_slug)
         background_tasks.add_task(_broadcaster(request).broadcast_panic, alert_id=alert_id, message=body.message, plan=plan)
 
     return PanicResponse(

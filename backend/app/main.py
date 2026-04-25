@@ -17,6 +17,7 @@ from app.services.apns import APNsClient
 from app.services.tenant_billing_store import TenantBillingStore
 from app.services.cloudflare_dns import CloudflareDNSClient
 from app.services.fcm import FCMClient
+from app.services.alert_hub import AlertHub
 from app.services.platform_admin_store import PlatformAdminStore
 from app.services.quiet_state_store import QuietStateStore
 from app.services.school_registry import SchoolRegistry
@@ -78,6 +79,7 @@ async def lifespan(app: FastAPI):
     app.state.platform_admin_store = platform_admin_store
     app.state.tenant_billing_store = tenant_billing_store
     app.state.quiet_state_store = quiet_state_store
+    app.state.alert_hub = AlertHub()
     app.state.school_registry = school_registry
     app.state.user_tenant_store = user_tenant_store
     app.state.tenant_manager = tenant_manager

@@ -11,6 +11,7 @@ struct LoginView: View {
     @State private var errorMessage: String?
     @State private var schoolOptions: [SchoolCatalogItem] = []
     @State private var schoolLoadHint = "Enter your school code (for example: nn) and sign in."
+    @State private var selectedSchoolName = ""
     @State private var keyboardHeight: CGFloat = 0
     @State private var animateIntro = false
 
@@ -54,6 +55,7 @@ struct LoginView: View {
                                     ForEach(schoolOptions) { school in
                                         Button("\(school.name) (\(school.slug))") {
                                             schoolCode = school.slug
+                                            selectedSchoolName = school.name
                                         }
                                     }
                                 } label: {
@@ -194,17 +196,34 @@ struct LoginView: View {
         do {
             let client = APIClient(baseURL: serverURL, apiKey: Config.backendApiKey)
             let user = try await client.login(username: trimmedUser, password: trimmedPassword)
+            let resolvedSchoolName = resolveSchoolName(forURL: serverURL)
             appState.completeLogin(
                 userID: user.userID,
                 name: user.name,
                 role: user.role,
                 loginName: user.loginName,
                 canDeactivateAlarm: user.canDeactivateAlarm,
-                serverURL: serverURL
+                serverURL: serverURL,
+                schoolName: resolvedSchoolName
             )
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+
+    private func resolveSchoolName(forURL url: URL) -> String {
+        // Use the name from the picker selection if the slug still matches.
+        let slug = url.pathComponents.last(where: { $0 != "/" }) ?? ""
+        if !selectedSchoolName.isEmpty,
+           schoolOptions.first(where: { $0.slug == slug })?.slug == slug {
+            return selectedSchoolName
+        }
+        // Fall back to matching the slug against fetched school options.
+        if let match = schoolOptions.first(where: { $0.slug == slug }) {
+            return match.name
+        }
+        // Last resort: use the slug itself, title-cased.
+        return slug.replacingOccurrences(of: "-", with: " ").capitalized
     }
 
     private func normalizeServerURL(input: String) -> URL? {
