@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+import logging
+import re
 
 from fastapi import FastAPI
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
@@ -18,12 +20,18 @@ from app.services.fcm import FCMClient
 from app.services.platform_admin_store import PlatformAdminStore
 from app.services.quiet_state_store import QuietStateStore
 from app.services.school_registry import SchoolRegistry
-from app.services.tenant_manager import TenantManager, normalize_school_slug
+from app.services.tenant_manager import TenantManager
 from app.services.twilio_sms import TwilioSMSClient
 from app.services.user_tenant_store import UserTenantStore
 
 
 settings = Settings()
+logger = logging.getLogger("bluebird.main")
+_TENANT_CLEAN_RE = re.compile(r"[^a-z0-9-]+")
+
+
+def _normalize_tenant_candidate(value: str) -> str:
+    return _TENANT_CLEAN_RE.sub("-", value.strip().lower()).strip("-")
 
 
 @asynccontextmanager
@@ -103,21 +111,69 @@ async def school_context_middleware(request, call_next):
         return response
 
     raw_segments = [segment for segment in path.split("/") if segment]
-    if not raw_segments:
-        response = await call_next(request)
-        return response
-    school_slug = normalize_school_slug(raw_segments[0])
-    school = request.app.state.tenant_manager.school_for_slug(school_slug)
-    if school is None:
-        return PlainTextResponse("Unknown school path.", status_code=404)
+    tenant_from_header_raw = request.headers.get("X-Tenant-ID")
+    tenant_from_header: str | None = None
+    if tenant_from_header_raw is not None and tenant_from_header_raw.strip():
+        candidate = _normalize_tenant_candidate(tenant_from_header_raw)
+        if not candidate:
+            return JSONResponse(
+                {"detail": "Invalid X-Tenant-ID header."},
+                status_code=400,
+            )
+        tenant_from_header = candidate
 
-    stripped_path = "/" + "/".join(raw_segments[1:]) if len(raw_segments) > 1 else "/"
-    request.scope["path"] = stripped_path
-    request.scope["raw_path"] = stripped_path.encode("utf-8")
-    request.state.school_path_prefix = f"/{school.slug}"
-    request.state.school_slug = school.slug
-    request.state.school = school
-    request.state.tenant = request.app.state.tenant_manager.get(school)
+    resolution_source = ""
+    school = None
+
+    def bind_tenant_context(bound_school) -> None:
+        request.state.school_path_prefix = f"/{bound_school.slug}"
+        request.state.school_slug = bound_school.slug
+        request.state.tenant_id = int(bound_school.id)
+        request.state.school = bound_school
+        request.state.tenant = request.app.state.tenant_manager.get(bound_school)
+
+    if tenant_from_header:
+        resolution_source = "header"
+        school = request.app.state.tenant_manager.school_for_slug(tenant_from_header)
+        if school is None:
+            return JSONResponse(
+                {"detail": "Unknown tenant in X-Tenant-ID header."},
+                status_code=400,
+            )
+        bind_tenant_context(school)
+    else:
+        if not raw_segments:
+            return JSONResponse(
+                {"detail": "Tenant could not be resolved. Use X-Tenant-ID header or /{tenant}/... path."},
+                status_code=400,
+            )
+        resolution_source = "path"
+        school_slug = _normalize_tenant_candidate(raw_segments[0])
+        if not school_slug:
+            return JSONResponse(
+                {"detail": "Tenant could not be resolved. Use X-Tenant-ID header or /{tenant}/... path."},
+                status_code=400,
+            )
+        school = request.app.state.tenant_manager.school_for_slug(school_slug)
+        if school is None:
+            return JSONResponse(
+                {"detail": "Tenant could not be resolved. Use X-Tenant-ID header or /{tenant}/... path."},
+                status_code=400,
+            )
+        stripped_path = "/" + "/".join(raw_segments[1:]) if len(raw_segments) > 1 else "/"
+        request.scope["path"] = stripped_path
+        request.scope["raw_path"] = stripped_path.encode("utf-8")
+        bind_tenant_context(school)
+
+    logger.debug(
+        "Tenant resolved source=%s tenant_id=%s slug=%s path_in=%s path_internal=%s",
+        resolution_source,
+        getattr(request.state, "tenant_id", None),
+        getattr(request.state, "school_slug", None),
+        path,
+        request.scope.get("path", path),
+    )
+
     response = await call_next(request)
     location = response.headers.get("location")
     if location and location.startswith("/admin"):
