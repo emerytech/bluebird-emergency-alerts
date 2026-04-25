@@ -783,14 +783,22 @@ async def _require_admin_user(users: UserStore, user_id: Optional[int]) -> int:
     return user.id
 
 
-async def _require_alarm_trigger_user(users: UserStore, user_id: Optional[int]) -> int:
+async def _require_alarm_trigger_user(
+    users: UserStore,
+    user_id: Optional[int],
+    *,
+    allow_platform_super_admin: bool = False,
+) -> Optional[int]:
     if user_id is None:
+        if allow_platform_super_admin:
+            return None
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Authorized user_id is required to activate alarm")
     user = await users.get_user(int(user_id))
-    if user is None or not user.is_active or not can_any(
-        user.role, {PERM_TRIGGER_OWN_TENANT_ALERTS, PERM_MANAGE_ASSIGNED_TENANT_INCIDENTS}
-    ):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only authorized active users can activate alarm")
+    if user is None or not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only active users in this tenant can activate alarm",
+        )
     return user.id
 
 
@@ -1049,10 +1057,15 @@ async def activate_alarm(
     _: None = Depends(require_api_key),
 ) -> AlarmStatusResponse:
     users = _users(request)
-    triggered_by_user_id = await _require_alarm_trigger_user(users, body.user_id)
+    allow_platform_super_admin = bool(getattr(request.state, "super_admin_school_access", False))
+    triggered_by_user_id = await _require_alarm_trigger_user(
+        users,
+        body.user_id,
+        allow_platform_super_admin=allow_platform_super_admin,
+    )
     is_training = bool(body.is_training)
     training_label = body.training_label.strip() if body.training_label else None
-    if is_training:
+    if is_training and triggered_by_user_id is not None:
         await _require_dashboard_admin_id(users, triggered_by_user_id)
 
     await _ensure_no_active_alarm(request)

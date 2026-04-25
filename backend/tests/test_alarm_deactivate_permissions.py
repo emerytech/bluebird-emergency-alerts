@@ -91,3 +91,58 @@ def test_alarm_deactivate_permission_matrix(client: TestClient, login_super_admi
     assert status.status_code == 200, status.text
     assert status.json()["is_active"] is False
 
+
+def test_alarm_activate_allows_any_active_user_role(client: TestClient, login_super_admin) -> None:
+    login_super_admin()
+    _create_school(client, name="Alarm Trigger Matrix", slug="alarm-trigger-matrix")
+
+    teacher_id = _create_user(client, "alarm-trigger-matrix", name="Teacher", role="teacher")
+    officer_id = _create_user(client, "alarm-trigger-matrix", name="Officer", role="law_enforcement")
+    admin_id = _create_user(client, "alarm-trigger-matrix", name="Admin", role="admin")
+
+    teacher_activate = client.post(
+        "/alarm-trigger-matrix/alarm/activate",
+        headers={"X-API-Key": "test-api-key"},
+        json={"message": "Teacher alarm", "user_id": teacher_id},
+    )
+    assert teacher_activate.status_code == 200, teacher_activate.text
+    assert teacher_activate.json()["is_active"] is True
+
+    teacher_disable_attempt = client.post(
+        "/alarm-trigger-matrix/alarm/deactivate",
+        headers={"X-API-Key": "test-api-key"},
+        json={"user_id": teacher_id},
+    )
+    assert teacher_disable_attempt.status_code == 403
+
+    clear_after_teacher = client.post(
+        "/alarm-trigger-matrix/alarm/deactivate",
+        headers={"X-API-Key": "test-api-key"},
+        json={"user_id": admin_id},
+    )
+    assert clear_after_teacher.status_code == 200, clear_after_teacher.text
+    assert clear_after_teacher.json()["is_active"] is False
+
+    officer_activate = client.post(
+        "/alarm-trigger-matrix/alarm/activate",
+        headers={"X-API-Key": "test-api-key"},
+        json={"message": "Officer alarm", "user_id": officer_id},
+    )
+    assert officer_activate.status_code == 200, officer_activate.text
+    assert officer_activate.json()["is_active"] is True
+
+
+def test_alarm_activate_rejects_user_not_in_current_tenant(client: TestClient, login_super_admin) -> None:
+    login_super_admin()
+    _create_school(client, name="Member Home", slug="member-home")
+    _create_school(client, name="Member Other", slug="member-other")
+
+    home_teacher_id = _create_user(client, "member-home", name="Home Teacher", role="teacher")
+
+    cross_tenant_attempt = client.post(
+        "/member-other/alarm/activate",
+        headers={"X-API-Key": "test-api-key"},
+        json={"message": "Cross tenant trigger", "user_id": home_teacher_id},
+    )
+    assert cross_tenant_attempt.status_code == 403
+    assert "this tenant" in cross_tenant_attempt.text

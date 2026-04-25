@@ -107,6 +107,29 @@ def test_super_admin_school_enter_and_exit_scope(client: TestClient, login_super
     assert response.headers.get("location") == "/oak-ridge/admin/login"
 
 
+def test_super_admin_school_access_can_activate_alarm_without_tenant_user_id(client: TestClient, login_super_admin) -> None:
+    login_super_admin()
+    _create_school(client, name="Signal Creek", slug="signal-creek")
+    _enter_school(client, "signal-creek")
+
+    activate = client.post(
+        "/signal-creek/admin/alarm/activate",
+        data={"message": "Platform-triggered alarm"},
+        follow_redirects=False,
+    )
+    assert activate.status_code == 303
+    assert activate.headers.get("location") == "/signal-creek/admin"
+
+    status = client.get(
+        "/signal-creek/alarm/status",
+        headers={"X-API-Key": "test-api-key"},
+    )
+    assert status.status_code == 200, status.text
+    payload = status.json()
+    assert payload["is_active"] is True
+    assert payload["message"] == "Platform-triggered alarm"
+
+
 def test_quiet_period_removal_clears_active_pause_state(client: TestClient, login_super_admin) -> None:
     login_super_admin()
     _create_school(client, name="River Valley", slug="river-valley")
