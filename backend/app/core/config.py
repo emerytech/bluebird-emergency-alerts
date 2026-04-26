@@ -29,8 +29,8 @@ class Settings(BaseSettings):
     DB_PATH: str = "./data/bluebird.db"
     PLATFORM_DB_PATH: str = "./data/platform.db"
     BASE_DOMAIN: str = "bluebird.ets3d.com"
-    DEFAULT_SCHOOL_SLUG: str = "default"
-    DEFAULT_SCHOOL_NAME: str = "Default School"
+    DEFAULT_SCHOOL_SLUG: str = "nen"
+    DEFAULT_SCHOOL_NAME: str = "Northeast Nodaway RV School District"
 
     SUPERADMIN_USERNAME: str = "temery"
     SUPERADMIN_PASSWORD: str = "Password@123"

@@ -112,6 +112,13 @@ async def lifespan(app: FastAPI):
         slug=settings.DEFAULT_SCHOOL_SLUG,
         name=settings.DEFAULT_SCHOOL_NAME,
     )
+    # Backward-compat alias: "default" was the original slug before the NEN rename.
+    # This allows old API clients, mobile apps, and audit history to keep resolving.
+    await school_registry.register_alias(
+        "default",
+        settings.DEFAULT_SCHOOL_SLUG,
+        reason="tenant_slug_migrated: default → nen (Northeast Nodaway RV School District)",
+    )
     tenant_manager = TenantManager(
         settings=settings,
         school_registry=school_registry,

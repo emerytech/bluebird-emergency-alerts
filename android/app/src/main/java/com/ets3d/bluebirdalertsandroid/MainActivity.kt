@@ -68,6 +68,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.zIndex
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModel
@@ -2599,11 +2601,12 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
     if (showQuietRequestOverlay) {
         QuietPeriodRequestOverlay(
             isBusy = state.isBusy,
+            errorMsg = state.errorMsg,
             onCancel = { showQuietRequestOverlay = false },
             onConfirm = { reason ->
-                showQuietRequestOverlay = false
                 vm.requestQuietPeriod(ctx, reason)
             },
+            onSuccess = { showQuietRequestOverlay = false },
         )
     }
     if (showQuietDeleteConfirmOverlay) {
@@ -4080,121 +4083,88 @@ private fun SafetyActionButton(
 @Composable
 private fun QuietPeriodRequestOverlay(
     isBusy: Boolean,
+    errorMsg: String?,
     onCancel: () -> Unit,
     onConfirm: (String?) -> Unit,
+    onSuccess: () -> Unit,
 ) {
-    var slideValue by remember { mutableStateOf(0f) }
     var reason by remember { mutableStateOf("") }
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color(0xCC0B1220))
-            .navigationBarsPadding()
-            .statusBarsPadding(),
+    var submitted by remember { mutableStateOf(false) }
+
+    LaunchedEffect(isBusy) {
+        if (submitted && !isBusy && errorMsg == null) {
+            onSuccess()
+        }
+    }
+
+    Dialog(
+        onDismissRequest = { if (!isBusy) onCancel() },
+        properties = DialogProperties(usePlatformDefaultWidth = false),
     ) {
-        Column(
+        Surface(
+            shape = RoundedCornerShape(DSRadius.Card),
+            color = SurfaceMain,
+            tonalElevation = 8.dp,
             modifier = Modifier
-                .fillMaxSize()
-                .padding(horizontal = 24.dp, vertical = 20.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
+                .fillMaxWidth()
+                .padding(horizontal = 24.dp),
         ) {
-            Text("BlueBird Alerts", color = Color(0xFFD4DCEE), fontSize = 16.sp, fontWeight = FontWeight.Bold)
-            Spacer(modifier = Modifier.height(24.dp))
-            Surface(
-                shape = CircleShape,
-                color = Color(0xFF7C3AED),
-                modifier = Modifier.size(86.dp),
+            Column(
+                modifier = Modifier.padding(24.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp),
             ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Text("\uD83D\uDD15", fontSize = 34.sp)
-                }
-            }
-            Spacer(modifier = Modifier.height(14.dp))
-            Text(
-                "REQUEST QUIET PERIOD",
-                color = Color.White,
-                fontWeight = FontWeight.ExtraBold,
-                fontSize = 24.sp,
-                textAlign = TextAlign.Center,
-            )
-            Spacer(modifier = Modifier.height(24.dp))
-            Surface(
-                shape = RoundedCornerShape(28.dp),
-                color = Color(0xFF5B616B),
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
-                    Text(
-                        if (isBusy) "Submitting…" else "Slide to Confirm →",
-                        color = Color.White,
-                        fontWeight = FontWeight.SemiBold,
-                        fontSize = 16.sp,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    Slider(
-                        value = slideValue,
-                        onValueChange = { slideValue = it },
-                        onValueChangeFinished = {
-                            if (!isBusy && slideValue >= 0.95f) {
-                                onConfirm(reason.trim().ifBlank { null })
-                            }
-                            slideValue = 0f
-                        },
-                        enabled = !isBusy,
-                        colors = SliderDefaults.colors(
-                            thumbColor = Color.White,
-                            activeTrackColor = Color(0xFF9AA0AA),
-                            inactiveTrackColor = Color(0xFF6D747F),
-                        ),
-                        valueRange = 0f..1f,
-                    )
-                }
-            }
-            Spacer(modifier = Modifier.height(16.dp))
-            OutlinedTextField(
-                value = reason,
-                onValueChange = { reason = it },
-                label = { Text("Reason (optional)", color = Color(0xFFCBD5E1)) },
-                placeholder = { Text("Wedding, funeral, testing context...", color = Color(0xFF94A3B8)) },
-                minLines = 2,
-                maxLines = 4,
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = Color(0xFF7C3AED),
-                    unfocusedBorderColor = Color(0xFF64748B),
-                    focusedTextColor = Color.White,
-                    unfocusedTextColor = Color.White,
-                    cursorColor = Color(0xFF7C3AED),
-                    focusedContainerColor = Color(0x33243355),
-                    unfocusedContainerColor = Color(0x22243355),
-                    focusedLabelColor = Color(0xFFE2E8F0),
-                    unfocusedLabelColor = Color(0xFFCBD5E1),
-                ),
-                modifier = Modifier.fillMaxWidth(),
-            )
-            Spacer(modifier = Modifier.weight(1f))
-            Surface(
-                shape = CircleShape,
-                color = Color(0xCC9CA3AF),
-                modifier = Modifier.size(68.dp),
-            ) {
-                Button(
-                    onClick = onCancel,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = Color.Transparent,
-                        contentColor = Color.White,
+                Text(
+                    "Request Quiet Period",
+                    color = TextPri,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 20.sp,
+                )
+                Text(
+                    "Admins will be notified and can approve or deny your request.",
+                    color = TextMuted,
+                    fontSize = 14.sp,
+                )
+                OutlinedTextField(
+                    value = reason,
+                    onValueChange = { reason = it },
+                    label = { Text("Reason (optional)") },
+                    minLines = 2,
+                    maxLines = 4,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = QuietPurple,
+                        unfocusedBorderColor = DSColor.Border.copy(alpha = 0.45f),
+                        focusedTextColor = TextPri,
+                        unfocusedTextColor = TextPri,
+                        cursorColor = QuietPurple,
+                        focusedContainerColor = SurfaceSoft,
+                        unfocusedContainerColor = SurfaceSoft,
+                        focusedLabelColor = QuietPurple,
+                        unfocusedLabelColor = TextMuted,
                     ),
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                if (!errorMsg.isNullOrBlank()) {
+                    Text(errorMsg, color = AlarmRed, fontSize = 13.sp)
+                }
+                PrimaryButton(
+                    text = "Submit Request",
+                    onClick = {
+                        submitted = true
+                        onConfirm(reason.trim().ifBlank { null })
+                    },
+                    enabled = !isBusy,
+                    isLoading = isBusy,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(52.dp),
+                )
+                TextButton(
+                    onClick = { if (!isBusy) onCancel() },
+                    modifier = Modifier.fillMaxWidth(),
                 ) {
-                    Text("✕", fontSize = 26.sp, fontWeight = FontWeight.Bold)
+                    Text("Cancel", color = TextMuted, fontWeight = FontWeight.SemiBold)
                 }
             }
-            Text(
-                "Cancel",
-                color = Color.White,
-                fontSize = 14.sp,
-                modifier = Modifier.padding(top = 6.dp),
-            )
         }
     }
 }

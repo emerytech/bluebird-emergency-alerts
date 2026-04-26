@@ -671,8 +671,8 @@ def render_login_page(
     error: Optional[str] = None,
     setup_mode: bool,
     school_name: str = "School",
-    school_slug: str = "default",
-    school_path_prefix: str = "/default",
+    school_slug: str = "nen",
+    school_path_prefix: str = "/nen",
     setup_pin_required: bool = False,
     theme: Optional[Mapping[str, str]] = None,
 ) -> str:

@@ -86,6 +86,12 @@ class TenantManager:
                 slug=slug,
                 name=self._settings.DEFAULT_SCHOOL_NAME,
             )
+        # Check alias table — supports legacy slugs after a rename migration.
+        canonical = self._school_registry.resolve_alias_sync(slug)
+        if canonical is not None:
+            aliased = self._school_registry._get_by_slug_sync(canonical)
+            if aliased is not None and aliased.is_active:
+                return aliased
         return None
 
     def get(self, school: SchoolRecord) -> TenantContext:
