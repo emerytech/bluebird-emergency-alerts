@@ -520,6 +520,9 @@ struct ContentView: View {
     @State private var pendingQuietActionIsApprove: Bool = true
     @State private var quietPeriodLocalFeedback: String? = nil
     @State private var quietPeriodLocalIsError: Bool = false
+    @State private var myQuietRequest: QuietPeriodRequestResponse? = nil
+    @State private var isCancellingQuietRequest = false
+    @State private var showCancelQuietRequestConfirm = false
     @State private var processedEventIDs: Set<String> = []
     @State private var pushDeliveryStats: PushDeliveryStatsResponse?
     @State private var auditLogEntries: [AuditLogEntry] = []
@@ -1553,25 +1556,90 @@ struct ContentView: View {
     private var quietPeriodCenterPage: some View {
         ScrollView {
             VStack(spacing: 14) {
-                card {
-                    SectionContainer("Request Quiet Period") {
-                        Text("Share optional context for approvers.")
-                            .font(.subheadline)
-                            .foregroundStyle(DSColor.textSecondary)
-                        TextInput(
-                            text: $quietPeriodReason,
-                            placeholder: "Reason (optional)",
-                            axis: .vertical
-                        )
-                        PrimaryButton(
-                            isSubmittingQuickAction ? "Submitting..." : "Submit Request",
-                            isLoading: isSubmittingQuickAction,
-                            isEnabled: !isSubmittingQuickAction
-                        ) {
-                            Task { await submitQuietPeriodRequest() }
+                if let pending = myQuietRequest, pending.status?.lowercased() == "pending" {
+                    card {
+                        VStack(alignment: .leading, spacing: 12) {
+                            HStack(alignment: .top) {
+                                Text("Quiet Period Requested")
+                                    .font(.headline)
+                                    .foregroundStyle(DSColor.textPrimary)
+                                Spacer()
+                                Text("Pending Approval")
+                                    .font(.caption)
+                                    .fontWeight(.semibold)
+                                    .foregroundStyle(DSColor.info)
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 4)
+                                    .background(DSColor.info.opacity(0.12))
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                            .stroke(DSColor.info.opacity(0.35), lineWidth: 1)
+                                    )
+                                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                            }
+                            if let requestedAt = pending.requestedAt {
+                                Text("Requested: \(requestedAt)")
+                                    .font(.subheadline)
+                                    .foregroundStyle(DSColor.textSecondary)
+                            }
+                            if let reason = pending.reason, !reason.isEmpty {
+                                Text("Reason: \(reason)")
+                                    .font(.subheadline)
+                                    .foregroundStyle(DSColor.textSecondary)
+                            }
+                            Button {
+                                showCancelQuietRequestConfirm = true
+                            } label: {
+                                Text(isCancellingQuietRequest ? "Cancelling..." : "Cancel Request")
+                                    .font(.body)
+                                    .fontWeight(.semibold)
+                                    .foregroundStyle(DSColor.danger)
+                                    .frame(maxWidth: .infinity, minHeight: 44)
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                            .stroke(DSColor.danger.opacity(0.5), lineWidth: 1.5)
+                                    )
+                            }
+                            .buttonStyle(PressableScaleButtonStyle())
+                            .disabled(isCancellingQuietRequest)
+                            if let feedback = quietPeriodLocalFeedback {
+                                flashBanner(message: feedback, isError: quietPeriodLocalIsError)
+                            }
                         }
-                        if let feedback = quietPeriodLocalFeedback {
-                            flashBanner(message: feedback, isError: quietPeriodLocalIsError)
+                    }
+                    .confirmationDialog(
+                        "Cancel this quiet period request?",
+                        isPresented: $showCancelQuietRequestConfirm,
+                        titleVisibility: .visible
+                    ) {
+                        Button("Cancel Request", role: .destructive) {
+                            Task { await cancelQuietPeriodRequest() }
+                        }
+                        Button("Keep Request", role: .cancel) {}
+                    } message: {
+                        Text("This will cancel your pending quiet period request.")
+                    }
+                } else {
+                    card {
+                        SectionContainer("Request Quiet Period") {
+                            Text("Share optional context for approvers.")
+                                .font(.subheadline)
+                                .foregroundStyle(DSColor.textSecondary)
+                            TextInput(
+                                text: $quietPeriodReason,
+                                placeholder: "Reason (optional)",
+                                axis: .vertical
+                            )
+                            PrimaryButton(
+                                isSubmittingQuickAction ? "Submitting..." : "Submit Request",
+                                isLoading: isSubmittingQuickAction,
+                                isEnabled: !isSubmittingQuickAction
+                            ) {
+                                Task { await submitQuietPeriodRequest() }
+                            }
+                            if let feedback = quietPeriodLocalFeedback {
+                                flashBanner(message: feedback, isError: quietPeriodLocalIsError)
+                            }
                         }
                     }
                 }
@@ -1588,6 +1656,9 @@ struct ContentView: View {
         )
         .navigationTitle("Quiet Period")
         .navigationBarTitleDisplayMode(.inline)
+        .onAppear {
+            Task { await loadMyQuietRequest() }
+        }
     }
 
     private var userMessageCard: some View {
@@ -2327,7 +2398,7 @@ struct ContentView: View {
             #if DEBUG
             print("[QuietPeriod] POST /quiet-periods/request — reason: \(trimmed.isEmpty ? "<none>" : trimmed)")
             #endif
-            _ = try await api.requestQuietPeriod(
+            let result = try await api.requestQuietPeriod(
                 userID: userID,
                 reason: trimmed.isEmpty ? nil : trimmed
             )
@@ -2335,7 +2406,8 @@ struct ContentView: View {
             print("[QuietPeriod] Request submitted successfully")
             #endif
             quietPeriodReason = ""
-            quietPeriodLocalFeedback = "Request submitted — admins will review it shortly."
+            myQuietRequest = result
+            quietPeriodLocalFeedback = nil
             quietPeriodLocalIsError = false
             appState.lastError = nil
             appState.lastStatus = "Quiet period request submitted."
@@ -2349,6 +2421,31 @@ struct ContentView: View {
             quietPeriodLocalFeedback = "Request failed: \(error.localizedDescription)"
             quietPeriodLocalIsError = true
             appState.lastError = "Quiet period request failed: \(error.localizedDescription)"
+        }
+    }
+
+    private func loadMyQuietRequest() async {
+        guard let userID = appState.userID else { return }
+        do {
+            let result = try await api.myQuietRequest(userID: userID)
+            myQuietRequest = (result.status?.lowercased() == "pending") ? result : nil
+        } catch {
+            myQuietRequest = nil
+        }
+    }
+
+    private func cancelQuietPeriodRequest() async {
+        guard let userID = appState.userID,
+              let requestID = myQuietRequest?.requestID else { return }
+        isCancellingQuietRequest = true
+        defer { isCancellingQuietRequest = false }
+        do {
+            _ = try await api.cancelQuietRequest(requestID: requestID, userID: userID)
+            myQuietRequest = nil
+            quietPeriodLocalFeedback = nil
+        } catch {
+            quietPeriodLocalFeedback = "Could not cancel request: \(error.localizedDescription)"
+            quietPeriodLocalIsError = true
         }
     }
 

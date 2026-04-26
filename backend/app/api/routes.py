@@ -4835,6 +4835,43 @@ async def quiet_period_status(
     )
 
 
+@router.get("/quiet-periods/my-request", response_model=QuietPeriodSummary)
+async def get_my_quiet_request(
+    request: Request,
+    user_id: int = Query(..., ge=1),
+    _: None = Depends(require_api_key),
+) -> QuietPeriodSummary:
+    user = await _users(request).get_user(user_id)
+    if user is None or not user.is_active:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    record = await _quiet_periods(request).pending_for_user(user_id=user_id)
+    if record is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No pending quiet period request")
+    return _to_quiet_period_summary(record)
+
+
+@router.delete("/quiet-periods/request/{request_id}", response_model=QuietPeriodSummary)
+async def cancel_quiet_period_request(
+    request_id: int,
+    request: Request,
+    user_id: int = Query(..., ge=1),
+    _: None = Depends(require_api_key),
+) -> QuietPeriodSummary:
+    user = await _users(request).get_user(user_id)
+    if user is None or not user.is_active:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found or inactive")
+    record = await _quiet_periods(request).cancel_for_user(
+        request_id=request_id,
+        user_id=user_id,
+    )
+    if record is None or record.user_id != user_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Quiet period request not found")
+    if record.status not in {"cancelled"}:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Quiet period request is not cancellable")
+    await _deactivate_law_enforcement_quiet_state_for_user(request, user_id=int(record.user_id))
+    return _to_quiet_period_summary(record)
+
+
 @router.post("/quiet-periods/{request_id}/delete", response_model=QuietPeriodSummary)
 async def delete_quiet_period_request(
     request_id: int,

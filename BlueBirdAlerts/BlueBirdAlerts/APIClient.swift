@@ -246,6 +246,29 @@ struct APIClient {
         return try JSONDecoder().decode(QuietPeriodRequestResponse.self, from: data)
     }
 
+    func myQuietRequest(userID: Int) async throws -> QuietPeriodRequestResponse {
+        var components = URLComponents(url: baseURL.appendingPathComponent("quiet-periods/my-request"), resolvingAgainstBaseURL: false)
+        components?.queryItems = [URLQueryItem(name: "user_id", value: String(userID))]
+        guard let url = components?.url else { throw URLError(.badURL) }
+        var request = URLRequest(url: url)
+        withAPIKey(&request)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try requireSuccess(response: response, data: data)
+        return try JSONDecoder().decode(QuietPeriodRequestResponse.self, from: data)
+    }
+
+    func cancelQuietRequest(requestID: Int, userID: Int) async throws -> QuietPeriodRequestResponse {
+        var components = URLComponents(url: baseURL.appendingPathComponent("quiet-periods/request/\(requestID)"), resolvingAgainstBaseURL: false)
+        components?.queryItems = [URLQueryItem(name: "user_id", value: String(userID))]
+        guard let url = components?.url else { throw URLError(.badURL) }
+        var request = URLRequest(url: url)
+        request.httpMethod = "DELETE"
+        withAPIKey(&request)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try requireSuccess(response: response, data: data)
+        return try JSONDecoder().decode(QuietPeriodRequestResponse.self, from: data)
+    }
+
     func alarmPushStats(userID: Int) async throws -> PushDeliveryStatsResponse {
         var components = URLComponents(url: baseURL.appendingPathComponent("alarm/push-stats"), resolvingAgainstBaseURL: false)
         components?.queryItems = [URLQueryItem(name: "user_id", value: String(userID))]
@@ -745,11 +768,23 @@ struct AdminSendMessageResponse: Decodable {
 
 struct QuietPeriodRequestResponse: Decodable {
     let requestID: Int?
+    let userID: Int?
+    let reason: String?
     let status: String?
+    let requestedAt: String?
+    let approvedAt: String?
+    let approvedByLabel: String?
+    let expiresAt: String?
 
     enum CodingKeys: String, CodingKey {
         case requestID = "request_id"
+        case userID = "user_id"
+        case reason
         case status
+        case requestedAt = "requested_at"
+        case approvedAt = "approved_at"
+        case approvedByLabel = "approved_by_label"
+        case expiresAt = "expires_at"
     }
 }
 

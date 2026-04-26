@@ -1915,6 +1915,7 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
     var showSettingsScreen by remember { mutableStateOf(false) }
     var showQuietRequestOverlay by remember { mutableStateOf(false) }
     var showQuietDeleteConfirmOverlay by remember { mutableStateOf(false) }
+    var showCancelRequestConfirmDialog by remember { mutableStateOf(false) }
     var showTeamAssistDialog by remember { mutableStateOf(false) }
     var promptRequestHelpId by remember { mutableStateOf<Int?>(null) }
     var dismissedPromptRequestHelpId by remember { mutableStateOf<Int?>(null) }
@@ -2430,17 +2431,29 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                     }
 
                     if (activePanel == DashboardPanel.QuietPeriod) {
-                        OutlinedButton(
-                            onClick = { showQuietRequestOverlay = true },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 20.dp, vertical = 8.dp)
-                                .height(52.dp),
-                            shape = RoundedCornerShape(14.dp),
-                            enabled = !state.isBusy,
-                            colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFF7C3AED)),
-                        ) {
-                            Text("Request Quiet Period", fontWeight = FontWeight.SemiBold)
+                        val qStatus = state.quietPeriodStatus?.status?.lowercase()
+                        if (qStatus == "pending") {
+                            PendingQuietRequestCard(
+                                status = state.quietPeriodStatus!!,
+                                isBusy = state.isBusy,
+                                onCancelRequest = { showCancelRequestConfirmDialog = true },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 20.dp, vertical = 8.dp),
+                            )
+                        } else {
+                            OutlinedButton(
+                                onClick = { showQuietRequestOverlay = true },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 20.dp, vertical = 8.dp)
+                                    .height(52.dp),
+                                shape = RoundedCornerShape(14.dp),
+                                enabled = !state.isBusy,
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFF7C3AED)),
+                            ) {
+                                Text("Request Quiet Period", fontWeight = FontWeight.SemiBold)
+                            }
                         }
                         if (isAdmin) {
                             AdminQuietPeriodRequestsCard(
@@ -2641,6 +2654,42 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
             onConfirm = {
                 showQuietDeleteConfirmOverlay = false
                 runProtectedAction(false) { vm.deleteQuietPeriodRequest(ctx) }
+            },
+        )
+    }
+    if (showCancelRequestConfirmDialog) {
+        AlertDialog(
+            onDismissRequest = { if (!state.isBusy) showCancelRequestConfirmDialog = false },
+            containerColor = DSColor.Card,
+            title = {
+                Text(
+                    "Cancel Request?",
+                    color = DSColor.TextPrimary,
+                    fontWeight = FontWeight.Bold,
+                )
+            },
+            text = {
+                Text(
+                    "This will cancel your pending quiet period request.",
+                    color = DSColor.TextSecondary,
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showCancelRequestConfirmDialog = false
+                        runProtectedAction(false) { vm.deleteQuietPeriodRequest(ctx) }
+                    },
+                    enabled = !state.isBusy,
+                    colors = ButtonDefaults.buttonColors(containerColor = DSColor.Danger),
+                ) {
+                    Text("Cancel Request", fontWeight = FontWeight.SemiBold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { if (!state.isBusy) showCancelRequestConfirmDialog = false }) {
+                    Text("Keep Request", color = DSColor.TextSecondary, fontWeight = FontWeight.SemiBold)
+                }
             },
         )
     }
@@ -3434,6 +3483,61 @@ private fun AuditLogCard(entries: List<AuditLogEntry>, onRefresh: () -> Unit, mo
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+@Composable
+private fun PendingQuietRequestCard(
+    status: QuietPeriodMobileStatus,
+    isBusy: Boolean,
+    onCancelRequest: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(16.dp),
+        color = DSColor.Info.copy(alpha = 0.10f),
+        border = BorderStroke(1.dp, DSColor.Info.copy(alpha = 0.25f)),
+    ) {
+        Column(
+            modifier = Modifier.padding(DSSpacing.LG),
+            verticalArrangement = Arrangement.spacedBy(DSSpacing.SM),
+        ) {
+            Row(
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(
+                    "Quiet Period Requested",
+                    color = DSColor.TextPrimary,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = DSTypography.Body,
+                )
+                BBStatusBadge("Pending Approval", color = DSColor.Info)
+            }
+            status.requestedAt?.let { at ->
+                Text(
+                    "Requested: ${formatIsoForBanner(at) ?: at}",
+                    color = DSColor.TextSecondary,
+                    fontSize = DSTypography.Caption,
+                )
+            }
+            status.reason?.takeIf { it.isNotBlank() }?.let { reason ->
+                Text(
+                    "Reason: $reason",
+                    color = DSColor.TextSecondary,
+                    fontSize = DSTypography.Caption,
+                )
+            }
+            BBSecondaryButton(
+                text = if (isBusy) "Cancelling…" else "Cancel Request",
+                onClick = onCancelRequest,
+                enabled = !isBusy,
+                modifier = Modifier.fillMaxWidth(),
+            )
         }
     }
 }
