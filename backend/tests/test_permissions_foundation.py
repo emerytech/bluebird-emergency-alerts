@@ -39,11 +39,16 @@ def _create_user(client: TestClient, slug: str, *, name: str, role: str) -> int:
 
 
 def test_permissions_matrix_foundation_flags() -> None:
+    # All authenticated user roles can submit quiet period requests.
     assert can("teacher", PERM_REQUEST_HELP)
-    assert not can("teacher", PERM_SUBMIT_QUIET_REQUEST)
+    assert can("teacher", PERM_SUBMIT_QUIET_REQUEST)
+    assert can("staff", PERM_SUBMIT_QUIET_REQUEST)
+    assert can("law_enforcement", PERM_SUBMIT_QUIET_REQUEST)
+    assert can("admin", PERM_SUBMIT_QUIET_REQUEST)
+    assert can("building_admin", PERM_SUBMIT_QUIET_REQUEST)
+    assert can("district_admin", PERM_SUBMIT_QUIET_REQUEST)
 
     assert can("law_enforcement", PERM_REQUEST_HELP)
-    assert can("law_enforcement", PERM_SUBMIT_QUIET_REQUEST)
     assert not can("law_enforcement", PERM_APPROVE_OWN_TENANT_QUIET_REQUESTS)
 
     assert can("admin", PERM_TRIGGER_OWN_TENANT_ALERTS)

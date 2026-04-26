@@ -55,7 +55,7 @@ data class DesignTokens(
             card            = Color(0xFFFFFFFF),
             inputBackground = Color(0xFF39404F),
             textPrimary     = Color(0xFF10203F),
-            textSecondary   = Color(0xFF5D7398),
+            textSecondary   = Color(0xFF45577A),
             border          = Color(0x1A123478),
             success         = Color(0xFF166534),
             warning         = Color(0xFFB45309),

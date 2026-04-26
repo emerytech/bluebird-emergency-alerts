@@ -83,7 +83,9 @@ fun PrimaryButton(
             contentColor = Color.White,
             disabledContentColor = Color.White.copy(alpha = 0.9f),
         ),
-        modifier = modifier.scale(scale.value),
+        modifier = modifier
+            .height(52.dp)
+            .scale(scale.value),
     ) {
         Row(horizontalArrangement = Arrangement.spacedBy(DSSpacing.SM)) {
             if (isLoading) {
@@ -146,19 +148,22 @@ fun TextInput(
     OutlinedTextField(
         value = value,
         onValueChange = onValueChange,
-        label = { Text(label, color = DSColor.TextSecondary) },
-        placeholder = { Text(placeholder, color = DSColor.TextSecondary.copy(alpha = 0.8f)) },
+        label = { Text(label) },
+        placeholder = { Text(placeholder, color = Color.White.copy(alpha = 0.4f)) },
         singleLine = singleLine,
+        shape = RoundedCornerShape(DSRadius.Input),
         colors = OutlinedTextFieldDefaults.colors(
             focusedBorderColor = DSColor.Primary,
-            unfocusedBorderColor = DSColor.Border,
-            focusedTextColor = DSColor.TextPrimary,
-            unfocusedTextColor = DSColor.TextPrimary,
+            unfocusedBorderColor = DSColor.InputBorder,
+            focusedTextColor = Color.White,
+            unfocusedTextColor = Color.White,
             cursorColor = DSColor.Primary,
-            focusedContainerColor = DSColor.Card,
-            unfocusedContainerColor = DSColor.Card,
+            focusedContainerColor = DSColor.InputBackground,
+            unfocusedContainerColor = DSColor.InputBackground,
+            focusedLabelColor = DSColor.Primary,
+            unfocusedLabelColor = Color.White.copy(alpha = 0.6f),
         ),
-        modifier = modifier,
+        modifier = modifier.fillMaxWidth(),
     )
 }
 

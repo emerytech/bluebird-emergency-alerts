@@ -42,7 +42,7 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -2169,7 +2169,7 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                     if (showSettingsScreen) {
                         IconButton(onClick = { showSettingsScreen = false }) {
                             Icon(
-                                imageVector = Icons.Filled.ArrowBack,
+                                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                                 contentDescription = "Back",
                                 tint = BluePrimary,
                             )
@@ -3444,107 +3444,42 @@ private fun QuietPeriodDeleteConfirmOverlay(
     onCancel: () -> Unit,
     onConfirm: () -> Unit,
 ) {
-    var slideValue by remember { mutableStateOf(0f) }
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color(0xCC0B1220))
-            .navigationBarsPadding()
-            .statusBarsPadding(),
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(horizontal = 24.dp, vertical = 20.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            Text("BlueBird Alerts", color = Color(0xFFD4DCEE), fontSize = 16.sp, fontWeight = FontWeight.Bold)
-            Spacer(modifier = Modifier.height(24.dp))
-            Surface(
-                shape = CircleShape,
-                color = Color(0xFFDC2626),
-                modifier = Modifier.size(86.dp),
+    AlertDialog(
+        onDismissRequest = { if (!isBusy) onCancel() },
+        containerColor = DSColor.Card,
+        title = {
+            Text(
+                "End Quiet Period Early?",
+                color = DSColor.TextPrimary,
+                fontWeight = FontWeight.Bold,
+            )
+        },
+        text = {
+            Text(
+                "This will cancel your approved quiet period. Admins will be notified.",
+                color = DSColor.TextSecondary,
+                fontSize = DSTypography.Body,
+            )
+        },
+        confirmButton = {
+            Button(
+                onClick = onConfirm,
+                enabled = !isBusy,
+                colors = ButtonDefaults.buttonColors(containerColor = DSColor.Danger),
             ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Text("!", fontSize = 34.sp, color = Color.White, fontWeight = FontWeight.ExtraBold)
+                if (isBusy) {
+                    CircularProgressIndicator(color = Color.White, strokeWidth = 2.dp, modifier = Modifier.size(18.dp))
+                } else {
+                    Text("End Early", fontWeight = FontWeight.SemiBold)
                 }
             }
-            Spacer(modifier = Modifier.height(14.dp))
-            Text(
-                "END QUIET PERIOD EARLY",
-                color = Color.White,
-                fontWeight = FontWeight.ExtraBold,
-                fontSize = 24.sp,
-                textAlign = TextAlign.Center,
-            )
-            Spacer(modifier = Modifier.height(12.dp))
-            Text(
-                "Do you really want to end this approved quiet period early?",
-                color = Color(0xFFE2E8F0),
-                fontWeight = FontWeight.Medium,
-                fontSize = 15.sp,
-                textAlign = TextAlign.Center,
-                modifier = Modifier.fillMaxWidth(),
-            )
-            Spacer(modifier = Modifier.height(24.dp))
-            Surface(
-                shape = RoundedCornerShape(28.dp),
-                color = Color(0xFF5B616B),
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
-                    Text(
-                        if (isBusy) "Ending…" else "Slide to Confirm →",
-                        color = Color.White,
-                        fontWeight = FontWeight.SemiBold,
-                        fontSize = 16.sp,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    Slider(
-                        value = slideValue,
-                        onValueChange = { slideValue = it },
-                        onValueChangeFinished = {
-                            if (!isBusy && slideValue >= 0.95f) {
-                                onConfirm()
-                            }
-                            slideValue = 0f
-                        },
-                        enabled = !isBusy,
-                        colors = SliderDefaults.colors(
-                            thumbColor = Color.White,
-                            activeTrackColor = Color(0xFFFCA5A5),
-                            inactiveTrackColor = Color(0xFF6D747F),
-                        ),
-                        valueRange = 0f..1f,
-                    )
-                }
+        },
+        dismissButton = {
+            TextButton(onClick = { if (!isBusy) onCancel() }) {
+                Text("Cancel", color = DSColor.TextSecondary, fontWeight = FontWeight.SemiBold)
             }
-            Spacer(modifier = Modifier.weight(1f))
-            Surface(
-                shape = CircleShape,
-                color = Color(0xCC9CA3AF),
-                modifier = Modifier.size(68.dp),
-            ) {
-                Button(
-                    onClick = onCancel,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = Color.Transparent,
-                        contentColor = Color.White,
-                    ),
-                    modifier = Modifier.fillMaxSize(),
-                ) {
-                    Text("✕", fontSize = 26.sp, fontWeight = FontWeight.Bold)
-                }
-            }
-            Text(
-                "Cancel",
-                color = Color.White,
-                fontSize = 14.sp,
-                modifier = Modifier.padding(top = 6.dp),
-            )
-        }
-    }
+        },
+    )
 }
 
 @Composable
