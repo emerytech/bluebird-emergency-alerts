@@ -517,12 +517,16 @@ struct AlarmStatusResponse: Decodable {
     let message: String?
     let isTraining: Bool
     let trainingLabel: String?
+    let acknowledgementCount: Int
+    let currentUserAcknowledged: Bool
 
     enum CodingKeys: String, CodingKey {
         case isActive = "is_active"
         case message
         case isTraining = "is_training"
         case trainingLabel = "training_label"
+        case acknowledgementCount = "acknowledgement_count"
+        case currentUserAcknowledged = "current_user_acknowledged"
     }
 
     init(from decoder: Decoder) throws {
@@ -531,6 +535,8 @@ struct AlarmStatusResponse: Decodable {
         message = try container.decodeIfPresent(String.self, forKey: .message)
         isTraining = try container.decodeIfPresent(Bool.self, forKey: .isTraining) ?? false
         trainingLabel = try container.decodeIfPresent(String.self, forKey: .trainingLabel)
+        acknowledgementCount = try container.decodeIfPresent(Int.self, forKey: .acknowledgementCount) ?? 0
+        currentUserAcknowledged = try container.decodeIfPresent(Bool.self, forKey: .currentUserAcknowledged) ?? false
     }
 }
 

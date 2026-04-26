@@ -550,6 +550,8 @@ data class AlarmStatus(
     val activatedAt: String? = null,
     val activatedByUserId: Int? = null,
     val broadcasts: List<BroadcastUpdate> = emptyList(),
+    val acknowledgementCount: Int = 0,
+    val currentUserAcknowledged: Boolean = false,
 )
 
 data class IncidentFeedItem(
@@ -3416,6 +3418,14 @@ private fun AlarmBanner(alarm: AlarmStatus, schoolName: String = "", modifier: M
                 alarm.activatedByUserId?.let {
                     Text("Triggered by user #$it", fontSize = 12.sp, color = Color(0xFFFFCDD2))
                 }
+                if (alarm.acknowledgementCount > 0) {
+                    Text(
+                        "✓ ${alarm.acknowledgementCount} acknowledged",
+                        fontSize = 12.sp,
+                        color = Color(0xFFA7F3D0),
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                }
             }
         }
     }
@@ -5072,12 +5082,14 @@ private class BackendClient(baseUrl: String, private val apiKey: String) {
                 }
             }
             return AlarmStatus(
-                isActive          = j.optBoolean("is_active"),
-                message           = j.optString("message").ifBlank { null },
-                activatedAt       = j.optString("activated_at").ifBlank { null },
-                activatedByUserId = if (j.has("activated_by_user_id") && !j.isNull("activated_by_user_id"))
+                isActive                = j.optBoolean("is_active"),
+                message                 = j.optString("message").ifBlank { null },
+                activatedAt             = j.optString("activated_at").ifBlank { null },
+                activatedByUserId       = if (j.has("activated_by_user_id") && !j.isNull("activated_by_user_id"))
                     j.optInt("activated_by_user_id") else null,
-                broadcasts       = broadcasts,
+                broadcasts              = broadcasts,
+                acknowledgementCount    = j.optInt("acknowledgement_count", 0),
+                currentUserAcknowledged = j.optBoolean("current_user_acknowledged", false),
             )
         }
     }
@@ -5546,14 +5558,16 @@ private class BackendClient(baseUrl: String, private val apiKey: String) {
             }
         }
         return AlarmStatus(
-            isActive          = j.optBoolean("is_active"),
-            message           = j.optString("message").ifBlank { null },
-            isTraining        = j.optBoolean("is_training", false),
-            trainingLabel     = j.optNullableString("training_label"),
-            activatedAt       = j.optString("activated_at").ifBlank { null },
-            activatedByUserId = if (j.has("activated_by_user_id") && !j.isNull("activated_by_user_id"))
+            isActive                 = j.optBoolean("is_active"),
+            message                  = j.optString("message").ifBlank { null },
+            isTraining               = j.optBoolean("is_training", false),
+            trainingLabel            = j.optNullableString("training_label"),
+            activatedAt              = j.optString("activated_at").ifBlank { null },
+            activatedByUserId        = if (j.has("activated_by_user_id") && !j.isNull("activated_by_user_id"))
                 j.optInt("activated_by_user_id") else null,
-            broadcasts        = broadcasts,
+            broadcasts               = broadcasts,
+            acknowledgementCount     = j.optInt("acknowledgement_count", 0),
+            currentUserAcknowledged  = j.optBoolean("current_user_acknowledged", false),
         )
     }
 

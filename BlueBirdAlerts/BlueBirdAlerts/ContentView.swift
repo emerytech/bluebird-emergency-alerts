@@ -490,6 +490,8 @@ struct ContentView: View {
     @State private var alarmMessage: String?
     @State private var alarmIsTraining = false
     @State private var alarmTrainingLabel: String?
+    @State private var alarmAcknowledgementCount = 0
+    @State private var alarmCurrentUserAcknowledged = false
     @State private var showAlarmTakeover = false
     @State private var isRefreshingIncidentFeed = false
     @State private var isUpdatingAlarm = false
@@ -1162,6 +1164,11 @@ struct ContentView: View {
                                 .foregroundStyle(textMuted)
                                 .lineLimit(2)
                         }
+                        if alarmAcknowledgementCount > 0 {
+                            Text("✓ \(alarmAcknowledgementCount) acknowledged")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(DSColor.success)
+                        }
                     }
                     Divider()
                 }
@@ -1798,6 +1805,8 @@ struct ContentView: View {
             alarmMessage = alarm.message
             alarmIsTraining = alarm.isTraining
             alarmTrainingLabel = alarm.trainingLabel
+            alarmAcknowledgementCount = alarm.acknowledgementCount
+            alarmCurrentUserAcknowledged = alarm.currentUserAcknowledged
             anySuccess = true
         } catch {
             errors.append("Alarm status: \(error.localizedDescription)")
