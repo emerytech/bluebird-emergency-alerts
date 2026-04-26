@@ -518,6 +518,8 @@ struct ContentView: View {
     @State private var isUpdatingQuietPeriodRequests = false
     @State private var pendingQuietActionItem: QuietPeriodAdminRequest? = nil
     @State private var pendingQuietActionIsApprove: Bool = true
+    @State private var quietPeriodLocalFeedback: String? = nil
+    @State private var quietPeriodLocalIsError: Bool = false
     @State private var processedEventIDs: Set<String> = []
     @State private var pushDeliveryStats: PushDeliveryStatsResponse?
     @State private var auditLogEntries: [AuditLogEntry] = []
@@ -538,7 +540,7 @@ struct ContentView: View {
 
     private var isAdminSession: Bool {
         let role = appState.userRole.lowercased()
-        return role == "admin" || role == "super_admin" || role == "platform_super_admin"
+        return role == "admin" || role == "building_admin" || role == "super_admin" || role == "platform_super_admin"
     }
 
     private var isDistrictSession: Bool {
@@ -1568,6 +1570,9 @@ struct ContentView: View {
                         ) {
                             Task { await submitQuietPeriodRequest() }
                         }
+                        if let feedback = quietPeriodLocalFeedback {
+                            flashBanner(message: feedback, isError: quietPeriodLocalIsError)
+                        }
                     }
                 }
                 if isAdminSession {
@@ -2307,21 +2312,42 @@ struct ContentView: View {
 
     private func submitQuietPeriodRequest() async {
         guard let userID = appState.userID else {
-            appState.lastError = "You must be signed in to request quiet period."
+            quietPeriodLocalFeedback = "You must be signed in to request a quiet period."
+            quietPeriodLocalIsError = true
             return
         }
+        #if DEBUG
+        print("[QuietPeriod] Submit tapped — userID: \(userID)")
+        #endif
         isSubmittingQuickAction = true
+        quietPeriodLocalFeedback = nil
         defer { isSubmittingQuickAction = false }
         do {
             let trimmed = quietPeriodReason.trimmingCharacters(in: .whitespacesAndNewlines)
+            #if DEBUG
+            print("[QuietPeriod] POST /quiet-periods/request — reason: \(trimmed.isEmpty ? "<none>" : trimmed)")
+            #endif
             _ = try await api.requestQuietPeriod(
                 userID: userID,
                 reason: trimmed.isEmpty ? nil : trimmed
             )
+            #if DEBUG
+            print("[QuietPeriod] Request submitted successfully")
+            #endif
             quietPeriodReason = ""
+            quietPeriodLocalFeedback = "Request submitted — admins will review it shortly."
+            quietPeriodLocalIsError = false
             appState.lastError = nil
             appState.lastStatus = "Quiet period request submitted."
+            if isAdminSession {
+                await loadAdminQuietPeriodRequests()
+            }
         } catch {
+            #if DEBUG
+            print("[QuietPeriod] Request failed: \(error)")
+            #endif
+            quietPeriodLocalFeedback = "Request failed: \(error.localizedDescription)"
+            quietPeriodLocalIsError = true
             appState.lastError = "Quiet period request failed: \(error.localizedDescription)"
         }
     }

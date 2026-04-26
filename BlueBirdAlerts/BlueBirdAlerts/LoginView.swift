@@ -14,6 +14,7 @@ struct LoginView: View {
     @State private var selectedSchoolName = ""
     @State private var keyboardHeight: CGFloat = 0
     @State private var animateIntro = false
+    @State private var showOnboarding = false
 
     var body: some View {
         ZStack {
@@ -102,11 +103,28 @@ struct LoginView: View {
                     ) {
                         Task { await submitLogin() }
                     }
+
+                    Button {
+                        showOnboarding = true
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "person.badge.plus")
+                            Text("New user? Get started with a code")
+                        }
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(DSColor.primary.opacity(0.85))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                    }
                 }
                 .padding(20)
                 .padding(.bottom, max(0, keyboardHeight - 44))
             }
             .scrollDismissesKeyboard(.interactively)
+        }
+        .sheet(isPresented: $showOnboarding) {
+            OnboardingView()
+                .environmentObject(appState)
         }
         .task {
             await loadSchools()

@@ -54,7 +54,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
@@ -929,10 +931,13 @@ class MainViewModel : ViewModel() {
             _state.update { it.copy(errorMsg = "You must be signed in to request a quiet period.") }
             return
         }
+        Log.d("QuietPeriod", "Submit tapped — userId=$userId reason=$reason")
         viewModelScope.launch(Dispatchers.IO) {
             _state.update { it.copy(isBusy = true, errorMsg = null) }
+            Log.d("QuietPeriod", "POST /quiet-periods/request")
             runCatching { client!!.requestQuietPeriod(userId = userId, reason = reason) }
                 .onSuccess {
+                    Log.d("QuietPeriod", "Request submitted successfully")
                     val quiet = runCatching { client!!.quietPeriodStatus(userId = userId) }.getOrNull()
                     _state.update {
                         it.copy(
@@ -943,6 +948,7 @@ class MainViewModel : ViewModel() {
                     }
                 }
                 .onFailure { e ->
+                    Log.e("QuietPeriod", "Request failed: ${e.message}", e)
                     _state.update { it.copy(isBusy = false, errorMsg = e.message ?: "Failed to request quiet period.") }
                 }
         }
@@ -1530,6 +1536,7 @@ private fun LoginScreen(onDone: () -> Unit) {
     var showPassword by remember { mutableStateOf(false) }
     var isSubmitting by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
+    var showOnboarding by remember { mutableStateOf(false) }
     val scrollState = rememberScrollState()
 
     val submitLogin: () -> Unit = {
@@ -1611,20 +1618,20 @@ private fun LoginScreen(onDone: () -> Unit) {
                 .verticalScroll(scrollState)
                 .imePadding()
                 .navigationBarsPadding()
-                .padding(horizontal = 24.dp, vertical = 24.dp),
+                .padding(horizontal = 24.dp, vertical = 32.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(18.dp),
+            verticalArrangement = Arrangement.spacedBy(20.dp),
         ) {
             Surface(
-                shape = RoundedCornerShape(28.dp),
+                shape = RoundedCornerShape(24.dp),
                 color = SurfaceMain,
-                shadowElevation = 8.dp,
+                shadowElevation = 12.dp,
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Column(
-                    modifier = Modifier.padding(22.dp),
+                    modifier = Modifier.padding(24.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(20.dp),
                 ) {
                     BlueBirdLogo(modifier = Modifier.size(116.dp))
                     Column(
@@ -1640,16 +1647,18 @@ private fun LoginScreen(onDone: () -> Unit) {
                         Text(
                             "Clear, fast emergency communication for school response.",
                             fontSize = 14.sp,
+                            lineHeight = 20.sp,
                             color = TextMuted,
                             textAlign = TextAlign.Center,
                         )
                     }
                     Surface(
-                        shape = RoundedCornerShape(18.dp),
+                        shape = RoundedCornerShape(14.dp),
                         color = SurfaceSoft,
+                        border = BorderStroke(1.dp, BorderSoft.copy(alpha = 0.35f)),
                         modifier = Modifier.fillMaxWidth(),
                     ) {
-                        Column(Modifier.padding(16.dp)) {
+                        Column(Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
                             Text("School server", fontSize = 12.sp, color = TextMuted)
                             Text(
                                 normalizeServerUrl(serverUrl),
@@ -1677,14 +1686,19 @@ private fun LoginScreen(onDone: () -> Unit) {
                         trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = schoolMenuExpanded) },
                         colors = OutlinedTextFieldDefaults.colors(
                             focusedBorderColor = BluePrimary,
-                            unfocusedBorderColor = BorderSoft,
+                            unfocusedBorderColor = DSColor.Border.copy(alpha = 0.45f),
+                            focusedLabelColor = BluePrimary,
+                            unfocusedLabelColor = TextMuted,
                             focusedTextColor = TextPri,
                             unfocusedTextColor = TextPri,
                             cursorColor = BluePrimary,
                             focusedContainerColor = SurfaceMain,
                             unfocusedContainerColor = SurfaceMain,
                         ),
-                        modifier = Modifier.menuAnchor(MenuAnchorType.PrimaryNotEditable).fillMaxWidth(),
+                        modifier = Modifier
+                            .menuAnchor(MenuAnchorType.PrimaryNotEditable)
+                            .fillMaxWidth()
+                            .defaultMinSize(minHeight = 56.dp),
                     )
                     ExposedDropdownMenu(
                         expanded = schoolMenuExpanded,
@@ -1721,14 +1735,18 @@ private fun LoginScreen(onDone: () -> Unit) {
                     singleLine = true,
                     colors = OutlinedTextFieldDefaults.colors(
                         focusedBorderColor = BluePrimary,
-                        unfocusedBorderColor = BorderSoft,
+                        unfocusedBorderColor = DSColor.Border.copy(alpha = 0.45f),
+                        focusedLabelColor = BluePrimary,
+                        unfocusedLabelColor = TextMuted,
                         focusedTextColor = TextPri,
                         unfocusedTextColor = TextPri,
                         cursorColor = BluePrimary,
                         focusedContainerColor = SurfaceMain,
                         unfocusedContainerColor = SurfaceMain,
                     ),
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .defaultMinSize(minHeight = 56.dp),
                 )
             }
 
@@ -1744,14 +1762,18 @@ private fun LoginScreen(onDone: () -> Unit) {
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
                 colors = OutlinedTextFieldDefaults.colors(
                     focusedBorderColor = BluePrimary,
-                    unfocusedBorderColor = BorderSoft,
+                    unfocusedBorderColor = DSColor.Border.copy(alpha = 0.45f),
+                    focusedLabelColor = BluePrimary,
+                    unfocusedLabelColor = TextMuted,
                     focusedTextColor = TextPri,
                     unfocusedTextColor = TextPri,
                     cursorColor = BluePrimary,
                     focusedContainerColor = SurfaceMain,
                     unfocusedContainerColor = SurfaceMain,
                 ),
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .defaultMinSize(minHeight = 56.dp),
             )
 
             OutlinedTextField(
@@ -1773,21 +1795,26 @@ private fun LoginScreen(onDone: () -> Unit) {
                 },
                 colors = OutlinedTextFieldDefaults.colors(
                     focusedBorderColor = BluePrimary,
-                    unfocusedBorderColor = BorderSoft,
+                    unfocusedBorderColor = DSColor.Border.copy(alpha = 0.45f),
+                    focusedLabelColor = BluePrimary,
+                    unfocusedLabelColor = TextMuted,
                     focusedTextColor = TextPri,
                     unfocusedTextColor = TextPri,
                     cursorColor = BluePrimary,
                     focusedContainerColor = SurfaceMain,
                     unfocusedContainerColor = SurfaceMain,
                 ),
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .defaultMinSize(minHeight = 56.dp),
             )
 
             error?.let {
                 Text(
                     text = it,
-                    color = Color(0xFFB91C1C),
+                    color = DSColor.Danger,
                     fontSize = 13.sp,
+                    fontWeight = FontWeight.Medium,
                     textAlign = TextAlign.Center,
                     modifier = Modifier.fillMaxWidth(),
                 )
@@ -1805,6 +1832,7 @@ private fun LoginScreen(onDone: () -> Unit) {
                         "Could not reach the school list from the backend. You can still enter a school code like nn, or a full school URL."
                 },
                 fontSize = 13.sp,
+                lineHeight = 20.sp,
                 color = TextMuted,
                 textAlign = TextAlign.Center,
                 modifier = Modifier.fillMaxWidth(),
@@ -1813,13 +1841,31 @@ private fun LoginScreen(onDone: () -> Unit) {
             PrimaryButton(
                 text = if (isSubmitting) "Signing In…" else "Sign In",
                 onClick = submitLogin,
-                enabled = !isSubmitting,
+                enabled = !isSubmitting && username.isNotBlank() && password.isNotBlank(),
                 isLoading = isSubmitting,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(52.dp),
+                    .height(56.dp),
             )
+
+            TextButton(
+                onClick = { showOnboarding = true },
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(
+                    "New user? Get started with a code",
+                    color = BluePrimary.copy(alpha = 0.85f),
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.SemiBold,
+                )
+            }
         }
+    }
+
+    if (showOnboarding) {
+        OnboardingSheet(
+            onDismiss = { showOnboarding = false },
+        )
     }
 }
 
@@ -1865,7 +1911,10 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
     val schoolName = remember { getSchoolName(ctx) }
     val currentUserId = remember { getUserId(ctx).toIntOrNull() }
     val canDeactivate = remember { canDeactivateAlarm(ctx) }
-    val isAdmin = remember(userRole) { userRole.equals("admin", ignoreCase = true) }
+    val isAdmin = remember(userRole) {
+        userRole.equals("admin", ignoreCase = true) ||
+        userRole.equals("building_admin", ignoreCase = true)
+    }
     val isDistrictSession = remember(userRole) {
         userRole.equals("district_admin", ignoreCase = true) ||
         userRole.equals("super_admin", ignoreCase = true) ||
@@ -5274,7 +5323,7 @@ private class BackendClient(baseUrl: String, private val apiKey: String) {
                         val isActive = item.optBoolean("is_active", true)
                         val role = item.optString("role").lowercase()
                         val userId = item.optInt("user_id", 0)
-                        if (!isActive || role == "admin" || userId <= 0) continue
+                        if (!isActive || role == "admin" || role == "building_admin" || userId <= 0) continue
                         add(
                             InboxRecipient(
                                 userId = userId,
@@ -5374,7 +5423,11 @@ private class BackendClient(baseUrl: String, private val apiKey: String) {
             .withAuth()
             .post(body.toString().toRequestBody(json))
             .build()
-        http.newCall(req).execute().use { requireSuccess(it) }
+        Log.d("QuietPeriod", "BackendClient → POST $base/quiet-periods/request body=$body")
+        http.newCall(req).execute().use { res ->
+            Log.d("QuietPeriod", "BackendClient ← ${res.code}")
+            requireSuccess(res)
+        }
     }
 
     fun listAdminQuietPeriodRequests(adminUserId: Int): List<AdminQuietPeriodRequest> {
@@ -5806,9 +5859,322 @@ private class BackendClient(baseUrl: String, private val apiKey: String) {
         }
         return body
     }
+
+    fun validateInviteCode(code: String, tenantSlug: String): JSONObject {
+        val body = JSONObject().apply {
+            put("code", code.trim().uppercase())
+            put("tenant_slug", tenantSlug.trim())
+        }.toString().toRequestBody(json)
+        val req = Request.Builder()
+            .url("${BuildConfig.BACKEND_BASE_URL}/onboarding/validate-code")
+            .post(body).build()
+        return http.newCall(req).execute().use { res -> JSONObject(requireSuccess(res)) }
+    }
+
+    fun createAccountFromCode(code: String, tenantSlug: String, name: String, loginName: String, password: String): JSONObject {
+        val body = JSONObject().apply {
+            put("code", code.trim().uppercase())
+            put("tenant_slug", tenantSlug.trim())
+            put("name", name.trim())
+            put("login_name", loginName.trim().lowercase())
+            put("password", password)
+        }.toString().toRequestBody(json)
+        val req = Request.Builder()
+            .url("${BuildConfig.BACKEND_BASE_URL}/onboarding/create-account")
+            .post(body).build()
+        return http.newCall(req).execute().use { res -> JSONObject(requireSuccess(res)) }
+    }
+
+    fun validateSetupCode(code: String): JSONObject {
+        val body = JSONObject().apply {
+            put("code", code.trim().uppercase())
+        }.toString().toRequestBody(json)
+        val req = Request.Builder()
+            .url("${BuildConfig.BACKEND_BASE_URL}/onboarding/validate-setup-code")
+            .post(body).build()
+        return http.newCall(req).execute().use { res -> JSONObject(requireSuccess(res)) }
+    }
+
+    fun createDistrictAdmin(code: String, name: String, loginName: String, password: String): JSONObject {
+        val body = JSONObject().apply {
+            put("code", code.trim().uppercase())
+            put("name", name.trim())
+            put("login_name", loginName.trim().lowercase())
+            put("password", password)
+        }.toString().toRequestBody(json)
+        val req = Request.Builder()
+            .url("${BuildConfig.BACKEND_BASE_URL}/onboarding/create-district-admin")
+            .post(body).build()
+        return http.newCall(req).execute().use { res -> JSONObject(requireSuccess(res)) }
+    }
 }
 
 private data class MessageInboxResponse(
     val unreadCount: Int,
     val messages: List<AdminInboxMessage>,
 )
+
+// ── Onboarding sheet ──────────────────────────────────────────────────────────
+
+private sealed class OnboardingStep {
+    object EnterCode : OnboardingStep()
+    data class Validated(
+        val role: String,
+        val roleLabel: String,
+        val title: String?,
+        val tenantSlug: String,
+        val tenantName: String,
+        val isSetup: Boolean = false,
+    ) : OnboardingStep()
+    data class CreateAccount(val tenantSlug: String, val isSetup: Boolean) : OnboardingStep()
+    object Success : OnboardingStep()
+}
+
+@Composable
+private fun OnboardingSheet(onDismiss: () -> Unit) {
+    var step by remember { mutableStateOf<OnboardingStep>(OnboardingStep.EnterCode) }
+    var codeText by remember { mutableStateOf("") }
+    var nameText by remember { mutableStateOf("") }
+    var usernameText by remember { mutableStateOf("") }
+    var passwordText by remember { mutableStateOf("") }
+    var confirmPasswordText by remember { mutableStateOf("") }
+    var isBusy by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+    val client = remember { BackendClient(BuildConfig.BACKEND_BASE_URL, BuildConfig.BACKEND_API_KEY) }
+    val shakeOffset = remember { Animatable(0f) }
+    val haptic = LocalHapticFeedback.current
+
+    fun triggerShake() {
+        scope.launch {
+            repeat(3) {
+                shakeOffset.animateTo(-10f, tween(50))
+                shakeOffset.animateTo(10f, tween(50))
+            }
+            shakeOffset.animateTo(0f)
+        }
+    }
+
+    Surface(
+        modifier = Modifier.fillMaxSize(),
+        color = DSColor.Background,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 20.dp, vertical = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    "Get Started",
+                    fontSize = 22.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = DSColor.TextPrimary,
+                )
+                TextButton(onClick = onDismiss) {
+                    Text("Cancel", color = BluePrimary)
+                }
+            }
+
+            when (val s = step) {
+                is OnboardingStep.EnterCode -> {
+                    Text(
+                        "Enter your 8-character invite code to create your account.",
+                        fontSize = 14.sp,
+                        color = DSColor.TextSecondary,
+                    )
+                    OutlinedTextField(
+                        value = codeText,
+                        onValueChange = { codeText = it.uppercase() },
+                        label = { Text("Invite Code") },
+                        placeholder = { Text("e.g. ABCD1234") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                    )
+                    if (error != null) {
+                        Text(error!!, color = DSColor.Danger, fontSize = 13.sp)
+                    }
+                    PrimaryButton(
+                        text = if (isBusy) "Checking…" else "Validate Code",
+                        onClick = {
+                            val code = codeText.trim().uppercase()
+                            if (code.length < 4) { error = "Enter a valid code."; return@PrimaryButton }
+                            scope.launch(Dispatchers.IO) {
+                                isBusy = true; error = null
+                                runCatching {
+                                    val res = client.validateSetupCode(code)
+                                    if (res.optBoolean("valid", false)) {
+                                        step = OnboardingStep.Validated(
+                                            role = "district_admin",
+                                            roleLabel = "District Admin",
+                                            title = null,
+                                            tenantSlug = res.optString("tenant_slug"),
+                                            tenantName = res.optString("tenant_name"),
+                                            isSetup = true,
+                                        )
+                                    } else {
+                                        error = res.optString("error").ifBlank { "Invalid or expired code." }
+                                    }
+                                }.onFailure { error = it.message }
+                                isBusy = false
+                            }
+                        },
+                        enabled = !isBusy && codeText.trim().length >= 4,
+                        isLoading = isBusy,
+                        modifier = Modifier.fillMaxWidth().height(52.dp),
+                    )
+                }
+                is OnboardingStep.Validated -> {
+                    Surface(
+                        shape = RoundedCornerShape(14.dp),
+                        color = DSColor.Card,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(16.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Text("Code Verified ✓", fontWeight = FontWeight.SemiBold, color = DSColor.Success)
+                            Text("School: ${s.tenantName}", fontSize = 14.sp, color = DSColor.TextPrimary)
+                            Text("Role: ${s.roleLabel}", fontSize = 14.sp, color = DSColor.TextPrimary)
+                            if (!s.title.isNullOrBlank()) {
+                                Text("Title: ${s.title}", fontSize = 14.sp, color = DSColor.TextPrimary)
+                            }
+                        }
+                    }
+                    PrimaryButton(
+                        text = "Create My Account",
+                        onClick = { step = OnboardingStep.CreateAccount(s.tenantSlug, s.isSetup) },
+                        enabled = true,
+                        modifier = Modifier.fillMaxWidth().height(52.dp),
+                    )
+                    TextButton(onClick = { step = OnboardingStep.EnterCode; codeText = ""; error = null }) {
+                        Text("Try a Different Code", color = DSColor.TextSecondary, fontSize = 13.sp)
+                    }
+                }
+                is OnboardingStep.CreateAccount -> {
+                    val isFormValid = nameText.isNotBlank() &&
+                        usernameText.isNotBlank() &&
+                        passwordText.length >= 8 &&
+                        confirmPasswordText == passwordText &&
+                        confirmPasswordText.isNotEmpty()
+                    val buttonAlpha by animateFloatAsState(
+                        targetValue = if (isFormValid) 1f else 0.5f,
+                        label = "buttonAlpha",
+                    )
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .offset(x = shakeOffset.value.dp),
+                        verticalArrangement = Arrangement.spacedBy(16.dp),
+                    ) {
+                        OutlinedTextField(
+                            value = nameText,
+                            onValueChange = { nameText = it },
+                            label = { Text("Full Name") },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                        )
+                        OutlinedTextField(
+                            value = usernameText,
+                            onValueChange = { usernameText = it.lowercase() },
+                            label = { Text("Username") },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
+                        )
+                        OutlinedTextField(
+                            value = passwordText,
+                            onValueChange = { passwordText = it },
+                            label = { Text("Password (min 8 characters)") },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                            visualTransformation = PasswordVisualTransformation(),
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                        )
+                        OutlinedTextField(
+                            value = confirmPasswordText,
+                            onValueChange = { confirmPasswordText = it },
+                            label = { Text("Confirm Password") },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                            visualTransformation = PasswordVisualTransformation(),
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                        )
+                        if (error != null) {
+                            Text(error!!, color = DSColor.Danger, fontSize = 13.sp)
+                        }
+                        PrimaryButton(
+                            text = if (isBusy) "Creating Account…" else "Create Account",
+                            onClick = {
+                                if (!isFormValid) {
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    triggerShake()
+                                    return@PrimaryButton
+                                }
+                                val name = nameText.trim()
+                                val username = usernameText.trim().lowercase()
+                                scope.launch(Dispatchers.IO) {
+                                    isBusy = true; error = null
+                                    runCatching {
+                                        val code = codeText.trim().uppercase()
+                                        val res = if (s.isSetup) {
+                                            client.createDistrictAdmin(code, name, username, passwordText)
+                                        } else {
+                                            client.createAccountFromCode(code, s.tenantSlug, name, username, passwordText)
+                                        }
+                                        if (res.optBoolean("valid", false)) {
+                                            step = OnboardingStep.Success
+                                        } else {
+                                            error = res.optString("error").ifBlank { "Could not create account." }
+                                        }
+                                    }.onFailure { error = it.message }
+                                    isBusy = false
+                                }
+                            },
+                            enabled = !isBusy,
+                            isLoading = isBusy,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(52.dp)
+                                .alpha(buttonAlpha),
+                        )
+                    }
+                }
+                is OnboardingStep.Success -> {
+                    Column(
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 32.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(16.dp),
+                    ) {
+                        Text("✓", fontSize = 64.sp, color = DSColor.Success)
+                        Text(
+                            "Account Created!",
+                            fontSize = 22.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = DSColor.TextPrimary,
+                        )
+                        Text(
+                            "Sign in with your username and password on the login screen.",
+                            fontSize = 14.sp,
+                            color = DSColor.TextSecondary,
+                            textAlign = TextAlign.Center,
+                        )
+                        PrimaryButton(
+                            text = "Done",
+                            onClick = onDismiss,
+                            enabled = true,
+                            modifier = Modifier.fillMaxWidth().height(52.dp),
+                        )
+                    }
+                }
+            }
+        }
+    }
+}

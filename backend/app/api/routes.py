@@ -83,7 +83,18 @@ from app.models.schemas import (
     PushDeliveryStatsResponse,
     AuditLogEntry,
     AuditLogResponse,
+    GenerateAccessCodeRequest,
+    AccessCodeResponse,
+    AccessCodeListResponse,
+    ValidateCodeRequest,
+    ValidateCodeResponse,
+    CreateAccountFromCodeRequest,
+    ValidateSetupCodeRequest,
+    ValidateSetupCodeResponse,
+    CreateDistrictAdminRequest,
+    SendInviteEmailRequest,
 )
+from app.services.access_code_service import AccessCodeService
 from app.services.alert_broadcaster import BroadcastPlan, AlertBroadcaster
 from app.services.alarm_store import AlarmStateRecord, AlarmStore
 from app.services.apns import APNsClient
@@ -97,9 +108,11 @@ from app.services.device_registry import DeviceRegistry
 from app.services.fcm import FCMClient
 from app.services.incident_store import IncidentStore
 from app.services.permissions import (
+    CODEGEN_ALLOWED_ROLES,
     PERM_APPROVE_ASSIGNED_TENANT_QUIET_REQUESTS,
     PERM_APPROVE_OWN_TENANT_QUIET_REQUESTS,
     PERM_FULL_ACCESS,
+    PERM_GENERATE_ACCESS_CODES,
     PERM_MANAGE_ASSIGNED_TENANT_INCIDENTS,
     PERM_MANAGE_ASSIGNED_TENANT_USERS,
     PERM_MANAGE_ASSIGNED_TENANTS,
@@ -110,7 +123,9 @@ from app.services.permissions import (
     can,
     can_any,
     can_deactivate_alarm as _can_deactivate_alarm,
+    can_generate_codes,
     is_dashboard_role,
+    role_display_label,
     valid_tenant_roles,
 )
 from app.services.quiet_period_store import QuietPeriodStore
@@ -152,6 +167,35 @@ def _check_alarm_rate_limit(slug: str, *, max_activations: int = 5, window_secon
             return False
         dq.append(now)
         return True
+
+
+# ── Onboarding code-validation rate limiter (per-IP, in-memory) ───────────────
+_code_rate_store: dict[str, deque] = {}
+_code_rate_lock = Lock()
+
+
+def _check_code_rate_limit(ip: str, *, max_attempts: int = 5, window_seconds: int = 60) -> bool:
+    """Returns True if within limit. Protects /onboarding/validate-* endpoints."""
+    now = time.monotonic()
+    with _code_rate_lock:
+        if ip not in _code_rate_store:
+            _code_rate_store[ip] = deque()
+        dq = _code_rate_store[ip]
+        while dq and now - dq[0] > window_seconds:
+            dq.popleft()
+        if len(dq) >= max_attempts:
+            return False
+        dq.append(now)
+        return True
+
+
+def _client_ip(request: Request) -> str:
+    forwarded = request.headers.get("x-forwarded-for", "")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
 TRUST_DEVICE_TTL_SECONDS = 14 * 24 * 60 * 60
 ADMIN_TRUST_COOKIE = "bluebird_admin_trusted_device"
 SUPER_ADMIN_TRUST_COOKIE = "bluebird_super_admin_trusted_device"
@@ -248,6 +292,10 @@ def _email_service(req: Request) -> EmailService:
     return req.app.state.email_service  # type: ignore[attr-defined]
 
 
+def _access_codes(req: Request) -> AccessCodeService:
+    return req.app.state.access_code_service  # type: ignore[attr-defined]
+
+
 def _session_user_id(request: Request) -> Optional[int]:
     value = request.session.get("admin_user_id")
     return int(value) if isinstance(value, int) or isinstance(value, str) and str(value).isdigit() else None
@@ -298,14 +346,14 @@ def _pop_flash(request: Request) -> tuple[Optional[str], Optional[str]]:
 
 def _admin_section(value: Optional[str]) -> str:
     normalized = str(value or "").strip().lower()
-    if normalized in {"dashboard", "user-management", "quiet-periods", "audit-logs", "settings", "drill-reports", "district"}:
+    if normalized in {"dashboard", "user-management", "access-codes", "quiet-periods", "audit-logs", "settings", "drill-reports", "district"}:
         return normalized
     return "dashboard"
 
 
 def _super_admin_section(value: Optional[str]) -> str:
     normalized = str(value or "").strip().lower()
-    if normalized in {"schools", "billing", "platform-audit", "create-school", "security", "server-tools", "health", "email-tool"}:
+    if normalized in {"schools", "billing", "platform-audit", "create-school", "security", "server-tools", "health", "email-tool", "setup-codes"}:
         return normalized
     return "schools"
 
@@ -1025,6 +1073,14 @@ async def _require_active_user_with_roles(users: UserStore, user_id: int, *, rol
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Active user is required")
     if user.role not in roles:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User does not have permission for this action")
+    return user.id
+
+
+async def _require_active_user(users: UserStore, user_id: int) -> int:
+    """Require any active user — no role or permission restriction."""
+    user = await users.get_user(int(user_id))
+    if user is None or not user.is_active:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Active user is required")
     return user.id
 
 
@@ -1764,6 +1820,12 @@ async def admin_dashboard(
     _ws_user_id = int(getattr(request.state.admin_user, "id", 0) or 0)
     _ws_home_tenant_slug = str(request.state.school.slug)
 
+    _admin_role = str(getattr(request.state.admin_user, "role", "")).strip().lower()
+    _access_code_records: list = []
+    if can_generate_codes(_admin_role) and selected_section == "access-codes":
+        _access_code_records = await _access_codes(request).list_codes(str(request.state.school.slug), limit=200)
+    _base_domain = str(getattr(request.app.state.settings, "BASE_DOMAIN", "") or "app.bluebirdalerts.com").strip()
+
     html = render_admin_page(
         school_name=request.state.school.name,
         school_slug=request.state.school.slug,
@@ -1819,6 +1881,8 @@ async def admin_dashboard(
         ws_api_key=_ws_api_key,
         current_user_id=_ws_user_id,
         home_tenant_slug=_ws_home_tenant_slug,
+        access_code_records=_access_code_records,
+        base_domain=_base_domain,
     )
     return HTMLResponse(content=html)
 
@@ -2613,6 +2677,9 @@ async def super_admin_dashboard(
     health_status = await hm.current_status()
     health_heartbeats = await hm.recent_heartbeats(limit=20)
     email_log = await es.recent_email_log(limit=50)
+    _sa_section = _super_admin_section(section)
+    _setup_codes = await _access_codes(request).list_setup_codes(limit=200) if _sa_section == "setup-codes" else []
+    _sa_schools_by_slug = {s.slug: s for s in await _schools(request).list_schools()} if _sa_section == "setup-codes" else {}
     return HTMLResponse(
         render_super_admin_page(
             base_domain=request.app.state.settings.BASE_DOMAIN,  # type: ignore[attr-defined]
@@ -2635,13 +2702,15 @@ async def super_admin_dashboard(
             ),
             flash_message=flash_message,
             flash_error=flash_error,
-            active_section=_super_admin_section(section),
+            active_section=_sa_section,
             health_status=health_status,
             health_heartbeats=health_heartbeats,
             email_log=email_log,
             email_configured=es.is_configured(),
             platform_admin_emails=request.app.state.settings.platform_admin_email_list,  # type: ignore[attr-defined]
             email_template_keys=EMAIL_TEMPLATE_KEYS,
+            setup_codes=_setup_codes,
+            schools_by_slug=_sa_schools_by_slug,
         )
     )
 
@@ -3083,7 +3152,7 @@ async def admin_create_user(
         _set_flash(request, error="Name is required.")
         return RedirectResponse(url="/admin?section=user-management#users", status_code=status.HTTP_303_SEE_OTHER)
     if normalized_role not in valid_tenant_roles():
-        _set_flash(request, error="Role must be one of: teacher, law_enforcement, admin, district_admin.")
+        _set_flash(request, error="Role must be one of: building_admin, teacher, staff, law_enforcement, district_admin.")
         return RedirectResponse(url="/admin?section=user-management#users", status_code=status.HTTP_303_SEE_OTHER)
     if bool(login_name.strip()) != bool(password.strip()):
         _set_flash(request, error="Provide both username and password to enable login for a user.")
@@ -3464,7 +3533,7 @@ async def admin_update_user(
         _set_flash(request, error="User name cannot be empty.")
         return RedirectResponse(url="/admin?section=user-management#users", status_code=status.HTTP_303_SEE_OTHER)
     if normalized_role not in valid_tenant_roles():
-        _set_flash(request, error="Role must be one of: teacher, law_enforcement, admin, district_admin.")
+        _set_flash(request, error="Role must be one of: building_admin, teacher, staff, law_enforcement, district_admin.")
         return RedirectResponse(url="/admin?section=user-management#users", status_code=status.HTTP_303_SEE_OTHER)
     if clear_login is None and bool(login_name.strip()) != bool(password.strip()) and bool(password.strip()):
         _set_flash(request, error="To change credentials, provide both username and password.")
@@ -4259,10 +4328,20 @@ async def request_quiet_period(
     request: Request,
     _: None = Depends(require_api_key),
 ) -> QuietPeriodSummary:
-    await _require_active_user_with_permission(_users(request), body.user_id, permission=PERM_SUBMIT_QUIET_REQUEST)
+    user_id = await _require_active_user(_users(request), body.user_id)
+    user = await _users(request).get_user(user_id)
     record = await _quiet_periods(request).request_quiet_period(
-        user_id=body.user_id,
+        user_id=user_id,
         reason=body.reason,
+    )
+    _fire_audit(
+        request,
+        "quiet_period_requested",
+        actor_user_id=user_id,
+        actor_label=user.name if user else None,
+        target_type="quiet_period_request",
+        target_id=str(record.id),
+        metadata={"reason": body.reason},
     )
     await _publish_simple_event(request, event="quiet_request_created", extra={
         "request_id": record.id,
@@ -4320,6 +4399,11 @@ async def approve_quiet_period_request_api(
         body.admin_user_id,
         permissions={PERM_APPROVE_OWN_TENANT_QUIET_REQUESTS, PERM_APPROVE_ASSIGNED_TENANT_QUIET_REQUESTS},
     )
+    pending = await _quiet_periods(request).get_request(request_id=request_id)
+    if pending is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Quiet period request not found")
+    if int(pending.user_id) == admin_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cannot approve your own quiet period request")
     admin_user = await _users(request).get_user(admin_id)
     record = await _quiet_periods(request).approve_request(
         request_id=request_id,
@@ -4333,6 +4417,15 @@ async def approve_quiet_period_request_api(
         request_user_id=int(record.user_id),
         source_request_id=int(record.id),
         approved_by_user_id=admin_id,
+    )
+    _fire_audit(
+        request,
+        "quiet_period_approved",
+        actor_user_id=admin_id,
+        actor_label=admin_user.name if admin_user else None,
+        target_type="quiet_period_request",
+        target_id=str(record.id),
+        metadata={"requester_user_id": int(record.user_id)},
     )
     await _publish_simple_event(request, event="quiet_request_updated", extra={
         "request_id": record.id,
@@ -4354,6 +4447,11 @@ async def deny_quiet_period_request_api(
         body.admin_user_id,
         permissions={PERM_APPROVE_OWN_TENANT_QUIET_REQUESTS, PERM_APPROVE_ASSIGNED_TENANT_QUIET_REQUESTS},
     )
+    pending = await _quiet_periods(request).get_request(request_id=request_id)
+    if pending is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Quiet period request not found")
+    if int(pending.user_id) == admin_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cannot deny your own quiet period request")
     admin_user = await _users(request).get_user(admin_id)
     record = await _quiet_periods(request).deny_request(
         request_id=request_id,
@@ -4363,6 +4461,15 @@ async def deny_quiet_period_request_api(
     if record is None or record.status != "denied":
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Quiet period request is not pending")
     await _deactivate_law_enforcement_quiet_state_for_user(request, user_id=int(record.user_id))
+    _fire_audit(
+        request,
+        "quiet_period_denied",
+        actor_user_id=admin_id,
+        actor_label=admin_user.name if admin_user else None,
+        target_type="quiet_period_request",
+        target_id=str(record.id),
+        metadata={"requester_user_id": int(record.user_id)},
+    )
     await _publish_simple_event(request, event="quiet_request_updated", extra={
         "request_id": record.id,
         "status": record.status,
@@ -4664,3 +4771,387 @@ async def panic(
         sms_queued=len(sms_numbers),
         twilio_configured=_broadcaster(request).twilio_configured(),
     )
+
+
+# ── Onboarding — public endpoints (no tenant session required) ─────────────────
+
+def _tenant_manager(req: Request):
+    return req.app.state.tenant_manager
+
+
+def _build_access_code_response(rec, school) -> AccessCodeResponse:
+    base_domain = ""
+    return AccessCodeResponse(
+        id=rec.id,
+        code=rec.code,
+        tenant_slug=rec.tenant_slug,
+        tenant_name=school.name if school else rec.tenant_slug,
+        role=rec.role,
+        role_label=role_display_label(rec.role),
+        title=rec.title,
+        created_at=rec.created_at,
+        expires_at=rec.expires_at,
+        max_uses=rec.max_uses,
+        use_count=rec.use_count,
+        status=rec.status,
+        qr_payload=AccessCodeService.qr_payload(rec.code, rec.tenant_slug),
+        invite_url=AccessCodeService.invite_url(rec.code, rec.tenant_slug, base_domain or "app.bluebirdalerts.com"),
+    )
+
+
+@router.post("/onboarding/validate-code", response_model=ValidateCodeResponse)
+async def onboarding_validate_code(request: Request, body: ValidateCodeRequest) -> ValidateCodeResponse:
+    ip = _client_ip(request)
+    if not _check_code_rate_limit(ip):
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="Too many validation attempts. Try again in a minute.")
+    rec = await _access_codes(request).validate_code(body.code, body.tenant_slug)
+    if rec is None:
+        return ValidateCodeResponse(valid=False, error="Code is invalid, expired, or already used.")
+    school = _tenant_manager(request).school_for_slug(rec.tenant_slug)
+    return ValidateCodeResponse(
+        valid=True,
+        role=rec.role,
+        role_label=role_display_label(rec.role),
+        title=rec.title,
+        tenant_slug=rec.tenant_slug,
+        tenant_name=school.name if school else rec.tenant_slug,
+    )
+
+
+@router.post("/onboarding/create-account", response_model=ValidateCodeResponse)
+async def onboarding_create_account(request: Request, body: CreateAccountFromCodeRequest) -> ValidateCodeResponse:
+    ip = _client_ip(request)
+    if not _check_code_rate_limit(ip):
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="Too many attempts. Try again in a minute.")
+    rec = await _access_codes(request).validate_code(body.code, body.tenant_slug)
+    if rec is None:
+        return ValidateCodeResponse(valid=False, error="Code is invalid, expired, or already used.")
+    school = _tenant_manager(request).school_for_slug(rec.tenant_slug)
+    if school is None:
+        return ValidateCodeResponse(valid=False, error="School not found.")
+    user_store: UserStore = _tenant_manager(request).get(school).user_store
+    try:
+        await user_store.create_user(
+            name=body.name.strip(),
+            role=rec.role,
+            phone_e164=None,
+            login_name=body.login_name.strip().lower(),
+            password=body.password,
+            must_change_password=False,
+            title=rec.title,
+        )
+    except Exception as exc:
+        logger.warning("onboarding create_account failed tenant=%s: %s", rec.tenant_slug, exc)
+        return ValidateCodeResponse(valid=False, error="Could not create account. The username may already be taken.")
+    consumed = await _access_codes(request).consume_code(rec.id)
+    if not consumed:
+        logger.warning("onboarding consume_code failed code_id=%s — user already created", rec.id)
+    logger.info("onboarding user created tenant=%s role=%s login=%s", rec.tenant_slug, rec.role, body.login_name)
+    return ValidateCodeResponse(
+        valid=True,
+        role=rec.role,
+        role_label=role_display_label(rec.role),
+        title=rec.title,
+        tenant_slug=rec.tenant_slug,
+        tenant_name=school.name,
+    )
+
+
+@router.post("/onboarding/validate-setup-code", response_model=ValidateSetupCodeResponse)
+async def onboarding_validate_setup_code(request: Request, body: ValidateSetupCodeRequest) -> ValidateSetupCodeResponse:
+    ip = _client_ip(request)
+    if not _check_code_rate_limit(ip):
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="Too many validation attempts. Try again in a minute.")
+    # Setup codes embed the tenant_slug; scan the whole platform for matching active setup code
+    # We don't know the tenant until we find the code, so we search with a sentinel slug.
+    # Actually, the mobile app provides tenant_slug from QR payload. We accept it as a hint.
+    # Try the code against all known schools.
+    schools = await _schools(request).list_schools()
+    rec = None
+    matched_school = None
+    for school in schools:
+        candidate = await _access_codes(request).validate_setup_code(body.code, school.slug)
+        if candidate is not None:
+            rec = candidate
+            matched_school = school
+            break
+    if rec is None:
+        return ValidateSetupCodeResponse(valid=False, error="Setup code is invalid, expired, or already used.")
+    return ValidateSetupCodeResponse(
+        valid=True,
+        tenant_slug=rec.tenant_slug,
+        tenant_name=matched_school.name if matched_school else rec.tenant_slug,
+    )
+
+
+@router.post("/onboarding/create-district-admin", response_model=ValidateSetupCodeResponse)
+async def onboarding_create_district_admin(request: Request, body: CreateDistrictAdminRequest) -> ValidateSetupCodeResponse:
+    ip = _client_ip(request)
+    if not _check_code_rate_limit(ip):
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="Too many attempts. Try again in a minute.")
+    schools = await _schools(request).list_schools()
+    rec = None
+    matched_school = None
+    for school in schools:
+        candidate = await _access_codes(request).validate_setup_code(body.code, school.slug)
+        if candidate is not None:
+            rec = candidate
+            matched_school = school
+            break
+    if rec is None:
+        return ValidateSetupCodeResponse(valid=False, error="Setup code is invalid, expired, or already used.")
+    if matched_school is None:
+        return ValidateSetupCodeResponse(valid=False, error="School not found.")
+    from app.services.permissions import ROLE_DISTRICT_ADMIN
+    user_store: UserStore = _tenant_manager(request).get(matched_school).user_store
+    try:
+        await user_store.create_user(
+            name=body.name.strip(),
+            role=ROLE_DISTRICT_ADMIN,
+            phone_e164=None,
+            login_name=body.login_name.strip().lower(),
+            password=body.password,
+            must_change_password=True,
+        )
+    except Exception as exc:
+        logger.warning("onboarding create_district_admin failed tenant=%s: %s", rec.tenant_slug, exc)
+        return ValidateSetupCodeResponse(valid=False, error="Could not create account. The username may already be taken.")
+    consumed = await _access_codes(request).consume_code(rec.id)
+    if not consumed:
+        logger.warning("onboarding consume_setup_code failed code_id=%s", rec.id)
+    logger.info("onboarding district_admin created tenant=%s login=%s", rec.tenant_slug, body.login_name)
+    return ValidateSetupCodeResponse(
+        valid=True,
+        tenant_slug=rec.tenant_slug,
+        tenant_name=matched_school.name,
+    )
+
+
+# ── Admin web form — access codes (redirect-based, for dashboard UI) ──────────
+
+@router.post("/admin/access-codes/generate", include_in_schema=False)
+async def admin_generate_access_code_form(
+    request: Request,
+    tenant_slug: str = Form(...),
+    role: str = Form(...),
+    title: str = Form(default=""),
+    max_uses: int = Form(default=1),
+    expires_hours: int = Form(default=48),
+) -> RedirectResponse:
+    users = await _require_dashboard_admin(request)
+    user_id = _session_user_id(request) or 0
+    user = await users.get_user(user_id)
+    if user is None or not can_generate_codes(user.role):
+        _set_flash(request, error="Only district admins may generate access codes.")
+        return RedirectResponse(url="/admin?section=access-codes#access-codes", status_code=status.HTTP_303_SEE_OTHER)
+    normalized_role = role.strip().lower()
+    if normalized_role not in CODEGEN_ALLOWED_ROLES:
+        _set_flash(request, error=f"Role '{normalized_role}' is not allowed for access codes.")
+        return RedirectResponse(url="/admin?section=access-codes#access-codes", status_code=status.HTTP_303_SEE_OTHER)
+    effective_slug = str(getattr(request.state, "school_slug", "") or tenant_slug).strip()
+    rec = await _access_codes(request).generate_code(
+        tenant_slug=effective_slug,
+        role=normalized_role,
+        title=title.strip() or None,
+        created_by_user_id=user_id,
+        expires_hours=max(1, min(720, expires_hours)),
+        max_uses=max(1, min(20, max_uses)),
+        is_setup_code=False,
+    )
+    _fire_audit(
+        request,
+        "access_code_generated",
+        actor_user_id=user_id,
+        actor_label=_current_school_actor_label(request),
+        target_type="access_code",
+        metadata={"code_id": rec.id, "role": normalized_role, "tenant": effective_slug},
+    )
+    _set_flash(request, message=f"Code {rec.code} generated for role '{normalized_role}'.")
+    return RedirectResponse(url="/admin?section=access-codes#access-codes", status_code=status.HTTP_303_SEE_OTHER)
+
+
+# ── Admin JSON API — access codes (tenant-scoped, requires dashboard admin) ────
+
+@router.post("/admin/access-codes/generate-api", response_model=AccessCodeResponse)
+async def admin_generate_access_code(request: Request, body: GenerateAccessCodeRequest) -> AccessCodeResponse:
+    users = await _require_dashboard_admin(request)
+    user_id = _session_user_id(request) or 0
+    user = await users.get_user(user_id)
+    if user is None or not can_generate_codes(user.role):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only district admins may generate access codes.")
+    if body.role not in CODEGEN_ALLOWED_ROLES:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Cannot generate code for role '{body.role}'. Allowed: {sorted(CODEGEN_ALLOWED_ROLES)}",
+        )
+    tenant_slug = str(getattr(request.state, "school_slug", "") or body.tenant_slug).strip()
+    rec = await _access_codes(request).generate_code(
+        tenant_slug=tenant_slug,
+        role=body.role,
+        title=body.title,
+        created_by_user_id=user_id,
+        expires_hours=body.expires_hours,
+        max_uses=body.max_uses,
+        is_setup_code=False,
+    )
+    school = _tenant_manager(request).school_for_slug(tenant_slug)
+    base_domain = str(request.app.state.settings.BASE_DOMAIN).strip()
+    return AccessCodeResponse(
+        id=rec.id,
+        code=rec.code,
+        tenant_slug=rec.tenant_slug,
+        tenant_name=school.name if school else rec.tenant_slug,
+        role=rec.role,
+        role_label=role_display_label(rec.role),
+        title=rec.title,
+        created_at=rec.created_at,
+        expires_at=rec.expires_at,
+        max_uses=rec.max_uses,
+        use_count=rec.use_count,
+        status=rec.status,
+        qr_payload=AccessCodeService.qr_payload(rec.code, rec.tenant_slug),
+        invite_url=AccessCodeService.invite_url(rec.code, rec.tenant_slug, base_domain or "app.bluebirdalerts.com"),
+    )
+
+
+@router.get("/admin/access-codes", response_model=AccessCodeListResponse)
+async def admin_list_access_codes(request: Request, limit: int = Query(default=200, ge=1, le=500)) -> AccessCodeListResponse:
+    users = await _require_dashboard_admin(request)
+    user_id = _session_user_id(request) or 0
+    user = await users.get_user(user_id)
+    if user is None or not can_generate_codes(user.role):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only district admins may view access codes.")
+    tenant_slug = str(getattr(request.state, "school_slug", "")).strip()
+    records = await _access_codes(request).list_codes(tenant_slug, limit=limit)
+    school = _tenant_manager(request).school_for_slug(tenant_slug)
+    base_domain = str(request.app.state.settings.BASE_DOMAIN).strip()
+    codes = [
+        AccessCodeResponse(
+            id=r.id,
+            code=r.code,
+            tenant_slug=r.tenant_slug,
+            tenant_name=school.name if school else r.tenant_slug,
+            role=r.role,
+            role_label=role_display_label(r.role),
+            title=r.title,
+            created_at=r.created_at,
+            expires_at=r.expires_at,
+            max_uses=r.max_uses,
+            use_count=r.use_count,
+            status=r.status,
+            qr_payload=AccessCodeService.qr_payload(r.code, r.tenant_slug),
+            invite_url=AccessCodeService.invite_url(r.code, r.tenant_slug, base_domain or "app.bluebirdalerts.com"),
+        )
+        for r in records
+    ]
+    return AccessCodeListResponse(codes=codes)
+
+
+@router.post("/admin/access-codes/{code_id}/revoke", include_in_schema=False)
+async def admin_revoke_access_code(request: Request, code_id: int):
+    users = await _require_dashboard_admin(request)
+    user_id = _session_user_id(request) or 0
+    user = await users.get_user(user_id)
+    _is_form = "application/x-www-form-urlencoded" in request.headers.get("content-type", "")
+    if user is None or not can_generate_codes(user.role):
+        if _is_form:
+            _set_flash(request, error="Only district admins may revoke access codes.")
+            return RedirectResponse(url="/admin?section=access-codes#access-codes", status_code=status.HTTP_303_SEE_OTHER)
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only district admins may revoke access codes.")
+    tenant_slug = str(getattr(request.state, "school_slug", "")).strip()
+    ok = await _access_codes(request).revoke_code(code_id, tenant_slug)
+    if _is_form:
+        if ok:
+            _set_flash(request, message="Code revoked.")
+        else:
+            _set_flash(request, error="Code not found or already revoked.")
+        return RedirectResponse(url="/admin?section=access-codes#access-codes", status_code=status.HTTP_303_SEE_OTHER)
+    if not ok:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Code not found or already revoked.")
+    return JSONResponse({"revoked": True, "code_id": code_id})
+
+
+@router.post("/admin/access-codes/{code_id}/send-invite", response_model=None)
+async def admin_send_invite_email(request: Request, code_id: int, body: SendInviteEmailRequest) -> JSONResponse:
+    users = await _require_dashboard_admin(request)
+    user_id = _session_user_id(request) or 0
+    user = await users.get_user(user_id)
+    if user is None or not can_generate_codes(user.role):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only district admins may send invite emails.")
+    tenant_slug = str(getattr(request.state, "school_slug", "")).strip()
+    records = await _access_codes(request).list_codes(tenant_slug, limit=500)
+    rec = next((r for r in records if r.id == code_id), None)
+    if rec is None or rec.status not in ("active",):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Active code not found.")
+    email_svc = _email_service(request)
+    if not email_svc.is_configured():
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Email is not configured on this server.")
+    base_domain = str(request.app.state.settings.BASE_DOMAIN).strip() or "app.bluebirdalerts.com"
+    url = AccessCodeService.invite_url(rec.code, rec.tenant_slug, base_domain)
+    school = _tenant_manager(request).school_for_slug(tenant_slug)
+    school_name = school.name if school else tenant_slug
+    subject = f"You've been invited to {school_name} on BlueBird Alerts"
+    body_text = (
+        f"Hi,\n\n"
+        f"You've been invited to join {school_name} on BlueBird Alerts as a {role_display_label(rec.role)}.\n\n"
+        f"Use your invite code to set up your account:\n\n"
+        f"  Code: {rec.code}\n"
+        f"  Direct link: {url}\n\n"
+        f"This code expires at {rec.expires_at[:10]} UTC.\n\n"
+        f"— BlueBird Alerts"
+    )
+    ok = await email_svc.send_email(
+        to_address=body.email,
+        subject=subject,
+        body=body_text,
+        event_type="invite_email",
+    )
+    await _access_codes(request).set_invite_email(code_id, tenant_slug, body.email)
+    return JSONResponse({"sent": ok, "email": body.email})
+
+
+# ── Super-admin — setup codes (district admin bootstrap) ───────────────────────
+
+@router.post("/super-admin/setup-codes/generate", include_in_schema=False)
+async def super_admin_generate_setup_code(
+    request: Request,
+    tenant_slug: str = Form(...),
+    expires_hours: int = Form(default=168),
+) -> RedirectResponse:
+    _require_super_admin(request)
+    school = await _schools(request).get_by_slug(tenant_slug.strip().lower())
+    if school is None:
+        _set_flash(request, error=f"School '{tenant_slug}' not found.")
+        return RedirectResponse(url=_super_admin_url("setup-codes"), status_code=status.HTTP_303_SEE_OTHER)
+    if expires_hours < 1 or expires_hours > 8760:
+        _set_flash(request, error="Expiry must be between 1 and 8760 hours.")
+        return RedirectResponse(url=_super_admin_url("setup-codes"), status_code=status.HTTP_303_SEE_OTHER)
+    rec = await _access_codes(request).generate_code(
+        tenant_slug=school.slug,
+        role="district_admin",
+        title="District Admin",
+        created_by_user_id=0,
+        expires_hours=expires_hours,
+        max_uses=1,
+        is_setup_code=True,
+    )
+    logger.info("super_admin generated setup code id=%s tenant=%s", rec.id, school.slug)
+    _set_flash(request, message=f"Setup code {rec.code} created for {school.name}. Expires in {expires_hours}h.")
+    return RedirectResponse(url=_super_admin_url("setup-codes"), status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.post("/super-admin/setup-codes/{code_id}/revoke", include_in_schema=False)
+async def super_admin_revoke_setup_code(request: Request, code_id: int) -> RedirectResponse:
+    _require_super_admin(request)
+    # Setup codes have tenant_slug but revoke needs it — look it up first
+    codes = await _access_codes(request).list_setup_codes(limit=500)
+    rec = next((c for c in codes if c.id == code_id), None)
+    if rec is None:
+        _set_flash(request, error="Setup code not found.")
+        return RedirectResponse(url=_super_admin_url("setup-codes"), status_code=status.HTTP_303_SEE_OTHER)
+    ok = await _access_codes(request).revoke_code(code_id, rec.tenant_slug)
+    if ok:
+        _set_flash(request, message=f"Setup code {rec.code} revoked.")
+    else:
+        _set_flash(request, error="Could not revoke code.")
+    return RedirectResponse(url=_super_admin_url("setup-codes"), status_code=status.HTTP_303_SEE_OTHER)

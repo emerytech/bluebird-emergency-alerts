@@ -72,17 +72,48 @@ def test_law_enforcement_can_request_help_and_submit_quiet_request(client: TestC
     assert quiet_response.json()["status"] == "pending"
 
 
-def test_teacher_cannot_submit_quiet_request(client: TestClient, login_super_admin) -> None:
+def test_any_active_user_can_submit_quiet_request(client: TestClient, login_super_admin) -> None:
     login_super_admin()
     _create_school(client, name="Teacher Quiet Guard", slug="teacher-quiet-guard")
     teacher_id = _create_user(client, "teacher-quiet-guard", name="Teacher One", role="teacher")
+    staff_id = _create_user(client, "teacher-quiet-guard", name="Staff One", role="staff")
 
-    quiet_response = client.post(
-        "/teacher-quiet-guard/quiet-periods/request",
+    for user_id in (teacher_id, staff_id):
+        r = client.post(
+            "/teacher-quiet-guard/quiet-periods/request",
+            headers={"X-API-Key": "test-api-key"},
+            json={"user_id": user_id, "reason": "Optional reason"},
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["status"] == "pending"
+
+
+def test_admin_cannot_approve_own_quiet_request(client: TestClient, login_super_admin) -> None:
+    login_super_admin()
+    _create_school(client, name="Self Approve Guard", slug="self-approve-guard")
+    admin_id = _create_user(client, "self-approve-guard", name="Admin One", role="admin")
+
+    request_response = client.post(
+        "/self-approve-guard/quiet-periods/request",
         headers={"X-API-Key": "test-api-key"},
-        json={"user_id": teacher_id, "reason": "Should be denied"},
+        json={"user_id": admin_id, "reason": "Admin requesting own quiet"},
     )
-    assert quiet_response.status_code == 403
+    assert request_response.status_code == 200, request_response.text
+    request_id = int(request_response.json()["request_id"])
+
+    approve_response = client.post(
+        f"/self-approve-guard/quiet-periods/{request_id}/approve",
+        headers={"X-API-Key": "test-api-key"},
+        json={"admin_user_id": admin_id},
+    )
+    assert approve_response.status_code == 403
+
+    deny_response = client.post(
+        f"/self-approve-guard/quiet-periods/{request_id}/deny",
+        headers={"X-API-Key": "test-api-key"},
+        json={"admin_user_id": admin_id},
+    )
+    assert deny_response.status_code == 403
 
 
 def test_district_admin_can_manage_incidents_and_quiet_approval(client: TestClient, login_super_admin) -> None:

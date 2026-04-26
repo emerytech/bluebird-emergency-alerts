@@ -6,20 +6,26 @@ from typing import Final
 
 ROLE_TEACHER: Final[str] = "teacher"
 ROLE_LAW_ENFORCEMENT: Final[str] = "law_enforcement"
-ROLE_ADMIN: Final[str] = "admin"
+ROLE_STAFF: Final[str] = "staff"
+ROLE_ADMIN: Final[str] = "admin"              # legacy alias — kept for backward compat
+ROLE_BUILDING_ADMIN: Final[str] = "building_admin"
 ROLE_DISTRICT_ADMIN: Final[str] = "district_admin"
 ROLE_SUPER_ADMIN: Final[str] = "super_admin"
 
 ALL_ROLES: Final[set[str]] = {
     ROLE_TEACHER,
     ROLE_LAW_ENFORCEMENT,
+    ROLE_STAFF,
     ROLE_ADMIN,
+    ROLE_BUILDING_ADMIN,
     ROLE_DISTRICT_ADMIN,
     ROLE_SUPER_ADMIN,
 }
 
+# Roles that may log in to the web admin dashboard
 DASHBOARD_ROLES: Final[set[str]] = {
     ROLE_ADMIN,
+    ROLE_BUILDING_ADMIN,
     ROLE_DISTRICT_ADMIN,
 }
 
@@ -35,13 +41,16 @@ PERM_MANAGE_ASSIGNED_TENANTS: Final[str] = "manage_assigned_tenants"
 PERM_MANAGE_ASSIGNED_TENANT_USERS: Final[str] = "manage_assigned_tenant_users"
 PERM_MANAGE_ASSIGNED_TENANT_INCIDENTS: Final[str] = "manage_assigned_tenant_incidents"
 PERM_APPROVE_ASSIGNED_TENANT_QUIET_REQUESTS: Final[str] = "approve_assigned_tenant_quiet_requests"
+PERM_GENERATE_ACCESS_CODES: Final[str] = "generate_access_codes"
 PERM_FULL_ACCESS: Final[str] = "full_access"
 
 
 ROLE_HIERARCHY: Final[dict[str, int]] = {
     ROLE_TEACHER: 1,
+    ROLE_STAFF: 1,
     ROLE_LAW_ENFORCEMENT: 2,
     ROLE_ADMIN: 3,
+    ROLE_BUILDING_ADMIN: 3,
     ROLE_DISTRICT_ADMIN: 4,
     ROLE_SUPER_ADMIN: 5,
 }
@@ -49,6 +58,10 @@ ROLE_HIERARCHY: Final[dict[str, int]] = {
 
 _ROLE_PERMISSIONS: Final[dict[str, set[str]]] = {
     ROLE_TEACHER: {
+        PERM_REQUEST_HELP,
+        PERM_VIEW_OWN_TENANT_INCIDENTS,
+    },
+    ROLE_STAFF: {
         PERM_REQUEST_HELP,
         PERM_VIEW_OWN_TENANT_INCIDENTS,
     },
@@ -63,11 +76,17 @@ _ROLE_PERMISSIONS: Final[dict[str, set[str]]] = {
         PERM_TRIGGER_OWN_TENANT_ALERTS,
         PERM_APPROVE_OWN_TENANT_QUIET_REQUESTS,
     },
+    ROLE_BUILDING_ADMIN: {
+        PERM_MANAGE_OWN_TENANT_USERS,
+        PERM_TRIGGER_OWN_TENANT_ALERTS,
+        PERM_APPROVE_OWN_TENANT_QUIET_REQUESTS,
+    },
     ROLE_DISTRICT_ADMIN: {
         PERM_MANAGE_ASSIGNED_TENANTS,
         PERM_MANAGE_ASSIGNED_TENANT_USERS,
         PERM_MANAGE_ASSIGNED_TENANT_INCIDENTS,
         PERM_APPROVE_ASSIGNED_TENANT_QUIET_REQUESTS,
+        PERM_GENERATE_ACCESS_CODES,
         # Keep district admin compatible with existing tenant-local admin routes.
         PERM_MANAGE_OWN_TENANT_USERS,
         PERM_TRIGGER_OWN_TENANT_ALERTS,
@@ -108,15 +127,25 @@ def valid_tenant_roles() -> set[str]:
     # Platform super admin is intentionally not created as a tenant-local user role.
     return {
         ROLE_TEACHER,
+        ROLE_STAFF,
         ROLE_LAW_ENFORCEMENT,
         ROLE_ADMIN,
+        ROLE_BUILDING_ADMIN,
         ROLE_DISTRICT_ADMIN,
     }
 
 
+# Roles that a district_admin may create via access code.
+# Never includes district_admin or super_admin.
+CODEGEN_ALLOWED_ROLES: Final[set[str]] = {
+    ROLE_BUILDING_ADMIN,
+    ROLE_TEACHER,
+    ROLE_STAFF,
+    ROLE_LAW_ENFORCEMENT,
+}
+
+
 def can_trigger_alarm(role: str | None) -> bool:
-    # The alarm-trigger API gate only checks is_active, not a specific permission.
-    # Any user with a known tenant role can trigger.
     return is_known_role(role)
 
 
@@ -128,8 +157,26 @@ def can_manage_users(role: str | None) -> bool:
     return can_any(role, {PERM_MANAGE_OWN_TENANT_USERS, PERM_MANAGE_ASSIGNED_TENANT_USERS, PERM_FULL_ACCESS})
 
 
+def can_generate_codes(role: str | None) -> bool:
+    return can_any(role, {PERM_GENERATE_ACCESS_CODES, PERM_FULL_ACCESS})
+
+
 def can_view_reports(role: str | None) -> bool:
     return is_dashboard_role(role) or normalize_role(role) == ROLE_SUPER_ADMIN
+
+
+def role_display_label(role: str | None) -> str:
+    """Human-readable label for a role value."""
+    _labels: dict[str, str] = {
+        ROLE_TEACHER: "Teacher",
+        ROLE_STAFF: "Staff",
+        ROLE_LAW_ENFORCEMENT: "Law Enforcement",
+        ROLE_ADMIN: "Building Admin",        # legacy alias displays as Building Admin
+        ROLE_BUILDING_ADMIN: "Building Admin",
+        ROLE_DISTRICT_ADMIN: "District Admin",
+        ROLE_SUPER_ADMIN: "Super Admin",
+    }
+    return _labels.get(normalize_role(role), str(role or "").capitalize())
 
 
 @dataclass(frozen=True)

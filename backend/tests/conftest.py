@@ -44,6 +44,14 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClie
     app_main = importlib.import_module("app.main")
     app_main = importlib.reload(app_main)
 
+    # Reset module-level in-memory rate-limiter stores so tests don't bleed into each other.
+    routes_mod = sys.modules.get("app.api.routes")
+    if routes_mod is not None:
+        for store_name in ("_alarm_rate_store", "_code_rate_store"):
+            store = getattr(routes_mod, store_name, None)
+            if isinstance(store, dict):
+                store.clear()
+
     with TestClient(app_main.app) as test_client:
         yield test_client
 

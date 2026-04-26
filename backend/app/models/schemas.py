@@ -22,14 +22,11 @@ class PushProvider(str, Enum):
     fcm = "fcm"
 
 class UserRole(str, Enum):
-    """
-    Roles are intentionally coarse for MVP.
-    We can expand this into a proper RBAC model later.
-    """
-
     teacher = "teacher"
+    staff = "staff"
     law_enforcement = "law_enforcement"
-    admin = "admin"
+    admin = "admin"                      # legacy alias — kept for backward compat
+    building_admin = "building_admin"
     district_admin = "district_admin"
     super_admin = "super_admin"
 
@@ -590,3 +587,80 @@ class AuditLogEntry(BaseModel):
 
 class AuditLogResponse(BaseModel):
     events: List[AuditLogEntry]
+
+
+# ── Access code / onboarding schemas ──────────────────────────────────────────
+
+class GenerateAccessCodeRequest(BaseModel):
+    role: str = Field(..., description="Role the new user will receive.")
+    title: Optional[str] = Field(default=None, max_length=120, description="Optional job title (metadata only).")
+    tenant_slug: str = Field(..., min_length=1, max_length=80)
+    max_uses: int = Field(default=1, ge=1, le=20)
+    expires_hours: int = Field(default=48, ge=1, le=720)  # 1h–30d
+
+
+class AccessCodeResponse(BaseModel):
+    id: int
+    code: str
+    tenant_slug: str
+    tenant_name: str
+    role: str
+    role_label: str
+    title: Optional[str]
+    created_at: str
+    expires_at: str
+    max_uses: int
+    use_count: int
+    status: str
+    qr_payload: str   # JSON string ready for QR encoding
+    invite_url: str   # deep-link/web fallback URL pre-filled with code
+
+
+class AccessCodeListResponse(BaseModel):
+    codes: List[AccessCodeResponse]
+
+
+class ValidateCodeRequest(BaseModel):
+    code: str = Field(..., min_length=1, max_length=20)
+    tenant_slug: str = Field(..., min_length=1, max_length=80)
+
+
+class ValidateCodeResponse(BaseModel):
+    valid: bool
+    role: Optional[str] = None
+    role_label: Optional[str] = None
+    title: Optional[str] = None
+    tenant_slug: Optional[str] = None
+    tenant_name: Optional[str] = None
+    error: Optional[str] = None
+
+
+class CreateAccountFromCodeRequest(BaseModel):
+    code: str = Field(..., min_length=1, max_length=20)
+    tenant_slug: str = Field(..., min_length=1, max_length=80)
+    name: str = Field(..., min_length=1, max_length=120)
+    login_name: str = Field(..., min_length=2, max_length=80)
+    password: str = Field(..., min_length=8, max_length=200)
+
+
+class ValidateSetupCodeRequest(BaseModel):
+    code: str = Field(..., min_length=1, max_length=20)
+
+
+class ValidateSetupCodeResponse(BaseModel):
+    valid: bool
+    tenant_slug: Optional[str] = None
+    tenant_name: Optional[str] = None
+    error: Optional[str] = None
+
+
+class CreateDistrictAdminRequest(BaseModel):
+    code: str = Field(..., min_length=1, max_length=20)
+    name: str = Field(..., min_length=1, max_length=120)
+    login_name: str = Field(..., min_length=2, max_length=80)
+    password: str = Field(..., min_length=8, max_length=200)
+
+
+class SendInviteEmailRequest(BaseModel):
+    email: str = Field(..., min_length=3, max_length=254)
+    code_id: int

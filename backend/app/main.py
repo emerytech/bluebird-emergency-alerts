@@ -15,6 +15,7 @@ from app.api.routes import router
 from app.core.config import Settings
 from app.core.logging import configure_logging
 from app.services.apns import APNsClient
+from app.services.access_code_service import AccessCodeService
 from app.services.email_service import EmailService, TEMPLATES
 from app.services.health_monitor import HealthMonitor
 from app.services.tenant_billing_store import TenantBillingStore
@@ -121,6 +122,7 @@ async def lifespan(app: FastAPI):
 
     health_monitor = HealthMonitor(settings.PLATFORM_DB_PATH)
     email_service = EmailService(settings, settings.PLATFORM_DB_PATH)
+    access_code_service = AccessCodeService(settings.PLATFORM_DB_PATH)
 
     app.state.settings = settings
     app.state.apns_client = apns_client
@@ -136,6 +138,7 @@ async def lifespan(app: FastAPI):
     app.state.tenant_manager = tenant_manager
     app.state.health_monitor = health_monitor
     app.state.email_service = email_service
+    app.state.access_code_service = access_code_service
 
     health_task = asyncio.create_task(
         _health_check_loop(app, settings.HEALTH_CHECK_INTERVAL)
@@ -171,6 +174,7 @@ async def school_context_middleware(request, call_next):
         path in {"/", "/health", "/schools", "/docs", "/redoc", "/openapi.json"}
         or path.startswith("/super-admin")
         or path.startswith("/static/")
+        or path.startswith("/onboarding")
     ):
         response = await call_next(request)
         return response

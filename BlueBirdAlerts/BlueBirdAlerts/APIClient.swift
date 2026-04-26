@@ -913,3 +913,122 @@ struct AuditLogEntry: Decodable, Identifiable {
 struct AuditLogResponse: Decodable {
     let events: [AuditLogEntry]
 }
+
+// MARK: - Onboarding models
+
+struct ValidateCodeRequest: Encodable {
+    let code: String
+    let tenantSlug: String
+    enum CodingKeys: String, CodingKey {
+        case code
+        case tenantSlug = "tenant_slug"
+    }
+}
+
+struct ValidateCodeResponse: Decodable {
+    let valid: Bool
+    let role: String?
+    let roleLabel: String?
+    let title: String?
+    let tenantSlug: String?
+    let tenantName: String?
+    let error: String?
+    enum CodingKeys: String, CodingKey {
+        case valid, role, title, error
+        case roleLabel = "role_label"
+        case tenantSlug = "tenant_slug"
+        case tenantName = "tenant_name"
+    }
+}
+
+struct CreateAccountFromCodeRequest: Encodable {
+    let code: String
+    let tenantSlug: String
+    let name: String
+    let loginName: String
+    let password: String
+    enum CodingKeys: String, CodingKey {
+        case code, name, password
+        case tenantSlug = "tenant_slug"
+        case loginName = "login_name"
+    }
+}
+
+struct ValidateSetupCodeRequest: Encodable {
+    let code: String
+}
+
+struct ValidateSetupCodeResponse: Decodable {
+    let valid: Bool
+    let tenantSlug: String?
+    let tenantName: String?
+    let error: String?
+    enum CodingKeys: String, CodingKey {
+        case valid, error
+        case tenantSlug = "tenant_slug"
+        case tenantName = "tenant_name"
+    }
+}
+
+struct CreateDistrictAdminRequest: Encodable {
+    let code: String
+    let name: String
+    let loginName: String
+    let password: String
+    enum CodingKeys: String, CodingKey {
+        case code, name, password
+        case loginName = "login_name"
+    }
+}
+
+// MARK: - Onboarding API methods (platform-level — use Config.backendBaseURL as baseURL)
+
+extension APIClient {
+    func validateInviteCode(code: String, tenantSlug: String) async throws -> ValidateCodeResponse {
+        let url = baseURL.appendingPathComponent("onboarding/validate-code")
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(ValidateCodeRequest(code: code, tenantSlug: tenantSlug))
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try requireSuccess(response: response, data: data)
+        return try JSONDecoder().decode(ValidateCodeResponse.self, from: data)
+    }
+
+    func createAccountFromCode(code: String, tenantSlug: String, name: String, loginName: String, password: String) async throws -> ValidateCodeResponse {
+        let url = baseURL.appendingPathComponent("onboarding/create-account")
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(
+            CreateAccountFromCodeRequest(code: code, tenantSlug: tenantSlug, name: name, loginName: loginName, password: password)
+        )
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try requireSuccess(response: response, data: data)
+        return try JSONDecoder().decode(ValidateCodeResponse.self, from: data)
+    }
+
+    func validateSetupCode(code: String) async throws -> ValidateSetupCodeResponse {
+        let url = baseURL.appendingPathComponent("onboarding/validate-setup-code")
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(ValidateSetupCodeRequest(code: code))
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try requireSuccess(response: response, data: data)
+        return try JSONDecoder().decode(ValidateSetupCodeResponse.self, from: data)
+    }
+
+    func createDistrictAdmin(code: String, name: String, loginName: String, password: String) async throws -> ValidateSetupCodeResponse {
+        let url = baseURL.appendingPathComponent("onboarding/create-district-admin")
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(
+            CreateDistrictAdminRequest(code: code, name: name, loginName: loginName, password: password)
+        )
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try requireSuccess(response: response, data: data)
+        return try JSONDecoder().decode(ValidateSetupCodeResponse.self, from: data)
+    }
+}

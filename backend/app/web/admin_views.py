@@ -908,6 +908,8 @@ def render_super_admin_page(
     email_configured: bool = False,
     platform_admin_emails: Sequence[str] = (),
     email_template_keys: Sequence[str] = (),
+    setup_codes: Sequence[Mapping[str, object]] = (),
+    schools_by_slug: Mapping[str, object] = {},
 ) -> str:
     rows = "".join(
         (
@@ -970,7 +972,25 @@ def render_super_admin_page(
         )
         for item in billing_rows
     ) or '<tr><td colspan="8" class="mini-copy">No tenant billing records yet.</td></tr>'
-    section = active_section if active_section in {"schools", "billing", "platform-audit", "create-school", "security", "server-tools", "health", "email-tool"} else "schools"
+
+    _status_class_map = {"active": "ok", "used": "warn", "expired": "warn", "revoked": "danger"}
+    setup_code_rows = "".join(
+        (
+            "<tr>"
+            f"<td><code>{escape(str(getattr(c, 'code', '')))}</code></td>"
+            f"<td>{escape(str(getattr(schools_by_slug.get(str(getattr(c, 'tenant_slug', '')), None), 'name', getattr(c, 'tenant_slug', ''))))}</td>"
+            f"<td><code>{escape(str(getattr(c, 'tenant_slug', '')))}</code></td>"
+            f"<td><span class=\"status-pill {_status_class_map.get(str(getattr(c, 'status', '')), 'warn')}\">{escape(str(getattr(c, 'status', '')))}</span></td>"
+            f"<td>{escape(str(getattr(c, 'expires_at', ''))[:16])}</td>"
+            f"<td>{int(getattr(c, 'use_count', 0))}/{int(getattr(c, 'max_uses', 1))}</td>"
+            f"<td><form method=\"post\" action=\"/super-admin/setup-codes/{int(getattr(c, 'id', 0))}/revoke\""
+            f" onsubmit=\"return confirm('Revoke setup code {escape(str(getattr(c, 'code', '')))}?');\"><button class=\"button button-danger-outline\" type=\"submit\">Revoke</button></form></td>"
+            "</tr>"
+        )
+        for c in setup_codes
+    ) or '<tr><td colspan="7" class="mini-copy">No setup codes generated yet.</td></tr>'
+
+    section = active_section if active_section in {"schools", "billing", "platform-audit", "create-school", "security", "server-tools", "health", "email-tool", "setup-codes"} else "schools"
 
     def _section_style(name: str) -> str:
         return "" if section == name else ' style="display:none;"'
@@ -1139,6 +1159,7 @@ def render_super_admin_page(
             {_nav_item("platform-audit", "Platform Audit")}
             {_nav_item("health", "System Health", None if (not health_status or health_status.overall == 'ok') else "!")}
             {_nav_item("email-tool", "Email Tool")}
+            {_nav_item("setup-codes", "Setup Codes")}
             {_nav_item("security", "Security")}
             {_nav_item("server-tools", "Server Tools")}
             <a class="nav-item" href="/super-admin/change-password">Change password</a>
@@ -1454,6 +1475,40 @@ def render_super_admin_page(
             {'Uses <code>SERVER_RESTART_COMMAND</code> env var.' if server_info.get("restart_configured") == "yes" else 'No <code>SERVER_RESTART_COMMAND</code> set — restart falls back to a self-restart of the running process.'}
           </p>
         </section>
+
+        <section class="panel command-section" id="setup-codes"{_section_style("setup-codes")}>
+          <div class="panel-header">
+            <div>
+              <p class="eyebrow">Setup Codes</p>
+              <h2>District admin bootstrap codes</h2>
+              <p class="card-copy">Generate a single-use setup code for a school. The first district admin uses this to create their account.</p>
+            </div>
+          </div>
+          <form method="post" action="/super-admin/setup-codes/generate" class="stack" style="max-width:480px;margin-bottom:28px;">
+            <div class="form-grid">
+              <div class="field">
+                <label>School slug</label>
+                <input name="tenant_slug" placeholder="north-high" required />
+              </div>
+              <div class="field">
+                <label>Expires (hours)</label>
+                <input name="expires_hours" type="number" min="1" max="8760" value="168" />
+              </div>
+            </div>
+            <div class="button-row">
+              <button class="button button-primary" type="submit">Generate Setup Code</button>
+            </div>
+          </form>
+          <div class="table-wrapper">
+            <table class="data-table">
+              <thead>
+                <tr><th>Code</th><th>School</th><th>Slug</th><th>Status</th><th>Expires</th><th>Uses</th><th></th></tr>
+              </thead>
+              <tbody>{setup_code_rows}</tbody>
+            </table>
+          </div>
+        </section>
+
       </section>
     </div>
   </main>
@@ -1919,6 +1974,8 @@ def render_admin_page(
     ws_api_key: str = "",
     current_user_id: Optional[int] = None,
     home_tenant_slug: str = "",
+    access_code_records: Sequence[object] = (),
+    base_domain: str = "app.bluebirdalerts.com",
 ) -> str:
     prefix = escape(school_path_prefix)
     role_counts = Counter(user.role for user in users)
@@ -1929,7 +1986,7 @@ def render_admin_page(
     alarm_status_class = "danger" if alarm_state.is_active and not alarm_state.is_training else ("warn" if alarm_state.is_active else "ok")
     alarm_status_label = "TRAINING ACTIVE" if alarm_state.is_active and alarm_state.is_training else ("ALARM ACTIVE" if alarm_state.is_active else "Alarm clear")
     security_feedback = f"{_render_flash(flash_message, 'success')}{_render_flash(flash_error, 'error')}"
-    section = active_section if active_section in {"dashboard", "user-management", "quiet-periods", "audit-logs", "settings", "drill-reports", "district"} else "dashboard"
+    section = active_section if active_section in {"dashboard", "user-management", "access-codes", "quiet-periods", "audit-logs", "settings", "drill-reports", "district"} else "dashboard"
     quiet_period_total = len(quiet_periods_active) + len(quiet_periods_history)
     refresh_meta = '<meta http-equiv="refresh" content="30">' if section in {"dashboard", "district"} else ""
     show_district_nav = str(getattr(current_user, "role", "")).strip().lower() in {"district_admin", "super_admin"}
@@ -1955,6 +2012,26 @@ def render_admin_page(
     _apns_token_count = provider_counts.get("apns", 0)
     _fcm_token_count = provider_counts.get("fcm", 0)
     _total_device_count = len(devices)
+
+    _show_access_codes = str(getattr(current_user, "role", "")).strip().lower() in {"district_admin", "super_admin"}
+    _ac_status_class = {"active": "ok", "used": "warn", "expired": "warn", "revoked": "danger"}
+    _access_code_rows = "".join(
+        (
+            "<tr>"
+            f"<td><code>{escape(str(getattr(r, 'code', '')))}</code></td>"
+            f"<td>{escape(str(getattr(r, 'role', '')))}</td>"
+            f"<td>{escape(str(getattr(r, 'title', '') or '—'))}</td>"
+            f"<td><span class=\"status-pill {_ac_status_class.get(str(getattr(r, 'status', '')), 'warn')}\">{escape(str(getattr(r, 'status', '')))}</span></td>"
+            f"<td>{escape(str(getattr(r, 'expires_at', ''))[:16])}</td>"
+            f"<td>{int(getattr(r, 'use_count', 0))}/{int(getattr(r, 'max_uses', 1))}</td>"
+            f"<td>"
+            f"<form method=\"post\" action=\"{prefix}/admin/access-codes/{int(getattr(r, 'id', 0))}/revoke\""
+            f" onsubmit=\"return confirm('Revoke this code?');\"><button class=\"button button-danger-outline\" type=\"submit\" {'disabled' if str(getattr(r, 'status', '')) != 'active' else ''}>Revoke</button></form>"
+            f"</td>"
+            "</tr>"
+        )
+        for r in access_code_records
+    ) or '<tr><td colspan="7" class="mini-copy">No access codes generated yet.</td></tr>'
 
     def _section_style(name: str) -> str:
         return "" if section == name else ' style="display:none;"'
@@ -2059,6 +2136,54 @@ def render_admin_page(
             {setup_details}
           </div>
         """
+    if _show_access_codes:
+        _access_codes_panel_html = f"""
+          <section class="panel command-section span-12" id="access-codes"{_section_style("access-codes")}>
+            <div class="panel-header">
+              <div>
+                <p class="eyebrow">Access Codes</p>
+                <h2>Invite codes for onboarding</h2>
+                <p class="card-copy">Generate a code so a new user can self-register via the mobile app. Codes are single-use by default and expire after 48 hours.</p>
+              </div>
+            </div>
+            <form method="post" action="{prefix}/admin/access-codes/generate" class="stack" style="max-width:560px;margin-bottom:28px;">
+              <input type="hidden" name="tenant_slug" value="{escape(school_slug)}" />
+              <div class="form-grid">
+                <div class="field">
+                  <label>Role</label>
+                  <select name="role">
+                    <option value="building_admin">Building Admin</option>
+                    <option value="teacher">Teacher / Standard</option>
+                    <option value="staff">Staff</option>
+                    <option value="law_enforcement">Law Enforcement</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label>Job title (optional)</label>
+                  <input name="title" placeholder="e.g. Principal" />
+                </div>
+                <div class="field">
+                  <label>Max uses</label>
+                  <input name="max_uses" type="number" min="1" max="20" value="1" />
+                </div>
+                <div class="field">
+                  <label>Expires (hours)</label>
+                  <input name="expires_hours" type="number" min="1" max="720" value="48" />
+                </div>
+              </div>
+              <div class="button-row">
+                <button class="button button-primary" type="submit">Generate Code</button>
+              </div>
+            </form>
+            <div class="table-wrapper">
+              <table class="data-table">
+                <thead><tr><th>Code</th><th>Role</th><th>Title</th><th>Status</th><th>Expires</th><th>Uses</th><th></th></tr></thead>
+                <tbody>{_access_code_rows}</tbody>
+              </table>
+            </div>
+          </section>"""
+    else:
+        _access_codes_panel_html = ""
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -2286,6 +2411,7 @@ def render_admin_page(
           <nav class="nav-list">
             {_nav_item("dashboard", "Dashboard")}
             {_nav_item("user-management", "User Management")}
+            {_nav_item("access-codes", "Access Codes") if _show_access_codes else ""}
             {_nav_item("quiet-periods", "Quiet Period Requests", str(len(quiet_periods_active)) if quiet_periods_active else None)}
             {_nav_item("drill-reports", "Drill Reports")}
             {_nav_item("audit-logs", "Audit Logs")}
@@ -2577,10 +2703,11 @@ def render_admin_page(
                 <div class="field">
                   <label>Role</label>
                   <select name="role">
-                    <option value="teacher">standard / teacher</option>
-                    <option value="law_enforcement">law enforcement</option>
-                    <option value="admin">admin</option>
-                    <option value="district_admin">district admin</option>
+                    <option value="teacher">Teacher / Standard</option>
+                    <option value="staff">Staff</option>
+                    <option value="law_enforcement">Law Enforcement</option>
+                    <option value="building_admin">Building Admin</option>
+                    <option value="district_admin">District Admin</option>
                   </select>
                 </div>
                 <div class="field">
@@ -2630,6 +2757,8 @@ def render_admin_page(
               )}
             </div>
           </section>
+
+          {_access_codes_panel_html}
 
           <section class="panel command-section span-5" id="reports"{_section_style("dashboard")}>
             <div class="panel-header">

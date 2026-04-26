@@ -43,7 +43,7 @@ def _create_admin_console_user(
     assert response.status_code == 303, response.text
 
 
-def _login_school_admin(client: TestClient, slug: str, *, login_name: str, password: str) -> None:
+def _login_building_admin(client: TestClient, slug: str, *, login_name: str, password: str) -> None:
     response = client.post(
         f"/{slug}/admin/login",
         data={"login_name": login_name, "password": password},
@@ -95,7 +95,7 @@ def test_district_admin_tenant_filter_respects_assignments(client: TestClient, l
     logout = client.post("/super-admin/logout", follow_redirects=False)
     assert logout.status_code == 303
 
-    _login_school_admin(client, "alpha-school", login_name="district.lead", password="Password@123")
+    _login_building_admin(client, "alpha-school", login_name="district.lead", password="Password@123")
 
     assigned_view = client.get(
         "/alpha-school/admin?section=user-management&tenant=beta-school",
@@ -154,7 +154,7 @@ def test_district_admin_assignment_update_filters_unassigned_tenants(client: Tes
 
     logout = client.post("/super-admin/logout", follow_redirects=False)
     assert logout.status_code == 303
-    _login_school_admin(client, "home-school", login_name="district.one", password="Password@123")
+    _login_building_admin(client, "home-school", login_name="district.one", password="Password@123")
 
     update = client.post(
         f"/home-school/admin/users/{officer_user.id}/tenant-assignments",
