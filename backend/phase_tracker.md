@@ -35,6 +35,16 @@
 - iOS ContentView: `alarmAcknowledgementCount` + `alarmCurrentUserAcknowledged` state vars; populated from `refreshIncidentFeed()`; banner shows "✓ N acknowledged" when count > 0
 - Android `AlarmStatus` data class: added `acknowledgementCount` + `currentUserAcknowledged`; both `alarmStatus()` and `parseAlarm()` parse new fields; `AlarmBanner` shows ack count line
 
+### Phase 8.1 — Web Admin UI Polish
+- Consistent `.data-table` class across all tables (schools, billing, audit, messages, requests, reports, devices, quiet periods, alerts)
+- `.data-table th` — uppercase headers, highlighted background, `text-transform: uppercase`
+- `.data-table tbody tr:hover` — subtle row hover state
+- `.table-wrap` — horizontal scroll wrapper for wide tables (billing, messages, devices)
+- `.table-search` + `.count-badge` — new CSS components
+- Client-side search inputs on: users, devices, audit events, drill reports, schools (super admin)
+- JS `makeSearchFilter()` function wired to all searchable tables/grids
+- Messages section: replaced 🔔 emoji in h2 with `<span class="count-badge">` for unread count
+
 ---
 
 ## Current Phase
@@ -45,8 +55,7 @@
 
 ## Upcoming Phases
 
-### Phase 8 — Production Hardening
-- Rate limiting on alarm trigger endpoints
+### Phase 8 — Production Hardening (remaining)
 - APNS/FCM error surfacing in admin UI
 - Audit log viewer for district admins
 - Graceful backend restart (WS reconnect on 1001/1012 close codes)

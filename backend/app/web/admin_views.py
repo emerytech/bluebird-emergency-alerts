@@ -458,6 +458,47 @@ def _base_styles(theme: Optional[Mapping[str, str]] = None) -> str:
       .sidebar { position: static; }
       .span-8, .span-7, .span-6, .span-5, .span-4 { grid-column: span 12; }
     }
+    .data-table th {
+      background: rgba(27, 95, 228, 0.04);
+      border-bottom: 2px solid var(--border);
+      font-size: 0.78rem;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--muted);
+      white-space: nowrap;
+    }
+    .data-table tbody tr { transition: background 100ms ease; }
+    .data-table tbody tr:hover { background: rgba(27, 95, 228, 0.04); }
+    .table-wrap { overflow-x: auto; border-radius: 12px; }
+    .table-search { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; }
+    .table-search input {
+      flex: 1;
+      min-height: 38px;
+      max-width: 360px;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      background: rgba(255,255,255,0.95);
+      padding: 0 12px;
+      font: inherit;
+      font-size: 0.92rem;
+      color: var(--text);
+    }
+    .count-badge {
+      display: inline-flex;
+      min-width: 22px;
+      height: 22px;
+      align-items: center;
+      justify-content: center;
+      padding: 0 7px;
+      border-radius: 999px;
+      background: var(--danger);
+      color: #fff;
+      font-size: 0.75rem;
+      font-weight: 800;
+      vertical-align: middle;
+      margin-left: 6px;
+    }
     """
 
 
@@ -1037,12 +1078,13 @@ def render_super_admin_page(
               <span class="status-pill {'ok' if git_pull_configured else 'danger'}"><strong>Git pull</strong>{'configured' if git_pull_configured else 'not configured'}</span>
             </div>
           </div>
-          <table>
+          <div class="table-search"><input type="search" id="school-search" placeholder="Filter schools..." /></div>
+          <div class="table-wrap"><table class="data-table" id="schools-table">
             <thead>
               <tr><th>Name</th><th>Slug</th><th>School URLs</th><th>Setup</th><th>Status</th></tr>
             </thead>
             <tbody>{rows}</tbody>
-          </table>
+          </table></div>
         </section>
         <section class="panel command-section" id="billing"{_section_style("billing")}>
           <div class="panel-header hero-band">
@@ -1056,12 +1098,12 @@ def render_super_admin_page(
               <span class="status-pill ok"><strong>Stripe checkout</strong>unchanged</span>
             </div>
           </div>
-          <table>
+          <div class="table-wrap"><table class="data-table">
             <thead>
               <tr><th>School</th><th>Plan</th><th>Status</th><th>Trial End</th><th>Renewal</th><th>Free Override</th><th>Stripe IDs</th><th>Controls</th></tr>
             </thead>
             <tbody>{billing_table_rows}</tbody>
-          </table>
+          </table></div>
         </section>
         <section class="panel command-section" id="platform-audit"{_section_style("platform-audit")}>
           <div class="panel-header">
@@ -1071,7 +1113,7 @@ def render_super_admin_page(
               <p class="card-copy">Cross-school activity feed for actions performed while operating as platform super admin.</p>
             </div>
           </div>
-          <table>
+          <table class="data-table">
             <thead>
               <tr><th>Time (UTC)</th><th>School</th><th>Action</th><th>By</th><th>Details</th></tr>
             </thead>
@@ -1992,6 +2034,25 @@ def render_admin_page(
     }});
   }})();
   </script>
+  <script>
+  document.addEventListener('DOMContentLoaded', function() {{
+    function makeSearchFilter(inputId, containerSelector, rowSelector) {{
+      var input = document.getElementById(inputId);
+      var container = document.querySelector(containerSelector);
+      if (!input || !container) return;
+      input.addEventListener('input', function() {{
+        var q = input.value.trim().toLowerCase();
+        container.querySelectorAll(rowSelector).forEach(function(el) {{
+          el.style.display = (!q || el.textContent.toLowerCase().includes(q)) ? '' : 'none';
+        }});
+      }});
+    }}
+    makeSearchFilter('audit-search', '#audit-events', 'tbody tr');
+    makeSearchFilter('device-search', '#devices', 'tbody tr');
+    makeSearchFilter('user-search', '#user-management', '.user-card');
+    makeSearchFilter('drill-search', '#drill-reports', 'tbody tr');
+  }});
+  </script>
 </head>
 <body>
   <main class="page-shell">
@@ -2261,6 +2322,7 @@ def render_admin_page(
                 <p class="card-copy">Download official compliance reports for past alerts and training drills. Reports include acknowledgement stats, timelines, and delivery data.</p>
               </div>
             </div>
+            <div class="table-search"><input type="search" id="drill-search" placeholder="Filter reports..." /></div>
             <table class="data-table">
               <thead>
                 <tr><th>ID</th><th>Type</th><th>Date</th><th>Message</th><th style="text-align:right;">Actions</th></tr>
@@ -2345,6 +2407,7 @@ def render_admin_page(
                 <p class="card-copy">Update role, phone, active status, and login credentials without leaving the dashboard.</p>
               </div>
             </div>
+            <div class="table-search"><input type="search" id="user-search" placeholder="Search users by name, role, or status..." /></div>
             <div class="user-grid">
               {_render_user_cards(
                   users,
@@ -2379,7 +2442,7 @@ def render_admin_page(
                 <button class="button button-primary" type="submit">Post update</button>
               </div>
             </form>
-            <table style="margin-top:16px;">
+            <table class="data-table" style="margin-top:16px;">
               <thead>
                 <tr><th>Created</th><th>By</th><th>Message</th></tr>
               </thead>
@@ -2393,18 +2456,18 @@ def render_admin_page(
             <div class="panel-header">
               <div>
                 <p class="eyebrow">Messaging</p>
-                <h2>User messages inbox {'🔔' if unread_admin_messages > 0 else ''}</h2>
+                <h2>User messages inbox {'<span class="count-badge">' + str(unread_admin_messages) + '</span>' if unread_admin_messages > 0 else ''}</h2>
                 <p class="card-copy">Review incoming mobile messages and reply directly from the admin console.</p>
               </div>
             </div>
-            <table>
+            <div class="table-wrap"><table class="data-table">
               <thead>
                 <tr><th>ID</th><th>Created</th><th>From</th><th>Message</th><th>Status</th><th>Response</th><th>Action</th></tr>
               </thead>
               <tbody>
                 {_render_admin_message_rows(admin_messages, school_path_prefix)}
               </tbody>
-            </table>
+            </table></div>
           </section>
 
           <section class="panel command-section span-12" id="request-help"{_section_style("dashboard")}>
@@ -2415,7 +2478,7 @@ def render_admin_page(
                 <p class="card-copy">Admins can clear help requests directly from the console. This clear action does not require two-person cancellation consent.</p>
               </div>
             </div>
-            <table>
+            <table class="data-table">
               <thead>
                 <tr><th>ID</th><th>Created</th><th>Type</th><th>Requested by</th><th>Status</th><th>Handled by</th><th>Action</th></tr>
               </thead>
@@ -2433,7 +2496,7 @@ def render_admin_page(
                 <p class="card-copy">Users can send structured status updates without creating an open chat stream.</p>
               </div>
             </div>
-            <table>
+            <table class="data-table">
               <thead>
                 <tr><th>ID</th><th>Created</th><th>Category</th><th>Note</th></tr>
               </thead>
@@ -2474,7 +2537,7 @@ def render_admin_page(
                 <button class="button button-secondary" type="submit">Grant 24-hour quiet period</button>
               </div>
             </form>
-            <table style="margin-top:16px;">
+            <table class="data-table" style="margin-top:16px;">
               <thead>
                 <tr><th>User</th><th>Status</th><th>Reason</th><th>Approved By</th><th>Requested</th><th>Expires</th><th>Action</th></tr>
               </thead>
@@ -2497,7 +2560,7 @@ def render_admin_page(
                 <h2>Recent alerts</h2>
               </div>
             </div>
-            <table>
+            <table class="data-table">
               <thead>
                 <tr><th>ID</th><th>Type</th><th>Created</th><th>Message</th><th>Triggered by</th></tr>
               </thead>
@@ -2514,14 +2577,15 @@ def render_admin_page(
                 <h2>Registered devices</h2>
               </div>
             </div>
-            <table>
+            <div class="table-search"><input type="search" id="device-search" placeholder="Filter devices..." /></div>
+            <div class="table-wrap"><table class="data-table">
               <thead>
                 <tr><th>#</th><th>Device</th><th>Platform</th><th>Provider</th><th>Current user</th><th>First user</th><th>Token</th><th>Action</th></tr>
               </thead>
               <tbody>
                 {_render_device_rows(devices, users, school_path_prefix)}
               </tbody>
-            </table>
+            </table></div>
           </section>
 
           <section class="panel span-12" id="audit-events"{_section_style("audit-logs")}>
@@ -2546,6 +2610,7 @@ def render_admin_page(
                 {"" if not audit_event_type_filter else f'<a class="button button-secondary" href="{prefix}/admin?section=audit-logs">Clear</a>'}
               </div>
             </form>
+            <div class="table-search"><input type="search" id="audit-search" placeholder="Filter audit events by text..." /></div>
             <table class="data-table">
               <thead>
                 <tr><th>Timestamp</th><th>Event</th><th>Actor</th><th>Target</th><th>Summary</th></tr>
@@ -2564,7 +2629,7 @@ def render_admin_page(
                 <p class="card-copy">Historical requests are retained for audit review and excluded from the active queue.</p>
               </div>
             </div>
-            <table>
+            <table class="data-table">
               <thead>
                 <tr><th>User</th><th>Status</th><th>Reason</th><th>Approved By</th><th>Requested</th><th>Expires</th><th>Action</th></tr>
               </thead>
