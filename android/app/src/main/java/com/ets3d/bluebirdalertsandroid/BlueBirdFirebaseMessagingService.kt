@@ -52,7 +52,7 @@ class BlueBirdFirebaseMessagingService : FirebaseMessagingService() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
 
-        AlarmLaunchCoordinator.publish(title = title, body = body)
+        AlarmLaunchCoordinator.publish(title = title, body = body, tenantSlug = message.data["tenant_slug"])
         wakeScreenForAlert()
 
         val notification = NotificationCompat.Builder(this, NOTIF_CH)

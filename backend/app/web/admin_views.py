@@ -1264,6 +1264,56 @@ def _render_alert_rows(alerts: Sequence[AlertRecord]) -> str:
     return "".join(rows)
 
 
+def _render_district_rows(items: Sequence[Mapping[str, object]], school_path_prefix: str) -> str:
+    if not items:
+        return '<tr><td colspan="5" class="mini-copy">No schools found.</td></tr>'
+    prefix = escape(school_path_prefix)
+    rows = []
+    for item in items:
+        slug = str(item.get("tenant_slug", ""))
+        name = str(item.get("tenant_name", slug))
+        is_active = bool(item.get("alarm_is_active", False))
+        is_training = bool(item.get("alarm_is_training", False))
+        message = str(item.get("alarm_message", "") or "")
+        last_alert_at = item.get("last_alert_at")
+        ack_count = int(item.get("ack_count", 0) or 0)
+        expected_users = int(item.get("expected_users", 0) or 0)
+        ack_rate = float(item.get("ack_rate", 0.0) or 0.0)
+
+        if is_active and is_training:
+            status_badge = '<span class="status-pill warn">TRAINING</span>'
+        elif is_active:
+            status_badge = '<span class="status-pill danger">LOCKDOWN</span>'
+        else:
+            status_badge = '<span class="status-pill ok">All Clear</span>'
+
+        message_note = f'<div class="mini-copy">{escape(message[:80])}</div>' if is_active and message else ""
+
+        last_alert_str = escape(str(last_alert_at)[:16].replace("T", " ")) if last_alert_at else "—"
+
+        if expected_users == 0:
+            ack_html = '<span class="mini-copy">No users</span>'
+        elif ack_rate >= 90:
+            ack_html = f'<span class="status-pill ok">{ack_count}/{expected_users} ({ack_rate:.0f}%)</span>'
+        elif ack_rate >= 60:
+            ack_html = f'<span class="status-pill warn">{ack_count}/{expected_users} ({ack_rate:.0f}%)</span>'
+        else:
+            ack_html = f'<span class="status-pill danger">{ack_count}/{expected_users} ({ack_rate:.0f}%)</span>'
+
+        manage_url = f"{prefix}/admin?tenant={escape(slug)}&section=dashboard"
+        rows.append(
+            f"<tr data-tenant-slug='{escape(slug)}' data-expected-users='{expected_users}'>"
+            f"<td><strong>{escape(name)}</strong></td>"
+            f"<td class='dist-status-cell'>{status_badge}{message_note}</td>"
+            f"<td class='mini-copy dist-last-cell'>{last_alert_str}</td>"
+            f"<td class='dist-ack-cell'>{ack_html}</td>"
+            f"<td><a class='button button-secondary' href='{manage_url}'"
+            f" style='font-size:13px;padding:6px 14px;min-height:auto;'>Manage</a></td>"
+            "</tr>"
+        )
+    return "".join(rows)
+
+
 def _render_drill_report_rows(alerts: Sequence[AlertRecord], prefix: str) -> str:
     if not alerts:
         return '<tr><td colspan="5" class="mini-copy">No alerts logged yet.</td></tr>'
@@ -1612,6 +1662,10 @@ def render_admin_page(
     audit_events: Sequence[AuditEventRecord] = (),
     audit_event_types: Sequence[str] = (),
     audit_event_type_filter: str = "",
+    district_overview_items: Sequence[Mapping[str, object]] = (),
+    ws_api_key: str = "",
+    current_user_id: Optional[int] = None,
+    home_tenant_slug: str = "",
 ) -> str:
     prefix = escape(school_path_prefix)
     role_counts = Counter(user.role for user in users)
@@ -1622,13 +1676,18 @@ def render_admin_page(
     alarm_status_class = "danger" if alarm_state.is_active and not alarm_state.is_training else ("warn" if alarm_state.is_active else "ok")
     alarm_status_label = "TRAINING ACTIVE" if alarm_state.is_active and alarm_state.is_training else ("ALARM ACTIVE" if alarm_state.is_active else "Alarm clear")
     security_feedback = f"{_render_flash(flash_message, 'success')}{_render_flash(flash_error, 'error')}"
-    section = active_section if active_section in {"dashboard", "user-management", "quiet-periods", "audit-logs", "settings", "drill-reports"} else "dashboard"
+    section = active_section if active_section in {"dashboard", "user-management", "quiet-periods", "audit-logs", "settings", "drill-reports", "district"} else "dashboard"
     quiet_period_total = len(quiet_periods_active) + len(quiet_periods_history)
-    refresh_meta = '<meta http-equiv="refresh" content="30">' if section == "dashboard" else ""
+    refresh_meta = '<meta http-equiv="refresh" content="30">' if section in {"dashboard", "district"} else ""
+    show_district_nav = str(getattr(current_user, "role", "")).strip().lower() in {"district_admin", "super_admin"}
+    user_title = str(getattr(current_user, "title", "") or "").strip()
+    user_display_name = f"{escape(current_user.name)} ({escape(user_title)})" if user_title else escape(current_user.name)
+    _ack_pill_visible = alarm_state.is_active and acknowledgement_count > 0
+    _ack_pill_hidden_attr = '' if _ack_pill_visible else ' style="display:none;"'
+    _ack_plural = "s" if acknowledgement_count != 1 else ""
     ack_pill = (
-        f'<span class="status-pill ok"><strong>Acknowledged</strong>{acknowledgement_count} user{"s" if acknowledgement_count != 1 else ""}</span>'
-        if alarm_state.is_active and acknowledgement_count > 0
-        else ""
+        f'<span id="js-ack-pill" class="status-pill ok"{_ack_pill_hidden_attr}>'
+        f'<strong>Acknowledged</strong>{acknowledgement_count} user{_ack_plural}</span>'
     )
 
     # Phase 2 panel computed values
@@ -1789,6 +1848,150 @@ def render_admin_page(
     }});
   }});
   </script>
+  <script>
+  // Server-injected config — do not edit by hand.
+  var BB_WS_API_KEY = {json.dumps(ws_api_key)};
+  var BB_USER_ID = {json.dumps(current_user_id or 0)};
+  var BB_HOME_TENANT = {json.dumps(home_tenant_slug)};
+  var BB_TENANT_SLUG = {json.dumps(selected_tenant_slug)};
+  var BB_SHOW_DISTRICT_WS = {json.dumps(show_district_nav)};
+  var BB_PATH_PREFIX = {json.dumps(school_path_prefix)};
+  </script>
+  <script>
+  (function() {{
+    var wsProto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+
+    // ── Single-school dashboard WebSocket ──────────────────────────────────
+    function makeSingleSchoolWS() {{
+      if (!BB_WS_API_KEY || !BB_USER_ID || !BB_TENANT_SLUG) return;
+      // WS bypasses the HTTP middleware — no path prefix stripping — use bare /ws/... path.
+      var url = wsProto + '//' + location.host + '/ws/' + BB_TENANT_SLUG + '/alerts'
+        + '?user_id=' + BB_USER_ID + '&api_key=' + encodeURIComponent(BB_WS_API_KEY);
+      var backoff = 1000;
+      function connect() {{
+        var ws = new WebSocket(url);
+        ws.onopen = function() {{ backoff = 1000; }};
+        ws.onmessage = function(evt) {{
+          try {{
+            var data = JSON.parse(evt.data);
+            updateSingleSchoolUI(data);
+          }} catch(e) {{}}
+        }};
+        ws.onclose = function(evt) {{
+          if (evt.code >= 4400 && evt.code < 4500) return; // auth failure — don't retry
+          setTimeout(connect, backoff);
+          backoff = Math.min(backoff * 2, 30000);
+        }};
+      }}
+      connect();
+    }}
+
+    function updateSingleSchoolUI(data) {{
+      var pill = document.getElementById('js-alarm-status-pill');
+      var ackPill = document.getElementById('js-ack-pill');
+      if (!pill || !data.alarm) return;
+      var alarm = data.alarm;
+      var cls = 'ok';
+      var label = 'Alarm clear';
+      var msg = alarm.message || 'No active alarm';
+      if (alarm.is_active && alarm.is_training) {{ cls = 'warn'; label = 'TRAINING ACTIVE'; }}
+      else if (alarm.is_active) {{ cls = 'danger'; label = 'ALARM ACTIVE'; }}
+      pill.className = 'status-pill ' + cls;
+      pill.innerHTML = '<strong>' + label + '</strong>' + msg;
+      if (ackPill) {{
+        var ackCount = alarm.acknowledgement_count || 0;
+        if (alarm.is_active && ackCount > 0) {{
+          ackPill.style.display = '';
+          ackPill.innerHTML = '<strong>Acknowledged</strong>' + ackCount + ' user' + (ackCount !== 1 ? 's' : '');
+        }} else {{
+          ackPill.style.display = 'none';
+        }}
+      }}
+    }}
+
+    // ── District overview WebSocket ────────────────────────────────────────
+    function makeDistrictWS() {{
+      if (!BB_SHOW_DISTRICT_WS || !BB_WS_API_KEY || !BB_USER_ID || !BB_HOME_TENANT) return;
+      var badge = document.getElementById('dist-ws-badge');
+      // WS bypasses HTTP middleware — no prefix; district endpoint has its own path.
+      var url = wsProto + '//' + location.host + '/ws/district/alerts'
+        + '?user_id=' + BB_USER_ID + '&home_tenant=' + encodeURIComponent(BB_HOME_TENANT)
+        + '&api_key=' + encodeURIComponent(BB_WS_API_KEY);
+      var backoff = 1000;
+      function setBadge(state) {{
+        if (!badge) return;
+        badge.style.display = '';
+        if (state === 'live') {{
+          badge.className = 'status-pill ok';
+          badge.innerHTML = '&#x25CF;&nbsp;Live';
+        }} else if (state === 'reconnecting') {{
+          badge.className = 'status-pill warn';
+          badge.innerHTML = '&#x25CB;&nbsp;Reconnecting';
+        }} else {{
+          badge.className = 'status-pill danger';
+          badge.innerHTML = '&#x25A0;&nbsp;Offline';
+        }}
+      }}
+      function connect() {{
+        setBadge('reconnecting');
+        var ws = new WebSocket(url);
+        ws.onopen = function() {{ backoff = 1000; setBadge('live'); }};
+        ws.onmessage = function(evt) {{
+          try {{
+            var data = JSON.parse(evt.data);
+            updateDistrictRow(data);
+          }} catch(e) {{}}
+        }};
+        ws.onclose = function(evt) {{
+          setBadge(evt.code >= 4400 && evt.code < 4500 ? 'offline' : 'reconnecting');
+          if (evt.code >= 4400 && evt.code < 4500) return;
+          setTimeout(connect, backoff);
+          backoff = Math.min(backoff * 2, 30000);
+        }};
+      }}
+      connect();
+    }}
+
+    function updateDistrictRow(data) {{
+      if (!data.tenant_slug || !data.alarm) return;
+      var slug = data.tenant_slug;
+      var alarm = data.alarm;
+      var rows = document.querySelectorAll('#district-overview tr[data-tenant-slug="' + slug + '"]');
+      rows.forEach(function(row) {{
+        var statusCell = row.querySelector('.dist-status-cell');
+        var ackCell = row.querySelector('.dist-ack-cell');
+        var lastCell = row.querySelector('.dist-last-cell');
+        if (statusCell) {{
+          var badge = '';
+          if (alarm.is_active && alarm.is_training) badge = '<span class="status-pill warn">TRAINING</span>';
+          else if (alarm.is_active) badge = '<span class="status-pill danger">LOCKDOWN</span>';
+          else badge = '<span class="status-pill ok">All Clear</span>';
+          var note = (alarm.is_active && alarm.message) ? '<div class="mini-copy">' + alarm.message.substring(0, 80) + '</div>' : '';
+          statusCell.innerHTML = badge + note;
+        }}
+        if (ackCell) {{
+          var ackCount = alarm.acknowledgement_count || 0;
+          var expectedUsers = parseInt(row.dataset.expectedUsers, 10) || 0;
+          if (expectedUsers === 0) {{
+            ackCell.innerHTML = '<span class="mini-copy">No users</span>';
+          }} else {{
+            var rate = Math.round(ackCount / expectedUsers * 100);
+            var cls = rate >= 90 ? 'ok' : (rate >= 60 ? 'warn' : 'danger');
+            ackCell.innerHTML = '<span class="status-pill ' + cls + '">' + ackCount + '/' + expectedUsers + ' (' + rate + '%)</span>';
+          }}
+        }}
+        if (lastCell && alarm.activated_at) {{
+          lastCell.textContent = (alarm.activated_at || '').substring(0, 16).replace('T', ' ');
+        }}
+      }});
+    }}
+
+    document.addEventListener('DOMContentLoaded', function() {{
+      makeSingleSchoolWS();
+      makeDistrictWS();
+    }});
+  }})();
+  </script>
 </head>
 <body>
   <main class="page-shell">
@@ -1799,7 +2002,7 @@ def render_admin_page(
           <div class="stack brand-text">
             <p class="eyebrow">BlueBird Alerts</p>
             <h2>Safety operations</h2>
-            <p class="hero-copy">Signed in as <strong>{escape(current_user.name)}</strong> ({escape(current_user.login_name or 'admin')}).</p>
+            <p class="hero-copy">Signed in as <strong>{user_display_name}</strong> ({escape(current_user.login_name or 'admin')}).</p>
             <p class="mini-copy">School: <strong>{escape(school_name)}</strong> ({escape(school_slug)})</p>
             <p class="mini-copy">Viewing tenant: <strong>{escape(selected_tenant_name)}</strong> ({escape(selected_tenant_slug)})</p>
             {tenant_selector_html}
@@ -1815,6 +2018,7 @@ def render_admin_page(
             {_nav_item("drill-reports", "Drill Reports")}
             {_nav_item("audit-logs", "Audit Logs")}
             {_nav_item("settings", "Settings")}
+            {_nav_item("district", "District Overview") if show_district_nav else ""}
           </nav>
           </div>
           <div class="shell-actions">
@@ -1840,7 +2044,7 @@ def render_admin_page(
               <p class="hero-copy">Manage users, see device readiness, review alerts, and control the active alarm state for <strong>{escape(selected_tenant_name)}</strong> from one place.</p>
             </div>
             <div class="status-row">
-              <span class="status-pill {alarm_status_class}"><strong>{alarm_status_label}</strong>{escape(alarm_state.message or 'No active alarm')}</span>
+              <span id="js-alarm-status-pill" class="status-pill {alarm_status_class}"><strong>{alarm_status_label}</strong>{escape(alarm_state.message or 'No active alarm')}</span>
               {"<span class='status-pill warn'><strong>TRAINING</strong>" + escape(alarm_state.training_label or "This is a drill") + "</span>" if alarm_state.is_active and alarm_state.is_training else ""}
               {ack_pill}
               <span class="status-pill {'ok' if apns_configured else 'danger'}"><strong>APNs</strong>{'ready' if apns_configured else 'not configured'}</span>
@@ -2366,6 +2570,31 @@ def render_admin_page(
               </thead>
               <tbody>
                 {_render_quiet_period_rows(quiet_periods_history, users, school_path_prefix, tenant_label=selected_tenant_name, include_actions=False)}
+              </tbody>
+            </table>
+          </section>
+
+          <section class="panel command-section span-12" id="district-overview"{_section_style("district")}>
+            <div class="panel-header">
+              <div>
+                <p class="eyebrow">District Overview</p>
+                <h2>All assigned schools</h2>
+                <p class="card-copy">Read-only status across all schools in your district. Switch to a school to manage alerts.</p>
+              </div>
+              <div class="status-row" style="align-self:flex-start;">
+                <span id="dist-ws-badge" class="status-pill" style="display:none;font-size:12px;">&#x25CF;&nbsp;Live</span>
+              </div>
+            </div>
+            <div class="flash" style="margin-bottom:16px;">
+              <strong>Alert controls are disabled in District Overview.</strong>
+              Select a school below to activate or deactivate alerts.
+            </div>
+            <table class="data-table">
+              <thead>
+                <tr><th>School</th><th>Status</th><th>Last Alert</th><th>Ack Rate</th><th>Actions</th></tr>
+              </thead>
+              <tbody>
+                {_render_district_rows(district_overview_items, school_path_prefix)}
               </tbody>
             </table>
           </section>

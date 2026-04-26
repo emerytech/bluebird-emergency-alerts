@@ -520,3 +520,49 @@ class TeamAssistActionRequest(BaseModel):
 
 class TeamAssistCancelConfirmRequest(BaseModel):
     user_id: int
+
+
+# ── District / multi-school schemas ──────────────────────────────────────────
+
+class TenantSummaryForUser(BaseModel):
+    tenant_slug: str
+    tenant_name: str
+    role: Optional[str] = None
+
+
+class MeResponse(BaseModel):
+    user_id: int
+    name: str
+    login_name: str
+    role: str
+    title: Optional[str] = None
+    can_deactivate_alarm: bool = False
+    tenants: List[TenantSummaryForUser]
+    selected_tenant: str
+
+
+class SelectTenantRequest(BaseModel):
+    tenant_slug: str = Field(..., min_length=1, max_length=120)
+
+
+class SelectTenantResponse(BaseModel):
+    tenant_slug: str
+    tenant_name: str
+    role: Optional[str] = None
+
+
+class TenantOverviewItem(BaseModel):
+    tenant_slug: str
+    tenant_name: str
+    alarm_is_active: bool
+    alarm_message: Optional[str] = None
+    alarm_is_training: bool = False
+    last_alert_at: Optional[str] = None
+    acknowledgement_count: int = 0
+    expected_user_count: int = 0
+    acknowledgement_rate: float = 0.0
+
+
+class DistrictOverviewResponse(BaseModel):
+    tenant_count: int
+    tenants: List[TenantOverviewItem]

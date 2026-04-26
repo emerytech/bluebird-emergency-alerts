@@ -253,6 +253,32 @@ struct APIClient {
         return try JSONDecoder().decode(SchoolsCatalogResponse.self, from: data)
     }
 
+    func me(userID: Int) async throws -> MeResponse {
+        var components = URLComponents(url: baseURL.appendingPathComponent("me"), resolvingAgainstBaseURL: false)
+        components?.queryItems = [URLQueryItem(name: "user_id", value: String(userID))]
+        guard let url = components?.url else {
+            throw NSError(domain: "BlueBird.API", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid /me URL"])
+        }
+        var request = URLRequest(url: url)
+        withAPIKey(&request)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try requireSuccess(response: response, data: data)
+        return try JSONDecoder().decode(MeResponse.self, from: data)
+    }
+
+    func districtOverview(userID: Int) async throws -> DistrictOverviewResponse {
+        var components = URLComponents(url: baseURL.appendingPathComponent("district/overview"), resolvingAgainstBaseURL: false)
+        components?.queryItems = [URLQueryItem(name: "user_id", value: String(userID))]
+        guard let url = components?.url else {
+            throw NSError(domain: "BlueBird.API", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid /district/overview URL"])
+        }
+        var request = URLRequest(url: url)
+        withAPIKey(&request)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try requireSuccess(response: response, data: data)
+        return try JSONDecoder().decode(DistrictOverviewResponse.self, from: data)
+    }
+
     func login(username: String, password: String) async throws -> MobileLoginResponse {
         let url = baseURL.appendingPathComponent("auth/login")
         var request = URLRequest(url: url)
@@ -750,4 +776,64 @@ struct MessageRecipient: Identifiable {
     let userID: Int
     let label: String
     var id: Int { userID }
+}
+
+// MARK: - Phase 7: Multi-tenant /me and /district/overview models
+
+struct MeResponse: Decodable {
+    let userID: Int
+    let name: String
+    let loginName: String
+    let role: String
+    let title: String?
+    let canDeactivateAlarm: Bool
+    let tenants: [TenantSummaryItem]
+    let selectedTenant: String
+
+    enum CodingKeys: String, CodingKey {
+        case userID = "user_id"
+        case name
+        case loginName = "login_name"
+        case role
+        case title
+        case canDeactivateAlarm = "can_deactivate_alarm"
+        case tenants
+        case selectedTenant = "selected_tenant"
+    }
+}
+
+struct TenantOverviewItem: Decodable, Identifiable {
+    let tenantSlug: String
+    let tenantName: String
+    let alarmIsActive: Bool
+    let alarmMessage: String?
+    let alarmIsTraining: Bool
+    let lastAlertAt: String?
+    let acknowledgementCount: Int
+    let expectedUserCount: Int
+    let acknowledgementRate: Double
+
+    var id: String { tenantSlug }
+
+    enum CodingKeys: String, CodingKey {
+        case tenantSlug = "tenant_slug"
+        case tenantName = "tenant_name"
+        case alarmIsActive = "alarm_is_active"
+        case alarmMessage = "alarm_message"
+        case alarmIsTraining = "alarm_is_training"
+        case lastAlertAt = "last_alert_at"
+        case acknowledgementCount = "acknowledgement_count"
+        case expectedUserCount = "expected_user_count"
+        case acknowledgementRate = "acknowledgement_rate"
+    }
+}
+
+struct DistrictOverviewResponse: Decodable {
+    let tenantCount: Int
+    let tenants: [TenantOverviewItem]
+
+    enum CodingKeys: String, CodingKey {
+        case tenantCount = "tenant_count"
+        case tenants
+    }
 }

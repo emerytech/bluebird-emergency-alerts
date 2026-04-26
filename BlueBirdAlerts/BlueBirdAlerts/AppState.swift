@@ -1,6 +1,20 @@
 import Foundation
 import Combine
 
+// Tenant entry returned by /me
+struct TenantSummaryItem: Codable, Identifiable, Equatable {
+    var id: String { tenantSlug }
+    let tenantSlug: String
+    let tenantName: String
+    let role: String?
+
+    enum CodingKeys: String, CodingKey {
+        case tenantSlug = "tenant_slug"
+        case tenantName = "tenant_name"
+        case role
+    }
+}
+
 @MainActor
 final class AppState: ObservableObject {
     private static let biometricsAllowedKey = "biometrics_allowed"
@@ -18,6 +32,11 @@ final class AppState: ObservableObject {
     private static let schoolNameKey = "school_name"
     private static let initialDeviceAuthUserIDKey = "initial_device_auth_user_id"
     private static let initialDeviceAuthUserNameKey = "initial_device_auth_user_name"
+    // Multi-tenant
+    private static let tenantsJSONKey = "tenants_json"
+    private static let selectedTenantSlugKey = "selected_tenant_slug"
+    private static let selectedTenantNameKey = "selected_tenant_name"
+    private static let userTitleKey = "user_title"
 
     @Published var notificationPermissionGranted: Bool?
     @Published var deviceToken: String?
@@ -39,6 +58,12 @@ final class AppState: ObservableObject {
     @Published var recentAlerts: [String] = []
     @Published var lastStatus: String?
     @Published var lastError: String?
+    // Multi-tenant state
+    @Published var tenants: [TenantSummaryItem] = []
+    @Published var selectedTenantSlug: String = UserDefaults.standard.string(forKey: selectedTenantSlugKey) ?? ""
+    @Published var selectedTenantName: String = UserDefaults.standard.string(forKey: selectedTenantNameKey) ?? ""
+    @Published var userTitle: String = UserDefaults.standard.string(forKey: userTitleKey) ?? ""
+
     @Published var biometricsAllowed: Bool = UserDefaults.standard.bool(forKey: biometricsAllowedKey) {
         didSet {
             UserDefaults.standard.set(biometricsAllowed, forKey: Self.biometricsAllowedKey)
@@ -95,6 +120,51 @@ final class AppState: ObservableObject {
             serverURLString = normalizedServer
             UserDefaults.standard.set(normalizedServer, forKey: Self.serverURLKey)
         }
+        // Load persisted tenant list
+        if let data = UserDefaults.standard.data(forKey: Self.tenantsJSONKey),
+           let decoded = try? JSONDecoder().decode([TenantSummaryItem].self, from: data) {
+            tenants = decoded
+        }
+    }
+
+    // The URL used for API calls in the currently-selected tenant.
+    // Replaces the school slug in serverURL with selectedTenantSlug when a switch has occurred.
+    var selectedTenantURL: URL {
+        let slug = selectedTenantSlug.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !slug.isEmpty else { return serverURL }
+        guard var components = URLComponents(url: serverURL, resolvingAgainstBaseURL: false) else {
+            return serverURL
+        }
+        let pathSegments = components.path
+            .split(separator: "/", omittingEmptySubsequences: true)
+            .map(String.init)
+        if pathSegments.isEmpty {
+            components.path = "/\(slug)"
+        } else {
+            var segs = pathSegments
+            segs[0] = slug
+            components.path = "/" + segs.joined(separator: "/")
+        }
+        return components.url ?? serverURL
+    }
+
+    // The base server URL (scheme + host, no path) for building WebSocket URLs.
+    var serverBaseURL: URL {
+        guard var components = URLComponents(url: serverURL, resolvingAgainstBaseURL: false) else {
+            return serverURL
+        }
+        components.path = ""
+        components.queryItems = nil
+        return components.url ?? serverURL
+    }
+
+    // True if the user has access to more than one school.
+    var isMultiTenant: Bool { tenants.count > 1 }
+
+    // Active school name: prefer the selected tenant name, fall back to login-time school name.
+    var effectiveSchoolName: String {
+        let selected = selectedTenantName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return selected.isEmpty ? schoolName : selected
     }
 
     var serverURL: URL {
@@ -131,6 +201,36 @@ final class AppState: ObservableObject {
         defaults.set(normalizedServerURLString, forKey: Self.serverURLKey)
     }
 
+    // Called after /me returns to persist the full tenant list.
+    func updateTenants(_ newTenants: [TenantSummaryItem], selectedSlug: String, selectedName: String) {
+        tenants = newTenants
+        // Only update selection if no selection is stored yet or selection is not in the new list.
+        let slugIsValid = newTenants.contains { $0.tenantSlug == selectedSlug }
+        let currentSlugValid = newTenants.contains { $0.tenantSlug == selectedTenantSlug }
+        if !currentSlugValid {
+            selectedTenantSlug = slugIsValid ? selectedSlug : (newTenants.first?.tenantSlug ?? selectedSlug)
+            selectedTenantName = newTenants.first(where: { $0.tenantSlug == selectedTenantSlug })?.tenantName ?? selectedName
+            UserDefaults.standard.set(selectedTenantSlug, forKey: Self.selectedTenantSlugKey)
+            UserDefaults.standard.set(selectedTenantName, forKey: Self.selectedTenantNameKey)
+        }
+        if let data = try? JSONEncoder().encode(newTenants) {
+            UserDefaults.standard.set(data, forKey: Self.tenantsJSONKey)
+        }
+    }
+
+    // Switch the active tenant. Restarts WebSocket connections in the calling view.
+    func switchTenant(slug: String, name: String) {
+        selectedTenantSlug = slug
+        selectedTenantName = name
+        UserDefaults.standard.set(slug, forKey: Self.selectedTenantSlugKey)
+        UserDefaults.standard.set(name, forKey: Self.selectedTenantNameKey)
+    }
+
+    func updateUserTitle(_ title: String) {
+        userTitle = title
+        UserDefaults.standard.set(title, forKey: Self.userTitleKey)
+    }
+
     func logout() {
         let preservedServer = serverURLString
         let defaults = UserDefaults.standard
@@ -141,6 +241,10 @@ final class AppState: ObservableObject {
         defaults.removeObject(forKey: Self.loginNameKey)
         defaults.removeObject(forKey: Self.canDeactivateKey)
         defaults.removeObject(forKey: Self.schoolNameKey)
+        defaults.removeObject(forKey: Self.tenantsJSONKey)
+        defaults.removeObject(forKey: Self.selectedTenantSlugKey)
+        defaults.removeObject(forKey: Self.selectedTenantNameKey)
+        defaults.removeObject(forKey: Self.userTitleKey)
 
         setupDone = false
         userID = nil
@@ -149,6 +253,10 @@ final class AppState: ObservableObject {
         loginName = ""
         canDeactivateAlarm = false
         schoolName = ""
+        tenants = []
+        selectedTenantSlug = ""
+        selectedTenantName = ""
+        userTitle = ""
         deviceRegistered = false
         backendReachable = nil
         registeredDeviceCount = 0

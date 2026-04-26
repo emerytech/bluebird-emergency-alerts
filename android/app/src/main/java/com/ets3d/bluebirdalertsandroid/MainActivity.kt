@@ -38,7 +38,10 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -80,6 +83,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.launch
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -91,6 +95,7 @@ import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 
 // ── Brand colours ─────────────────────────────────────────────────────────────
 private val AppBg       = DSColor.Background
@@ -126,6 +131,9 @@ private const val TAG_ACTIVATION = "BluebirdActivation"
 internal const val EXTRA_OPEN_ALARM = "bluebird_open_alarm"
 internal const val EXTRA_ALARM_TITLE = "bluebird_alarm_title"
 internal const val EXTRA_ALARM_MESSAGE = "bluebird_alarm_message"
+private const val KEY_SELECTED_TENANT_SLUG = "selected_tenant_slug"
+private const val KEY_SELECTED_TENANT_NAME = "selected_tenant_name"
+private const val KEY_USER_TITLE = "user_title"
 
 private enum class HoldActivationUiState {
     Idle,
@@ -139,6 +147,7 @@ private enum class HoldActivationUiState {
 data class AlarmLaunchEvent(
     val title: String,
     val body: String,
+    val tenantSlug: String? = null,
     val receivedAtMillis: Long = System.currentTimeMillis(),
 )
 
@@ -146,8 +155,8 @@ object AlarmLaunchCoordinator {
     private val _event = MutableStateFlow<AlarmLaunchEvent?>(null)
     val event: StateFlow<AlarmLaunchEvent?> get() = _event
 
-    fun publish(title: String, body: String) {
-        _event.value = AlarmLaunchEvent(title = title, body = body)
+    fun publish(title: String, body: String, tenantSlug: String? = null) {
+        _event.value = AlarmLaunchEvent(title = title, body = body, tenantSlug = tenantSlug?.takeIf { it.isNotBlank() })
     }
 }
 
@@ -251,6 +260,9 @@ private fun screenFlashAlertsEnabled(ctx: Context) = prefs(ctx).getBoolean(KEY_S
 private fun setScreenFlashAlertsEnabled(ctx: Context, enabled: Boolean) {
     prefs(ctx).edit().putBoolean(KEY_SCREEN_FLASH_ALERTS_ENABLED, enabled).apply()
 }
+private fun getSelectedTenantSlug(ctx: Context) = prefs(ctx).getString(KEY_SELECTED_TENANT_SLUG, "") ?: ""
+private fun getSelectedTenantName(ctx: Context) = prefs(ctx).getString(KEY_SELECTED_TENANT_NAME, "") ?: ""
+private fun getUserTitle(ctx: Context) = prefs(ctx).getString(KEY_USER_TITLE, "") ?: ""
 
 private fun Context.findActivity(): FragmentActivity? = when (this) {
     is FragmentActivity -> this
@@ -498,6 +510,36 @@ private val TeamAssistTypes = listOf(
     "Suspicious Activity",
 )
 
+// ── Multi-tenant models ────────────────────────────────────────────────────────
+data class TenantSummaryItem(
+    val tenantSlug: String,
+    val tenantName: String,
+    val role: String?,
+)
+
+data class TenantOverviewItem(
+    val tenantSlug: String,
+    val tenantName: String,
+    val alarmIsActive: Boolean,
+    val alarmMessage: String?,
+    val alarmIsTraining: Boolean,
+    val lastAlertAt: String?,
+    val acknowledgementCount: Int,
+    val expectedUserCount: Int,
+    val acknowledgementRate: Double,
+)
+
+private data class MeData(
+    val userId: Int,
+    val name: String,
+    val role: String,
+    val loginName: String,
+    val title: String?,
+    val canDeactivateAlarm: Boolean,
+    val tenants: List<TenantSummaryItem>,
+    val selectedTenant: String,
+)
+
 // ── Data ───────────────────────────────────────────────────────────────────────
 data class AlarmStatus(
     val isActive: Boolean = false,
@@ -547,6 +589,11 @@ data class UiState(
     val teamAssistActionRecipients: List<TeamAssistActionRecipient> = emptyList(),
     val adminQuietPeriodRequests: List<AdminQuietPeriodRequest> = emptyList(),
     val featureLabels: Map<String, String> = AppLabels.DEFAULT_FEATURE_LABELS,
+    val tenants: List<TenantSummaryItem> = emptyList(),
+    val selectedTenantSlug: String = "",
+    val selectedTenantName: String = "",
+    val userTitle: String = "",
+    val districtTenants: List<TenantOverviewItem> = emptyList(),
 )
 
 // ── ViewModel ──────────────────────────────────────────────────────────────────
@@ -555,16 +602,31 @@ class MainViewModel : ViewModel() {
     val state: StateFlow<UiState> = _state
 
     private var client: BackendClient? = null
+    private var currentBaseUrl: String = ""
+    private val wsHttpClient = OkHttpClient.Builder()
+        .connectTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(0, TimeUnit.SECONDS)
+        .writeTimeout(15, TimeUnit.SECONDS)
+        .build()
+    private var alarmWs: okhttp3.WebSocket? = null
+    private var wsJob: Job? = null
+    private val wsGeneration = AtomicInteger(0)
 
     fun init(ctx: Context) {
         if (client != null) return
-        client = BackendClient(
-            baseUrl = getServerUrl(ctx),
-            apiKey  = BuildConfig.BACKEND_API_KEY,
-        )
+        val serverUrl = getServerUrl(ctx)
+        val savedSlug = getSelectedTenantSlug(ctx)
+        val savedName = getSelectedTenantName(ctx)
+        currentBaseUrl = if (savedSlug.isNotBlank()) buildSelectedTenantUrl(serverUrl, savedSlug) else serverUrl
+        client = BackendClient(currentBaseUrl, BuildConfig.BACKEND_API_KEY)
+        if (savedSlug.isNotBlank()) {
+            _state.update { it.copy(selectedTenantSlug = savedSlug, selectedTenantName = savedName) }
+        }
         refreshFeatureLabels()
         registerPushToken(ctx)
         startPolling(ctx)
+        loadMeData(ctx)
+        startAlarmWebSocket(ctx)
     }
 
     fun refreshFeatureLabels() {
@@ -1015,6 +1077,201 @@ class MainViewModel : ViewModel() {
                 .onFailure { e ->
                     _state.update { it.copy(isBusy = false, errorMsg = e.message ?: "Failed to delete quiet period request.") }
                 }
+        }
+    }
+
+    fun loadMeData(ctx: Context) {
+        val userId = getUserId(ctx).toIntOrNull() ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                BackendClient(getServerUrl(ctx), BuildConfig.BACKEND_API_KEY).getMe(userId)
+            }.onSuccess { me ->
+                val currentSlug = _state.value.selectedTenantSlug
+                val slugIsValid = me.tenants.any { it.tenantSlug == currentSlug }
+                val selectedSlug = if (slugIsValid && currentSlug.isNotBlank()) {
+                    currentSlug
+                } else {
+                    me.tenants.firstOrNull()?.tenantSlug ?: me.selectedTenant
+                }
+                val selectedName = me.tenants.firstOrNull { it.tenantSlug == selectedSlug }?.tenantName ?: ""
+                prefs(ctx).edit()
+                    .putString(KEY_SELECTED_TENANT_SLUG, selectedSlug)
+                    .putString(KEY_SELECTED_TENANT_NAME, selectedName)
+                    .putString(KEY_USER_TITLE, me.title ?: "")
+                    .apply()
+                _state.update { s ->
+                    s.copy(
+                        tenants = me.tenants,
+                        selectedTenantSlug = selectedSlug,
+                        selectedTenantName = selectedName,
+                        userTitle = me.title ?: "",
+                    )
+                }
+                val newUrl = buildSelectedTenantUrl(getServerUrl(ctx), selectedSlug)
+                if (newUrl != currentBaseUrl) {
+                    currentBaseUrl = newUrl
+                    client = BackendClient(newUrl, BuildConfig.BACKEND_API_KEY)
+                    startAlarmWebSocket(ctx)
+                }
+            }
+        }
+    }
+
+    fun switchTenant(ctx: Context, slug: String, name: String) {
+        prefs(ctx).edit()
+            .putString(KEY_SELECTED_TENANT_SLUG, slug)
+            .putString(KEY_SELECTED_TENANT_NAME, name)
+            .apply()
+        _state.update {
+            it.copy(
+                selectedTenantSlug = slug,
+                selectedTenantName = name,
+                alarm = AlarmStatus(),
+                districtTenants = emptyList(),
+            )
+        }
+        val newUrl = buildSelectedTenantUrl(getServerUrl(ctx), slug)
+        currentBaseUrl = newUrl
+        client = BackendClient(newUrl, BuildConfig.BACKEND_API_KEY)
+        startAlarmWebSocket(ctx)
+    }
+
+    fun loadDistrictOverview(ctx: Context) {
+        val userId = getUserId(ctx).toIntOrNull() ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { client!!.getDistrictOverview(userId) }
+                .onSuccess { tenants -> _state.update { it.copy(districtTenants = tenants) } }
+                .onFailure { e -> _state.update { it.copy(errorMsg = e.message ?: "Failed to load district overview.") } }
+        }
+    }
+
+    private fun startAlarmWebSocket(ctx: Context) {
+        wsJob?.cancel()
+        alarmWs?.close(1000, "restart")
+        alarmWs = null
+        val myGen = wsGeneration.incrementAndGet()
+        val serverUrl = getServerUrl(ctx)
+        val slug = _state.value.selectedTenantSlug.ifBlank { extractSchoolSlug(serverUrl) }
+        if (slug.isBlank()) return
+        Log.d("BluebirdWS", "WS starting gen=$myGen slug=$slug")
+        wsJob = viewModelScope.launch(Dispatchers.IO) {
+            var backoffMs = 2_000L
+            while (isActive && wsGeneration.get() == myGen) {
+                val wsUrl = buildWsUrl(serverUrl, slug)
+                if (wsUrl.isBlank()) break
+                Log.d("BluebirdWS", "WS connecting: $wsUrl backoff=${backoffMs}ms gen=$myGen")
+                val closed = CompletableDeferred<Unit>()
+                alarmWs = wsHttpClient.newWebSocket(
+                    okhttp3.Request.Builder()
+                        .url(wsUrl)
+                        .header("X-API-Key", BuildConfig.BACKEND_API_KEY)
+                        .build(),
+                    object : okhttp3.WebSocketListener() {
+                        override fun onOpen(ws: okhttp3.WebSocket, response: okhttp3.Response) {
+                            backoffMs = 2_000L
+                            Log.d("BluebirdWS", "WS connected: $wsUrl gen=$myGen")
+                        }
+                        override fun onMessage(ws: okhttp3.WebSocket, text: String) {
+                            backoffMs = 2_000L
+                            val eventType = runCatching { JSONObject(text).optString("event", "?") }.getOrDefault("?")
+                            Log.d("BluebirdWS", "WS message event=$eventType slug=$slug gen=$myGen")
+                            handleWsMessage(text)
+                        }
+                        override fun onFailure(ws: okhttp3.WebSocket, t: Throwable, response: okhttp3.Response?) {
+                            Log.w("BluebirdWS", "WS failure: ${t.message} gen=$myGen")
+                            alarmWs = null
+                            closed.complete(Unit)
+                        }
+                        override fun onClosed(ws: okhttp3.WebSocket, code: Int, reason: String) {
+                            Log.d("BluebirdWS", "WS closed: code=$code reason=$reason gen=$myGen")
+                            alarmWs = null
+                            closed.complete(Unit)
+                        }
+                    },
+                )
+                closed.await()
+                if (!isActive || wsGeneration.get() != myGen) break
+                Log.d("BluebirdWS", "WS reconnecting in ${backoffMs}ms gen=$myGen")
+                delay(backoffMs)
+                backoffMs = minOf(backoffMs * 2, 15_000L)
+            }
+            Log.d("BluebirdWS", "WS loop exited gen=$myGen")
+        }
+    }
+
+    private fun buildWsUrl(serverUrl: String, slug: String): String {
+        return runCatching {
+            val uri = java.net.URI(serverUrl)
+            val scheme = if (uri.scheme == "https") "wss" else "ws"
+            val port = if (uri.port > 0) ":${uri.port}" else ""
+            "$scheme://${uri.host}$port/ws/$slug/alerts"
+        }.getOrDefault("")
+    }
+
+    private fun buildSelectedTenantUrl(serverUrl: String, slug: String): String {
+        val trimmedSlug = slug.trim()
+        if (trimmedSlug.isBlank()) return serverUrl
+        return runCatching {
+            val uri = java.net.URI(serverUrl)
+            val segs = uri.path.trim('/').split("/").filter { it.isNotBlank() }
+            val newSegs = if (segs.isEmpty()) listOf(trimmedSlug) else segs.toMutableList().also { it[0] = trimmedSlug }
+            val port = if (uri.port > 0) ":${uri.port}" else ""
+            "${uri.scheme}://${uri.host}$port/${newSegs.joinToString("/")}"
+        }.getOrDefault(serverUrl)
+    }
+
+    private fun handleWsMessage(text: String) {
+        val j = runCatching { JSONObject(text) }.getOrNull() ?: return
+        val event = j.optString("event")
+        val eventSlug = j.optString("tenant_slug").trim()
+        val alarm = j.optJSONObject("alarm")
+        val currentSlug = _state.value.selectedTenantSlug
+        val isCurrentTenant = eventSlug.isBlank() || eventSlug == currentSlug
+        if (eventSlug.isNotBlank()) updateDistrictTenant(eventSlug, event, alarm)
+        if (!isCurrentTenant) return
+        when (event) {
+            "alarm_activated", "alert_triggered" -> {
+                val a = alarm ?: return
+                _state.update { s ->
+                    s.copy(alarm = s.alarm.copy(
+                        isActive = a.optBoolean("is_active", true),
+                        message = a.optString("message").ifBlank { null },
+                        isTraining = a.optBoolean("is_training", false),
+                        trainingLabel = a.optString("training_label").ifBlank { null },
+                    ))
+                }
+            }
+            "alarm_deactivated", "tenant_alert_cleared" -> {
+                AlarmAudioController.stop()
+                _state.update { s ->
+                    s.copy(alarm = s.alarm.copy(isActive = false, message = null, isTraining = false, trainingLabel = null))
+                }
+            }
+        }
+    }
+
+    private fun updateDistrictTenant(slug: String, event: String, alarm: JSONObject?) {
+        val idx = _state.value.districtTenants.indexOfFirst { it.tenantSlug == slug }
+        if (idx < 0) return
+        _state.update { s ->
+            val old = s.districtTenants[idx]
+            val updated = when (event) {
+                "alarm_activated", "alert_triggered" -> old.copy(
+                    alarmIsActive = alarm?.optBoolean("is_active", true) ?: true,
+                    alarmMessage = alarm?.optString("message")?.ifBlank { null },
+                    alarmIsTraining = alarm?.optBoolean("is_training", false) ?: false,
+                )
+                "alarm_deactivated", "tenant_alert_cleared" -> old.copy(
+                    alarmIsActive = false, alarmMessage = null, alarmIsTraining = false,
+                )
+                "tenant_acknowledgement_updated" -> old.copy(
+                    acknowledgementCount = alarm?.optInt("acknowledgement_count", old.acknowledgementCount) ?: old.acknowledgementCount,
+                    acknowledgementRate = alarm?.optDouble("acknowledgement_rate", old.acknowledgementRate) ?: old.acknowledgementRate,
+                )
+                else -> old
+            }
+            val newList = s.districtTenants.toMutableList().also { it[idx] = updated }
+            s.copy(districtTenants = newList)
         }
     }
 
@@ -1507,12 +1764,22 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
     var showAlarmTakeover by remember { mutableStateOf(false) }
     var trainingModeEnabled by remember { mutableStateOf(false) }
     var trainingLabel by remember { mutableStateOf("This is a drill") }
+    var pendingAlertAction by remember { mutableStateOf<SafetyAction?>(null) }
+    var showDistrictView by remember { mutableStateOf(false) }
+    var showTenantMenu by remember { mutableStateOf(false) }
     val userName = remember { getUserName(ctx) }
     val userRole = remember { getUserRole(ctx) }
     val schoolName = remember { getSchoolName(ctx) }
     val currentUserId = remember { getUserId(ctx).toIntOrNull() }
     val canDeactivate = remember { canDeactivateAlarm(ctx) }
     val isAdmin = remember(userRole) { userRole.equals("admin", ignoreCase = true) }
+    val isDistrictSession = remember(userRole) {
+        userRole.equals("district_admin", ignoreCase = true) ||
+        userRole.equals("super_admin", ignoreCase = true) ||
+        userRole.equals("platform_super_admin", ignoreCase = true)
+    }
+    val effectiveSchoolName = state.selectedTenantName.ifBlank { schoolName }
+    val isMultiTenant = state.tenants.size > 1
     var biometricsEnabled by remember { mutableStateOf(biometricsAllowed(ctx)) }
     var hapticAlertsOn by remember { mutableStateOf(hapticAlertsEnabled(ctx)) }
     var flashlightAlertsOn by remember { mutableStateOf(flashlightAlertsEnabled(ctx)) }
@@ -1583,6 +1850,11 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
 
     LaunchedEffect(launchEvent?.receivedAtMillis) {
         val event = launchEvent ?: return@LaunchedEffect
+        val eventSlug = event.tenantSlug
+        if (eventSlug != null && eventSlug != state.selectedTenantSlug) {
+            vm.setErrorMessage("Alert received for another school. Switch schools to view it.")
+            return@LaunchedEffect
+        }
         activePanel = DashboardPanel.Home
         showAlarmTakeover = true
         showSettingsScreen = false
@@ -1636,12 +1908,72 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
         topBar = {
             TopAppBar(
                 title = {
-                    if (showSettingsScreen || schoolName.isBlank()) {
+                    if (showSettingsScreen || effectiveSchoolName.isBlank()) {
                         Text(
                             if (showSettingsScreen) "Settings" else "BlueBird Alerts",
                             fontWeight = FontWeight.Bold,
                             color = TextPri,
                         )
+                    } else if (isMultiTenant) {
+                        Box {
+                            TextButton(
+                                onClick = { showTenantMenu = true },
+                                contentPadding = PaddingValues(0.dp),
+                            ) {
+                                Column(verticalArrangement = Arrangement.Center) {
+                                    Text(
+                                        "BlueBird Alerts",
+                                        fontWeight = FontWeight.Bold,
+                                        color = TextPri,
+                                        fontSize = 18.sp,
+                                        lineHeight = 20.sp,
+                                    )
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(2.dp),
+                                    ) {
+                                        Text(
+                                            effectiveSchoolName,
+                                            fontWeight = FontWeight.Medium,
+                                            color = TextPri.copy(alpha = 0.65f),
+                                            fontSize = 12.sp,
+                                            lineHeight = 14.sp,
+                                        )
+                                        Text("▾", color = TextPri.copy(alpha = 0.65f), fontSize = 10.sp)
+                                    }
+                                }
+                            }
+                            DropdownMenu(
+                                expanded = showTenantMenu,
+                                onDismissRequest = { showTenantMenu = false },
+                                containerColor = SurfaceMain,
+                            ) {
+                                state.tenants.forEach { tenant ->
+                                    DropdownMenuItem(
+                                        text = {
+                                            Row(
+                                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                            ) {
+                                                Text(
+                                                    tenant.tenantName,
+                                                    color = TextPri,
+                                                    fontWeight = if (tenant.tenantSlug == state.selectedTenantSlug) FontWeight.Bold else FontWeight.Normal,
+                                                )
+                                                if (tenant.tenantSlug == state.selectedTenantSlug) {
+                                                    Text("✓", color = BluePrimary, fontWeight = FontWeight.Bold)
+                                                }
+                                            }
+                                        },
+                                        onClick = {
+                                            showTenantMenu = false
+                                            showDistrictView = false
+                                            vm.switchTenant(ctx, tenant.tenantSlug, tenant.tenantName)
+                                        },
+                                    )
+                                }
+                            }
+                        }
                     } else {
                         Column(verticalArrangement = Arrangement.Center) {
                             Text(
@@ -1652,7 +1984,7 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                                 lineHeight = 20.sp,
                             )
                             Text(
-                                schoolName,
+                                effectiveSchoolName,
                                 fontWeight = FontWeight.Medium,
                                 color = TextPri.copy(alpha = 0.65f),
                                 fontSize = 12.sp,
@@ -1661,15 +1993,43 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                         }
                     }
                 },
+                navigationIcon = {
+                    if (showSettingsScreen) {
+                        IconButton(onClick = { showSettingsScreen = false }) {
+                            Icon(
+                                imageVector = Icons.Filled.ArrowBack,
+                                contentDescription = "Back",
+                                tint = BluePrimary,
+                            )
+                        }
+                    }
+                },
                 actions = {
-                    TextButton(
-                        onClick = { showSettingsScreen = !showSettingsScreen },
-                    ) {
-                        Text(
-                            if (showSettingsScreen) "Back" else "Settings",
-                            color = BluePrimary,
-                            fontWeight = FontWeight.SemiBold,
-                        )
+                    if (isDistrictSession && !showSettingsScreen) {
+                        TextButton(onClick = {
+                            showDistrictView = !showDistrictView
+                            if (showDistrictView) vm.loadDistrictOverview(ctx)
+                        }) {
+                            Text(
+                                if (showDistrictView) "School" else "District",
+                                color = BluePrimary,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                        }
+                    }
+                    if (!showSettingsScreen) {
+                        TextButton(
+                            onClick = {
+                                showSettingsScreen = true
+                                showDistrictView = false
+                            },
+                        ) {
+                            Text(
+                                "Settings",
+                                color = BluePrimary,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                        }
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
@@ -1717,6 +2077,13 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                         setScreenFlashAlertsEnabled(ctx, enabled)
                     },
                 )
+            } else if (showDistrictView) {
+                DistrictOverviewScreen(
+                    tenants = state.districtTenants,
+                    isBusy = state.isBusy,
+                    onRefresh = { vm.loadDistrictOverview(ctx) },
+                    modifier = Modifier.fillMaxSize(),
+                )
             } else {
                 Column(
                     modifier = Modifier
@@ -1748,9 +2115,9 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                                         fontSize = 12.sp,
                                         color = TextMuted,
                                     )
-                                    if (schoolName.isNotBlank()) {
+                                    if (effectiveSchoolName.isNotBlank()) {
                                         Text(
-                                            schoolName,
+                                            effectiveSchoolName,
                                             fontSize = 11.sp,
                                             color = TextMuted.copy(alpha = 0.65f),
                                         )
@@ -1817,6 +2184,7 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                     // ── Alarm banner ─────────────────────────────────────────
                     AlarmBanner(
                         alarm = state.alarm,
+                        schoolName = effectiveSchoolName,
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(horizontal = 20.dp, vertical = 8.dp),
@@ -1836,21 +2204,7 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                         onActivate = { action ->
                             if (activationInFlight || state.isBusy || state.alarm.isActive) return@SafetyActionGrid
                             activationInFlight = true
-                            runProtectedAction(false) {
-                                runCatching {
-                                    vm.activateAlarm(
-                                        ctx,
-                                        action.message,
-                                        isTraining = trainingModeEnabled,
-                                        trainingLabel = trainingLabel,
-                                    )
-                                }
-                                    .onFailure { err ->
-                                        activationInFlight = false
-                                        Log.e(TAG_ACTIVATION, "activateAlarm failed", err)
-                                        vm.setErrorMessage("Failed to activate alarm.")
-                                }
-                            }
+                            pendingAlertAction = action
                         },
                         onHoldVisual = { active, progress, color ->
                             holdFlashActive = active
@@ -2065,6 +2419,7 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
             if (state.alarm.isActive && showAlarmTakeover) {
                 EmergencyAlarmTakeover(
                     alarm = state.alarm,
+                    schoolName = effectiveSchoolName,
                     canDeactivate = canDeactivate,
                     isBusy = state.isBusy,
                     onDeactivate = {
@@ -2217,6 +2572,55 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
             onConfirm = { reply ->
                 replyTarget = null
                 runProtectedAction(true) { vm.replyToAdminMessage(ctx, target.messageId, reply) }
+            },
+        )
+    }
+
+    pendingAlertAction?.let { action ->
+        AlertDialog(
+            onDismissRequest = {
+                pendingAlertAction = null
+                activationInFlight = false
+            },
+            containerColor = SurfaceMain,
+            title = { Text("Activate ${action.title}?", color = TextPri, fontWeight = FontWeight.Bold) },
+            text = {
+                val school = effectiveSchoolName
+                Text(
+                    if (school.isNotBlank()) "This will send an emergency alert to all devices at $school."
+                    else "This will send an emergency alert to all registered devices.",
+                    color = TextMuted,
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val a = pendingAlertAction
+                        if (a != null) {
+                            pendingAlertAction = null
+                            runProtectedAction(false) {
+                                runCatching {
+                                    vm.activateAlarm(ctx, a.message, isTraining = trainingModeEnabled, trainingLabel = trainingLabel)
+                                }.onFailure { err ->
+                                    activationInFlight = false
+                                    Log.e(TAG_ACTIVATION, "activateAlarm failed", err)
+                                    vm.setErrorMessage("Failed to activate alarm.")
+                                }
+                            }
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = AlarmRed),
+                ) {
+                    Text("Activate", fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    pendingAlertAction = null
+                    activationInFlight = false
+                }) {
+                    Text("Cancel", color = TextMuted)
+                }
             },
         )
     }
@@ -2866,7 +3270,7 @@ private fun QuietPeriodDeleteConfirmOverlay(
 }
 
 @Composable
-private fun AlarmBanner(alarm: AlarmStatus, modifier: Modifier = Modifier) {
+private fun AlarmBanner(alarm: AlarmStatus, schoolName: String = "", modifier: Modifier = Modifier) {
     val pulse = rememberInfiniteTransition(label = "pulse")
     val pulseAlpha by pulse.animateFloat(
         initialValue = 1f,
@@ -2916,6 +3320,9 @@ private fun AlarmBanner(alarm: AlarmStatus, modifier: Modifier = Modifier) {
 
             if (alarm.isActive) {
                 HorizontalDivider(color = Color(0x33FFFFFF), thickness = 1.dp)
+                if (schoolName.isNotBlank()) {
+                    Text(schoolName, fontSize = 12.sp, color = Color(0xFFFFCDD2), fontWeight = FontWeight.SemiBold)
+                }
                 alarm.message?.let {
                     Text(it, fontSize = 16.sp, color = TextOnDark, fontWeight = FontWeight.Medium)
                 }
@@ -2933,6 +3340,7 @@ private fun AlarmBanner(alarm: AlarmStatus, modifier: Modifier = Modifier) {
 @Composable
 private fun EmergencyAlarmTakeover(
     alarm: AlarmStatus,
+    schoolName: String = "",
     canDeactivate: Boolean,
     isBusy: Boolean,
     onDeactivate: () -> Unit,
@@ -3015,6 +3423,15 @@ private fun EmergencyAlarmTakeover(
                         fontWeight = FontWeight.Bold,
                         textAlign = TextAlign.Center,
                     )
+                    if (schoolName.isNotBlank()) {
+                        Text(
+                            schoolName,
+                            color = Color.White.copy(alpha = 0.75f),
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            textAlign = TextAlign.Center,
+                        )
+                    }
                     Text(
                         message,
                         color = Color.White.copy(alpha = 0.9f),
@@ -3061,6 +3478,101 @@ private fun EmergencyAlarmTakeover(
                     Text("View Dashboard", fontWeight = FontWeight.Bold)
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun DistrictOverviewScreen(
+    tenants: List<TenantOverviewItem>,
+    isBusy: Boolean,
+    onRefresh: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier = modifier
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 20.dp, vertical = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("District Overview", color = TextPri, fontWeight = FontWeight.Bold, fontSize = 20.sp)
+            TextButton(onClick = onRefresh, enabled = !isBusy) {
+                Text(if (isBusy) "Loading…" else "Refresh", color = BluePrimary)
+            }
+        }
+        if (tenants.isEmpty()) {
+            Surface(
+                color = SurfaceMain,
+                shape = RoundedCornerShape(20.dp),
+                shadowElevation = 4.dp,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Box(modifier = Modifier.padding(32.dp), contentAlignment = Alignment.Center) {
+                    Text(
+                        if (isBusy) "Loading schools…" else "No schools found. Tap Refresh to load.",
+                        color = TextMuted,
+                        fontSize = 14.sp,
+                        textAlign = TextAlign.Center,
+                    )
+                }
+            }
+        } else {
+            tenants.forEach { tenant ->
+                DistrictTenantRow(tenant)
+            }
+        }
+    }
+}
+
+@Composable
+private fun DistrictTenantRow(tenant: TenantOverviewItem) {
+    val accentColor = when {
+        tenant.alarmIsActive && tenant.alarmIsTraining -> DSColor.Warning
+        tenant.alarmIsActive -> DSColor.Danger
+        else -> DSColor.Success
+    }
+    Surface(
+        color = SurfaceMain,
+        shape = RoundedCornerShape(16.dp),
+        shadowElevation = 3.dp,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Row(
+            modifier = Modifier.padding(16.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(tenant.tenantName, color = TextPri, fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
+                Text(
+                    when {
+                        tenant.alarmIsActive && tenant.alarmIsTraining -> "TRAINING DRILL"
+                        tenant.alarmIsActive -> tenant.alarmMessage ?: "ALARM ACTIVE"
+                        else -> "All Clear"
+                    },
+                    color = accentColor,
+                    fontSize = 13.sp,
+                    fontWeight = if (tenant.alarmIsActive) FontWeight.Bold else FontWeight.Normal,
+                )
+                if (tenant.alarmIsActive && tenant.expectedUserCount > 0) {
+                    Text(
+                        "Acknowledged: ${tenant.acknowledgementCount}/${tenant.expectedUserCount} (${(tenant.acknowledgementRate * 100).toInt()}%)",
+                        color = TextMuted,
+                        fontSize = 11.sp,
+                    )
+                }
+            }
+            Box(
+                modifier = Modifier
+                    .size(12.dp)
+                    .clip(CircleShape)
+                    .background(accentColor),
+            )
         }
     }
 }
@@ -3878,105 +4390,145 @@ private fun SettingsScreen(
     val schoolName = remember { getSchoolName(ctx) }
     val activeServerUrl = remember { normalizeServerUrl(getServerUrl(ctx)) }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(horizontal = 20.dp, vertical = 16.dp),
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 16.dp, bottom = 32.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        Surface(
-            color = SurfaceMain,
-            shape = RoundedCornerShape(20.dp),
-            shadowElevation = 4.dp,
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            Column(
-                modifier = Modifier.padding(18.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
+        // Account card
+        item {
+            Surface(
+                color = SurfaceMain,
+                shape = RoundedCornerShape(20.dp),
+                shadowElevation = 4.dp,
+                modifier = Modifier.fillMaxWidth(),
             ) {
-                Text("Signed in as", color = TextMuted, fontSize = 12.sp)
-                Text(userName.ifBlank { "BlueBird user" }, color = TextPri, fontWeight = FontWeight.Bold, fontSize = 18.sp)
-                Text("@${loginName.ifBlank { "unknown" }}", color = BlueLight, fontSize = 13.sp)
-                HorizontalDivider(color = BorderSoft)
-                if (schoolName.isNotBlank()) {
-                    Text("School: $schoolName", color = TextPri, fontSize = 14.sp)
+                Column(
+                    modifier = Modifier.padding(18.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    Text(
+                        "ACCOUNT",
+                        color = TextMuted,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        letterSpacing = 0.8.sp,
+                    )
+                    Text(
+                        userName.ifBlank { "BlueBird user" },
+                        color = TextPri,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 18.sp,
+                    )
+                    Text(
+                        "@${loginName.ifBlank { "unknown" }}",
+                        color = BlueLight,
+                        fontSize = 13.sp,
+                    )
+                    HorizontalDivider(color = BorderSoft)
+                    if (schoolName.isNotBlank()) {
+                        SettingsInfoRow("School", schoolName)
+                    }
+                    SettingsInfoRow("Role", userRole.replaceFirstChar { it.uppercase() })
+                    SettingsInfoRow("User ID", userId)
+                    SettingsInfoRow("Server", activeServerUrl, muted = true, small = true)
                 }
-                Text("Role: ${userRole.replaceFirstChar { it.uppercase() }}", color = TextPri, fontSize = 14.sp)
-                Text("User ID: $userId", color = TextPri, fontSize = 14.sp)
-                Text("Server: $activeServerUrl", color = TextMuted, fontSize = 12.sp)
             }
         }
-        Surface(
-            color = SurfaceMain,
-            shape = RoundedCornerShape(20.dp),
-            shadowElevation = 4.dp,
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 18.dp, vertical = 14.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
+
+        // Security card
+        item {
+            Surface(
+                color = SurfaceMain,
+                shape = RoundedCornerShape(20.dp),
+                shadowElevation = 4.dp,
+                modifier = Modifier.fillMaxWidth(),
             ) {
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text("Biometrics Allowed", color = TextPri, fontWeight = FontWeight.Bold)
+                Column(
+                    modifier = Modifier.padding(horizontal = 18.dp, vertical = 14.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp),
+                ) {
+                    Text("Security", color = TextPri, fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
+                    SettingsToggleRow(
+                        title = "Require Biometrics",
+                        subtitle = "Require Face ID or fingerprint for emergency and admin actions.",
+                        checked = biometricsEnabled,
+                        onCheckedChange = onBiometricsChanged,
+                    )
+                }
+            }
+        }
+
+        // Emergency feedback card
+        item {
+            Surface(
+                color = SurfaceMain,
+                shape = RoundedCornerShape(20.dp),
+                shadowElevation = 4.dp,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Column(
+                    modifier = Modifier.padding(horizontal = 18.dp, vertical = 14.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp),
+                ) {
+                    Text("Emergency Feedback", color = TextPri, fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
+                    SettingsToggleRow(
+                        title = "Haptic Alerts",
+                        subtitle = "Pulse vibration with each active emergency cycle.",
+                        checked = hapticAlertsEnabled,
+                        onCheckedChange = onHapticAlertsChanged,
+                    )
+                    SettingsToggleRow(
+                        title = "Flashlight Alerts",
+                        subtitle = "Flash the device torch while the alert screen is active.",
+                        checked = flashlightAlertsEnabled,
+                        onCheckedChange = onFlashlightAlertsChanged,
+                    )
+                    SettingsToggleRow(
+                        title = "Screen Flash Alerts",
+                        subtitle = "Pulse a full-screen warning overlay during emergencies.",
+                        checked = screenFlashAlertsEnabled,
+                        onCheckedChange = onScreenFlashAlertsChanged,
+                    )
                     Text(
-                        "Require Face ID / fingerprint for emergency and admin actions.",
+                        "Enable LED Flash Alerts in device settings for enhanced visibility.",
                         color = TextMuted,
                         fontSize = 12.sp,
                     )
                 }
-                Switch(
-                    checked = biometricsEnabled,
-                    onCheckedChange = onBiometricsChanged,
-                )
             }
         }
-        Surface(
-            color = SurfaceMain,
-            shape = RoundedCornerShape(20.dp),
-            shadowElevation = 4.dp,
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 18.dp, vertical = 14.dp),
-                verticalArrangement = Arrangement.spacedBy(14.dp),
+
+        // Sign out
+        item {
+            Button(
+                onClick = onLogout,
+                colors = ButtonDefaults.buttonColors(containerColor = AlarmRed),
+                modifier = Modifier.fillMaxWidth().height(50.dp),
+                shape = RoundedCornerShape(14.dp),
             ) {
-                Text("Emergency Feedback", color = TextPri, fontWeight = FontWeight.Bold)
-                SettingsToggleRow(
-                    title = "Enable Haptic Alerts",
-                    subtitle = "Pulse vibration with each active emergency cycle.",
-                    checked = hapticAlertsEnabled,
-                    onCheckedChange = onHapticAlertsChanged,
-                )
-                SettingsToggleRow(
-                    title = "Enable Flashlight Alerts",
-                    subtitle = "Flash the device torch while the alert screen is active.",
-                    checked = flashlightAlertsEnabled,
-                    onCheckedChange = onFlashlightAlertsChanged,
-                )
-                SettingsToggleRow(
-                    title = "Enable Screen Flash Alerts",
-                    subtitle = "Pulse a full-screen warning overlay during emergencies.",
-                    checked = screenFlashAlertsEnabled,
-                    onCheckedChange = onScreenFlashAlertsChanged,
-                )
-                Text(
-                    "Enable LED Flash Alerts in device settings for enhanced visibility.",
-                    color = TextMuted,
-                    fontSize = 12.sp,
-                )
+                Text("Sign Out", fontWeight = FontWeight.SemiBold)
             }
         }
-        Button(
-            onClick = onLogout,
-            colors = ButtonDefaults.buttonColors(containerColor = AlarmRed),
-            modifier = Modifier.fillMaxWidth().height(50.dp),
-            shape = RoundedCornerShape(14.dp),
-        ) { Text("Log Out") }
+    }
+}
+
+@Composable
+private fun SettingsInfoRow(label: String, value: String, muted: Boolean = false, small: Boolean = false) {
+    val fontSize = if (small) 11.sp else 13.sp
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.Top,
+    ) {
+        Text(label, color = TextMuted, fontSize = fontSize, modifier = Modifier.padding(end = 8.dp))
+        Text(
+            value,
+            color = if (muted) TextMuted else TextPri,
+            fontSize = fontSize,
+            textAlign = TextAlign.End,
+            modifier = Modifier.weight(1f),
+        )
     }
 }
 
@@ -4919,6 +5471,72 @@ private class BackendClient(baseUrl: String, private val apiKey: String) {
                 j.optInt("activated_by_user_id") else null,
             broadcasts        = broadcasts,
         )
+    }
+
+    fun getMe(userId: Int): MeData {
+        val req = Request.Builder()
+            .url("$base/me?user_id=$userId")
+            .withAuth()
+            .get()
+            .build()
+        http.newCall(req).execute().use { res ->
+            val body = requireSuccess(res)
+            val j = JSONObject(body)
+            val tenantsJson = j.optJSONArray("tenants")
+            val tenants = buildList {
+                if (tenantsJson != null) {
+                    for (i in 0 until tenantsJson.length()) {
+                        val item = tenantsJson.optJSONObject(i) ?: continue
+                        add(TenantSummaryItem(
+                            tenantSlug = item.optString("tenant_slug"),
+                            tenantName = item.optString("tenant_name"),
+                            role = item.optNullableString("role"),
+                        ))
+                    }
+                }
+            }
+            return MeData(
+                userId = j.optInt("user_id"),
+                name = j.optString("name"),
+                role = j.optString("role"),
+                loginName = j.optString("login_name"),
+                title = j.optNullableString("title"),
+                canDeactivateAlarm = j.optBoolean("can_deactivate_alarm"),
+                tenants = tenants,
+                selectedTenant = j.optString("selected_tenant").ifBlank { tenants.firstOrNull()?.tenantSlug ?: "" },
+            )
+        }
+    }
+
+    fun getDistrictOverview(userId: Int): List<TenantOverviewItem> {
+        val req = Request.Builder()
+            .url("$base/district/overview?user_id=$userId")
+            .withAuth()
+            .get()
+            .build()
+        http.newCall(req).execute().use { res ->
+            val body = requireSuccess(res)
+            val j = JSONObject(body)
+            val tenantsJson = j.optJSONArray("tenants")
+            return buildList {
+                if (tenantsJson != null) {
+                    for (i in 0 until tenantsJson.length()) {
+                        val item = tenantsJson.optJSONObject(i) ?: continue
+                        add(TenantOverviewItem(
+                            tenantSlug = item.optString("tenant_slug"),
+                            tenantName = item.optString("tenant_name"),
+                            alarmIsActive = item.optBoolean("alarm_is_active"),
+                            alarmMessage = item.optNullableString("alarm_message"),
+                            alarmIsTraining = item.optBoolean("alarm_is_training"),
+                            lastAlertAt = item.optNullableString("last_alert_at"),
+                            acknowledgementCount = item.optInt("acknowledgement_count"),
+                            expectedUserCount = item.optInt("expected_user_count"),
+                            acknowledgementRate = item.optDouble("acknowledgement_rate", 0.0),
+                        ))
+                    }
+                }
+            }
+        }
     }
 
     private fun requireSuccess(res: okhttp3.Response): String {

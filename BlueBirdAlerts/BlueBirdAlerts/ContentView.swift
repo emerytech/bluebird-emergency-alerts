@@ -519,14 +519,23 @@ struct ContentView: View {
     @State private var holdFlashProgress: Double = 0
     @State private var holdFlashColor: Color = DSColor.danger
     @State private var showDeactivateConfirmation = false
+    @State private var pendingAlertAction: SafetyActionItem?
+    @State private var showDistrictView = false
+    @State private var districtTenants: [TenantOverviewItem] = []
+    @State private var wsReconnectGeneration: Int = 0
 
     private var api: APIClient {
-        APIClient(baseURL: appState.serverURL, apiKey: Config.backendApiKey)
+        APIClient(baseURL: appState.selectedTenantURL, apiKey: Config.backendApiKey)
     }
 
     private var isAdminSession: Bool {
         let role = appState.userRole.lowercased()
         return role == "admin" || role == "super_admin" || role == "platform_super_admin"
+    }
+
+    private var isDistrictSession: Bool {
+        let role = appState.userRole.lowercased()
+        return role == "district_admin" || role == "super_admin" || role == "platform_super_admin"
     }
 
     private var safetyActions: [SafetyActionItem] {
@@ -578,8 +587,10 @@ struct ContentView: View {
                         if alarmIsActive, alarmIsTraining {
                             let trainingBannerLabel = alarmTrainingLabel?.trimmingCharacters(in: .whitespacesAndNewlines)
                             let trainingText = (trainingBannerLabel?.isEmpty == false) ? (trainingBannerLabel ?? "This is a drill") : "This is a drill"
+                            let school = appState.effectiveSchoolName
+                            let prefix = school.isEmpty ? "TRAINING DRILL" : "TRAINING DRILL — \(school)"
                             flashBanner(
-                                message: "TRAINING DRILL: \(trainingText)",
+                                message: "\(prefix): \(trainingText)",
                                 isError: false
                             )
                         }
@@ -656,10 +667,17 @@ struct ContentView: View {
             .navigationDestination(isPresented: $showQuietPeriodCenter) {
                 quietPeriodCenterPage
             }
+            .navigationDestination(isPresented: $showDistrictView) {
+                districtOverviewPage
+            }
             .refreshable {
                 await refreshIncidentFeed()
             }
+            .task(id: "\(appState.selectedTenantSlug)-\(wsReconnectGeneration)") {
+                await connectAlarmWebSocket()
+            }
             .task {
+                await loadMeData()
                 await loadFeatureLabels()
                 await refreshIncidentFeed()
                 if let pendingAlarmUserInfo = AlarmPushBridge.consumePendingUserInfo() {
@@ -721,6 +739,23 @@ struct ContentView: View {
                 }
             } message: {
                 Text("This will end the active emergency alert for all users.")
+            }
+            .alert(
+                "Confirm Alert",
+                isPresented: Binding(
+                    get: { pendingAlertAction != nil },
+                    set: { if !$0 { pendingAlertAction = nil } }
+                ),
+                presenting: pendingAlertAction
+            ) { action in
+                Button("Cancel", role: .cancel) { pendingAlertAction = nil }
+                Button("Send \(action.title) Alert", role: .destructive) {
+                    pendingAlertAction = nil
+                    Task { await authenticateThenSendPanic() }
+                }
+            } message: { action in
+                let school = appState.effectiveSchoolName
+                Text("Send \(action.title) alert to \(school.isEmpty ? "your school" : school)?")
             }
             .sheet(
                 isPresented: Binding(
@@ -785,6 +820,7 @@ struct ContentView: View {
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
+                wsReconnectGeneration += 1
                 if let pendingAlarmUserInfo = AlarmPushBridge.consumePendingUserInfo() {
                     handleIncomingAlarmNotification(pendingAlarmUserInfo)
                 } else if alarmIsActive {
@@ -822,6 +858,26 @@ struct ContentView: View {
             ?? (userInfo?["message"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
             ?? (userInfo?["body"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
 
+        // Tenant slug safety: if the push payload carries a tenant_slug (current APNs payload
+        // does not, but future versions may), guard against cross-tenant state contamination.
+        let pushSlug = (userInfo?["tenant_slug"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let currentSlug: String = {
+            if !appState.selectedTenantSlug.isEmpty { return appState.selectedTenantSlug }
+            let parts = appState.serverURL.pathComponents.filter { !$0.isEmpty && $0 != "/" }
+            return parts.first ?? ""
+        }()
+        if let slug = pushSlug, !slug.isEmpty, slug != currentSlug {
+            // Push is from a different school. Show banner but do NOT activate alarm for wrong school.
+            let schoolName = appState.tenants.first(where: { $0.tenantSlug == slug })?.tenantName ?? slug
+            let displayBody = body ?? "Emergency alert"
+            appState.lastStatus = "Alert at \(schoolName): \(displayBody)"
+            #if DEBUG
+            print("[Push] Cross-tenant push from '\(slug)' (active: '\(currentSlug)') — alarm state unchanged")
+            #endif
+            Task { await refreshIncidentFeed() }
+            return
+        }
+
         showSettings = false
         showMessagingCenter = false
         showQuietPeriodCenter = false
@@ -857,7 +913,10 @@ struct ContentView: View {
         let isTraining = alarmIsTraining
         let accent = isTraining ? DSColor.warning : DSColor.danger
         let title = isTraining ? "TRAINING DRILL" : "EMERGENCY ALERT"
-        let subtitle = isTraining ? (alarmTrainingLabel ?? "This is a drill") : "School alarm is active"
+        let schoolName = appState.effectiveSchoolName
+        let subtitle = isTraining
+            ? (alarmTrainingLabel ?? "This is a drill")
+            : (schoolName.isEmpty ? "School alarm is active" : "\(schoolName) — alarm is active")
         let body = alarmMessage?.trimmingCharacters(in: .whitespacesAndNewlines)
 
         return ZStack {
@@ -960,10 +1019,29 @@ struct ContentView: View {
                     Text("BlueBird Alerts")
                         .font(.headline)
                         .foregroundStyle(textPrimary)
-                    if !appState.schoolName.isEmpty {
-                        Text(appState.schoolName)
-                            .font(.subheadline.weight(.medium))
-                            .foregroundStyle(textPrimary.opacity(0.75))
+                    if !appState.effectiveSchoolName.isEmpty {
+                        if appState.isMultiTenant {
+                            Menu {
+                                ForEach(appState.tenants) { tenant in
+                                    Button(tenant.tenantName) {
+                                        appState.switchTenant(slug: tenant.tenantSlug, name: tenant.tenantName)
+                                    }
+                                }
+                            } label: {
+                                HStack(spacing: 4) {
+                                    Text(appState.effectiveSchoolName)
+                                        .font(.subheadline.weight(.medium))
+                                        .foregroundStyle(textPrimary.opacity(0.75))
+                                    Image(systemName: "chevron.up.chevron.down")
+                                        .font(.caption2)
+                                        .foregroundStyle(textMuted)
+                                }
+                            }
+                        } else {
+                            Text(appState.effectiveSchoolName)
+                                .font(.subheadline.weight(.medium))
+                                .foregroundStyle(textPrimary.opacity(0.75))
+                        }
                     }
                     Text(appState.userName.isEmpty ? "School Safety" : "\(appState.userName) • \(appState.userRole.capitalized)")
                         .font(.caption)
@@ -1138,6 +1216,23 @@ struct ContentView: View {
                         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                     }
                     .shadow(color: DSColor.quietAccent.opacity(0.16), radius: 8, x: 0, y: 3)
+                    .buttonStyle(PressableScaleButtonStyle())
+                }
+                if isDistrictSession {
+                    Button {
+                        showDistrictView = true
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "building.2.fill")
+                            Text("District Overview")
+                        }
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity, minHeight: 46)
+                        .background(DSColor.info)
+                        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    }
+                    .shadow(color: DSColor.info.opacity(0.16), radius: 8, x: 0, y: 3)
                     .buttonStyle(PressableScaleButtonStyle())
                 }
             }
@@ -1480,7 +1575,7 @@ struct ContentView: View {
         ) {
             guard !isSending else { return }
             message = action.message
-            Task { await authenticateThenSendPanic() }
+            pendingAlertAction = action
         }
     }
 
@@ -2062,6 +2157,292 @@ struct ContentView: View {
 
     private func dismissKeyboard() {
         UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+    }
+
+    private func loadMeData() async {
+        guard let userID = appState.userID else { return }
+        let homeAPI = APIClient(baseURL: appState.serverURL, apiKey: Config.backendApiKey)
+        do {
+            let me = try await homeAPI.me(userID: userID)
+            appState.updateTenants(
+                me.tenants,
+                selectedSlug: me.selectedTenant,
+                selectedName: me.tenants.first(where: { $0.tenantSlug == me.selectedTenant })?.tenantName ?? ""
+            )
+            if let title = me.title, !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                appState.updateUserTitle(title)
+            }
+        } catch {
+            // Non-critical — app still works on single-tenant without /me data
+        }
+    }
+
+    private func loadDistrictOverview() async {
+        guard let userID = appState.userID else { return }
+        do {
+            let response = try await api.districtOverview(userID: userID)
+            districtTenants = response.tenants
+        } catch {
+            appState.lastError = "District overview failed: \(error.localizedDescription)"
+        }
+    }
+
+    private func connectAlarmWebSocket() async {
+        guard let userID = appState.userID else { return }
+        let slug: String = {
+            if !appState.selectedTenantSlug.isEmpty { return appState.selectedTenantSlug }
+            let parts = appState.serverURL.pathComponents.filter { !$0.isEmpty && $0 != "/" }
+            return parts.first ?? "default"
+        }()
+        guard var components = URLComponents(url: appState.serverBaseURL, resolvingAgainstBaseURL: false) else { return }
+        components.scheme = (components.scheme == "https") ? "wss" : "ws"
+        components.path = "/ws/\(slug)/alerts"
+        components.queryItems = [
+            URLQueryItem(name: "user_id", value: String(userID)),
+            URLQueryItem(name: "api_key", value: Config.backendApiKey),
+        ]
+        guard let wsURL = components.url else { return }
+
+        var delay: UInt64 = 2_000_000_000
+        let maxDelay: UInt64 = 15_000_000_000
+        while !Task.isCancelled {
+            #if DEBUG
+            print("[WS] Connecting: \(slug)")
+            #endif
+            let wsTask = URLSession(configuration: .default).webSocketTask(with: wsURL)
+            wsTask.resume()
+            var connectedOnce = false
+            receiveLoop: while !Task.isCancelled {
+                do {
+                    let msg = try await wsTask.receive()
+                    if !connectedOnce {
+                        connectedOnce = true
+                        delay = 2_000_000_000  // reset backoff on successful connection
+                        #if DEBUG
+                        print("[WS] Connected: \(slug)")
+                        #endif
+                    }
+                    if case .string(let text) = msg,
+                       let data = text.data(using: .utf8),
+                       let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                        #if DEBUG
+                        print("[WS] Event: \(json["event"] as? String ?? "unknown")")
+                        #endif
+                        handleAlarmWebSocketEvent(json)
+                    }
+                } catch {
+                    #if DEBUG
+                    print("[WS] Disconnected: \(slug) — \(error.localizedDescription)")
+                    #endif
+                    break receiveLoop
+                }
+            }
+            // Always close the task cleanly, even if Swift cancelled the outer Task.
+            wsTask.cancel(with: .normalClosure, reason: nil)
+            guard !Task.isCancelled else { return }
+            #if DEBUG
+            print("[WS] Reconnecting in \(delay / 1_000_000_000)s: \(slug)")
+            #endif
+            try? await Task.sleep(nanoseconds: delay)
+            delay = min(delay * 2, maxDelay)
+        }
+    }
+
+    private func handleAlarmWebSocketEvent(_ json: [String: Any]) {
+        let event = json["event"] as? String ?? ""
+        let eventSlug = (json["tenant_slug"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        // Alarm fields are nested inside the "alarm" key in every backend event.
+        let alarm = json["alarm"] as? [String: Any]
+
+        // Resolve current slug (selectedTenantSlug is empty before /me loads on first launch).
+        let currentSlug: String = {
+            if !appState.selectedTenantSlug.isEmpty { return appState.selectedTenantSlug }
+            let parts = appState.serverURL.pathComponents.filter { !$0.isEmpty && $0 != "/" }
+            return parts.first ?? ""
+        }()
+        let isCurrentTenant = eventSlug.isEmpty || eventSlug == currentSlug
+
+        // Update district overview rows for any tenant without a full refetch.
+        if !eventSlug.isEmpty {
+            applyEventToDistrictTenant(slug: eventSlug, event: event, alarm: alarm)
+        }
+
+        // Guard: only update local alarm state when the event is for the active tenant.
+        guard isCurrentTenant else {
+            #if DEBUG
+            print("[WS] Cross-tenant event '\(event)' for '\(eventSlug)' (active: '\(currentSlug)') — main state unchanged")
+            #endif
+            return
+        }
+
+        switch event {
+        case "alarm_activated", "alert_triggered":
+            let wasActive = alarmIsActive
+            if let a = alarm {
+                if let v = a["is_active"] as? Bool { alarmIsActive = v }
+                if let v = a["message"] as? String { alarmMessage = v }
+                if let v = a["is_training"] as? Bool { alarmIsTraining = v }
+                alarmTrainingLabel = a["training_label"] as? String
+            }
+            if alarmIsActive && !wasActive {
+                showAlarmTakeover = true
+                alertController.startAlarmAudio()
+                updateAlertFeedbackState()
+            }
+            Task { await refreshIncidentFeed() }
+
+        case "alarm_deactivated", "tenant_alert_cleared":
+            alarmIsActive = false
+            alarmMessage = nil
+            alarmIsTraining = false
+            alarmTrainingLabel = nil
+            alertController.stopAlarmAudio()
+            updateAlertFeedbackState()
+            Task { await refreshIncidentFeed() }
+
+        case "tenant_alert_updated":
+            if let a = alarm {
+                if let v = a["is_active"] as? Bool { alarmIsActive = v }
+                if let v = a["message"] as? String { alarmMessage = v }
+                if let v = a["is_training"] as? Bool { alarmIsTraining = v }
+                alarmTrainingLabel = a["training_label"] as? String
+            }
+            if !alarmIsActive {
+                alertController.stopAlarmAudio()
+                updateAlertFeedbackState()
+            }
+            Task { await refreshIncidentFeed() }
+
+        case "tenant_acknowledgement_updated":
+            // Ack count is surfaced via refreshIncidentFeed / alarm status poll.
+            // districtTenants already updated above via applyEventToDistrictTenant.
+            break
+
+        case "quiet_request_created", "quiet_request_updated", "message_received":
+            // Reserved for future phases — intentionally no-op.
+            break
+
+        default:
+            #if DEBUG
+            print("[WS] Unknown event type: '\(event)'")
+            #endif
+            break
+        }
+    }
+
+    private func applyEventToDistrictTenant(slug: String, event: String, alarm: [String: Any]?) {
+        guard let idx = districtTenants.firstIndex(where: { $0.tenantSlug == slug }) else { return }
+        let old = districtTenants[idx]
+        let updated: TenantOverviewItem
+        switch event {
+        case "alarm_activated", "alert_triggered", "tenant_alert_updated":
+            guard let a = alarm else { return }
+            updated = TenantOverviewItem(
+                tenantSlug: old.tenantSlug,
+                tenantName: old.tenantName,
+                alarmIsActive: a["is_active"] as? Bool ?? old.alarmIsActive,
+                alarmMessage: a["message"] as? String ?? old.alarmMessage,
+                alarmIsTraining: a["is_training"] as? Bool ?? old.alarmIsTraining,
+                lastAlertAt: a["activated_at"] as? String ?? old.lastAlertAt,
+                acknowledgementCount: old.acknowledgementCount,
+                expectedUserCount: old.expectedUserCount,
+                acknowledgementRate: old.acknowledgementRate
+            )
+        case "alarm_deactivated", "tenant_alert_cleared":
+            updated = TenantOverviewItem(
+                tenantSlug: old.tenantSlug,
+                tenantName: old.tenantName,
+                alarmIsActive: false,
+                alarmMessage: nil,
+                alarmIsTraining: false,
+                lastAlertAt: old.lastAlertAt,
+                acknowledgementCount: old.acknowledgementCount,
+                expectedUserCount: old.expectedUserCount,
+                acknowledgementRate: old.acknowledgementRate
+            )
+        case "tenant_acknowledgement_updated":
+            guard let a = alarm, let count = a["acknowledgement_count"] as? Int else { return }
+            let rate: Double = old.expectedUserCount > 0
+                ? Double(count) / Double(old.expectedUserCount)
+                : old.acknowledgementRate
+            updated = TenantOverviewItem(
+                tenantSlug: old.tenantSlug,
+                tenantName: old.tenantName,
+                alarmIsActive: old.alarmIsActive,
+                alarmMessage: old.alarmMessage,
+                alarmIsTraining: old.alarmIsTraining,
+                lastAlertAt: old.lastAlertAt,
+                acknowledgementCount: count,
+                expectedUserCount: old.expectedUserCount,
+                acknowledgementRate: rate
+            )
+        default:
+            return
+        }
+        districtTenants[idx] = updated
+    }
+
+    private var districtOverviewPage: some View {
+        ScrollView {
+            VStack(spacing: 14) {
+                if districtTenants.isEmpty {
+                    card {
+                        Text("Loading district overview...")
+                            .font(.subheadline)
+                            .foregroundStyle(textMuted)
+                            .frame(maxWidth: .infinity, alignment: .center)
+                    }
+                } else {
+                    ForEach(districtTenants) { tenant in
+                        card {
+                            VStack(alignment: .leading, spacing: 8) {
+                                HStack {
+                                    Text(tenant.tenantName)
+                                        .font(.headline)
+                                        .foregroundStyle(textPrimary)
+                                    Spacer()
+                                    Circle()
+                                        .fill(tenant.alarmIsActive
+                                              ? (tenant.alarmIsTraining ? DSColor.warning : DSColor.danger)
+                                              : DSColor.success)
+                                        .frame(width: 10, height: 10)
+                                }
+                                if tenant.alarmIsActive {
+                                    Text(tenant.alarmIsTraining ? "Training Drill Active" : "ALARM ACTIVE")
+                                        .font(.subheadline.weight(.bold))
+                                        .foregroundStyle(tenant.alarmIsTraining ? DSColor.warning : DSColor.danger)
+                                    if let msg = tenant.alarmMessage, !msg.isEmpty {
+                                        Text(msg)
+                                            .font(.caption)
+                                            .foregroundStyle(textMuted)
+                                    }
+                                } else {
+                                    Text("No active alarm")
+                                        .font(.subheadline)
+                                        .foregroundStyle(textMuted)
+                                }
+                                if tenant.expectedUserCount > 0 {
+                                    let rate = Int((tenant.acknowledgementRate * 100).rounded())
+                                    Text("Ack: \(tenant.acknowledgementCount)/\(tenant.expectedUserCount) (\(rate)%)")
+                                        .font(.caption)
+                                        .foregroundStyle(textMuted)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 14)
+        }
+        .background(
+            LinearGradient(colors: [appBg, appBgDeep], startPoint: .top, endPoint: .bottom)
+                .ignoresSafeArea()
+        )
+        .navigationTitle("District Overview")
+        .navigationBarTitleDisplayMode(.inline)
+        .task { await loadDistrictOverview() }
+        .refreshable { await loadDistrictOverview() }
     }
 
     private func authenticateIfNeeded(reason: String) async -> Bool {
