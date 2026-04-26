@@ -172,7 +172,7 @@ def test_team_assist_admin_action_records_actor_label(client: TestClient, login_
 
     action = client.post(
         f"/assist-action/team-assist/{team_assist_id}/action",
-        json={"user_id": admin_id, "action": "acknowledge"},
+        json={"user_id": admin_id, "action": "resolve"},
         headers={"X-API-Key": "test-api-key"},
     )
     assert action.status_code == 200

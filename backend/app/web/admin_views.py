@@ -10,6 +10,8 @@ from typing import Mapping, Optional, Sequence
 from app.services.alert_log import AlertRecord
 from app.services.audit_log_service import AuditEventRecord
 from app.services.alarm_store import AlarmStateRecord
+from app.services.email_service import EmailLogRecord, TEMPLATE_KEYS as EMAIL_TEMPLATE_KEYS
+from app.services.health_monitor import HeartbeatRecord, HealthStatus, UptimeStats
 from app.services.device_registry import RegisteredDevice
 from app.services.incident_store import TeamAssistRecord
 from app.services.quiet_period_store import QuietPeriodRecord
@@ -900,6 +902,12 @@ def render_super_admin_page(
     flash_message: Optional[str] = None,
     flash_error: Optional[str] = None,
     active_section: str = "schools",
+    health_status: Optional[HealthStatus] = None,
+    health_heartbeats: Sequence[HeartbeatRecord] = (),
+    email_log: Sequence[EmailLogRecord] = (),
+    email_configured: bool = False,
+    platform_admin_emails: Sequence[str] = (),
+    email_template_keys: Sequence[str] = (),
 ) -> str:
     rows = "".join(
         (
@@ -962,7 +970,7 @@ def render_super_admin_page(
         )
         for item in billing_rows
     ) or '<tr><td colspan="8" class="mini-copy">No tenant billing records yet.</td></tr>'
-    section = active_section if active_section in {"schools", "billing", "platform-audit", "create-school", "security", "server-tools"} else "schools"
+    section = active_section if active_section in {"schools", "billing", "platform-audit", "create-school", "security", "server-tools", "health", "email-tool"} else "schools"
 
     def _section_style(name: str) -> str:
         return "" if section == name else ' style="display:none;"'
@@ -1021,6 +1029,85 @@ def render_super_admin_page(
             {setup_details}
           </div>
         """
+    # ── Health section computed vars ────────────────────────────────────────────
+    _hs = health_status
+    _hs_overall = _hs.overall if _hs else "unknown"
+    _hs_pill_cls = {"ok": "ok", "degraded": "warn", "error": "danger"}.get(_hs_overall, "")
+    _hs_uptime_24 = f"{_hs.uptime_24h:.1f}%" if (_hs and _hs.uptime_24h is not None) else "—"
+    _hs_uptime_7d = f"{_hs.uptime_7d:.1f}%" if (_hs and _hs.uptime_7d is not None) else "—"
+    _hs_last = escape(_hs.last_heartbeat_at[:19].replace("T", " ")) if (_hs and _hs.last_heartbeat_at) else "—"
+    _hs_since_raw = _hs.seconds_since_heartbeat if _hs else None
+    if _hs_since_raw is None:
+        _hs_since = "—"
+    elif _hs_since_raw < 120:
+        _hs_since = f"{int(_hs_since_raw)}s ago"
+    elif _hs_since_raw < 3600:
+        _hs_since = f"{int(_hs_since_raw) // 60}m ago"
+    else:
+        _hs_since = f"{int(_hs_since_raw) // 3600}h ago"
+    _hs_rtt = f"{_hs.response_time_ms:.0f} ms" if _hs else "—"
+    _hs_db_cls = "ok" if (_hs and _hs.db_ok) else "danger"
+    _hs_db_text = "OK" if (_hs and _hs.db_ok) else "Error"
+    _hs_ws = str(_hs.ws_connections) if _hs else "0"
+    _hs_apns = "Configured" if (_hs and _hs.apns_configured) else "Not set"
+    _hs_fcm = "Configured" if (_hs and _hs.fcm_configured) else "Not set"
+    _hs_error_html = (
+        f'<div class="flash error" style="margin-bottom:16px;">{escape(_hs.error_note)}</div>'
+        if (_hs and _hs.error_note) else ""
+    )
+
+    def _hb_pill(s: str) -> str:
+        cls = {"ok": "ok", "degraded": "warn", "error": "danger"}.get(s, "")
+        return f'<span class="status-pill {cls}">{escape(s)}</span>' if cls else f'<span class="status-pill">{escape(s)}</span>'
+
+    _hb_rows_html = "".join(
+        f"<tr>"
+        f"<td class='mini-copy'>{escape(hb.timestamp[:19].replace('T', ' '))}</td>"
+        f"<td>{_hb_pill(hb.status)}</td>"
+        f"<td>{hb.response_time_ms:.0f} ms</td>"
+        f"<td>{'✓' if hb.db_ok else '✗'}</td>"
+        f"<td>{hb.ws_connections}</td>"
+        f"<td>{'✓' if hb.apns_configured else '—'}</td>"
+        f"<td>{'✓' if hb.fcm_configured else '—'}</td>"
+        f"<td class='mini-copy'>{escape(hb.error_note or '')}</td>"
+        f"</tr>"
+        for hb in health_heartbeats
+    ) or '<tr><td colspan="8" class="mini-copy">No heartbeats recorded yet — monitor starts with the next background tick.</td></tr>'
+
+    # ── Email tool computed vars ─────────────────────────────────────────────────
+    _et_pill_cls = "ok" if email_configured else "danger"
+    _et_status_text = "Configured" if email_configured else "Not configured"
+    _et_admin_emails_html = (
+        "".join(f'<span class="status-pill">{escape(e)}</span>' for e in platform_admin_emails)
+        or '<span class="mini-copy">None — set <code>PLATFORM_ADMIN_EMAILS</code> (comma-separated)</span>'
+    )
+    _et_not_configured_html = (
+        '<div class="flash error" style="margin-bottom:16px;">'
+        'SMTP is not configured. Set <code>SMTP_HOST</code>, <code>SMTP_PORT</code>, '
+        '<code>SMTP_FROM</code>, and optionally <code>SMTP_USERNAME</code> / '
+        '<code>SMTP_PASSWORD</code> in the backend environment.</div>'
+    ) if not email_configured else ""
+    _et_template_options = "".join(
+        f'<option value="{escape(k)}">{escape(k.replace("_", " ").title())}</option>'
+        for k in email_template_keys
+    )
+
+    def _et_ok_pill(ok: bool) -> str:
+        return '<span class="status-pill ok">Sent</span>' if ok else '<span class="status-pill danger">Failed</span>'
+
+    _et_log_rows = "".join(
+        f"<tr>"
+        f"<td class='mini-copy'>{escape(rec.timestamp[:19].replace('T', ' '))}</td>"
+        f"<td>{escape(rec.event_type)}</td>"
+        f"<td>{escape(rec.to_address)}</td>"
+        f"<td>{escape(rec.subject[:60])}</td>"
+        f"<td>{_et_ok_pill(rec.ok)}</td>"
+        f"<td class='mini-copy'>{escape(rec.error or '')}</td>"
+        f"</tr>"
+        for rec in email_log
+    ) or '<tr><td colspan="6" class="mini-copy">No emails sent yet.</td></tr>'
+    _et_disabled = "disabled" if not email_configured else ""
+
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1050,6 +1137,8 @@ def render_super_admin_page(
             {_nav_item("billing", "Billing", str(len(billing_rows)) if billing_rows else None)}
             {_nav_item("create-school", "Create School")}
             {_nav_item("platform-audit", "Platform Audit")}
+            {_nav_item("health", "System Health", None if (not health_status or health_status.overall == 'ok') else "!")}
+            {_nav_item("email-tool", "Email Tool")}
             {_nav_item("security", "Security")}
             {_nav_item("server-tools", "Server Tools")}
             <a class="nav-item" href="/super-admin/change-password">Change password</a>
@@ -1148,6 +1237,128 @@ def render_super_admin_page(
             </div>
           </form>
           <p class="mini-copy" style="margin-top:14px;">New school URLs use the same domain with a school path, like <code>https://{escape(base_domain)}/school-slug/admin</code>.</p>
+        </section>
+        <section class="panel command-section" id="health"{_section_style("health")}>
+          <div class="panel-header hero-band">
+            <div>
+              <p class="eyebrow">Platform</p>
+              <h1>System Health</h1>
+              <p class="hero-copy">Background heartbeat monitor checks DB, WebSocket connections, and push provider config every 60 seconds.</p>
+            </div>
+            <div class="status-row">
+              <span class="status-pill {_hs_pill_cls}"><strong>Status</strong>{escape(_hs_overall)}</span>
+              <span class="status-pill"><strong>24h uptime</strong>{_hs_uptime_24}</span>
+              <span class="status-pill"><strong>7d uptime</strong>{_hs_uptime_7d}</span>
+            </div>
+          </div>
+          {_hs_error_html}
+          <div class="metrics-grid" style="margin-bottom:20px;">
+            <article class="metric-card">
+              <div class="meta">Last heartbeat</div>
+              <div class="metric-value" style="font-size:1.1rem;">{_hs_last}</div>
+              <p class="mini-copy">{_hs_since}</p>
+            </article>
+            <article class="metric-card">
+              <div class="meta">DB ping</div>
+              <div class="metric-value" style="font-size:1.1rem;">{_hs_rtt}</div>
+              <p class="mini-copy"><span class="status-pill {_hs_db_cls}">{_hs_db_text}</span></p>
+            </article>
+            <article class="metric-card">
+              <div class="meta">WebSocket connections</div>
+              <div class="metric-value" style="font-size:1.3rem;">{_hs_ws}</div>
+            </article>
+            <article class="metric-card">
+              <div class="meta">APNs</div>
+              <div class="metric-value" style="font-size:1.1rem;">{_hs_apns}</div>
+            </article>
+            <article class="metric-card">
+              <div class="meta">FCM</div>
+              <div class="metric-value" style="font-size:1.1rem;">{_hs_fcm}</div>
+            </article>
+          </div>
+          <div class="panel-header" style="margin-top:10px; margin-bottom:10px;">
+            <div>
+              <h2>Recent heartbeats</h2>
+              <p class="card-copy">Last 20 background checks, newest first.</p>
+            </div>
+          </div>
+          <div class="table-wrap"><table class="data-table">
+            <thead>
+              <tr><th>Time (UTC)</th><th>Status</th><th>DB latency</th><th>DB</th><th>WS</th><th>APNs</th><th>FCM</th><th>Note</th></tr>
+            </thead>
+            <tbody>{_hb_rows_html}</tbody>
+          </table></div>
+        </section>
+        <section class="panel command-section" id="email-tool"{_section_style("email-tool")}>
+          <div class="panel-header hero-band">
+            <div>
+              <p class="eyebrow">Communications</p>
+              <h1>Email Tool</h1>
+              <p class="hero-copy">Send platform admin notifications and test SMTP configuration. Entirely separate from emergency alert delivery — never affects APNs, FCM, or Twilio.</p>
+            </div>
+            <div class="status-row">
+              <span class="status-pill {_et_pill_cls}"><strong>SMTP</strong>{_et_status_text}</span>
+            </div>
+          </div>
+          {_et_not_configured_html}
+          <div class="metrics-grid" style="margin-bottom:20px;">
+            <article class="metric-card" style="grid-column:span 2;">
+              <div class="meta">Platform admin emails</div>
+              <div style="margin-top:8px;">{_et_admin_emails_html}</div>
+            </article>
+          </div>
+          <div class="form-grid" style="gap:24px; align-items:start; grid-template-columns:1fr 1fr; margin-bottom:24px;">
+            <div class="stack">
+              <h3 style="margin-bottom:8px;">Test SMTP</h3>
+              <p class="mini-copy" style="margin-bottom:12px;">Send a test email to verify SMTP settings are working.</p>
+              <form method="post" action="/super-admin/health/email/test" class="stack">
+                <div class="field">
+                  <label for="test_email">Recipient address</label>
+                  <input id="test_email" name="test_email" type="email" placeholder="you@example.com" {_et_disabled} />
+                </div>
+                <div class="button-row">
+                  <button class="button button-secondary" type="submit" {_et_disabled}>Send test</button>
+                </div>
+              </form>
+            </div>
+            <div class="stack">
+              <h3 style="margin-bottom:8px;">Send template</h3>
+              <p class="mini-copy" style="margin-bottom:12px;">Send a platform notification to one or more addresses.</p>
+              <form method="post" action="/super-admin/health/email/send" class="stack">
+                <div class="field">
+                  <label for="et_template">Template</label>
+                  <select id="et_template" name="template_key" {_et_disabled}>{_et_template_options}</select>
+                </div>
+                <div class="field">
+                  <label for="et_subject">Subject override <span class="mini-copy">(optional)</span></label>
+                  <input id="et_subject" name="custom_subject" placeholder="Leave blank to use template" {_et_disabled} />
+                </div>
+                <div class="field">
+                  <label for="et_body">Body override <span class="mini-copy">(optional)</span></label>
+                  <textarea id="et_body" name="custom_body" rows="4" placeholder="Leave blank to use template" {_et_disabled}></textarea>
+                </div>
+                <div class="field">
+                  <label for="et_addresses">Recipients <span class="mini-copy">(comma or newline-separated)</span></label>
+                  <textarea id="et_addresses" name="to_addresses" rows="3" placeholder="admin@school.org, it@district.edu" {_et_disabled}></textarea>
+                </div>
+                <div class="button-row">
+                  <button class="button button-primary" type="submit" {_et_disabled}>Send</button>
+                </div>
+              </form>
+            </div>
+          </div>
+          <div class="panel-header" style="margin-top:10px; margin-bottom:10px;">
+            <div>
+              <h2>Email log</h2>
+              <p class="card-copy">Last 50 platform emails, newest first. Automatically pruned to 500 records.</p>
+            </div>
+          </div>
+          <div class="table-wrap"><table class="data-table">
+            <thead>
+              <tr><th>Time (UTC)</th><th>Type</th><th>To</th><th>Subject</th><th>Result</th><th>Error</th></tr>
+            </thead>
+            <tbody>{_et_log_rows}</tbody>
+          </table></div>
         </section>
         <section class="panel command-section" id="security"{_section_style("security")}>
           <div class="panel-header">

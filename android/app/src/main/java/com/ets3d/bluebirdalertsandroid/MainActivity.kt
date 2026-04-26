@@ -1318,7 +1318,7 @@ class MainViewModel : ViewModel() {
             "help_request_acknowledged", "help_request_resolved" -> {
                 viewModelScope.launch(Dispatchers.IO) {
                     runCatching { client!!.activeRequestHelp() }
-                        .onSuccess { result -> _state.update { it.copy(activeTeamAssists = result.teamAssists) } }
+                        .onSuccess { result -> _state.update { it.copy(activeTeamAssists = result) } }
                 }
             }
         }

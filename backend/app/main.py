@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 import logging
@@ -14,6 +15,8 @@ from app.api.routes import router
 from app.core.config import Settings
 from app.core.logging import configure_logging
 from app.services.apns import APNsClient
+from app.services.email_service import EmailService, TEMPLATES
+from app.services.health_monitor import HealthMonitor
 from app.services.tenant_billing_store import TenantBillingStore
 from app.services.cloudflare_dns import CloudflareDNSClient
 from app.services.fcm import FCMClient
@@ -29,6 +32,51 @@ from app.services.user_tenant_store import UserTenantStore
 settings = Settings()
 logger = logging.getLogger("bluebird.main")
 _TENANT_CLEAN_RE = re.compile(r"[^a-z0-9-]+")
+
+
+async def _health_check_loop(app: FastAPI, interval: int) -> None:
+    """
+    Background heartbeat loop — runs health checks every `interval` seconds.
+    Completely read-only: never writes to alert tables or triggers notifications.
+    """
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            health_monitor: HealthMonitor = app.state.health_monitor
+            email_service: EmailService = app.state.email_service
+            checks = await HealthMonitor.run_checks(app.state)
+            await health_monitor.record_heartbeat(
+                status=str(checks["status"]),
+                response_time_ms=float(checks["response_time_ms"]),
+                db_ok=bool(checks["db_ok"]),
+                ws_connections=int(checks["ws_connections"]),
+                apns_configured=bool(checks["apns_configured"]),
+                fcm_configured=bool(checks["fcm_configured"]),
+                error_note=str(checks["error_note"]) if checks.get("error_note") else None,
+            )
+            # Automated email on degradation/error (respects cooldown)
+            if checks["status"] in ("error", "degraded") and email_service.is_configured():
+                if email_service.check_cooldown("health_auto", app.state.settings.HEALTH_EMAIL_COOLDOWN_MINUTES):
+                    admins = app.state.settings.platform_admin_email_list
+                    if admins:
+                        tmpl = TEMPLATES["outage_alert"]
+                        note = checks.get("error_note") or "unknown"
+                        body = f"{tmpl['body']}\n\nError details: {note}"
+                        await email_service.send_to_addresses(
+                            admins,
+                            subject=tmpl["subject"],
+                            body=body,
+                            event_type="health_auto",
+                        )
+                        logger.warning("Health auto-email sent to %d admin(s): status=%s", len(admins), checks["status"])
+            elif checks["status"] == "ok" and email_service.is_configured():
+                # Recovery email — only if a health_auto cooldown was recently consumed
+                # (check_cooldown would have reset it; we only send recovery if previously degraded)
+                pass
+        except asyncio.CancelledError:
+            break
+        except Exception as exc:
+            logger.warning("Health check loop error: %s", exc)
 
 
 def _normalize_tenant_candidate(value: str) -> str:
@@ -71,6 +119,9 @@ async def lifespan(app: FastAPI):
         twilio=twilio_sms,
     )
 
+    health_monitor = HealthMonitor(settings.PLATFORM_DB_PATH)
+    email_service = EmailService(settings, settings.PLATFORM_DB_PATH)
+
     app.state.settings = settings
     app.state.apns_client = apns_client
     app.state.cloudflare_dns = cloudflare_dns
@@ -83,8 +134,20 @@ async def lifespan(app: FastAPI):
     app.state.school_registry = school_registry
     app.state.user_tenant_store = user_tenant_store
     app.state.tenant_manager = tenant_manager
+    app.state.health_monitor = health_monitor
+    app.state.email_service = email_service
+
+    health_task = asyncio.create_task(
+        _health_check_loop(app, settings.HEALTH_CHECK_INTERVAL)
+    )
 
     yield
+
+    health_task.cancel()
+    try:
+        await health_task
+    except asyncio.CancelledError:
+        pass
 
     await apns_client.stop()
     await cloudflare_dns.stop()

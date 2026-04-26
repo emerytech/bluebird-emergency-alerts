@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Optional
+from typing import List, Optional
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -69,6 +69,21 @@ class Settings(BaseSettings):
     SERVER_RESTART_COMMAND: Optional[str] = None
     SERVER_GIT_PULL_COMMAND: Optional[str] = None
 
+    # SMTP (admin communication — separate from alert delivery)
+    SMTP_HOST: str = ""
+    SMTP_PORT: int = 587
+    SMTP_USERNAME: Optional[str] = None
+    SMTP_PASSWORD: Optional[str] = None
+    SMTP_FROM: str = ""
+    SMTP_USE_TLS: bool = True
+
+    # Platform admin contacts (comma-separated emails for health alerts)
+    PLATFORM_ADMIN_EMAILS: str = ""
+
+    # Background health monitor
+    HEALTH_CHECK_INTERVAL: int = 60
+    HEALTH_EMAIL_COOLDOWN_MINUTES: int = 30
+
     @property
     def apns_host(self) -> str:
         return "api.sandbox.push.apple.com" if self.APNS_USE_SANDBOX else "api.push.apple.com"
@@ -91,6 +106,13 @@ class Settings(BaseSettings):
 
     def fcm_is_configured(self) -> bool:
         return bool(self.FCM_SERVICE_ACCOUNT_JSON)
+
+    def smtp_is_configured(self) -> bool:
+        return bool(self.SMTP_HOST and self.SMTP_FROM)
+
+    @property
+    def platform_admin_email_list(self) -> List[str]:
+        return [e.strip() for e in self.PLATFORM_ADMIN_EMAILS.split(",") if e.strip()]
 
     def cloudflare_dns_is_configured(self) -> bool:
         return all(

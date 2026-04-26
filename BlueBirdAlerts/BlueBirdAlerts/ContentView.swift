@@ -619,11 +619,15 @@ struct ContentView: View {
 
                 if holdFlashActive {
                     TimelineView(.animation(minimumInterval: 0.05)) { timeline in
-                        let t = timeline.date.timeIntervalSinceReferenceDate
-                        let wave = (sin(t * Double.pi * 2 * 1.6) + 1) / 2
-                        let base = 0.035 + holdFlashProgress * 0.09
-                        let pulse = (0.03 + holdFlashProgress * 0.07) * wave
-                        let countdown = max(1, Int(ceil((1.0 - holdFlashProgress) * 3.0)))
+                        let t: Double = timeline.date.timeIntervalSinceReferenceDate
+                        let frequency: Double = 1.6
+                        let twoPi: Double = Double.pi * 2
+                        let angle: Double = t * twoPi * frequency
+                        let sineValue: Double = sin(angle)
+                        let wave: Double = (sineValue + 1.0) / 2.0
+                        let base: Double = 0.035 + holdFlashProgress * 0.09
+                        let pulse: Double = (0.03 + holdFlashProgress * 0.07) * wave
+                        let countdown: Int = max(1, Int(ceil((1.0 - holdFlashProgress) * 3.0)))
                         ZStack {
                             Rectangle()
                                 .fill(holdFlashColor)

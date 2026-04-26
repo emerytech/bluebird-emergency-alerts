@@ -87,6 +87,8 @@ from app.models.schemas import (
 from app.services.alert_broadcaster import BroadcastPlan, AlertBroadcaster
 from app.services.alarm_store import AlarmStateRecord, AlarmStore
 from app.services.apns import APNsClient
+from app.services.email_service import EmailService, TEMPLATE_KEYS as EMAIL_TEMPLATE_KEYS
+from app.services.health_monitor import HealthMonitor
 from app.services.alert_log import AlertLog
 from app.services.audit_log_service import AuditLogService, AuditEventRecord
 from app.services.drill_report_service import DrillReportService
@@ -235,7 +237,15 @@ def _tenant_billing(req: Request) -> TenantBillingStore:
 
 
 def _quiet_states(req: Request) -> QuietStateStore:
-    return req.app.state.quiet_state_store  # type: ignore[attr-defined]
+    return req.app.state.quiet_state_store
+
+
+def _health_monitor(req: Request) -> HealthMonitor:
+    return req.app.state.health_monitor  # type: ignore[attr-defined]
+
+
+def _email_service(req: Request) -> EmailService:
+    return req.app.state.email_service  # type: ignore[attr-defined]
 
 
 def _session_user_id(request: Request) -> Optional[int]:
@@ -295,7 +305,7 @@ def _admin_section(value: Optional[str]) -> str:
 
 def _super_admin_section(value: Optional[str]) -> str:
     normalized = str(value or "").strip().lower()
-    if normalized in {"schools", "billing", "platform-audit", "create-school", "security", "server-tools"}:
+    if normalized in {"schools", "billing", "platform-audit", "create-school", "security", "server-tools", "health", "email-tool"}:
         return normalized
     return "schools"
 
@@ -2598,6 +2608,11 @@ async def super_admin_dashboard(
                 "remove_free_action": f"/super-admin/schools/{school.slug}/billing/remove-free",
             }
         )
+    hm = _health_monitor(request)
+    es = _email_service(request)
+    health_status = await hm.current_status()
+    health_heartbeats = await hm.recent_heartbeats(limit=20)
+    email_log = await es.recent_email_log(limit=50)
     return HTMLResponse(
         render_super_admin_page(
             base_domain=request.app.state.settings.BASE_DOMAIN,  # type: ignore[attr-defined]
@@ -2621,6 +2636,12 @@ async def super_admin_dashboard(
             flash_message=flash_message,
             flash_error=flash_error,
             active_section=_super_admin_section(section),
+            health_status=health_status,
+            health_heartbeats=health_heartbeats,
+            email_log=email_log,
+            email_configured=es.is_configured(),
+            platform_admin_emails=request.app.state.settings.platform_admin_email_list,  # type: ignore[attr-defined]
+            email_template_keys=EMAIL_TEMPLATE_KEYS,
         )
     )
 
@@ -2909,6 +2930,62 @@ def _do_restart(command: Optional[str]) -> None:
             os.execv(sys.argv[0], sys.argv)
         except Exception:
             os.execv(sys.executable, [sys.executable] + sys.argv)
+
+
+@router.post("/super-admin/health/email/send", include_in_schema=False)
+async def super_admin_health_email_send(
+    request: Request,
+    to_addresses: str = Form(default=""),
+    template_key: str = Form(default="maintenance_notice"),
+    custom_subject: str = Form(default=""),
+    custom_body: str = Form(default=""),
+) -> RedirectResponse:
+    _require_super_admin(request)
+    es = _email_service(request)
+    if not es.is_configured():
+        _set_flash(request, error="SMTP is not configured. Set SMTP_HOST and SMTP_FROM in the backend environment.")
+        return RedirectResponse(url=_super_admin_url("email-tool"), status_code=status.HTTP_303_SEE_OTHER)
+    addresses = [a.strip() for a in to_addresses.replace("\n", ",").split(",") if a.strip()]
+    if not addresses:
+        _set_flash(request, error="No valid email addresses provided.")
+        return RedirectResponse(url=_super_admin_url("email-tool"), status_code=status.HTTP_303_SEE_OTHER)
+    tmpl = es.get_template(template_key)
+    subject = custom_subject.strip() or tmpl["subject"]
+    body = custom_body.strip() or tmpl["body"]
+    count = await es.send_to_addresses(addresses, subject=subject, body=body, event_type=f"manual_{template_key}")
+    _set_flash(request, message=f"Email sent to {count}/{len(addresses)} addresses.")
+    return RedirectResponse(url=_super_admin_url("email-tool"), status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.post("/super-admin/health/email/test", include_in_schema=False)
+async def super_admin_health_email_test(
+    request: Request,
+    test_email: str = Form(default=""),
+) -> RedirectResponse:
+    _require_super_admin(request)
+    es = _email_service(request)
+    if not es.is_configured():
+        _set_flash(request, error="SMTP is not configured. Set SMTP_HOST and SMTP_FROM in the backend environment.")
+        return RedirectResponse(url=_super_admin_url("email-tool"), status_code=status.HTTP_303_SEE_OTHER)
+    addr = test_email.strip()
+    if not addr or "@" not in addr:
+        _set_flash(request, error="Enter a valid email address for the test.")
+        return RedirectResponse(url=_super_admin_url("email-tool"), status_code=status.HTTP_303_SEE_OTHER)
+    ok = await es.send_email(
+        to_address=addr,
+        subject="BlueBird Alerts — Test Email",
+        body=(
+            "This is a test email from the BlueBird Alerts platform admin console.\n\n"
+            "If you received this, SMTP is configured correctly.\n\n"
+            "— BlueBird Alerts Platform"
+        ),
+        event_type="test",
+    )
+    if ok:
+        _set_flash(request, message=f"Test email sent successfully to {addr}.")
+    else:
+        _set_flash(request, error=f"Test email to {addr} failed. Check SMTP settings and the email log for details.")
+    return RedirectResponse(url=_super_admin_url("email-tool"), status_code=status.HTTP_303_SEE_OTHER)
 
 
 @router.post("/admin/super-admin/exit", include_in_schema=False)
