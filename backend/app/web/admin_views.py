@@ -17,21 +17,25 @@ from app.services.incident_store import TeamAssistRecord
 from app.services.quiet_period_store import QuietPeriodRecord
 from app.services.report_store import AdminMessageRecord, BroadcastUpdateRecord, ReportRecord
 from app.services.school_registry import SchoolRecord
+from app.services.tenant_settings_store import SettingsChangeRecord
 from app.services.user_store import UserRecord
 
 
 LOGO_PATH = "/static/bluebird-alert-logo.png"
 
 
-def _favicon_tags() -> str:
+def _favicon_tags(logo_url: Optional[str] = None) -> str:
+    icon = logo_url if logo_url else LOGO_PATH
     return (
-        f'<link rel="icon" type="image/png" href="{LOGO_PATH}" />'
-        f'<link rel="apple-touch-icon" href="{LOGO_PATH}" />'
+        f'<link rel="icon" type="image/png" href="{icon}" />'
+        f'<link rel="apple-touch-icon" href="{icon}" />'
     )
 
 
-def _brand_mark() -> str:
-    return f'<div class="brand-mark"><img src="{LOGO_PATH}" alt="BlueBird Alerts logo" /></div>'
+def _brand_mark(logo_url: Optional[str] = None) -> str:
+    img_src = logo_url if logo_url else LOGO_PATH
+    alt = "School logo" if logo_url else "BlueBird Alerts logo"
+    return f'<div class="brand-mark"><img src="{img_src}" alt="{alt}" /></div>'
 
 
 @lru_cache(maxsize=1)
@@ -1574,7 +1578,7 @@ def _render_alert_rows(alerts: Sequence[AlertRecord]) -> str:
 
 def _render_district_rows(items: Sequence[Mapping[str, object]], school_path_prefix: str) -> str:
     if not items:
-        return '<tr><td colspan="5" class="mini-copy">No schools found.</td></tr>'
+        return '<tr><td colspan="6" class="mini-copy">No schools found.</td></tr>'
     prefix = escape(school_path_prefix)
     rows = []
     for item in items:
@@ -1609,8 +1613,14 @@ def _render_district_rows(items: Sequence[Mapping[str, object]], school_path_pre
             ack_html = f'<span class="status-pill danger">{ack_count}/{expected_users} ({ack_rate:.0f}%)</span>'
 
         manage_url = f"{prefix}/admin?tenant={escape(slug)}&section=dashboard"
+        drag_handle = (
+            "<td style='cursor:grab;color:#aaa;text-align:center;width:28px;' "
+            "class='dist-drag-handle' title='Drag to reorder'>&#9776;</td>"
+        )
         rows.append(
-            f"<tr data-tenant-slug='{escape(slug)}' data-expected-users='{expected_users}'>"
+            f"<tr draggable='true' data-slug='{escape(slug)}' data-tenant-slug='{escape(slug)}'"
+            f" data-expected-users='{expected_users}' style='transition:opacity .15s;'>"
+            f"{drag_handle}"
             f"<td><strong>{escape(name)}</strong></td>"
             f"<td class='dist-status-cell'>{status_badge}{message_note}</td>"
             f"<td class='mini-copy dist-last-cell'>{last_alert_str}</td>"
@@ -1930,6 +1940,227 @@ def render_change_password_page(
 </html>"""
 
 
+def _render_settings_panels(
+    prefix: str,
+    school_name: str,
+    school_slug: str,
+    settings_history: Sequence[SettingsChangeRecord],
+    school_logo_url: Optional[str],
+    theme: Optional[Mapping[str, str]],
+    _section_style,
+) -> str:
+    # ── School Info ──────────────────────────────────────────────────────────
+    logo_preview = (
+        f'<img src="{escape(school_logo_url)}" alt="Current logo" '
+        f'style="max-height:60px;max-width:180px;border-radius:8px;border:1px solid var(--border);margin-bottom:12px;display:block;" />'
+    ) if school_logo_url else ""
+
+    # ── Change History ───────────────────────────────────────────────────────
+    if settings_history:
+        history_rows = ""
+        for rec in settings_history:
+            undone_badge = '<span style="color:var(--muted);font-size:0.78rem;">(undone)</span>' if rec.is_undone else ""
+            undo_btn = (
+                f'<form method="post" action="{prefix}/admin/settings/undo/{rec.id}" style="display:inline;">'
+                f'<button type="submit" class="button button-secondary" style="min-height:30px;padding:0 12px;font-size:0.82rem;">Undo</button>'
+                f'</form>'
+            ) if not rec.is_undone else ""
+            old_display = ", ".join(f"{k}: {escape(str(v))}" for k, v in rec.old_value.items()) or "—"
+            new_display = ", ".join(f"{k}: {escape(str(v))}" for k, v in rec.new_value.items()) or "—"
+            history_rows += f"""
+              <tr>
+                <td style="white-space:nowrap;">{escape(rec.changed_at[:19].replace("T", " "))}</td>
+                <td>{escape(rec.field)} {undone_badge}</td>
+                <td style="color:var(--muted);font-size:0.85rem;">{old_display}</td>
+                <td style="font-size:0.85rem;">{new_display}</td>
+                <td>{undo_btn}</td>
+              </tr>"""
+        history_html = f"""
+          <div style="overflow-x:auto;">
+            <table style="width:100%;border-collapse:collapse;font-size:0.9rem;">
+              <thead>
+                <tr style="border-bottom:1px solid var(--border);color:var(--muted);">
+                  <th style="text-align:left;padding:8px 10px;">When</th>
+                  <th style="text-align:left;padding:8px 10px;">Field</th>
+                  <th style="text-align:left;padding:8px 10px;">Before</th>
+                  <th style="text-align:left;padding:8px 10px;">After</th>
+                  <th style="text-align:left;padding:8px 10px;"></th>
+                </tr>
+              </thead>
+              <tbody>{history_rows}</tbody>
+            </table>
+          </div>"""
+    else:
+        history_html = '<p class="card-copy">No settings changes recorded yet.</p>'
+
+    # ── Current theme values for color form placeholders ─────────────────────
+    t_accent         = escape(str((theme or {}).get("accent", "") or ""))
+    t_accent_strong  = escape(str((theme or {}).get("accent_strong", "") or ""))
+    t_sidebar_start  = escape(str((theme or {}).get("sidebar_start", "") or ""))
+    t_sidebar_end    = escape(str((theme or {}).get("sidebar_end", "") or ""))
+
+    _preview_logo_img = (
+        '<img src="' + escape(school_logo_url) + '" style="width:100%;height:100%;object-fit:cover;" />'
+        if school_logo_url
+        else '<div style="width:20px;height:20px;border-radius:50%;background:rgba(255,255,255,0.3);"></div>'
+    )
+    _remove_logo_btn = (
+        '<a href="' + prefix + '/admin/settings/logo/remove"'
+        ' class="button button-secondary"'
+        " onclick=\"return confirm('Remove the current logo?');\">Remove logo</a>"
+        if school_logo_url else ""
+    )
+    hidden = _section_style("settings")
+    return f"""
+        <section class="panel command-section" id="school-info"{hidden}>
+          <div class="panel-header">
+            <div>
+              <p class="eyebrow">School Settings</p>
+              <h2>School information</h2>
+              <p class="card-copy">Update your school's display name and logo. The school ID (slug) is permanent and cannot be changed here.</p>
+            </div>
+          </div>
+          <div class="stack" style="max-width:520px;">
+            <form method="post" action="{prefix}/admin/settings/name">
+              <div class="field" style="margin-bottom:12px;">
+                <label for="settings-name">School name</label>
+                <input id="settings-name" name="name" type="text" value="{escape(school_name)}" required maxlength="200" />
+              </div>
+              <div style="display:flex;align-items:center;gap:12px;margin-bottom:6px;">
+                <span style="color:var(--muted);font-size:0.88rem;">School ID: <strong>{escape(school_slug)}</strong></span>
+              </div>
+              <button type="submit" class="button button-primary">Save name</button>
+            </form>
+
+            <hr style="border:none;border-top:1px solid var(--border);margin:20px 0;" />
+
+            <form method="post" action="{prefix}/admin/settings/logo" enctype="multipart/form-data">
+              <p class="eyebrow" style="margin-bottom:8px;">School logo</p>
+              {logo_preview}
+              <div class="field" style="margin-bottom:12px;">
+                <label for="settings-logo">Upload logo (PNG, JPG, SVG — max 2 MB)</label>
+                <input id="settings-logo" name="logo" type="file" accept="image/png,image/jpeg,image/svg+xml,image/webp"
+                       style="padding:10px 0;background:none;border:none;" />
+              </div>
+              <div class="button-row">
+                <button type="submit" class="button button-primary">Upload logo</button>
+                {_remove_logo_btn}
+              </div>
+            </form>
+          </div>
+        </section>
+
+        <section class="panel command-section" id="theme-settings"{hidden}>
+          <div class="panel-header">
+            <div>
+              <p class="eyebrow">School Settings</p>
+              <h2>Theme &amp; colors</h2>
+              <p class="card-copy">Customize your school's brand colors. The preview updates live as you pick. Leave fields blank to use the BlueBird Alerts defaults.</p>
+            </div>
+          </div>
+          <div style="display:grid;grid-template-columns:minmax(0,1fr) 220px;gap:32px;align-items:start;">
+            <form method="post" action="{prefix}/admin/settings/colors">
+              <div class="stack">
+                <div class="field">
+                  <label for="s-accent">Primary / accent color</label>
+                  <div style="display:flex;gap:10px;align-items:center;">
+                    <input id="bp-accent-picker" type="color" name="accent_picker" value="{t_accent or "#1b5fe4"}"
+                           style="width:44px;height:44px;border-radius:10px;border:1px solid var(--border);padding:2px;cursor:pointer;" />
+                    <input id="s-accent" name="accent" type="text" value="{t_accent}" placeholder="#1b5fe4"
+                           style="flex:1;" pattern="#[0-9a-fA-F]{{6}}" maxlength="7" />
+                  </div>
+                </div>
+                <div class="field">
+                  <label for="s-accent-strong">Accent strong (button hover)</label>
+                  <div style="display:flex;gap:10px;align-items:center;">
+                    <input id="bp-accent-strong-picker" type="color" name="accent_strong_picker" value="{t_accent_strong or "#2f84ff"}"
+                           style="width:44px;height:44px;border-radius:10px;border:1px solid var(--border);padding:2px;cursor:pointer;" />
+                    <input id="s-accent-strong" name="accent_strong" type="text" value="{t_accent_strong}" placeholder="#2f84ff"
+                           style="flex:1;" pattern="#[0-9a-fA-F]{{6}}" maxlength="7" />
+                  </div>
+                </div>
+                <div class="field">
+                  <label for="s-sidebar-start">Sidebar gradient start</label>
+                  <div style="display:flex;gap:10px;align-items:center;">
+                    <input id="bp-sidebar-start-picker" type="color" name="sidebar_start_picker" value="{t_sidebar_start or "#092054"}"
+                           style="width:44px;height:44px;border-radius:10px;border:1px solid var(--border);padding:2px;cursor:pointer;" />
+                    <input id="s-sidebar-start" name="sidebar_start" type="text" value="{t_sidebar_start}" placeholder="#092054"
+                           style="flex:1;" pattern="#[0-9a-fA-F]{{6}}" maxlength="7" />
+                  </div>
+                </div>
+                <div class="field">
+                  <label for="s-sidebar-end">Sidebar gradient end</label>
+                  <div style="display:flex;gap:10px;align-items:center;">
+                    <input id="bp-sidebar-end-picker" type="color" name="sidebar_end_picker" value="{t_sidebar_end or "#071536"}"
+                           style="width:44px;height:44px;border-radius:10px;border:1px solid var(--border);padding:2px;cursor:pointer;" />
+                    <input id="s-sidebar-end" name="sidebar_end" type="text" value="{t_sidebar_end}" placeholder="#071536"
+                           style="flex:1;" pattern="#[0-9a-fA-F]{{6}}" maxlength="7" />
+                  </div>
+                </div>
+                <div class="button-row">
+                  <button type="submit" class="button button-primary">Save colors</button>
+                  <button type="reset" class="button button-secondary">Reset</button>
+                </div>
+              </div>
+            </form>
+
+            <!-- Live preview card -->
+            <div>
+              <p class="eyebrow" style="margin-bottom:10px;color:var(--muted);">Live preview</p>
+              <div id="bp-sidebar-preview" style="
+                border-radius:16px;overflow:hidden;position:relative;
+                background:linear-gradient(180deg,{t_sidebar_start or "#092054"} 0%,{t_sidebar_end or "#071536"} 100%);
+                padding:16px;box-shadow:0 8px 24px rgba(0,0,0,0.28);">
+                <div class="bp-preview-glow" style="
+                  position:absolute;inset:0;pointer-events:none;
+                  background:radial-gradient(circle at top left,{t_accent or "#1b5fe4"}28,transparent 60%);"></div>
+                <div style="display:flex;gap:10px;align-items:center;margin-bottom:12px;">
+                  <div style="width:36px;height:36px;border-radius:10px;overflow:hidden;
+                              background:rgba(255,255,255,0.12);border:1px solid rgba(255,255,255,0.18);
+                              flex:0 0 auto;display:grid;place-items:center;">
+                    {_preview_logo_img}
+                  </div>
+                  <div>
+                    <p style="margin:0;font-size:0.62rem;font-weight:700;letter-spacing:0.12em;
+                               text-transform:uppercase;color:rgba(255,255,255,0.5);">BlueBird Alerts</p>
+                    <p style="margin:0;font-size:0.82rem;font-weight:700;color:rgba(255,255,255,0.92);">Safety ops</p>
+                  </div>
+                </div>
+                <div style="display:grid;gap:6px;">
+                  <div style="background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.09);
+                              border-radius:10px;padding:8px 12px;font-size:0.78rem;
+                              color:rgba(255,255,255,0.88);">Dashboard</div>
+                  <div style="background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.09);
+                              border-radius:10px;padding:8px 12px;font-size:0.78rem;
+                              color:rgba(255,255,255,0.88);">User Management</div>
+                  <div style="background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.09);
+                              border-radius:10px;padding:8px 12px;font-size:0.78rem;
+                              color:rgba(255,255,255,0.88);">Settings</div>
+                </div>
+                <div style="margin-top:12px;">
+                  <div class="bp-preview-dot" style="
+                    height:32px;border-radius:8px;display:grid;place-items:center;
+                    background:{t_accent or "#1b5fe4"};font-size:0.76rem;font-weight:700;color:#fff;">
+                    Sample button
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel command-section" id="settings-history"{hidden}>
+          <div class="panel-header">
+            <div>
+              <p class="eyebrow">School Settings</p>
+              <h2>Change history</h2>
+              <p class="card-copy">Every settings change is recorded with its before and after values. You can undo any change that has not already been undone.</p>
+            </div>
+          </div>
+          {history_html}
+        </section>"""
+
+
 def render_admin_page(
     *,
     school_name: str,
@@ -1976,6 +2207,8 @@ def render_admin_page(
     home_tenant_slug: str = "",
     access_code_records: Sequence[object] = (),
     base_domain: str = "app.bluebirdalerts.com",
+    settings_history: Sequence[SettingsChangeRecord] = (),
+    school_logo_url: Optional[str] = None,
 ) -> str:
     prefix = escape(school_path_prefix)
     role_counts = Counter(user.role for user in users)
@@ -2190,7 +2423,7 @@ def render_admin_page(
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>BlueBird Admin</title>
-  {_favicon_tags()}
+  {_favicon_tags(school_logo_url)}
   {refresh_meta}
   <style>{_base_styles(theme)}</style>
   <script>
@@ -2389,13 +2622,57 @@ def render_admin_page(
     makeSearchFilter('drill-search', '#drill-reports', 'tbody tr');
   }});
   </script>
+  <script>
+  /* ── Live branding preview ──────────────────────────────────────────────── */
+  (function() {{
+    var root = document.documentElement;
+    var CSS_VAR_MAP = {{
+      'bp-accent':        '--color-primary',
+      'bp-accent-strong': '--color-primary-strong',
+      'bp-sidebar-start': '--color-sidebar-start',
+      'bp-sidebar-end':   '--color-sidebar-end',
+    }};
+    function applyVar(cssVar, value) {{
+      if (/^#[0-9a-fA-F]{{6}}$/.test(value)) {{
+        root.style.setProperty(cssVar, value);
+        updateSidebarPreview();
+      }}
+    }}
+    function wireInput(textId, pickerId, cssVar) {{
+      var text = document.getElementById(textId);
+      var picker = document.getElementById(pickerId);
+      if (!text || !picker) return;
+      text.addEventListener('input', function() {{ applyVar(cssVar, text.value.trim()); picker.value = text.value.trim(); }});
+      picker.addEventListener('input', function() {{ text.value = picker.value; applyVar(cssVar, picker.value); }});
+    }}
+    function updateSidebarPreview() {{
+      var preview = document.getElementById('bp-sidebar-preview');
+      if (!preview) return;
+      var start = getComputedStyle(root).getPropertyValue('--color-sidebar-start').trim() || '#092054';
+      var end   = getComputedStyle(root).getPropertyValue('--color-sidebar-end').trim()   || '#071536';
+      var accent = getComputedStyle(root).getPropertyValue('--color-primary').trim()       || '#1b5fe4';
+      preview.style.background = 'linear-gradient(180deg, ' + start + ' 0%, ' + end + ' 100%)';
+      var dot = preview.querySelector('.bp-preview-dot');
+      if (dot) dot.style.background = accent;
+      var glow = preview.querySelector('.bp-preview-glow');
+      if (glow) glow.style.background = 'radial-gradient(circle at top left, ' + accent + '28, transparent 60%)';
+    }}
+    document.addEventListener('DOMContentLoaded', function() {{
+      wireInput('s-accent',        'bp-accent-picker',        '--color-primary');
+      wireInput('s-accent-strong', 'bp-accent-strong-picker', '--color-primary-strong');
+      wireInput('s-sidebar-start', 'bp-sidebar-start-picker', '--color-sidebar-start');
+      wireInput('s-sidebar-end',   'bp-sidebar-end-picker',   '--color-sidebar-end');
+      updateSidebarPreview();
+    }});
+  }})();
+  </script>
 </head>
 <body>
   <main class="page-shell">
     <div class="app-shell">
       <aside class="sidebar nav-panel">
         <section class="brand-block">
-          {_brand_mark()}
+          {_brand_mark(school_logo_url)}
           <div class="stack brand-text">
             <p class="eyebrow">BlueBird Alerts</p>
             <h2>Safety operations</h2>
@@ -2466,6 +2743,8 @@ def render_admin_page(
             {_count_list(provider_counts)}
           </div>
         </section>
+
+        {_render_settings_panels(prefix, school_name, school_slug, settings_history, school_logo_url, theme, _section_style)}
 
         <section class="panel command-section" id="security"{_section_style("settings")}>
           <div class="panel-header">
@@ -2986,23 +3265,119 @@ def render_admin_page(
                 <h2>All assigned schools</h2>
                 <p class="card-copy">Read-only status across all schools in your district. Switch to a school to manage alerts.</p>
               </div>
-              <div class="status-row" style="align-self:flex-start;">
+              <div class="status-row" style="align-self:flex-start;gap:10px;">
                 <span id="dist-ws-badge" class="status-pill" style="display:none;font-size:12px;">&#x25CF;&nbsp;Live</span>
+                <button id="dist-save-order-btn" class="button button-secondary"
+                  style="display:none;font-size:13px;padding:6px 16px;min-height:auto;"
+                  onclick="distSaveOrder()">Save Order</button>
+                <span id="dist-order-status" class="mini-copy" style="display:none;"></span>
               </div>
             </div>
             <div class="flash" style="margin-bottom:16px;">
               <strong>Alert controls are disabled in District Overview.</strong>
               Select a school below to activate or deactivate alerts.
+              Drag rows to reorder schools within your district.
             </div>
-            <table class="data-table">
+            <table class="data-table" id="district-order-table">
               <thead>
-                <tr><th>School</th><th>Status</th><th>Last Alert</th><th>Ack Rate</th><th>Actions</th></tr>
+                <tr><th style="width:28px;"></th><th>School</th><th>Status</th><th>Last Alert</th><th>Ack Rate</th><th>Actions</th></tr>
               </thead>
-              <tbody>
+              <tbody id="district-order-tbody">
                 {_render_district_rows(district_overview_items, school_path_prefix)}
               </tbody>
             </table>
           </section>
+          <script>
+          (function() {{
+            var tbody = document.getElementById('district-order-tbody');
+            var saveBtn = document.getElementById('dist-save-order-btn');
+            var statusEl = document.getElementById('dist-order-status');
+            if (!tbody) return;
+            var dragSrc = null;
+            var originalOrder = null;
+
+            function getSlugOrder() {{
+              return Array.from(tbody.querySelectorAll('tr[data-slug]')).map(function(r) {{
+                return r.getAttribute('data-slug');
+              }});
+            }}
+
+            function markDirty() {{
+              if (saveBtn) {{ saveBtn.style.display = ''; }}
+              if (statusEl) {{ statusEl.style.display = 'none'; statusEl.textContent = ''; }}
+            }}
+
+            tbody.addEventListener('dragstart', function(e) {{
+              dragSrc = e.target.closest('tr[data-slug]');
+              if (!dragSrc) return;
+              if (originalOrder === null) originalOrder = getSlugOrder();
+              dragSrc.style.opacity = '0.4';
+              e.dataTransfer.effectAllowed = 'move';
+              e.dataTransfer.setData('text/plain', dragSrc.getAttribute('data-slug'));
+            }});
+
+            tbody.addEventListener('dragend', function(e) {{
+              var row = e.target.closest('tr[data-slug]');
+              if (row) row.style.opacity = '';
+              tbody.querySelectorAll('tr[data-slug]').forEach(function(r) {{
+                r.classList.remove('drag-over');
+              }});
+            }});
+
+            tbody.addEventListener('dragover', function(e) {{
+              e.preventDefault();
+              e.dataTransfer.dropEffect = 'move';
+              var target = e.target.closest('tr[data-slug]');
+              if (!target || target === dragSrc) return;
+              tbody.querySelectorAll('tr[data-slug]').forEach(function(r) {{
+                r.classList.remove('drag-over');
+              }});
+              target.classList.add('drag-over');
+            }});
+
+            tbody.addEventListener('drop', function(e) {{
+              e.preventDefault();
+              var target = e.target.closest('tr[data-slug]');
+              if (!target || !dragSrc || target === dragSrc) return;
+              var rows = Array.from(tbody.querySelectorAll('tr[data-slug]'));
+              var srcIdx = rows.indexOf(dragSrc);
+              var tgtIdx = rows.indexOf(target);
+              if (srcIdx < tgtIdx) {{
+                tbody.insertBefore(dragSrc, target.nextSibling);
+              }} else {{
+                tbody.insertBefore(dragSrc, target);
+              }}
+              markDirty();
+            }});
+
+            window.distSaveOrder = function() {{
+              var slugs = getSlugOrder();
+              if (saveBtn) saveBtn.disabled = true;
+              if (statusEl) {{ statusEl.style.display = ''; statusEl.textContent = 'Saving…'; }}
+              fetch('/admin/district/schools/reorder', {{
+                method: 'POST',
+                headers: {{ 'Content-Type': 'application/json' }},
+                body: JSON.stringify({{ ordered_slugs: slugs }})
+              }}).then(function(r) {{ return r.json(); }}).then(function(data) {{
+                if (saveBtn) {{ saveBtn.style.display = 'none'; saveBtn.disabled = false; }}
+                if (data.ok) {{
+                  if (statusEl) {{ statusEl.textContent = 'Order saved.'; statusEl.style.display = ''; }}
+                  originalOrder = null;
+                }} else {{
+                  if (statusEl) {{ statusEl.textContent = 'Error: ' + (data.error || 'unknown'); statusEl.style.display = ''; }}
+                }}
+              }}).catch(function() {{
+                if (saveBtn) {{ saveBtn.style.display = ''; saveBtn.disabled = false; }}
+                if (statusEl) {{ statusEl.textContent = 'Network error — try again.'; statusEl.style.display = ''; }}
+              }});
+            }};
+
+            // Highlight drop target
+            document.head.insertAdjacentHTML('beforeend',
+              '<style>tr.drag-over td {{ outline: 2px solid var(--color-primary, #1a73e8); }}</style>'
+            );
+          }})();
+          </script>
 
         </section>
       </section>

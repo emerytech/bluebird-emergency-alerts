@@ -40,6 +40,11 @@ data class DesignTokens(
     val typeBody: Int,
     val typeButton: Int,
     val typeCaption: Int,
+    // Extended tokens — defaults match iOS spec
+    val cardBorder: Color = Color(0x1A000000),
+    val inputBorder: Color = Color(0x1A123478),
+    val spacingXXL: Int = 24,
+    val typeSectionTitle: Int = 13,
 ) {
     companion object {
         val Defaults = DesignTokens(
@@ -61,25 +66,31 @@ data class DesignTokens(
             spacingMD       = 12,
             spacingLG       = 16,
             spacingXL       = 20,
-            radiusButton    = 12,
-            radiusCard      = 22,
-            radiusInput     = 12,
+            spacingXXL      = 24,
+            radiusButton    = 16,
+            radiusCard      = 20,
+            radiusInput     = 14,
             typeTitle       = 24,
             typeTitleLarge  = 28,
             typeTitleMedium = 20,
             typeBody        = 16,
             typeButton      = 16,
             typeCaption     = 12,
+            typeSectionTitle = 13,
+            cardBorder      = Color(0x1A000000),
+            inputBorder     = Color(0x1A123478),
         )
 
         val DarkDefaults = Defaults.copy(
-            primary        = Color(0xFF4D8BFF),
-            background     = Color(0xFF0D1424),
-            backgroundDeep = Color(0xFF111B2E),
-            card           = Color(0xFF192132),
-            textPrimary    = Color(0xFFE8EEFF),
-            textSecondary  = Color(0xFF8FA3C8),
-            border         = Color(0x33FFFFFF),
+            primary         = Color(0xFF4D8BFF),
+            background      = Color(0xFF0D1424),
+            backgroundDeep  = Color(0xFF111B2E),
+            card            = Color(0xFF192132),
+            textPrimary     = Color(0xFFE8EEFF),
+            textSecondary   = Color(0xFF8FA3C8),
+            border          = Color(0x33FFFFFF),
+            cardBorder      = Color(0x1AFFFFFF),
+            inputBorder     = Color(0x4DFFFFFF),
         )
     }
 }
@@ -111,33 +122,37 @@ object DSTokenStore {
     private fun parseTokens(root: JSONObject): DesignTokens {
         val base = if (isDarkMode) DesignTokens.DarkDefaults else DesignTokens.Defaults
         return base.copy(
-            primary         = pickColor(root, base.primary,        "color.mode.primary",         "theme.colors.primary", "color.button.primary", "colors.button.primary", "colors.primary", "color.primary"),
-            danger          = pickColor(root, base.danger,         "color.button.danger",         "colors.button.danger", "colors.danger", "color.danger", "theme.colors.danger"),
-            background      = pickColor(root, base.background,     "color.mode.background",       "colors.background.light", "color.background.light", "colors.background", "color.background"),
-            backgroundDeep  = pickColor(root, base.backgroundDeep, "color.mode.background_deep",  "colors.background.dark", "color.background.dark", "colors.background_deep"),
-            card            = pickColor(root, base.card,           "color.mode.card",             "color.background.surface", "colors.background.surface", "colors.card", "color.card"),
-            inputBackground = pickColor(root, base.inputBackground,"colors.input_background",     "color.input_background", "colors.inputBackground", "color.inputBackground"),
-            textPrimary     = pickColor(root, base.textPrimary,    "color.mode.text_primary",     "colors.text_primary", "color.text_primary", "colors.textPrimary", "color.textPrimary"),
-            textSecondary   = pickColor(root, base.textSecondary,  "color.mode.text_secondary",   "colors.text_secondary", "color.text_secondary", "colors.textSecondary", "color.textSecondary"),
-            border          = pickColor(root, base.border,         "color.mode.border",           "color.border.default", "colors.border.default", "colors.border", "color.border"),
-            success         = pickColor(root, base.success,        "color.status.success",        "colors.status.success"),
-            warning         = pickColor(root, base.warning,        "color.status.warning",        "colors.status.warning"),
-            info            = pickColor(root, base.info,           "color.status.info",           "colors.status.info"),
-            quietAccent     = pickColor(root, base.quietAccent,    "color.status.quiet",          "colors.status.quiet"),
-            spacingXS       = pickInt(root, base.spacingXS,        "spacing.xs"),
-            spacingSM       = pickInt(root, base.spacingSM,        "spacing.sm"),
-            spacingMD       = pickInt(root, base.spacingMD,        "spacing.md"),
-            spacingLG       = pickInt(root, base.spacingLG,        "spacing.lg"),
-            spacingXL       = pickInt(root, base.spacingXL,        "spacing.xl"),
-            radiusButton    = pickInt(root, base.radiusButton,     "radius.button"),
-            radiusCard      = pickInt(root, base.radiusCard,       "radius.card"),
-            radiusInput     = pickInt(root, base.radiusInput,      "radius.input"),
-            typeTitle       = pickInt(root, base.typeTitle,        "typography.title.size"),
-            typeTitleLarge  = pickInt(root, base.typeTitleLarge,   "typography.title_large.size"),
-            typeTitleMedium = pickInt(root, base.typeTitleMedium,  "typography.title_medium.size"),
-            typeBody        = pickInt(root, base.typeBody,         "typography.body.size"),
-            typeButton      = pickInt(root, base.typeButton,       "typography.button.size"),
-            typeCaption     = pickInt(root, base.typeCaption,      "typography.caption.size"),
+            primary          = pickColor(root, base.primary,          "color.mode.primary",          "theme.colors.primary", "color.button.primary", "colors.button.primary", "colors.primary", "color.primary"),
+            danger           = pickColor(root, base.danger,           "color.button.danger",          "colors.button.danger", "colors.danger", "color.danger", "theme.colors.danger"),
+            background       = pickColor(root, base.background,       "color.mode.background",        "colors.background.light", "color.background.light", "colors.background", "color.background"),
+            backgroundDeep   = pickColor(root, base.backgroundDeep,   "color.mode.background_deep",   "colors.background.dark", "color.background.dark", "colors.background_deep"),
+            card             = pickColor(root, base.card,             "color.mode.card",              "color.background.surface", "colors.background.surface", "colors.card", "color.card"),
+            inputBackground  = pickColor(root, base.inputBackground,  "colors.input_background",      "color.input_background", "colors.inputBackground", "color.inputBackground"),
+            textPrimary      = pickColor(root, base.textPrimary,      "color.mode.text_primary",      "colors.text_primary", "color.text_primary", "colors.textPrimary", "color.textPrimary"),
+            textSecondary    = pickColor(root, base.textSecondary,    "color.mode.text_secondary",    "colors.text_secondary", "color.text_secondary", "colors.textSecondary", "color.textSecondary"),
+            border           = pickColor(root, base.border,           "color.mode.border",            "color.border.default", "colors.border.default", "colors.border", "color.border"),
+            success          = pickColor(root, base.success,          "color.status.success",         "colors.status.success"),
+            warning          = pickColor(root, base.warning,          "color.status.warning",         "colors.status.warning"),
+            info             = pickColor(root, base.info,             "color.status.info",            "colors.status.info"),
+            quietAccent      = pickColor(root, base.quietAccent,      "color.status.quiet",           "colors.status.quiet"),
+            cardBorder       = pickColor(root, base.cardBorder,       "color.mode.card_border",       "colors.card_border"),
+            inputBorder      = pickColor(root, base.inputBorder,      "color.mode.input_border",      "colors.input_border"),
+            spacingXS        = pickInt(root, base.spacingXS,          "spacing.xs"),
+            spacingSM        = pickInt(root, base.spacingSM,          "spacing.sm"),
+            spacingMD        = pickInt(root, base.spacingMD,          "spacing.md"),
+            spacingLG        = pickInt(root, base.spacingLG,          "spacing.lg"),
+            spacingXL        = pickInt(root, base.spacingXL,          "spacing.xl"),
+            spacingXXL       = pickInt(root, base.spacingXXL,         "spacing.xxl"),
+            radiusButton     = pickInt(root, base.radiusButton,       "radius.button"),
+            radiusCard       = pickInt(root, base.radiusCard,         "radius.card"),
+            radiusInput      = pickInt(root, base.radiusInput,        "radius.input"),
+            typeTitle        = pickInt(root, base.typeTitle,          "typography.title.size"),
+            typeTitleLarge   = pickInt(root, base.typeTitleLarge,     "typography.title_large.size"),
+            typeTitleMedium  = pickInt(root, base.typeTitleMedium,    "typography.title_medium.size"),
+            typeBody         = pickInt(root, base.typeBody,           "typography.body.size"),
+            typeButton       = pickInt(root, base.typeButton,         "typography.button.size"),
+            typeCaption      = pickInt(root, base.typeCaption,        "typography.caption.size"),
+            typeSectionTitle = pickInt(root, base.typeSectionTitle,   "typography.section_title.size"),
         )
     }
 
@@ -234,7 +249,9 @@ object DSColor {
     val Background:      Color get() = DSTokenStore.tokens().background
     val BackgroundDeep:  Color get() = DSTokenStore.tokens().backgroundDeep
     val Card:            Color get() = DSTokenStore.tokens().card
+    val CardBorder:      Color get() = DSTokenStore.tokens().cardBorder
     val InputBackground: Color get() = DSTokenStore.tokens().inputBackground
+    val InputBorder:     Color get() = DSTokenStore.tokens().inputBorder
     val TextPrimary:     Color get() = DSTokenStore.tokens().textPrimary
     val TextSecondary:   Color get() = DSTokenStore.tokens().textSecondary
     val Border:          Color get() = DSTokenStore.tokens().border
@@ -245,11 +262,12 @@ object DSColor {
 }
 
 object DSSpacing {
-    val XS get() = DSTokenStore.tokens().spacingXS.dp
-    val SM get() = DSTokenStore.tokens().spacingSM.dp
-    val MD get() = DSTokenStore.tokens().spacingMD.dp
-    val LG get() = DSTokenStore.tokens().spacingLG.dp
-    val XL get() = DSTokenStore.tokens().spacingXL.dp
+    val XS  get() = DSTokenStore.tokens().spacingXS.dp
+    val SM  get() = DSTokenStore.tokens().spacingSM.dp
+    val MD  get() = DSTokenStore.tokens().spacingMD.dp
+    val LG  get() = DSTokenStore.tokens().spacingLG.dp
+    val XL  get() = DSTokenStore.tokens().spacingXL.dp
+    val XXL get() = DSTokenStore.tokens().spacingXXL.dp
 }
 
 object DSRadius {
@@ -259,10 +277,11 @@ object DSRadius {
 }
 
 object DSTypography {
-    val TitleLarge  get() = DSTokenStore.tokens().typeTitleLarge.sp
-    val TitleMedium get() = DSTokenStore.tokens().typeTitleMedium.sp
-    val Title       get() = DSTokenStore.tokens().typeTitle.sp
-    val Body        get() = DSTokenStore.tokens().typeBody.sp
-    val Button      get() = DSTokenStore.tokens().typeButton.sp
-    val Caption     get() = DSTokenStore.tokens().typeCaption.sp
+    val TitleLarge   get() = DSTokenStore.tokens().typeTitleLarge.sp
+    val TitleMedium  get() = DSTokenStore.tokens().typeTitleMedium.sp
+    val Title        get() = DSTokenStore.tokens().typeTitle.sp
+    val Body         get() = DSTokenStore.tokens().typeBody.sp
+    val Button       get() = DSTokenStore.tokens().typeButton.sp
+    val Caption      get() = DSTokenStore.tokens().typeCaption.sp
+    val SectionTitle get() = DSTokenStore.tokens().typeSectionTitle.sp
 }

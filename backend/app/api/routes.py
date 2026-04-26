@@ -21,7 +21,7 @@ from threading import Lock
 from types import SimpleNamespace
 from typing import Optional, cast
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Form, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi import HTTPException, status
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse, JSONResponse
 
@@ -296,6 +296,11 @@ def _access_codes(req: Request) -> AccessCodeService:
     return req.app.state.access_code_service  # type: ignore[attr-defined]
 
 
+def _settings_store(req: Request):
+    from app.services.tenant_settings_store import TenantSettingsStore
+    return _tenant(req).settings_store  # type: ignore[attr-defined]
+
+
 def _session_user_id(request: Request) -> Optional[int]:
     value = request.session.get("admin_user_id")
     return int(value) if isinstance(value, int) or isinstance(value, str) and str(value).isdigit() else None
@@ -417,6 +422,35 @@ def _school_theme(school) -> dict[str, str]:
         "sidebar_start": getattr(school, "sidebar_start", None) or "",
         "sidebar_end": getattr(school, "sidebar_end", None) or "",
     }
+
+
+async def _resolve_effective_branding(school, school_registry: "SchoolRegistry") -> dict:
+    """
+    Cascade: school colors/logo → district colors/logo → empty (defaults apply in CSS).
+    Returns a dict with keys: accent, accent_strong, sidebar_start, sidebar_end, logo_url.
+    """
+    school_theme = _school_theme(school)
+    school_logo = getattr(school, "logo_path", None) or None
+
+    # If the school has any color set, it wins completely; no cascade needed.
+    if any(v for v in school_theme.values()):
+        return {**school_theme, "logo_url": school_logo}
+
+    district_id = getattr(school, "district_id", None)
+    if district_id is not None:
+        district = await school_registry.get_district(int(district_id))
+        if district is not None:
+            district_theme = {
+                "accent":        getattr(district, "accent", None) or "",
+                "accent_strong": getattr(district, "accent_strong", None) or "",
+                "sidebar_start": getattr(district, "sidebar_start", None) or "",
+                "sidebar_end":   getattr(district, "sidebar_end", None) or "",
+            }
+            district_logo = getattr(district, "logo_path", None) or None
+            if any(v for v in district_theme.values()) or district_logo:
+                return {**district_theme, "logo_url": school_logo or district_logo}
+
+    return {**school_theme, "logo_url": school_logo}
 
 
 def _tenant(req: Request):
@@ -1341,6 +1375,39 @@ async def list_schools(request: Request) -> SchoolsCatalogResponse:
     )
 
 
+@router.get("/{slug}/branding", include_in_schema=False)
+async def get_school_branding(slug: str, request: Request) -> JSONResponse:
+    """
+    Public endpoint — no auth required. Returns effective branding tokens for a school
+    (cascading district → school → defaults). Mobile apps call this on login to apply
+    DSBranding.apply(primary, accent) and display the school logo.
+    """
+    from app.services.tenant_manager import TenantManager
+    tenant_manager: TenantManager = request.app.state.tenant_manager  # type: ignore[attr-defined]
+    school = tenant_manager.school_for_slug(slug)
+    if school is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="School not found")
+
+    branding = await _resolve_effective_branding(school, _schools(request))
+    base_url = str(getattr(request.app.state.settings, "BASE_URL", "") or "").rstrip("/")
+    logo_url = branding.get("logo_url")
+    if logo_url and not logo_url.startswith("http") and base_url:
+        logo_url = base_url + logo_url
+
+    return JSONResponse({
+        "slug": school.slug,
+        "name": school.name,
+        "accent": branding.get("accent") or "#1b5fe4",
+        "accent_strong": branding.get("accent_strong") or "#2f84ff",
+        "sidebar_start": branding.get("sidebar_start") or "#092054",
+        "sidebar_end": branding.get("sidebar_end") or "#071536",
+        "logo_url": logo_url,
+        "has_custom_branding": bool(
+            branding.get("accent") or branding.get("logo_url")
+        ),
+    })
+
+
 @router.get("/config/labels")
 async def config_labels(_: None = Depends(require_api_key)) -> dict[str, str]:
     return FEATURE_LABELS
@@ -1820,11 +1887,18 @@ async def admin_dashboard(
     _ws_user_id = int(getattr(request.state.admin_user, "id", 0) or 0)
     _ws_home_tenant_slug = str(request.state.school.slug)
 
+    _settings_history: list = []
+    if selected_section == "settings":
+        _settings_history = await _settings_store(request).get_history(limit=50)
+
     _admin_role = str(getattr(request.state.admin_user, "role", "")).strip().lower()
     _access_code_records: list = []
     if can_generate_codes(_admin_role) and selected_section == "access-codes":
         _access_code_records = await _access_codes(request).list_codes(str(request.state.school.slug), limit=200)
     _base_domain = str(getattr(request.app.state.settings, "BASE_DOMAIN", "") or "app.bluebirdalerts.com").strip()
+    _effective_branding = await _resolve_effective_branding(request.state.school, _schools(request))
+    _effective_theme = {k: v for k, v in _effective_branding.items() if k != "logo_url"}
+    _effective_logo_url = _effective_branding.get("logo_url") or None
 
     html = render_admin_page(
         school_name=request.state.school.name,
@@ -1833,7 +1907,7 @@ async def admin_dashboard(
         selected_tenant_slug=str(getattr(effective_school, "slug", request.state.school.slug)),
         selected_tenant_name=str(getattr(effective_school, "name", request.state.school.name)),
         tenant_options=[{"id": str(item.id), "slug": str(item.slug), "name": str(item.name)} for item in available_schools],
-        theme=_school_theme(request.state.school),
+        theme=_effective_theme,
         current_user=request.state.admin_user,  # type: ignore[attr-defined]
         alerts=alerts,
         devices=devices,
@@ -1883,8 +1957,263 @@ async def admin_dashboard(
         home_tenant_slug=_ws_home_tenant_slug,
         access_code_records=_access_code_records,
         base_domain=_base_domain,
+        settings_history=_settings_history,
+        school_logo_url=_effective_logo_url,
     )
     return HTMLResponse(content=html)
+
+
+@router.post("/admin/settings/name", include_in_schema=False)
+async def admin_settings_update_name(
+    request: Request,
+    name: str = Form(...),
+) -> RedirectResponse:
+    await _require_dashboard_admin(request)
+    name = name.strip()
+    if not name:
+        _set_flash(request, error="School name cannot be empty.")
+        return RedirectResponse(url=_school_url(request, "/admin?section=settings"), status_code=status.HTTP_303_SEE_OTHER)
+
+    school = request.state.school
+    old_name = str(school.name)
+    if name == old_name:
+        return RedirectResponse(url=_school_url(request, "/admin?section=settings"), status_code=status.HTTP_303_SEE_OTHER)
+
+    updated = await _schools(request).update_name(slug=str(school.slug), name=name)
+    if updated is None:
+        _set_flash(request, error="School not found.")
+        return RedirectResponse(url=_school_url(request, "/admin?section=settings"), status_code=status.HTTP_303_SEE_OTHER)
+
+    actor_label = str(getattr(request.state.admin_user, "name", "") or "")
+    await _settings_store(request).record_change(
+        field="name",
+        old_value={"name": old_name},
+        new_value={"name": name},
+        changed_by_label=actor_label or None,
+    )
+    await _audit_log_svc(request).log_event(
+        tenant_slug=str(school.slug),
+        event_type="settings.name_updated",
+        actor_label=actor_label or None,
+        metadata={"old_name": old_name, "new_name": name},
+    )
+    _set_flash(request, message=f"School name updated to \"{name}\".")
+    return RedirectResponse(url=_school_url(request, "/admin?section=settings"), status_code=status.HTTP_303_SEE_OTHER)
+
+
+_LOGO_MAX_BYTES = 2 * 1024 * 1024  # 2 MB
+_LOGO_ALLOWED_TYPES = {"image/png", "image/jpeg", "image/svg+xml", "image/webp"}
+_LOGO_EXTENSIONS = {"image/png": ".png", "image/jpeg": ".jpg", "image/svg+xml": ".svg", "image/webp": ".webp"}
+
+
+@router.post("/admin/settings/logo", include_in_schema=False)
+async def admin_settings_upload_logo(
+    request: Request,
+    logo: UploadFile = File(...),
+) -> RedirectResponse:
+    await _require_dashboard_admin(request)
+
+    content_type = str(logo.content_type or "").lower().split(";")[0].strip()
+    if content_type not in _LOGO_ALLOWED_TYPES:
+        _set_flash(request, error="Unsupported file type. Use PNG, JPG, SVG, or WebP.")
+        return RedirectResponse(url=_school_url(request, "/admin?section=settings"), status_code=status.HTTP_303_SEE_OTHER)
+
+    data = await logo.read(_LOGO_MAX_BYTES + 1)
+    if len(data) > _LOGO_MAX_BYTES:
+        _set_flash(request, error="Logo file exceeds the 2 MB size limit.")
+        return RedirectResponse(url=_school_url(request, "/admin?section=settings"), status_code=status.HTTP_303_SEE_OTHER)
+
+    school = request.state.school
+    ext = _LOGO_EXTENSIONS.get(content_type, ".png")
+    logos_dir = os.path.join(os.path.dirname(__file__), "..", "static", "logos")
+    os.makedirs(logos_dir, exist_ok=True)
+    logo_filename = f"{school.slug}{ext}"
+    logo_file_path = os.path.join(logos_dir, logo_filename)
+    with open(logo_file_path, "wb") as f:
+        f.write(data)
+
+    logo_url = f"/static/logos/{logo_filename}"
+    old_logo = getattr(school, "logo_path", None)
+    updated = await _schools(request).update_logo_path(slug=str(school.slug), logo_path=logo_url)
+    if updated is None:
+        _set_flash(request, error="School not found.")
+        return RedirectResponse(url=_school_url(request, "/admin?section=settings"), status_code=status.HTTP_303_SEE_OTHER)
+
+    actor_label = str(getattr(request.state.admin_user, "name", "") or "")
+    await _settings_store(request).record_change(
+        field="logo",
+        old_value={"logo_path": old_logo or ""},
+        new_value={"logo_path": logo_url},
+        changed_by_label=actor_label or None,
+    )
+    await _audit_log_svc(request).log_event(
+        tenant_slug=str(school.slug),
+        event_type="settings.logo_uploaded",
+        actor_label=actor_label or None,
+        metadata={"logo_url": logo_url},
+    )
+    _set_flash(request, message="Logo uploaded successfully.")
+    return RedirectResponse(url=_school_url(request, "/admin?section=settings"), status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.get("/admin/settings/logo/remove", include_in_schema=False)
+async def admin_settings_remove_logo(request: Request) -> RedirectResponse:
+    await _require_dashboard_admin(request)
+    school = request.state.school
+    old_logo = getattr(school, "logo_path", None)
+    await _schools(request).update_logo_path(slug=str(school.slug), logo_path=None)
+
+    actor_label = str(getattr(request.state.admin_user, "name", "") or "")
+    await _settings_store(request).record_change(
+        field="logo",
+        old_value={"logo_path": old_logo or ""},
+        new_value={"logo_path": ""},
+        changed_by_label=actor_label or None,
+    )
+    await _audit_log_svc(request).log_event(
+        tenant_slug=str(school.slug),
+        event_type="settings.logo_removed",
+        actor_label=actor_label or None,
+        metadata={"old_logo_path": old_logo or ""},
+    )
+    _set_flash(request, message="Logo removed.")
+    return RedirectResponse(url=_school_url(request, "/admin?section=settings"), status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.post("/admin/settings/colors", include_in_schema=False)
+async def admin_settings_update_colors(
+    request: Request,
+    accent: str = Form(default=""),
+    accent_strong: str = Form(default=""),
+    sidebar_start: str = Form(default=""),
+    sidebar_end: str = Form(default=""),
+) -> RedirectResponse:
+    await _require_dashboard_admin(request)
+
+    school = request.state.school
+    old_theme = _school_theme(school)
+
+    new_accent = accent.strip() or None
+    new_accent_strong = accent_strong.strip() or None
+    new_sidebar_start = sidebar_start.strip() or None
+    new_sidebar_end = sidebar_end.strip() or None
+
+    updated = await _schools(request).update_theme(
+        slug=str(school.slug),
+        accent=new_accent,
+        accent_strong=new_accent_strong,
+        sidebar_start=new_sidebar_start,
+        sidebar_end=new_sidebar_end,
+    )
+    if updated is None:
+        _set_flash(request, error="School not found.")
+        return RedirectResponse(url=_school_url(request, "/admin?section=settings"), status_code=status.HTTP_303_SEE_OTHER)
+
+    actor_label = str(getattr(request.state.admin_user, "name", "") or "")
+    await _settings_store(request).record_change(
+        field="colors",
+        old_value=old_theme,
+        new_value={
+            "accent": new_accent or "",
+            "accent_strong": new_accent_strong or "",
+            "sidebar_start": new_sidebar_start or "",
+            "sidebar_end": new_sidebar_end or "",
+        },
+        changed_by_label=actor_label or None,
+    )
+    await _audit_log_svc(request).log_event(
+        tenant_slug=str(school.slug),
+        event_type="settings.colors_updated",
+        actor_label=actor_label or None,
+        metadata={"accent": new_accent, "accent_strong": new_accent_strong,
+                  "sidebar_start": new_sidebar_start, "sidebar_end": new_sidebar_end},
+    )
+    _set_flash(request, message="Theme colors updated.")
+    return RedirectResponse(url=_school_url(request, "/admin?section=settings"), status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.post("/admin/settings/undo/{change_id}", include_in_schema=False)
+async def admin_settings_undo(
+    request: Request,
+    change_id: int,
+) -> RedirectResponse:
+    await _require_dashboard_admin(request)
+
+    store = _settings_store(request)
+    rec = await store.get_by_id(change_id)
+    if rec is None or rec.is_undone:
+        _set_flash(request, error="Change not found or already undone.")
+        return RedirectResponse(url=_school_url(request, "/admin?section=settings"), status_code=status.HTTP_303_SEE_OTHER)
+
+    school = request.state.school
+    actor_label = str(getattr(request.state.admin_user, "name", "") or "")
+
+    if rec.field == "name":
+        restored_name = str(rec.old_value.get("name", "") or "")
+        if restored_name:
+            await _schools(request).update_name(slug=str(school.slug), name=restored_name)
+    elif rec.field == "colors":
+        await _schools(request).update_theme(
+            slug=str(school.slug),
+            accent=str(rec.old_value.get("accent", "") or "") or None,
+            accent_strong=str(rec.old_value.get("accent_strong", "") or "") or None,
+            sidebar_start=str(rec.old_value.get("sidebar_start", "") or "") or None,
+            sidebar_end=str(rec.old_value.get("sidebar_end", "") or "") or None,
+        )
+    elif rec.field == "logo":
+        restored_logo = str(rec.old_value.get("logo_path", "") or "") or None
+        await _schools(request).update_logo_path(slug=str(school.slug), logo_path=restored_logo)
+
+    await store.mark_undone(change_id)
+    await _audit_log_svc(request).log_event(
+        tenant_slug=str(school.slug),
+        event_type="settings.change_undone",
+        actor_label=actor_label or None,
+        metadata={"change_id": change_id, "field": rec.field},
+    )
+    _set_flash(request, message=f"Change to \"{rec.field}\" has been undone.")
+    return RedirectResponse(url=_school_url(request, "/admin?section=settings"), status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.post("/admin/district/schools/reorder", include_in_schema=False)
+async def admin_district_reorder_schools(request: Request) -> JSONResponse:
+    """Reorder schools within a district. Accepts {ordered_slugs: [...]}. Same-district only."""
+    if _session_user_id(request) is None and not _super_admin_school_access_here(request):
+        return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    _admin_role = str(getattr(request.state.admin_user, "role", "")).strip().lower()
+    if _admin_role not in {"district_admin", "super_admin"}:
+        return JSONResponse({"error": "Forbidden"}, status_code=403)
+
+    school = request.state.school
+    district_id = getattr(school, "district_id", None)
+    if district_id is None:
+        return JSONResponse({"error": "Current school has no district"}, status_code=400)
+
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+
+    ordered_slugs = [str(s).strip().lower() for s in body.get("ordered_slugs", []) if str(s).strip()]
+    if not ordered_slugs:
+        return JSONResponse({"error": "ordered_slugs must be a non-empty list"}, status_code=400)
+
+    try:
+        await _schools(request).reorder_schools_in_district(
+            district_id=int(district_id),
+            ordered_slugs=ordered_slugs,
+        )
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+
+    actor_label = str(getattr(request.state.admin_user, "name", "") or "")
+    await _audit_log_svc(request).log_event(
+        tenant_slug=str(school.slug),
+        event_type="district.schools_reordered",
+        actor_label=actor_label or None,
+        metadata={"ordered_slugs": ordered_slugs},
+    )
+    return JSONResponse({"ok": True})
 
 
 @router.get("/admin/reports/{alert_id}", include_in_schema=False)

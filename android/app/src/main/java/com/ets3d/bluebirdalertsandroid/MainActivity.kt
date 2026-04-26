@@ -1540,12 +1540,31 @@ private fun LoginScreen(onDone: () -> Unit) {
     var error by remember { mutableStateOf<String?>(null) }
     var showOnboarding by remember { mutableStateOf(false) }
     val scrollState = rememberScrollState()
+    var animateIntro by remember { mutableStateOf(false) }
+    val introAlpha by animateFloatAsState(
+        targetValue = if (animateIntro) 1f else 0f,
+        animationSpec = tween(durationMillis = 280, easing = FastOutSlowInEasing),
+        label = "login_intro_alpha",
+    )
+    val hapticFeedback = LocalHapticFeedback.current
+    val errorShake = remember { Animatable(0f) }
+    LaunchedEffect(error) {
+        if (error != null) {
+            repeat(3) {
+                errorShake.animateTo(8f, tween(50))
+                errorShake.animateTo(-8f, tween(50))
+            }
+            errorShake.animateTo(0f, tween(50))
+        }
+    }
 
     val submitLogin: () -> Unit = {
         val normalizedUsername = username.trim()
         if (normalizedUsername.isBlank() || password.isBlank()) {
+            hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
             error = "Enter your username and password."
         } else if (schoolOptions.isNotEmpty() && selectedSchoolSlug.isBlank()) {
+            hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
             error = "Select your school."
         } else {
             val normalizedServerUrl = normalizeServerUrl(serverUrl)
@@ -1584,6 +1603,8 @@ private fun LoginScreen(onDone: () -> Unit) {
         }
     }
 
+    LaunchedEffect(Unit) { animateIntro = true }
+
     LaunchedEffect(Unit) {
         val client = BackendClient(BuildConfig.BACKEND_BASE_URL, BuildConfig.BACKEND_API_KEY)
         runCatching { client.listSchools() }
@@ -1620,7 +1641,11 @@ private fun LoginScreen(onDone: () -> Unit) {
                 .verticalScroll(scrollState)
                 .imePadding()
                 .navigationBarsPadding()
-                .padding(horizontal = 24.dp, vertical = 32.dp),
+                .padding(horizontal = 24.dp, vertical = 32.dp)
+                .graphicsLayer {
+                    alpha = introAlpha
+                    translationY = 5f * density * (1f - introAlpha)
+                },
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(20.dp),
         ) {
@@ -1635,14 +1660,14 @@ private fun LoginScreen(onDone: () -> Unit) {
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.spacedBy(20.dp),
                 ) {
-                    BlueBirdLogo(modifier = Modifier.size(116.dp))
+                    BlueBirdLogo(modifier = Modifier.size(84.dp))
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
                         Text(
                             "BlueBird Alerts",
-                            fontSize = 28.sp,
+                            fontSize = 32.sp,
                             fontWeight = FontWeight.Bold,
                             color = TextPri,
                         )
@@ -1683,19 +1708,19 @@ private fun LoginScreen(onDone: () -> Unit) {
                         value = selectedSchoolName,
                         onValueChange = {},
                         readOnly = true,
-                        label = { Text("School", color = TextMuted) },
-                        placeholder = { Text("Select your school", color = TextMuted) },
+                        label = { Text("School") },
+                        placeholder = { Text("Select your school", color = Color.White.copy(alpha = 0.4f)) },
                         trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = schoolMenuExpanded) },
                         colors = OutlinedTextFieldDefaults.colors(
                             focusedBorderColor = BluePrimary,
-                            unfocusedBorderColor = DSColor.Border.copy(alpha = 0.45f),
+                            unfocusedBorderColor = DSColor.InputBorder,
                             focusedLabelColor = BluePrimary,
-                            unfocusedLabelColor = TextMuted,
-                            focusedTextColor = TextPri,
-                            unfocusedTextColor = TextPri,
+                            unfocusedLabelColor = Color.White.copy(alpha = 0.6f),
+                            focusedTextColor = Color.White,
+                            unfocusedTextColor = Color.White,
                             cursorColor = BluePrimary,
-                            focusedContainerColor = SurfaceMain,
-                            unfocusedContainerColor = SurfaceMain,
+                            focusedContainerColor = DSColor.InputBackground,
+                            unfocusedContainerColor = DSColor.InputBackground,
                         ),
                         modifier = Modifier
                             .menuAnchor(MenuAnchorType.PrimaryNotEditable)
@@ -1732,19 +1757,19 @@ private fun LoginScreen(onDone: () -> Unit) {
                         selectedSchoolSlug = extractSchoolSlug(it)
                         error = null
                     },
-                    label = { Text("School code or URL", color = TextMuted) },
-                    placeholder = { Text("nn", color = TextMuted) },
+                    label = { Text("School code or URL") },
+                    placeholder = { Text("nn", color = Color.White.copy(alpha = 0.4f)) },
                     singleLine = true,
                     colors = OutlinedTextFieldDefaults.colors(
                         focusedBorderColor = BluePrimary,
-                        unfocusedBorderColor = DSColor.Border.copy(alpha = 0.45f),
+                        unfocusedBorderColor = DSColor.InputBorder,
                         focusedLabelColor = BluePrimary,
-                        unfocusedLabelColor = TextMuted,
-                        focusedTextColor = TextPri,
-                        unfocusedTextColor = TextPri,
+                        unfocusedLabelColor = Color.White.copy(alpha = 0.6f),
+                        focusedTextColor = Color.White,
+                        unfocusedTextColor = Color.White,
                         cursorColor = BluePrimary,
-                        focusedContainerColor = SurfaceMain,
-                        unfocusedContainerColor = SurfaceMain,
+                        focusedContainerColor = DSColor.InputBackground,
+                        unfocusedContainerColor = DSColor.InputBackground,
                     ),
                     modifier = Modifier
                         .fillMaxWidth()
@@ -1758,20 +1783,20 @@ private fun LoginScreen(onDone: () -> Unit) {
                     username = it
                     error = null
                 },
-                label = { Text("Username", color = TextMuted) },
-                placeholder = { Text("Enter your BlueBird username", color = TextMuted) },
+                label = { Text("Username") },
+                placeholder = { Text("Enter your BlueBird username", color = Color.White.copy(alpha = 0.4f)) },
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
                 colors = OutlinedTextFieldDefaults.colors(
                     focusedBorderColor = BluePrimary,
-                    unfocusedBorderColor = DSColor.Border.copy(alpha = 0.45f),
+                    unfocusedBorderColor = DSColor.InputBorder,
                     focusedLabelColor = BluePrimary,
-                    unfocusedLabelColor = TextMuted,
-                    focusedTextColor = TextPri,
-                    unfocusedTextColor = TextPri,
+                    unfocusedLabelColor = Color.White.copy(alpha = 0.6f),
+                    focusedTextColor = Color.White,
+                    unfocusedTextColor = Color.White,
                     cursorColor = BluePrimary,
-                    focusedContainerColor = SurfaceMain,
-                    unfocusedContainerColor = SurfaceMain,
+                    focusedContainerColor = DSColor.InputBackground,
+                    unfocusedContainerColor = DSColor.InputBackground,
                 ),
                 modifier = Modifier
                     .fillMaxWidth()
@@ -1784,8 +1809,8 @@ private fun LoginScreen(onDone: () -> Unit) {
                     password = it
                     error = null
                 },
-                label = { Text("Password", color = TextMuted) },
-                placeholder = { Text("Enter your password", color = TextMuted) },
+                label = { Text("Password") },
+                placeholder = { Text("Enter your password", color = Color.White.copy(alpha = 0.4f)) },
                 singleLine = true,
                 visualTransformation = if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done),
@@ -1797,14 +1822,14 @@ private fun LoginScreen(onDone: () -> Unit) {
                 },
                 colors = OutlinedTextFieldDefaults.colors(
                     focusedBorderColor = BluePrimary,
-                    unfocusedBorderColor = DSColor.Border.copy(alpha = 0.45f),
+                    unfocusedBorderColor = DSColor.InputBorder,
                     focusedLabelColor = BluePrimary,
-                    unfocusedLabelColor = TextMuted,
-                    focusedTextColor = TextPri,
-                    unfocusedTextColor = TextPri,
+                    unfocusedLabelColor = Color.White.copy(alpha = 0.6f),
+                    focusedTextColor = Color.White,
+                    unfocusedTextColor = Color.White,
                     cursorColor = BluePrimary,
-                    focusedContainerColor = SurfaceMain,
-                    unfocusedContainerColor = SurfaceMain,
+                    focusedContainerColor = DSColor.InputBackground,
+                    unfocusedContainerColor = DSColor.InputBackground,
                 ),
                 modifier = Modifier
                     .fillMaxWidth()
@@ -1818,7 +1843,9 @@ private fun LoginScreen(onDone: () -> Unit) {
                     fontSize = 13.sp,
                     fontWeight = FontWeight.Medium,
                     textAlign = TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .graphicsLayer { translationX = errorShake.value },
                 )
             }
 
@@ -1840,14 +1867,12 @@ private fun LoginScreen(onDone: () -> Unit) {
                 modifier = Modifier.fillMaxWidth(),
             )
 
-            PrimaryButton(
+            BBPrimaryButton(
                 text = if (isSubmitting) "Signing In…" else "Sign In",
                 onClick = submitLogin,
                 enabled = !isSubmitting && username.isNotBlank() && password.isNotBlank(),
                 isLoading = isSubmitting,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(56.dp),
+                modifier = Modifier.fillMaxWidth(),
             )
 
             TextButton(
@@ -2983,7 +3008,7 @@ private fun ActiveSafetyFeedCard(
         modifier = modifier,
         color = SurfaceMain,
         shape = RoundedCornerShape(20.dp),
-        shadowElevation = 4.dp,
+        shadowElevation = 8.dp,
     ) {
         Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Row(
@@ -2991,24 +3016,19 @@ private fun ActiveSafetyFeedCard(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text("Active Feed", color = TextPri, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                Text("Active Feed", color = TextPri, fontWeight = FontWeight.Bold, fontSize = DSTypography.Body)
                 TextButton(onClick = onRefresh, enabled = !isRefreshing) {
-                    Text(if (isRefreshing) "Refreshing…" else "Refresh", color = BluePrimary)
+                    Text(if (isRefreshing) "Refreshing…" else "Refresh", color = BluePrimary, fontSize = DSTypography.Caption)
                 }
             }
             if (alarm.isActive && canDeactivate) {
-                OutlinedButton(
+                DangerButton(
+                    text = if (isBusy) "Working…" else if (alarm.isTraining) "End Training Alert" else "Deactivate Alarm",
                     onClick = onDeactivateAlarm,
-                    modifier = Modifier.fillMaxWidth().height(52.dp),
-                    shape = RoundedCornerShape(14.dp),
                     enabled = !isBusy,
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = TextPri),
-                ) {
-                    Text(
-                        if (isBusy) "Working…" else if (alarm.isTraining) "End Training Alert" else "Deactivate Alarm",
-                        fontWeight = FontWeight.SemiBold,
-                    )
-                }
+                    isLoading = isBusy,
+                    modifier = Modifier.fillMaxWidth().height(52.dp),
+                )
             }
             TabRow(
                 selectedTabIndex = selectedTab,
@@ -3551,6 +3571,7 @@ private fun AlarmBanner(alarm: AlarmStatus, schoolName: String = "", modifier: M
         shape = RoundedCornerShape(24.dp),
         color = bg,
         tonalElevation = 4.dp,
+        shadowElevation = if (alarm.isActive) 12.dp else 6.dp,
     ) {
         Column(
             modifier = Modifier.padding(28.dp),
@@ -3882,6 +3903,7 @@ private fun SafetyActionGrid(
         shape = RoundedCornerShape(20.dp),
         color = SurfaceMain,
         tonalElevation = 2.dp,
+        shadowElevation = 8.dp,
     ) {
         Column(
             modifier = Modifier.padding(horizontal = 12.dp, vertical = 16.dp),
@@ -4101,69 +4123,44 @@ private fun QuietPeriodRequestOverlay(
         onDismissRequest = { if (!isBusy) onCancel() },
         properties = DialogProperties(usePlatformDefaultWidth = false),
     ) {
-        Surface(
-            shape = RoundedCornerShape(DSRadius.Card),
-            color = SurfaceMain,
-            tonalElevation = 8.dp,
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 24.dp),
-        ) {
-            Column(
-                modifier = Modifier.padding(24.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp),
+        BBModalCard {
+            Text(
+                "Request Quiet Period",
+                color = TextPri,
+                fontWeight = FontWeight.Bold,
+                fontSize = DSTypography.TitleMedium,
+            )
+            Text(
+                "Admins will be notified and can approve or deny your request.",
+                color = TextMuted,
+                fontSize = DSTypography.Caption,
+            )
+            BBTextField(
+                value = reason,
+                onValueChange = { reason = it },
+                label = "Reason (optional)",
+                minLines = 2,
+                maxLines = 4,
+                accentColor = QuietPurple,
+            )
+            if (!errorMsg.isNullOrBlank()) {
+                Text(errorMsg, color = AlarmRed, fontSize = DSTypography.Caption)
+            }
+            BBPrimaryButton(
+                text = "Submit Request",
+                onClick = {
+                    submitted = true
+                    onConfirm(reason.trim().ifBlank { null })
+                },
+                enabled = !isBusy,
+                isLoading = isBusy,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            TextButton(
+                onClick = { if (!isBusy) onCancel() },
+                modifier = Modifier.fillMaxWidth(),
             ) {
-                Text(
-                    "Request Quiet Period",
-                    color = TextPri,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 20.sp,
-                )
-                Text(
-                    "Admins will be notified and can approve or deny your request.",
-                    color = TextMuted,
-                    fontSize = 14.sp,
-                )
-                OutlinedTextField(
-                    value = reason,
-                    onValueChange = { reason = it },
-                    label = { Text("Reason (optional)") },
-                    minLines = 2,
-                    maxLines = 4,
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = QuietPurple,
-                        unfocusedBorderColor = DSColor.Border.copy(alpha = 0.45f),
-                        focusedTextColor = TextPri,
-                        unfocusedTextColor = TextPri,
-                        cursorColor = QuietPurple,
-                        focusedContainerColor = SurfaceSoft,
-                        unfocusedContainerColor = SurfaceSoft,
-                        focusedLabelColor = QuietPurple,
-                        unfocusedLabelColor = TextMuted,
-                    ),
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                if (!errorMsg.isNullOrBlank()) {
-                    Text(errorMsg, color = AlarmRed, fontSize = 13.sp)
-                }
-                PrimaryButton(
-                    text = "Submit Request",
-                    onClick = {
-                        submitted = true
-                        onConfirm(reason.trim().ifBlank { null })
-                    },
-                    enabled = !isBusy,
-                    isLoading = isBusy,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(52.dp),
-                )
-                TextButton(
-                    onClick = { if (!isBusy) onCancel() },
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Text("Cancel", color = TextMuted, fontWeight = FontWeight.SemiBold)
-                }
+                Text("Cancel", color = TextMuted, fontWeight = FontWeight.SemiBold)
             }
         }
     }
