@@ -640,6 +640,23 @@ async def _publish_alert_event(
     await _alert_hub(request).publish(effective_slug, payload)
 
 
+async def _publish_simple_event(
+    request: Request,
+    *,
+    event: str,
+    extra: Optional[dict[str, object]] = None,
+) -> None:
+    """Publish a lightweight non-alarm WebSocket event to the tenant channel."""
+    effective_slug = _tenant(request).slug
+    payload: dict[str, object] = {
+        "event": event,
+        "tenant_slug": effective_slug,
+    }
+    if extra:
+        payload.update(extra)
+    await _alert_hub(request).publish(effective_slug, payload)
+
+
 async def _platform_activity_feed(
     request: Request,
     *,
@@ -3653,9 +3670,15 @@ async def team_assist_action(
     if existing.status == "cancelled":
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Request help item is already cancelled")
 
-    # Admin response should immediately clear active request-help alarm state.
-    # We keep the action type in logs/notifications for audit visibility.
-    next_status = "resolved"
+    if existing.status == "resolved":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Request help item is already resolved")
+
+    if body.action in {"acknowledge", "responding"}:
+        next_status = "acknowledged"
+    elif body.action == "resolve":
+        next_status = "resolved"
+    else:
+        next_status = body.action  # "forward" keeps its own status label
     forward_to_user_id: Optional[int] = None
     forward_to_label: Optional[str] = None
     if body.action == "forward":
@@ -3701,6 +3724,15 @@ async def team_assist_action(
                 "forwarded_by_label": actor.name,
             },
         )
+
+    ws_event = "help_request_resolved" if updated.status == "resolved" else "help_request_acknowledged"
+    await _publish_simple_event(request, event=ws_event, extra={
+        "event_id": f"hra_{updated.id}_{updated.status}",
+        "team_assist_id": updated.id,
+        "status": updated.status,
+        "acted_by_label": actor.name,
+    })
+
     return _to_team_assist_summary(updated)
 
 
@@ -4073,6 +4105,11 @@ async def request_quiet_period(
         user_id=body.user_id,
         reason=body.reason,
     )
+    await _publish_simple_event(request, event="quiet_request_created", extra={
+        "request_id": record.id,
+        "user_id": record.user_id,
+        "event_id": f"qrc_{record.id}",
+    })
     return _to_quiet_period_summary(record)
 
 
@@ -4138,6 +4175,11 @@ async def approve_quiet_period_request_api(
         source_request_id=int(record.id),
         approved_by_user_id=admin_id,
     )
+    await _publish_simple_event(request, event="quiet_request_updated", extra={
+        "request_id": record.id,
+        "status": record.status,
+        "event_id": f"qru_{record.id}_approved",
+    })
     return _to_quiet_period_summary(record)
 
 
@@ -4162,6 +4204,11 @@ async def deny_quiet_period_request_api(
     if record is None or record.status != "denied":
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Quiet period request is not pending")
     await _deactivate_law_enforcement_quiet_state_for_user(request, user_id=int(record.user_id))
+    await _publish_simple_event(request, event="quiet_request_updated", extra={
+        "request_id": record.id,
+        "status": record.status,
+        "event_id": f"qru_{record.id}_denied",
+    })
     return _to_quiet_period_summary(record)
 
 
@@ -4240,6 +4287,11 @@ async def message_admin(
     created = next((item for item in messages if item.id == message_id), None)
     if created is None:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not load created admin message")
+    await _publish_simple_event(request, event="message_received", extra={
+        "message_id": created.id,
+        "direction": "user_to_admin",
+        "event_id": f"msg_{created.id}",
+    })
     return AdminMessageResponse(
         message_id=created.id,
         created_at=created.created_at,
@@ -4287,6 +4339,11 @@ async def admin_send_message(
             message=body.message,
             status="delivered",
         )
+    await _publish_simple_event(request, event="message_received", extra={
+        "direction": "admin_to_user",
+        "sent_count": len(recipients),
+        "event_id": f"msgb_{admin_id}_{int(time.time() * 1000)}",
+    })
     return AdminSendMessageResponse(
         sent_count=len(recipients),
         recipient_scope="all" if body.send_to_all else "single",

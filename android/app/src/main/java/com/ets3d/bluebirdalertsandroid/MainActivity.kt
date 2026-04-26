@@ -38,6 +38,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -611,9 +612,22 @@ class MainViewModel : ViewModel() {
     private var alarmWs: okhttp3.WebSocket? = null
     private var wsJob: Job? = null
     private val wsGeneration = AtomicInteger(0)
+    private var cachedUserId: Int? = null
+    private val processedEventIds = LinkedHashSet<String>(200)
+
+    private fun isDuplicateEvent(eventId: String): Boolean {
+        if (eventId.isBlank()) return false
+        synchronized(processedEventIds) {
+            if (processedEventIds.contains(eventId)) return true
+            processedEventIds.add(eventId)
+            if (processedEventIds.size > 200) processedEventIds.remove(processedEventIds.iterator().next())
+            return false
+        }
+    }
 
     fun init(ctx: Context) {
         if (client != null) return
+        cachedUserId = getUserId(ctx).toIntOrNull()
         val serverUrl = getServerUrl(ctx)
         val savedSlug = getSelectedTenantSlug(ctx)
         val savedName = getSelectedTenantName(ctx)
@@ -1223,6 +1237,11 @@ class MainViewModel : ViewModel() {
     private fun handleWsMessage(text: String) {
         val j = runCatching { JSONObject(text) }.getOrNull() ?: return
         val event = j.optString("event")
+        val eventId = j.optString("event_id").trim()
+        if (isDuplicateEvent(eventId)) {
+            Log.d("BluebirdWS", "WS dedup skip eventId=$eventId event=$event")
+            return
+        }
         val eventSlug = j.optString("tenant_slug").trim()
         val alarm = j.optJSONObject("alarm")
         val currentSlug = _state.value.selectedTenantSlug
@@ -1245,6 +1264,26 @@ class MainViewModel : ViewModel() {
                 AlarmAudioController.stop()
                 _state.update { s ->
                     s.copy(alarm = s.alarm.copy(isActive = false, message = null, isTraining = false, trainingLabel = null))
+                }
+            }
+            "quiet_request_created", "quiet_request_updated" -> {
+                val uid = cachedUserId ?: return
+                viewModelScope.launch(Dispatchers.IO) {
+                    runCatching { client!!.listAdminQuietPeriodRequests(adminUserId = uid) }
+                        .onSuccess { requests -> _state.update { it.copy(adminQuietPeriodRequests = requests) } }
+                }
+            }
+            "message_received" -> {
+                val uid = cachedUserId ?: return
+                viewModelScope.launch(Dispatchers.IO) {
+                    runCatching { client!!.messageInbox(userId = uid) }
+                        .onSuccess { inbox -> _state.update { it.copy(adminInbox = inbox.messages, unreadAdminMessages = inbox.unreadCount) } }
+                }
+            }
+            "help_request_acknowledged", "help_request_resolved" -> {
+                viewModelScope.launch(Dispatchers.IO) {
+                    runCatching { client!!.activeRequestHelp() }
+                        .onSuccess { result -> _state.update { it.copy(activeTeamAssists = result.teamAssists) } }
                 }
             }
         }
@@ -1333,6 +1372,9 @@ class MainActivity : FragmentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         applyAlarmLaunchFlags(intent)
+        DSTokenStore.isDarkMode = (resources.configuration.uiMode and
+            android.content.res.Configuration.UI_MODE_NIGHT_MASK) ==
+            android.content.res.Configuration.UI_MODE_NIGHT_YES
         DSTokenStore.loadIfNeeded(this)
         ensureNotificationChannel(this)
         askNotificationPermission()
@@ -1373,16 +1415,30 @@ class MainActivity : FragmentActivity() {
 // ── Theme ──────────────────────────────────────────────────────────────────────
 @Composable
 private fun BlueBirdTheme(content: @Composable () -> Unit) {
+    val darkTheme = isSystemInDarkTheme()
+    val colorScheme = if (darkTheme) {
+        darkColorScheme(
+            primary      = DSColor.Primary,
+            background   = DSColor.Background,
+            surface      = DSColor.Card,
+            onPrimary    = Color.White,
+            onBackground = DSColor.TextPrimary,
+            onSurface    = DSColor.TextPrimary,
+            error        = DSColor.Danger,
+        )
+    } else {
+        lightColorScheme(
+            primary      = DSColor.Primary,
+            background   = DSColor.Background,
+            surface      = DSColor.Card,
+            onPrimary    = Color.White,
+            onBackground = DSColor.TextPrimary,
+            onSurface    = DSColor.TextPrimary,
+            error        = DSColor.Danger,
+        )
+    }
     MaterialTheme(
-        colorScheme = lightColorScheme(
-            primary   = BluePrimary,
-            background = AppBg,
-            surface   = SurfaceMain,
-            onPrimary  = TextOnDark,
-            onBackground = TextPri,
-            onSurface  = TextPri,
-            error      = AlarmRed,
-        ),
+        colorScheme = colorScheme,
         content = content,
     )
 }
@@ -1766,6 +1822,8 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
     var trainingLabel by remember { mutableStateOf("This is a drill") }
     var pendingAlertAction by remember { mutableStateOf<SafetyAction?>(null) }
     var showDistrictView by remember { mutableStateOf(false) }
+    var quietActionPendingId by remember { mutableStateOf<Int?>(null) }
+    var quietActionPendingIsApprove by remember { mutableStateOf(true) }
     var showTenantMenu by remember { mutableStateOf(false) }
     val userName = remember { getUserName(ctx) }
     val userRole = remember { getUserRole(ctx) }
@@ -2275,10 +2333,12 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                                 requests = state.adminQuietPeriodRequests,
                                 isBusy = state.isBusy,
                                 onApprove = { requestId ->
-                                    runProtectedAction(true) { vm.approveQuietPeriodRequest(ctx, requestId) }
+                                    quietActionPendingId = requestId
+                                    quietActionPendingIsApprove = true
                                 },
                                 onDeny = { requestId ->
-                                    runProtectedAction(true) { vm.denyQuietPeriodRequest(ctx, requestId) }
+                                    quietActionPendingId = requestId
+                                    quietActionPendingIsApprove = false
                                 },
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -2486,7 +2546,7 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                         color = TextMuted,
                         fontSize = 13.sp,
                     )
-                    Text("Take action now to clear this active request.", color = TextPri, fontSize = 14.sp)
+                    Text("Acknowledge to log receipt, or Resolve to close the request.", color = TextPri, fontSize = 14.sp)
                 }
             },
             confirmButton = {
@@ -2517,12 +2577,12 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                                 vm.updateRequestHelpAction(
                                     ctx = ctx,
                                     teamAssistId = promptRequest.id,
-                                    action = "responding",
+                                    action = "resolve",
                                 )
                             }
                         },
                     ) {
-                        Text("Responding", fontWeight = FontWeight.SemiBold)
+                        Text("Resolve", fontWeight = FontWeight.SemiBold)
                     }
                 }
             },
@@ -2540,6 +2600,24 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
     }
 
     // ── Dialogs ───────────────────────────────────────────────────────────────
+    val pendingQid = quietActionPendingId
+    val pendingQApprove = quietActionPendingIsApprove
+    if (pendingQid != null) {
+        ConfirmDialog(
+            title = if (pendingQApprove) "Approve Quiet Period?" else "Deny Quiet Period?",
+            body = if (pendingQApprove) "Approve this quiet period request?" else "Deny this quiet period request?",
+            confirmLabel = if (pendingQApprove) "Approve" else "Deny",
+            onConfirm = {
+                quietActionPendingId = null
+                runProtectedAction(true) {
+                    if (pendingQApprove) vm.approveQuietPeriodRequest(ctx, pendingQid)
+                    else vm.denyQuietPeriodRequest(ctx, pendingQid)
+                }
+            },
+            onDismiss = { quietActionPendingId = null },
+        )
+    }
+
     if (showDeactivateDialog) {
         ConfirmDialog(
             title = "Deactivate alarm?",
@@ -2914,14 +2992,20 @@ private fun TeamAssistRow(
         if (isAdmin || canRequesterConfirm) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (isAdmin) {
-                    AssistActionChip(label = "Acknowledge", enabled = !isBusy) {
-                        onTeamAssistAction(teamAssist.id, "acknowledge", null)
+                    val isOpenOrActive = teamAssist.status.equals("open", ignoreCase = true) || teamAssist.status.equals("active", ignoreCase = true)
+                    val isTerminal = teamAssist.status.equals("resolved", ignoreCase = true) || teamAssist.status.equals("cancelled", ignoreCase = true)
+                    if (isOpenOrActive) {
+                        AssistActionChip(label = "Acknowledge", enabled = !isBusy) {
+                            onTeamAssistAction(teamAssist.id, "acknowledge", null)
+                        }
                     }
-                    AssistActionChip(label = "Responding", enabled = !isBusy) {
-                        onTeamAssistAction(teamAssist.id, "responding", null)
-                    }
-                    AssistActionChip(label = "Forward", enabled = !isBusy && actionRecipients.isNotEmpty()) {
-                        showForwardDialog = true
+                    if (!isTerminal) {
+                        AssistActionChip(label = "Resolve", enabled = !isBusy) {
+                            onTeamAssistAction(teamAssist.id, "resolve", null)
+                        }
+                        AssistActionChip(label = "Forward", enabled = !isBusy && actionRecipients.isNotEmpty()) {
+                            showForwardDialog = true
+                        }
                     }
                     AssistActionChip(label = if (teamAssist.cancelAdminConfirmed) "Admin Confirmed" else "Confirm Cancel", enabled = !isBusy && !teamAssist.cancelAdminConfirmed) {
                         onTeamAssistCancelConfirm(teamAssist.id)

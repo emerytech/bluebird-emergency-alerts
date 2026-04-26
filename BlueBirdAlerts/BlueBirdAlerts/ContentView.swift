@@ -514,6 +514,9 @@ struct ContentView: View {
     @State private var dismissedAdminPromptRequestHelpID: Int?
     @State private var adminQuietPeriodRequests: [QuietPeriodAdminRequest] = []
     @State private var isUpdatingQuietPeriodRequests = false
+    @State private var pendingQuietActionItem: QuietPeriodAdminRequest? = nil
+    @State private var pendingQuietActionIsApprove: Bool = true
+    @State private var processedEventIDs: Set<String> = []
     @State private var featureLabels: [String: String] = AppLabels.defaultFeatureLabels
     @State private var holdFlashActive = false
     @State private var holdFlashProgress: Double = 0
@@ -757,6 +760,35 @@ struct ContentView: View {
                 let school = appState.effectiveSchoolName
                 Text("Send \(action.title) alert to \(school.isEmpty ? "your school" : school)?")
             }
+            .alert(
+                pendingQuietActionIsApprove ? "Approve Quiet Period?" : "Deny Quiet Period?",
+                isPresented: Binding(
+                    get: { pendingQuietActionItem != nil },
+                    set: { if !$0 { pendingQuietActionItem = nil } }
+                ),
+                presenting: pendingQuietActionItem
+            ) { item in
+                Button("Cancel", role: .cancel) { pendingQuietActionItem = nil }
+                Button(
+                    pendingQuietActionIsApprove ? "Approve" : "Deny",
+                    role: pendingQuietActionIsApprove ? .none : .destructive
+                ) {
+                    let captured = item
+                    let isApprove = pendingQuietActionIsApprove
+                    pendingQuietActionItem = nil
+                    Task {
+                        if isApprove {
+                            await approveQuietPeriodRequest(captured)
+                        } else {
+                            await denyQuietPeriodRequest(captured)
+                        }
+                    }
+                }
+            } message: { item in
+                let name = item.userName ?? "User #\(item.userID)"
+                let reason = item.reason.map { "\nReason: \($0)" } ?? ""
+                return Text("\(name)\(reason)")
+            }
             .sheet(
                 isPresented: Binding(
                     get: { isAdminSession && adminPromptRequestHelpItem != nil },
@@ -780,10 +812,10 @@ struct ContentView: View {
                             adminPromptRequestHelpID = nil
                             Task { await applyTeamAssistAction(promptItem, action: "acknowledge") }
                         },
-                        onResponding: {
+                        onResolve: {
                             dismissedAdminPromptRequestHelpID = promptItem.id
                             adminPromptRequestHelpID = nil
-                            Task { await applyTeamAssistAction(promptItem, action: "responding") }
+                            Task { await applyTeamAssistAction(promptItem, action: "resolve") }
                         },
                         onLater: {
                             dismissedAdminPromptRequestHelpID = promptItem.id
@@ -1352,7 +1384,8 @@ struct ContentView: View {
                             }
                             HStack(spacing: 10) {
                                 Button {
-                                    Task { await approveQuietPeriodRequest(item) }
+                                    pendingQuietActionItem = item
+                                    pendingQuietActionIsApprove = true
                                 } label: {
                                     Text("Approve")
                                         .font(.caption.weight(.semibold))
@@ -1365,7 +1398,8 @@ struct ContentView: View {
                                 .disabled(isUpdatingQuietPeriodRequests || item.status.lowercased() != "pending")
 
                                 Button {
-                                    Task { await denyQuietPeriodRequest(item) }
+                                    pendingQuietActionItem = item
+                                    pendingQuietActionIsApprove = false
                                 } label: {
                                     Text("Deny")
                                         .font(.caption.weight(.semibold))
@@ -1621,23 +1655,42 @@ struct ContentView: View {
             feedRow(title: AppLabels.featureDisplayName(for: item.type, overrides: featureLabels), subtitle: teamAssistSubtitle(for: item))
             if isAdminSession {
                 HStack(spacing: 10) {
-                    Menu {
-                        Button("Acknowledge") {
+                    if item.status == "open" || item.status == "active" {
+                        Button {
                             Task { await applyTeamAssistAction(item, action: "acknowledge") }
+                        } label: {
+                            Text("Acknowledge")
+                                .font(.caption.weight(.semibold))
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 7)
+                                .background(bluePrimary.opacity(0.14))
+                                .clipShape(Capsule())
                         }
-                        Button("Responding") {
-                            Task { await applyTeamAssistAction(item, action: "responding") }
+                        .disabled(isUpdatingTeamAssist)
+                    }
+                    if item.status != "resolved" && item.status != "cancelled" {
+                        Button {
+                            Task { await applyTeamAssistAction(item, action: "resolve") }
+                        } label: {
+                            Text("Resolve")
+                                .font(.caption.weight(.semibold))
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 7)
+                                .background(DSColor.success.opacity(0.14))
+                                .clipShape(Capsule())
                         }
-                        Button("Forward…") {
+                        .disabled(isUpdatingTeamAssist)
+                        Button {
                             forwardingTeamAssist = item
+                        } label: {
+                            Text("Forward…")
+                                .font(.caption.weight(.semibold))
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 7)
+                                .background(DSColor.textSecondary.opacity(0.14))
+                                .clipShape(Capsule())
                         }
-                    } label: {
-                        Text("Update")
-                            .font(.caption.weight(.semibold))
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 7)
-                            .background(bluePrimary.opacity(0.14))
-                            .clipShape(Capsule())
+                        .disabled(isUpdatingTeamAssist)
                     }
 
                     if item.status != "cancelled" {
@@ -2250,6 +2303,19 @@ struct ContentView: View {
 
     private func handleAlarmWebSocketEvent(_ json: [String: Any]) {
         let event = json["event"] as? String ?? ""
+
+        // Deduplication: ignore events already processed (bounded to 200 entries)
+        if let eventID = json["event_id"] as? String, !eventID.isEmpty {
+            guard !processedEventIDs.contains(eventID) else {
+                #if DEBUG
+                print("[WS] Dedup skip eventID=\(eventID) event=\(event)")
+                #endif
+                return
+            }
+            processedEventIDs.insert(eventID)
+            if processedEventIDs.count > 200 { processedEventIDs.remove(processedEventIDs.first!) }
+        }
+
         let eventSlug = (json["tenant_slug"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         // Alarm fields are nested inside the "alarm" key in every backend event.
         let alarm = json["alarm"] as? [String: Any]
@@ -2318,9 +2384,14 @@ struct ContentView: View {
             // districtTenants already updated above via applyEventToDistrictTenant.
             break
 
-        case "quiet_request_created", "quiet_request_updated", "message_received":
-            // Reserved for future phases — intentionally no-op.
+        case "quiet_request_created", "quiet_request_updated":
+            if isAdminSession { Task { await loadAdminQuietPeriodRequests() } }
+
+        case "message_received":
             break
+
+        case "help_request_acknowledged", "help_request_resolved":
+            Task { await refreshIncidentFeed() }
 
         default:
             #if DEBUG
@@ -2571,7 +2642,7 @@ private struct AdminRequestHelpPromptSheet: View {
     let item: TeamAssistSummary
     let isBusy: Bool
     let onAcknowledge: () -> Void
-    let onResponding: () -> Void
+    let onResolve: () -> Void
     let onLater: () -> Void
 
     var body: some View {
@@ -2583,7 +2654,7 @@ private struct AdminRequestHelpPromptSheet: View {
                 Text("From #\(item.createdBy) • \(item.createdAt)")
                     .font(.subheadline)
                     .foregroundStyle(textMuted)
-                Text("Take action now to clear this active request.")
+                Text("Acknowledge to log receipt, or Resolve to close the request.")
                     .font(.subheadline)
                     .foregroundStyle(textPrimary)
 
@@ -2592,7 +2663,7 @@ private struct AdminRequestHelpPromptSheet: View {
                         .buttonStyle(.bordered)
                         .tint(bluePrimary)
                         .disabled(isBusy)
-                    Button("Responding") { onResponding() }
+                    Button("Resolve") { onResolve() }
                         .buttonStyle(.borderedProminent)
                         .tint(DSColor.success)
                         .disabled(isBusy)
@@ -2676,102 +2747,181 @@ private struct SettingsView: View {
             LinearGradient(colors: [DSColor.background, DSColor.backgroundDeep], startPoint: .top, endPoint: .bottom)
                 .ignoresSafeArea()
 
-            List {
-                Section("Account") {
-                    Text("BlueBird Alerts")
-                        .foregroundStyle(DSColor.textPrimary)
-                    if !appState.loginName.isEmpty {
-                        Text("Login: \(appState.loginName)")
-                            .foregroundStyle(DSColor.textPrimary)
-                    }
-                    Text("Role: \(appState.userRole.capitalized)")
-                        .foregroundStyle(DSColor.textPrimary)
-                    Text("Server: \(appState.serverURL.absoluteString)")
-                        .font(.footnote)
-                        .foregroundStyle(DSColor.textSecondary)
-                    if !appState.initialDeviceAuthUserName.isEmpty {
-                        Text("Initial device auth: \(appState.initialDeviceAuthUserName)")
-                            .font(.footnote)
-                            .foregroundStyle(DSColor.textSecondary)
-                    }
-                }
-                .listRowBackground(DSColor.card)
-
-                Section("Appearance") {
-                    Picker("Theme", selection: $themeModeRaw) {
-                        ForEach(DSThemeMode.allCases, id: \.rawValue) { mode in
-                            Text(mode.rawValue.capitalized).tag(mode.rawValue)
+            ScrollView {
+                VStack(spacing: 16) {
+                    // Account
+                    settingsCard {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("ACCOUNT")
+                                .font(.caption)
+                                .fontWeight(.semibold)
+                                .foregroundStyle(DSColor.textSecondary)
+                                .tracking(0.8)
+                            Text(appState.userName.isEmpty ? "BlueBird Alerts" : appState.userName)
+                                .font(.title3)
+                                .fontWeight(.bold)
+                                .foregroundStyle(DSColor.textPrimary)
+                            if !appState.loginName.isEmpty {
+                                Text("@\(appState.loginName)")
+                                    .font(.subheadline)
+                                    .foregroundStyle(DSColor.primary)
+                            }
+                            Divider()
+                            settingsInfoRow("Role", value: appState.userRole.capitalized)
+                            settingsInfoRow("Server", value: appState.serverURL.absoluteString, small: true, muted: true)
+                            if !appState.initialDeviceAuthUserName.isEmpty {
+                                settingsInfoRow("Device Auth", value: appState.initialDeviceAuthUserName, small: true, muted: true)
+                            }
                         }
                     }
-                    .tint(DSColor.primary)
-                }
-                .listRowBackground(DSColor.card)
 
-                Section("Security") {
-                    Toggle("Biometrics Allowed", isOn: $appState.biometricsAllowed)
-                        .tint(DSColor.primary)
-                    Text("Require Face ID / Touch ID before sending emergency alerts.")
-                        .font(.footnote)
-                        .foregroundStyle(DSColor.textSecondary)
-                    Toggle("Require confirmation before ending alerts", isOn: $appState.endAlertConfirmationEnabled)
-                        .tint(DSColor.primary)
-                    Text("Show a confirmation dialog before deactivating a live alarm. Training drills always skip confirmation.")
-                        .font(.footnote)
-                        .foregroundStyle(DSColor.textSecondary)
-                }
-                .listRowBackground(DSColor.card)
-
-                Section("Emergency Feedback") {
-                    Toggle("Enable Haptic Alerts", isOn: $appState.hapticAlertsEnabled)
-                        .tint(DSColor.primary)
-                    Toggle("Enable Flashlight Alerts", isOn: $appState.flashlightAlertsEnabled)
-                        .tint(DSColor.primary)
-                    Toggle("Enable Screen Flash Alerts", isOn: $appState.screenFlashAlertsEnabled)
-                        .tint(DSColor.primary)
-                    Text("Enable LED Flash Alerts in device settings for enhanced visibility.")
-                        .font(.footnote)
-                        .foregroundStyle(DSColor.textSecondary)
-                }
-                .listRowBackground(DSColor.card)
-
-                Section("Diagnostics (Temporary)") {
-                    Button(isTestingBackend ? "Testing..." : "Test Backend") {
-                        Task { await testBackend() }
-                    }
-                    .disabled(isTestingBackend)
-
-                    Button(isLoadingDebugData ? "Refreshing..." : "Load Debug Data") {
-                        Task { await loadDebugData() }
-                    }
-                    .disabled(isLoadingDebugData)
-
-                    if appState.deviceToken != nil {
-                        Button(isRegistering ? "Registering..." : "Register Device") {
-                            Task { await retryRegisterDevice() }
+                    // Appearance
+                    settingsCard {
+                        VStack(alignment: .leading, spacing: 14) {
+                            Text("Appearance")
+                                .font(.headline)
+                                .foregroundStyle(DSColor.textPrimary)
+                            Picker("Theme", selection: $themeModeRaw) {
+                                ForEach(DSThemeMode.allCases, id: \.rawValue) { mode in
+                                    Text(mode.rawValue.capitalized).tag(mode.rawValue)
+                                }
+                            }
+                            .pickerStyle(.segmented)
                         }
-                        .disabled(isRegistering)
                     }
 
-                    Button(isRegistering ? "Registering..." : localTestButtonTitle) {
-                        Task { await useLocalTestDevice() }
+                    // Security
+                    settingsCard {
+                        VStack(alignment: .leading, spacing: 14) {
+                            Text("Security")
+                                .font(.headline)
+                                .foregroundStyle(DSColor.textPrimary)
+                            settingsToggleRow(
+                                title: "Require Biometrics",
+                                description: "Require Face ID or Touch ID before sending emergency alerts.",
+                                isOn: $appState.biometricsAllowed
+                            )
+                            Divider().opacity(0.5)
+                            settingsToggleRow(
+                                title: "Confirm Before Ending Alerts",
+                                description: "Show a confirmation dialog before deactivating a live alarm. Training drills always skip confirmation.",
+                                isOn: $appState.endAlertConfirmationEnabled
+                            )
+                        }
                     }
-                    .disabled(isRegistering)
-                }
-                .listRowBackground(DSColor.card)
 
-                Section {
-                    Button("Log Out", role: .destructive) {
+                    // Emergency Feedback
+                    settingsCard {
+                        VStack(alignment: .leading, spacing: 14) {
+                            Text("Emergency Feedback")
+                                .font(.headline)
+                                .foregroundStyle(DSColor.textPrimary)
+                            settingsToggleRow(title: "Haptic Alerts", description: "Pulse vibration during active emergencies.", isOn: $appState.hapticAlertsEnabled)
+                            Divider().opacity(0.5)
+                            settingsToggleRow(title: "Flashlight Alerts", description: "Flash the device torch while the alert screen is active.", isOn: $appState.flashlightAlertsEnabled)
+                            Divider().opacity(0.5)
+                            settingsToggleRow(title: "Screen Flash Alerts", description: "Pulse a full-screen warning overlay during emergencies.", isOn: $appState.screenFlashAlertsEnabled)
+                            Text("Enable LED Flash Alerts in device settings for enhanced visibility.")
+                                .font(.footnote)
+                                .foregroundStyle(DSColor.textSecondary)
+                        }
+                    }
+
+                    // Diagnostics
+                    settingsCard {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Text("Diagnostics")
+                                .font(.headline)
+                                .foregroundStyle(DSColor.textPrimary)
+                            Button(isTestingBackend ? "Testing…" : "Test Backend") {
+                                Task { await testBackend() }
+                            }
+                            .font(.subheadline)
+                            .foregroundStyle(DSColor.primary)
+                            .disabled(isTestingBackend)
+                            Button(isLoadingDebugData ? "Refreshing…" : "Load Debug Data") {
+                                Task { await loadDebugData() }
+                            }
+                            .font(.subheadline)
+                            .foregroundStyle(DSColor.primary)
+                            .disabled(isLoadingDebugData)
+                            if appState.deviceToken != nil {
+                                Button(isRegistering ? "Registering…" : "Register Device") {
+                                    Task { await retryRegisterDevice() }
+                                }
+                                .font(.subheadline)
+                                .foregroundStyle(DSColor.primary)
+                                .disabled(isRegistering)
+                            }
+                            Button(isRegistering ? "Registering…" : localTestButtonTitle) {
+                                Task { await useLocalTestDevice() }
+                            }
+                            .font(.subheadline)
+                            .foregroundStyle(DSColor.primary)
+                            .disabled(isRegistering)
+                        }
+                    }
+
+                    // Sign Out
+                    Button {
                         appState.logout()
+                    } label: {
+                        Text("Sign Out")
+                            .font(.headline)
+                            .foregroundStyle(.white)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 14)
+                            .background(DSColor.danger, in: RoundedRectangle(cornerRadius: 14))
                     }
                 }
-                .listRowBackground(DSColor.card)
+                .padding(.horizontal, 20)
+                .padding(.top, 16)
+                .padding(.bottom, 32)
             }
-            .listStyle(.insetGrouped)
-            .scrollContentBackground(.hidden)
-            .tint(DSColor.primary)
         }
         .navigationTitle("Settings")
         .navigationBarTitleDisplayMode(.inline)
+    }
+
+    @ViewBuilder
+    private func settingsCard<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        content()
+            .padding(18)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(DSColor.card, in: RoundedRectangle(cornerRadius: 16))
+            .shadow(color: .black.opacity(0.06), radius: 8, x: 0, y: 2)
+    }
+
+    @ViewBuilder
+    private func settingsToggleRow(title: String, description: String, isOn: Binding<Bool>) -> some View {
+        HStack(alignment: .center, spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.subheadline)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(DSColor.textPrimary)
+                Text(description)
+                    .font(.caption)
+                    .foregroundStyle(DSColor.textSecondary)
+            }
+            Spacer()
+            Toggle("", isOn: isOn)
+                .labelsHidden()
+                .tint(DSColor.primary)
+        }
+    }
+
+    private func settingsInfoRow(_ label: String, value: String, small: Bool = false, muted: Bool = false) -> some View {
+        HStack(alignment: .top) {
+            Text(label)
+                .font(small ? .caption : .subheadline)
+                .foregroundStyle(DSColor.textSecondary)
+            Spacer()
+            Text(value)
+                .font(small ? .caption : .subheadline)
+                .foregroundStyle(muted ? DSColor.textSecondary : DSColor.textPrimary)
+                .multilineTextAlignment(.trailing)
+        }
     }
 
     private var localTestToken: String {

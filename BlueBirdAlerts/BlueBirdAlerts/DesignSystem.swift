@@ -1,5 +1,6 @@
 import SwiftUI
 import Foundation
+import UIKit
 
 enum DSThemeMode: String, CaseIterable {
     case system
@@ -21,10 +22,14 @@ enum DSThemeMode: String, CaseIterable {
         switch self {
         case .dark:
             return "dark"
-        case .light, .system:
+        case .light:
             return "light"
+        case .system:
+            return UITraitCollection.current.userInterfaceStyle == .dark ? "dark" : "light"
         }
     }
+
+    var isDark: Bool { tokenVariant == "dark" }
 }
 
 enum DSThemePreference {
@@ -164,7 +169,7 @@ final class DSTokenStore {
     }
 }
 
-private extension Color {
+extension Color {
     init?(hex: String) {
         let trimmed = hex.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "#", with: "")
         let normalized: String
@@ -194,67 +199,125 @@ private extension Color {
     }
 }
 
+// MARK: - District branding override
+
+enum DSBranding {
+    static var overridePrimary: Color? = nil
+    static var overrideAccent: Color? = nil
+
+    /// Apply district-level color overrides. Pass hex strings (e.g. "#1B5FE4").
+    /// Call this after receiving district config from the backend.
+    static func apply(primary: String? = nil, accent: String? = nil) {
+        overridePrimary = primary.flatMap { Color(hex: $0) }
+        overrideAccent  = accent.flatMap  { Color(hex: $0) }
+    }
+
+    static func reset() {
+        overridePrimary = nil
+        overrideAccent  = nil
+    }
+}
+
+// MARK: - Adaptive fallback helpers
+
+private extension DSColor {
+    static func adaptive(light: UIColor, dark: UIColor) -> Color {
+        Color(UIColor { traits in traits.userInterfaceStyle == .dark ? dark : light })
+    }
+}
+
+// MARK: - Color tokens
+
 enum DSColor {
     static var primary: Color {
-        DSTokenStore.shared.color(
-            candidates: ["color.button.primary", "colors.button.primary", "colors.primary", "color.primary", "theme.colors.primary"],
-            fallback: Color(red: 0.11, green: 0.37, blue: 0.89)
+        if let override = DSBranding.overridePrimary { return override }
+        return DSTokenStore.shared.color(
+            candidates: ["theme.colors.primary", "color.mode.primary", "color.button.primary", "colors.button.primary", "colors.primary", "color.primary"],
+            fallback: adaptive(
+                light: UIColor(red: 0.11, green: 0.37, blue: 0.89, alpha: 1),
+                dark:  UIColor(red: 0.30, green: 0.55, blue: 1.00, alpha: 1)
+            )
         )
+    }
+
+    static var accent: Color {
+        DSBranding.overrideAccent ?? primary
     }
 
     static var danger: Color {
         DSTokenStore.shared.color(
             candidates: ["color.button.danger", "colors.button.danger", "colors.danger", "color.danger", "theme.colors.danger"],
-            fallback: Color(red: 0.86, green: 0.26, blue: 0.22)
+            fallback: adaptive(
+                light: UIColor(red: 0.86, green: 0.26, blue: 0.22, alpha: 1),
+                dark:  UIColor(red: 1.00, green: 0.40, blue: 0.38, alpha: 1)
+            )
         )
     }
 
     static var background: Color {
         DSTokenStore.shared.color(
-            candidates: ["colors.background.light", "color.background.light", "colors.background", "color.background"],
-            fallback: Color(red: 0.93, green: 0.96, blue: 1.0)
+            candidates: ["color.mode.background", "colors.background.light", "color.background.light", "colors.background", "color.background"],
+            fallback: adaptive(
+                light: UIColor(red: 0.93, green: 0.96, blue: 1.00, alpha: 1),
+                dark:  UIColor(red: 0.05, green: 0.08, blue: 0.14, alpha: 1)
+            )
         )
     }
 
     static var backgroundDeep: Color {
         DSTokenStore.shared.color(
-            candidates: ["colors.background.dark", "color.background.dark", "colors.background_deep", "color.background_deep"],
-            fallback: Color(red: 0.86, green: 0.91, blue: 1.0)
+            candidates: ["color.mode.background_deep", "colors.background.dark", "color.background.dark", "colors.background_deep", "color.background_deep"],
+            fallback: adaptive(
+                light: UIColor(red: 0.86, green: 0.91, blue: 1.00, alpha: 1),
+                dark:  UIColor(red: 0.07, green: 0.11, blue: 0.18, alpha: 1)
+            )
         )
     }
 
     static var card: Color {
         DSTokenStore.shared.color(
-            candidates: ["color.background.surface", "colors.background.surface", "colors.card", "color.card"],
-            fallback: .white
+            candidates: ["color.mode.card", "color.background.surface", "colors.background.surface", "colors.card", "color.card"],
+            fallback: adaptive(
+                light: UIColor.white,
+                dark:  UIColor(red: 0.10, green: 0.13, blue: 0.20, alpha: 1)
+            )
         )
     }
 
     static var inputBackground: Color {
         DSTokenStore.shared.color(
-            candidates: ["colors.input_background", "color.input_background", "colors.inputBackground", "color.inputBackground"],
+            candidates: ["colors.input_background", "color.input_background"],
             fallback: Color(red: 0.22, green: 0.25, blue: 0.31)
         )
     }
 
     static var textPrimary: Color {
         DSTokenStore.shared.color(
-            candidates: ["colors.text_primary", "color.text_primary", "colors.textPrimary", "color.textPrimary"],
-            fallback: Color(red: 0.06, green: 0.13, blue: 0.25)
+            candidates: ["color.mode.text_primary", "colors.text_primary", "color.text_primary", "colors.textPrimary", "color.textPrimary"],
+            fallback: adaptive(
+                light: UIColor(red: 0.06, green: 0.13, blue: 0.25, alpha: 1),
+                dark:  UIColor(red: 0.91, green: 0.93, blue: 1.00, alpha: 1)
+            )
         )
     }
 
     static var textSecondary: Color {
         DSTokenStore.shared.color(
-            candidates: ["colors.text_secondary", "color.text_secondary", "colors.textSecondary", "color.textSecondary"],
-            fallback: Color(red: 0.27, green: 0.34, blue: 0.48)
+            candidates: ["color.mode.text_secondary", "colors.text_secondary", "color.text_secondary", "colors.textSecondary", "color.textSecondary"],
+            fallback: adaptive(
+                light: UIColor(red: 0.27, green: 0.34, blue: 0.48, alpha: 1),
+                dark:  UIColor(red: 0.56, green: 0.64, blue: 0.78, alpha: 1)
+            )
         )
     }
 
     static var border: Color {
         DSTokenStore.shared.color(
-            candidates: ["color.border.default", "colors.border.default", "colors.border", "color.border"],
-            fallback: Color.white.opacity(0.12)
+            candidates: ["color.mode.border", "color.border.default", "colors.border.default", "colors.border", "color.border"],
+            fallback: adaptive(
+                light: UIColor(white: 0.07, alpha: 0.10),
+                dark:  UIColor(white: 1.00, alpha: 0.10)
+            )
         )
     }
 
@@ -302,6 +365,12 @@ enum DSRadius {
 }
 
 enum DSTypography {
+    static var titleLarge: Font {
+        Font.system(size: DSTokenStore.shared.number(candidates: ["typography.title_large.size"], fallback: 28), weight: .bold)
+    }
+    static var titleMedium: Font {
+        Font.system(size: DSTokenStore.shared.number(candidates: ["typography.title_medium.size"], fallback: 20), weight: .semibold)
+    }
     static var title: Font {
         Font.system(size: DSTokenStore.shared.number(candidates: ["typography.title.size"], fallback: 24), weight: .bold)
     }
@@ -310,5 +379,8 @@ enum DSTypography {
     }
     static var button: Font {
         Font.system(size: DSTokenStore.shared.number(candidates: ["typography.button.size"], fallback: 16), weight: .semibold)
+    }
+    static var caption: Font {
+        Font.system(size: DSTokenStore.shared.number(candidates: ["typography.caption.size"], fallback: 12), weight: .regular)
     }
 }

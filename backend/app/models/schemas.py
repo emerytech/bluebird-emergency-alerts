@@ -513,8 +513,8 @@ class TeamAssistActionRequest(BaseModel):
     @classmethod
     def normalize_action(cls, v: str) -> str:
         normalized = v.strip().lower()
-        if normalized not in {"acknowledge", "responding", "forward"}:
-            raise ValueError("action must be acknowledge, responding, or forward")
+        if normalized not in {"acknowledge", "responding", "forward", "resolve"}:
+            raise ValueError("action must be acknowledge, responding, forward, or resolve")
         return normalized
 
 

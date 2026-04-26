@@ -35,45 +35,61 @@ data class DesignTokens(
     val radiusCard: Int,
     val radiusInput: Int,
     val typeTitle: Int,
+    val typeTitleLarge: Int,
+    val typeTitleMedium: Int,
     val typeBody: Int,
     val typeButton: Int,
+    val typeCaption: Int,
 ) {
     companion object {
         val Defaults = DesignTokens(
-            primary = Color(0xFF1B5FE4),
-            danger = Color(0xFFDC2626),
-            background = Color(0xFFEEF5FF),
-            backgroundDeep = Color(0xFFDCE9FF),
-            card = Color(0xFFFFFFFF),
+            primary         = Color(0xFF1B5FE4),
+            danger          = Color(0xFFDC2626),
+            background      = Color(0xFFEEF5FF),
+            backgroundDeep  = Color(0xFFDCE9FF),
+            card            = Color(0xFFFFFFFF),
             inputBackground = Color(0xFF39404F),
-            textPrimary = Color(0xFF10203F),
-            textSecondary = Color(0xFF5D7398),
-            border = Color(0x1A123478),
-            success = Color(0xFF166534),
-            warning = Color(0xFFB45309),
-            info = Color(0xFF1D4ED8),
-            quietAccent = Color(0xFF8E3BEB),
-            spacingXS = 4,
-            spacingSM = 8,
-            spacingMD = 12,
-            spacingLG = 16,
-            spacingXL = 20,
-            radiusButton = 12,
-            radiusCard = 22,
-            radiusInput = 12,
-            typeTitle = 24,
-            typeBody = 16,
-            typeButton = 16,
+            textPrimary     = Color(0xFF10203F),
+            textSecondary   = Color(0xFF5D7398),
+            border          = Color(0x1A123478),
+            success         = Color(0xFF166534),
+            warning         = Color(0xFFB45309),
+            info            = Color(0xFF1D4ED8),
+            quietAccent     = Color(0xFF8E3BEB),
+            spacingXS       = 4,
+            spacingSM       = 8,
+            spacingMD       = 12,
+            spacingLG       = 16,
+            spacingXL       = 20,
+            radiusButton    = 12,
+            radiusCard      = 22,
+            radiusInput     = 12,
+            typeTitle       = 24,
+            typeTitleLarge  = 28,
+            typeTitleMedium = 20,
+            typeBody        = 16,
+            typeButton      = 16,
+            typeCaption     = 12,
+        )
+
+        val DarkDefaults = Defaults.copy(
+            primary        = Color(0xFF4D8BFF),
+            background     = Color(0xFF0D1424),
+            backgroundDeep = Color(0xFF111B2E),
+            card           = Color(0xFF192132),
+            textPrimary    = Color(0xFFE8EEFF),
+            textSecondary  = Color(0xFF8FA3C8),
+            border         = Color(0x33FFFFFF),
         )
     }
 }
 
 object DSTokenStore {
-    @Volatile
-    private var didLoad = false
+    @Volatile private var didLoad = false
+    @Volatile private var current: DesignTokens = DesignTokens.Defaults
 
-    @Volatile
-    private var current: DesignTokens = DesignTokens.Defaults
+    /** Set this to true before calling loadIfNeeded() for correct dark-mode token resolution. */
+    @Volatile var isDarkMode: Boolean = false
 
     fun loadIfNeeded(context: Context) {
         if (didLoad) return
@@ -84,53 +100,60 @@ object DSTokenStore {
                 context.assets.open("tokens.json").bufferedReader().use { reader ->
                     parseTokens(JSONObject(reader.readText()))
                 }
-            }.getOrElse { DesignTokens.Defaults }
+            }.getOrElse { if (isDarkMode) DesignTokens.DarkDefaults else DesignTokens.Defaults }
         }
     }
 
     fun tokens(): DesignTokens = current
 
+    fun parseHexColor(raw: String): Color? = parseHexColorInternal(raw)
+
     private fun parseTokens(root: JSONObject): DesignTokens {
-        val defaults = DesignTokens.Defaults
-        return defaults.copy(
-            primary = pickColor(root, defaults.primary, "color.button.primary", "colors.button.primary", "colors.primary", "color.primary", "theme.colors.primary"),
-            danger = pickColor(root, defaults.danger, "color.button.danger", "colors.button.danger", "colors.danger", "color.danger", "theme.colors.danger"),
-            background = pickColor(root, defaults.background, "colors.background.light", "color.background.light", "colors.background", "color.background"),
-            backgroundDeep = pickColor(root, defaults.backgroundDeep, "colors.background.dark", "color.background.dark", "colors.background_deep", "color.background_deep"),
-            card = pickColor(root, defaults.card, "color.background.surface", "colors.background.surface", "colors.card", "color.card"),
-            inputBackground = pickColor(root, defaults.inputBackground, "colors.input_background", "color.input_background", "colors.inputBackground", "color.inputBackground"),
-            textPrimary = pickColor(root, defaults.textPrimary, "colors.text_primary", "color.text_primary", "colors.textPrimary", "color.textPrimary"),
-            textSecondary = pickColor(root, defaults.textSecondary, "colors.text_secondary", "color.text_secondary", "colors.textSecondary", "color.textSecondary"),
-            border = pickColor(root, defaults.border, "color.border.default", "colors.border.default", "colors.border", "color.border"),
-            success = pickColor(root, defaults.success, "color.status.success", "colors.status.success"),
-            warning = pickColor(root, defaults.warning, "color.status.warning", "colors.status.warning"),
-            info = pickColor(root, defaults.info, "color.status.info", "colors.status.info"),
-            quietAccent = pickColor(root, defaults.quietAccent, "color.status.quiet", "colors.status.quiet"),
-            spacingXS = pickInt(root, defaults.spacingXS, "spacing.xs"),
-            spacingSM = pickInt(root, defaults.spacingSM, "spacing.sm"),
-            spacingMD = pickInt(root, defaults.spacingMD, "spacing.md"),
-            spacingLG = pickInt(root, defaults.spacingLG, "spacing.lg"),
-            spacingXL = pickInt(root, defaults.spacingXL, "spacing.xl"),
-            radiusButton = pickInt(root, defaults.radiusButton, "radius.button"),
-            radiusCard = pickInt(root, defaults.radiusCard, "radius.card"),
-            radiusInput = pickInt(root, defaults.radiusInput, "radius.input"),
-            typeTitle = pickInt(root, defaults.typeTitle, "typography.title.size"),
-            typeBody = pickInt(root, defaults.typeBody, "typography.body.size"),
-            typeButton = pickInt(root, defaults.typeButton, "typography.button.size"),
+        val base = if (isDarkMode) DesignTokens.DarkDefaults else DesignTokens.Defaults
+        return base.copy(
+            primary         = pickColor(root, base.primary,        "color.mode.primary",         "theme.colors.primary", "color.button.primary", "colors.button.primary", "colors.primary", "color.primary"),
+            danger          = pickColor(root, base.danger,         "color.button.danger",         "colors.button.danger", "colors.danger", "color.danger", "theme.colors.danger"),
+            background      = pickColor(root, base.background,     "color.mode.background",       "colors.background.light", "color.background.light", "colors.background", "color.background"),
+            backgroundDeep  = pickColor(root, base.backgroundDeep, "color.mode.background_deep",  "colors.background.dark", "color.background.dark", "colors.background_deep"),
+            card            = pickColor(root, base.card,           "color.mode.card",             "color.background.surface", "colors.background.surface", "colors.card", "color.card"),
+            inputBackground = pickColor(root, base.inputBackground,"colors.input_background",     "color.input_background", "colors.inputBackground", "color.inputBackground"),
+            textPrimary     = pickColor(root, base.textPrimary,    "color.mode.text_primary",     "colors.text_primary", "color.text_primary", "colors.textPrimary", "color.textPrimary"),
+            textSecondary   = pickColor(root, base.textSecondary,  "color.mode.text_secondary",   "colors.text_secondary", "color.text_secondary", "colors.textSecondary", "color.textSecondary"),
+            border          = pickColor(root, base.border,         "color.mode.border",           "color.border.default", "colors.border.default", "colors.border", "color.border"),
+            success         = pickColor(root, base.success,        "color.status.success",        "colors.status.success"),
+            warning         = pickColor(root, base.warning,        "color.status.warning",        "colors.status.warning"),
+            info            = pickColor(root, base.info,           "color.status.info",           "colors.status.info"),
+            quietAccent     = pickColor(root, base.quietAccent,    "color.status.quiet",          "colors.status.quiet"),
+            spacingXS       = pickInt(root, base.spacingXS,        "spacing.xs"),
+            spacingSM       = pickInt(root, base.spacingSM,        "spacing.sm"),
+            spacingMD       = pickInt(root, base.spacingMD,        "spacing.md"),
+            spacingLG       = pickInt(root, base.spacingLG,        "spacing.lg"),
+            spacingXL       = pickInt(root, base.spacingXL,        "spacing.xl"),
+            radiusButton    = pickInt(root, base.radiusButton,     "radius.button"),
+            radiusCard      = pickInt(root, base.radiusCard,       "radius.card"),
+            radiusInput     = pickInt(root, base.radiusInput,      "radius.input"),
+            typeTitle       = pickInt(root, base.typeTitle,        "typography.title.size"),
+            typeTitleLarge  = pickInt(root, base.typeTitleLarge,   "typography.title_large.size"),
+            typeTitleMedium = pickInt(root, base.typeTitleMedium,  "typography.title_medium.size"),
+            typeBody        = pickInt(root, base.typeBody,         "typography.body.size"),
+            typeButton      = pickInt(root, base.typeButton,       "typography.button.size"),
+            typeCaption     = pickInt(root, base.typeCaption,      "typography.caption.size"),
         )
     }
 
     private fun pickColor(root: JSONObject, fallback: Color, vararg paths: String): Color {
+        val variant = if (isDarkMode) "dark" else "light"
         for (path in paths) {
             val raw = lookup(root, path) ?: continue
             val hex = when (raw) {
                 is String -> raw
-                is JSONObject -> raw.optString("light")
+                is JSONObject -> raw.optString(variant)
+                    .ifBlank { raw.optString("light") }
                     .ifBlank { raw.optString("default") }
                     .ifBlank { raw.optString("value") }
                 else -> ""
             }
-            val parsed = parseHexColor(hex)
+            val parsed = parseHexColorInternal(hex)
             if (parsed != null) return parsed
         }
         return fallback
@@ -158,18 +181,14 @@ object DSTokenStore {
         var current: Any = root
         for (segment in path.split(".")) {
             val obj = current as? JSONObject ?: return null
-            val candidates = listOf(
-                segment,
-                segment.replace("-", "_"),
-                segment.replace("_", "-"),
-            )
+            val candidates = listOf(segment, segment.replace("-", "_"), segment.replace("_", "-"))
             val key = candidates.firstOrNull { obj.has(it) } ?: return null
             current = obj.get(key)
         }
         return current
     }
 
-    private fun parseHexColor(raw: String): Color? {
+    private fun parseHexColorInternal(raw: String): Color? {
         val cleaned = raw.trim().removePrefix("#")
         if (cleaned.isEmpty()) return null
         val expanded = when (cleaned.length) {
@@ -190,20 +209,39 @@ object DSTokenStore {
     }
 }
 
+// MARK: - District branding override
+
+object DSBranding {
+    var overridePrimary: Color? = null
+    var overrideAccent: Color? = null
+
+    /** Apply district-level color overrides. Pass hex strings (e.g. "#1B5FE4"). */
+    fun apply(primary: String? = null, accent: String? = null) {
+        overridePrimary = primary?.let { DSTokenStore.parseHexColor(it) }
+        overrideAccent  = accent?.let  { DSTokenStore.parseHexColor(it) }
+    }
+
+    fun reset() {
+        overridePrimary = null
+        overrideAccent  = null
+    }
+}
+
 object DSColor {
-    val Primary: Color get() = DSTokenStore.tokens().primary
-    val Danger: Color get() = DSTokenStore.tokens().danger
-    val Background: Color get() = DSTokenStore.tokens().background
-    val BackgroundDeep: Color get() = DSTokenStore.tokens().backgroundDeep
-    val Card: Color get() = DSTokenStore.tokens().card
+    val Primary:         Color get() = DSBranding.overridePrimary ?: DSTokenStore.tokens().primary
+    val Accent:          Color get() = DSBranding.overrideAccent  ?: Primary
+    val Danger:          Color get() = DSTokenStore.tokens().danger
+    val Background:      Color get() = DSTokenStore.tokens().background
+    val BackgroundDeep:  Color get() = DSTokenStore.tokens().backgroundDeep
+    val Card:            Color get() = DSTokenStore.tokens().card
     val InputBackground: Color get() = DSTokenStore.tokens().inputBackground
-    val TextPrimary: Color get() = DSTokenStore.tokens().textPrimary
-    val TextSecondary: Color get() = DSTokenStore.tokens().textSecondary
-    val Border: Color get() = DSTokenStore.tokens().border
-    val Success: Color get() = DSTokenStore.tokens().success
-    val Warning: Color get() = DSTokenStore.tokens().warning
-    val Info: Color get() = DSTokenStore.tokens().info
-    val QuietAccent: Color get() = DSTokenStore.tokens().quietAccent
+    val TextPrimary:     Color get() = DSTokenStore.tokens().textPrimary
+    val TextSecondary:   Color get() = DSTokenStore.tokens().textSecondary
+    val Border:          Color get() = DSTokenStore.tokens().border
+    val Success:         Color get() = DSTokenStore.tokens().success
+    val Warning:         Color get() = DSTokenStore.tokens().warning
+    val Info:            Color get() = DSTokenStore.tokens().info
+    val QuietAccent:     Color get() = DSTokenStore.tokens().quietAccent
 }
 
 object DSSpacing {
@@ -216,12 +254,15 @@ object DSSpacing {
 
 object DSRadius {
     val Button get() = DSTokenStore.tokens().radiusButton.dp
-    val Card get() = DSTokenStore.tokens().radiusCard.dp
-    val Input get() = DSTokenStore.tokens().radiusInput.dp
+    val Card   get() = DSTokenStore.tokens().radiusCard.dp
+    val Input  get() = DSTokenStore.tokens().radiusInput.dp
 }
 
 object DSTypography {
-    val Title get() = DSTokenStore.tokens().typeTitle.sp
-    val Body get() = DSTokenStore.tokens().typeBody.sp
-    val Button get() = DSTokenStore.tokens().typeButton.sp
+    val TitleLarge  get() = DSTokenStore.tokens().typeTitleLarge.sp
+    val TitleMedium get() = DSTokenStore.tokens().typeTitleMedium.sp
+    val Title       get() = DSTokenStore.tokens().typeTitle.sp
+    val Body        get() = DSTokenStore.tokens().typeBody.sp
+    val Button      get() = DSTokenStore.tokens().typeButton.sp
+    val Caption     get() = DSTokenStore.tokens().typeCaption.sp
 }
