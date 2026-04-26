@@ -576,6 +576,21 @@ data class TeamAssistFeedItem(
     val cancelAdminLabel: String? = null,
 )
 
+data class PushDeliveryStats(
+    val total: Int = 0,
+    val ok: Int = 0,
+    val failed: Int = 0,
+    val lastError: String? = null,
+)
+
+data class AuditLogEntry(
+    val id: Int,
+    val timestamp: String,
+    val eventType: String,
+    val actorLabel: String? = null,
+    val targetType: String? = null,
+)
+
 data class UiState(
     val alarm: AlarmStatus      = AlarmStatus(),
     val connected: Boolean?     = null,   // null = unknown, true/false = result
@@ -591,6 +606,8 @@ data class UiState(
     val isRefreshingFeed: Boolean = false,
     val teamAssistActionRecipients: List<TeamAssistActionRecipient> = emptyList(),
     val adminQuietPeriodRequests: List<AdminQuietPeriodRequest> = emptyList(),
+    val pushDeliveryStats: PushDeliveryStats? = null,
+    val auditLog: List<AuditLogEntry> = emptyList(),
     val featureLabels: Map<String, String> = AppLabels.DEFAULT_FEATURE_LABELS,
     val tenants: List<TenantSummaryItem> = emptyList(),
     val selectedTenantSlug: String = "",
@@ -865,6 +882,22 @@ class MainViewModel : ViewModel() {
                 .onSuccess { requests ->
                     _state.update { it.copy(adminQuietPeriodRequests = requests) }
                 }
+        }
+    }
+
+    fun refreshPushDeliveryStats(ctx: Context) {
+        val userId = getUserId(ctx).toIntOrNull() ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { client!!.alarmPushStats(userId = userId) }
+                .onSuccess { stats -> _state.update { it.copy(pushDeliveryStats = stats) } }
+        }
+    }
+
+    fun refreshAuditLog(ctx: Context) {
+        val userId = getUserId(ctx).toIntOrNull() ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { client!!.auditLog(userId = userId, limit = 50) }
+                .onSuccess { entries -> _state.update { it.copy(auditLog = entries) } }
         }
     }
 
@@ -1879,9 +1912,12 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
         vm.refreshAdminRecipients()
         vm.refreshTeamAssistActionRecipients()
         vm.refreshAdminQuietPeriodRequests(ctx)
+        vm.refreshPushDeliveryStats(ctx)
+        vm.refreshAuditLog(ctx)
         while (true) {
             vm.refreshAdminInbox(ctx)
             vm.refreshAdminQuietPeriodRequests(ctx)
+            vm.refreshPushDeliveryStats(ctx)
             delay(8_000)
         }
     }
@@ -2345,6 +2381,19 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .padding(horizontal = 20.dp, vertical = 8.dp),
+                            )
+                            PushDeliveryStatsCard(
+                                stats = state.pushDeliveryStats,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 20.dp, vertical = 4.dp),
+                            )
+                            AuditLogCard(
+                                entries = state.auditLog,
+                                onRefresh = { vm.refreshAuditLog(ctx) },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 20.dp, vertical = 4.dp),
                             )
                         }
                     }
@@ -3239,6 +3288,77 @@ private fun AdminQuietPeriodRequestsCard(
                                 }
                             }
                         }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PushDeliveryStatsCard(stats: PushDeliveryStats?, modifier: Modifier = Modifier) {
+    Surface(
+        modifier = modifier,
+        color = SurfaceMain,
+        shape = RoundedCornerShape(20.dp),
+        shadowElevation = 4.dp,
+    ) {
+        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Push Delivery", color = TextPri, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+            if (stats == null || stats.total == 0) {
+                Text("No deliveries recorded for current alert.", color = TextMuted, fontSize = 13.sp)
+            } else {
+                Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                    Text("✓ ${stats.ok} sent", color = Color(0xFF166534), fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                    if (stats.failed > 0) {
+                        Text("✗ ${stats.failed} failed", color = Color(0xFFDC2626), fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                    }
+                }
+                stats.lastError?.takeIf { it.isNotBlank() }?.let {
+                    Text("Last error: $it", color = Color(0xFFDC2626), fontSize = 12.sp, maxLines = 2)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AuditLogCard(entries: List<AuditLogEntry>, onRefresh: () -> Unit, modifier: Modifier = Modifier) {
+    Surface(
+        modifier = modifier,
+        color = SurfaceMain,
+        shape = RoundedCornerShape(20.dp),
+        shadowElevation = 4.dp,
+    ) {
+        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Text("Audit Log", color = TextPri, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                TextButton(onClick = onRefresh) {
+                    Text("Refresh", color = BluePrimary, fontSize = 12.sp)
+                }
+            }
+            if (entries.isEmpty()) {
+                Text("No audit events.", color = TextMuted, fontSize = 13.sp)
+            } else {
+                entries.take(20).forEach { entry ->
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(
+                            entry.eventType.replace("_", " ").replaceFirstChar { it.uppercase() },
+                            color = TextPri,
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 13.sp,
+                        )
+                        Text(
+                            buildString {
+                                entry.actorLabel?.let { append(it); append(" • ") }
+                                append(entry.timestamp.take(16))
+                            },
+                            color = TextMuted,
+                            fontSize = 11.sp,
+                        )
+                    }
+                    if (entry != entries.take(20).last()) {
+                        HorizontalDivider(color = DSColor.Border, thickness = 0.5.dp)
                     }
                 }
             }
@@ -5308,6 +5428,47 @@ private class BackendClient(baseUrl: String, private val apiKey: String) {
             .post(body.toString().toRequestBody(json))
             .build()
         http.newCall(req).execute().use { requireSuccess(it) }
+    }
+
+    fun alarmPushStats(userId: Int): PushDeliveryStats {
+        val req = Request.Builder()
+            .url("$base/alarm/push-stats?user_id=$userId")
+            .withAuth().get().build()
+        http.newCall(req).execute().use { res ->
+            val j = JSONObject(requireSuccess(res))
+            return PushDeliveryStats(
+                total = j.optInt("total", 0),
+                ok = j.optInt("ok", 0),
+                failed = j.optInt("failed", 0),
+                lastError = j.optNullableString("last_error"),
+            )
+        }
+    }
+
+    fun auditLog(userId: Int, limit: Int = 50): List<AuditLogEntry> {
+        val req = Request.Builder()
+            .url("$base/audit-log?user_id=$userId&limit=$limit")
+            .withAuth().get().build()
+        http.newCall(req).execute().use { res ->
+            val j = JSONObject(requireSuccess(res))
+            val items = j.optJSONArray("events")
+            return buildList {
+                if (items != null) {
+                    for (i in 0 until items.length()) {
+                        val item = items.optJSONObject(i) ?: continue
+                        add(
+                            AuditLogEntry(
+                                id = item.optInt("id"),
+                                timestamp = item.optString("timestamp"),
+                                eventType = item.optString("event_type"),
+                                actorLabel = item.optNullableString("actor_label"),
+                                targetType = item.optNullableString("target_type"),
+                            )
+                        )
+                    }
+                }
+            }
+        }
     }
 
     fun deleteQuietPeriodRequest(requestId: Int, userId: Int) {

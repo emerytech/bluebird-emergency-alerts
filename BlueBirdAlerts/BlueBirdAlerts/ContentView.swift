@@ -519,6 +519,9 @@ struct ContentView: View {
     @State private var pendingQuietActionItem: QuietPeriodAdminRequest? = nil
     @State private var pendingQuietActionIsApprove: Bool = true
     @State private var processedEventIDs: Set<String> = []
+    @State private var pushDeliveryStats: PushDeliveryStatsResponse?
+    @State private var auditLogEntries: [AuditLogEntry] = []
+    @State private var isLoadingAuditLog = false
     @State private var featureLabels: [String: String] = AppLabels.defaultFeatureLabels
     @State private var holdFlashActive = false
     @State private var holdFlashProgress: Double = 0
@@ -606,6 +609,8 @@ struct ContentView: View {
                         supportActionsCard
                         if isAdminSession {
                             trainingModeCard
+                            adminPushStatsCard
+                            adminAuditLogCard
                         }
                     }
                     .padding(.horizontal, 16)
@@ -692,6 +697,8 @@ struct ContentView: View {
                     await loadAdminRecipients()
                     await loadTeamAssistForwardRecipients()
                     await loadAdminQuietPeriodRequests()
+                    await loadPushDeliveryStats()
+                    await loadAuditLog()
                 }
                 if let token = appState.deviceToken, appState.initialDeviceAuthUserID == nil {
                     appState.usingLocalTestToken = (token == localTestToken)
@@ -709,6 +716,7 @@ struct ContentView: View {
                         await loadAdminRecipients()
                         await loadTeamAssistForwardRecipients()
                         await loadAdminQuietPeriodRequests()
+                        await loadPushDeliveryStats()
                     }
                 }
             }
@@ -1636,6 +1644,89 @@ struct ContentView: View {
             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
+    private var adminPushStatsCard: some View {
+        card {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Push Delivery")
+                    .font(.headline)
+                    .foregroundStyle(textPrimary)
+                if let stats = pushDeliveryStats {
+                    if stats.total == 0 {
+                        Text("No deliveries recorded for current alert.")
+                            .font(.subheadline)
+                            .foregroundStyle(textMuted)
+                    } else {
+                        HStack(spacing: 16) {
+                            Label("\(stats.ok) sent", systemImage: "checkmark.circle.fill")
+                                .foregroundStyle(DSColor.success)
+                            if stats.failed > 0 {
+                                Label("\(stats.failed) failed", systemImage: "exclamationmark.triangle.fill")
+                                    .foregroundStyle(DSColor.danger)
+                            }
+                        }
+                        .font(.subheadline.weight(.semibold))
+                        if let err = stats.lastError, !err.isEmpty {
+                            Text("Last error: \(err)")
+                                .font(.caption)
+                                .foregroundStyle(DSColor.danger)
+                                .lineLimit(2)
+                        }
+                    }
+                } else {
+                    Text("—")
+                        .font(.subheadline)
+                        .foregroundStyle(textMuted)
+                }
+            }
+        }
+    }
+
+    private var adminAuditLogCard: some View {
+        card {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Text("Audit Log")
+                        .font(.headline)
+                        .foregroundStyle(textPrimary)
+                    Spacer()
+                    Button {
+                        Task { await loadAuditLog() }
+                    } label: {
+                        Text(isLoadingAuditLog ? "Loading…" : "Refresh")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(bluePrimary)
+                    }
+                    .disabled(isLoadingAuditLog)
+                }
+                if auditLogEntries.isEmpty {
+                    Text("No audit events.")
+                        .font(.subheadline)
+                        .foregroundStyle(textMuted)
+                } else {
+                    ForEach(auditLogEntries.prefix(20)) { entry in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(entry.eventType.replacingOccurrences(of: "_", with: " ").capitalized)
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(textPrimary)
+                            HStack(spacing: 6) {
+                                if let label = entry.actorLabel {
+                                    Text(label)
+                                }
+                                Text(entry.timestamp.prefix(16))
+                            }
+                            .font(.caption2)
+                            .foregroundStyle(textMuted)
+                        }
+                        .padding(.vertical, 2)
+                        if entry.id != auditLogEntries.prefix(20).last?.id {
+                            Divider()
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     private func card<Content: View>(@ViewBuilder content: () -> Content) -> some View {
         content()
             .padding(16)
@@ -1995,6 +2086,20 @@ struct ContentView: View {
             if adminQuietPeriodRequests.isEmpty {
                 appState.lastError = "Could not load quiet period requests."
             }
+        }
+    }
+
+    private func loadPushDeliveryStats() async {
+        guard isAdminSession, let adminUserID = appState.userID else { return }
+        pushDeliveryStats = try? await api.alarmPushStats(userID: adminUserID)
+    }
+
+    private func loadAuditLog() async {
+        guard isAdminSession, let adminUserID = appState.userID else { return }
+        isLoadingAuditLog = true
+        defer { isLoadingAuditLog = false }
+        if let response = try? await api.auditLog(userID: adminUserID, limit: 50) {
+            auditLogEntries = response.events
         }
     }
 

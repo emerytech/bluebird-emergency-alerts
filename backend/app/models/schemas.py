@@ -566,3 +566,27 @@ class TenantOverviewItem(BaseModel):
 class DistrictOverviewResponse(BaseModel):
     tenant_count: int
     tenants: List[TenantOverviewItem]
+
+
+# ── Phase 8: Production hardening schemas ─────────────────────────────────────
+
+class PushDeliveryStatsResponse(BaseModel):
+    total: int = 0
+    ok: int = 0
+    failed: int = 0
+    last_error: Optional[str] = None
+
+
+class AuditLogEntry(BaseModel):
+    id: int
+    timestamp: str
+    event_type: str
+    actor_user_id: Optional[int] = None
+    actor_label: Optional[str] = None
+    target_type: Optional[str] = None
+    target_id: Optional[str] = None
+    metadata: Dict = {}
+
+
+class AuditLogResponse(BaseModel):
+    events: List[AuditLogEntry]

@@ -246,6 +246,31 @@ struct APIClient {
         return try JSONDecoder().decode(QuietPeriodRequestResponse.self, from: data)
     }
 
+    func alarmPushStats(userID: Int) async throws -> PushDeliveryStatsResponse {
+        var components = URLComponents(url: baseURL.appendingPathComponent("alarm/push-stats"), resolvingAgainstBaseURL: false)
+        components?.queryItems = [URLQueryItem(name: "user_id", value: String(userID))]
+        guard let url = components?.url else { throw URLError(.badURL) }
+        var request = URLRequest(url: url)
+        withAPIKey(&request)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try requireSuccess(response: response, data: data)
+        return try JSONDecoder().decode(PushDeliveryStatsResponse.self, from: data)
+    }
+
+    func auditLog(userID: Int, limit: Int = 50) async throws -> AuditLogResponse {
+        var components = URLComponents(url: baseURL.appendingPathComponent("audit-log"), resolvingAgainstBaseURL: false)
+        components?.queryItems = [
+            URLQueryItem(name: "user_id", value: String(userID)),
+            URLQueryItem(name: "limit", value: String(limit)),
+        ]
+        guard let url = components?.url else { throw URLError(.badURL) }
+        var request = URLRequest(url: url)
+        withAPIKey(&request)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try requireSuccess(response: response, data: data)
+        return try JSONDecoder().decode(AuditLogResponse.self, from: data)
+    }
+
     func listSchools() async throws -> SchoolsCatalogResponse {
         let url = Config.backendBaseURL.appendingPathComponent("schools")
         let (data, response) = try await URLSession.shared.data(from: url)
@@ -842,4 +867,49 @@ struct DistrictOverviewResponse: Decodable {
         case tenantCount = "tenant_count"
         case tenants
     }
+}
+
+// MARK: - Phase 8: Production hardening models
+
+struct PushDeliveryStatsResponse: Decodable {
+    let total: Int
+    let ok: Int
+    let failed: Int
+    let lastError: String?
+
+    enum CodingKeys: String, CodingKey {
+        case total, ok, failed
+        case lastError = "last_error"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        total = try c.decodeIfPresent(Int.self, forKey: .total) ?? 0
+        ok = try c.decodeIfPresent(Int.self, forKey: .ok) ?? 0
+        failed = try c.decodeIfPresent(Int.self, forKey: .failed) ?? 0
+        lastError = try c.decodeIfPresent(String.self, forKey: .lastError)
+    }
+}
+
+struct AuditLogEntry: Decodable, Identifiable {
+    let id: Int
+    let timestamp: String
+    let eventType: String
+    let actorUserID: Int?
+    let actorLabel: String?
+    let targetType: String?
+    let targetId: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id, timestamp
+        case eventType = "event_type"
+        case actorUserID = "actor_user_id"
+        case actorLabel = "actor_label"
+        case targetType = "target_type"
+        case targetId = "target_id"
+    }
+}
+
+struct AuditLogResponse: Decodable {
+    let events: [AuditLogEntry]
 }

@@ -30,17 +30,16 @@
 - iOS: `teamAssistFeedRow` shows Acknowledge (open/active only), Resolve, Forward buttons based on status; `AdminRequestHelpPromptSheet` now has Acknowledge + Resolve
 - Android: `TeamAssistRow` shows status-aware chips; admin prompt dialog updated to Acknowledge/Resolve; WS handlers refresh team assist list
 
+### Phase 7.6 — Alarm Confirmation Tracking
+- `AlarmStatusResponse` iOS model now decodes `acknowledgement_count` + `current_user_acknowledged`
+- iOS ContentView: `alarmAcknowledgementCount` + `alarmCurrentUserAcknowledged` state vars; populated from `refreshIncidentFeed()`; banner shows "✓ N acknowledged" when count > 0
+- Android `AlarmStatus` data class: added `acknowledgementCount` + `currentUserAcknowledged`; both `alarmStatus()` and `parseAlarm()` parse new fields; `AlarmBanner` shows ack count line
+
 ---
 
 ## Current Phase
 
-### Phase 7.6 — Alarm Confirmation Tracking
-**GOAL**: Track per-user alarm acknowledgement, surface counts in admin feed
-
-**Scope**:
-- Backend: store ack per user per alert; expose count in alarm status response
-- iOS + Android: show ack count badge in active alarm banner
-- WS: no new event needed (polling covers it)
+### Phase 8 — Production Hardening
 
 ---
 

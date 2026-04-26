@@ -13,9 +13,11 @@ import os
 import socket
 import sys
 import time
+from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from html import escape
+from threading import Lock
 from types import SimpleNamespace
 from typing import Optional, cast
 
@@ -78,6 +80,9 @@ from app.models.schemas import (
     SchoolsCatalogResponse,
     UserSummary,
     UsersResponse,
+    PushDeliveryStatsResponse,
+    AuditLogEntry,
+    AuditLogResponse,
 )
 from app.services.alert_broadcaster import BroadcastPlan, AlertBroadcaster
 from app.services.alarm_store import AlarmStateRecord, AlarmStore
@@ -127,6 +132,24 @@ from app.web.admin_views import (
 
 router = APIRouter()
 logger = logging.getLogger("bluebird.routes")
+
+# ── Alarm activation rate limiter (per-tenant, in-memory) ─────────────────────
+_alarm_rate_store: dict[str, deque] = {}
+_alarm_rate_lock = Lock()
+
+def _check_alarm_rate_limit(slug: str, *, max_activations: int = 5, window_seconds: int = 60) -> bool:
+    """Returns True if within limit. Allows up to max_activations per window per tenant."""
+    now = time.monotonic()
+    with _alarm_rate_lock:
+        if slug not in _alarm_rate_store:
+            _alarm_rate_store[slug] = deque()
+        dq = _alarm_rate_store[slug]
+        while dq and now - dq[0] > window_seconds:
+            dq.popleft()
+        if len(dq) >= max_activations:
+            return False
+        dq.append(now)
+        return True
 TRUST_DEVICE_TTL_SECONDS = 14 * 24 * 60 * 60
 ADMIN_TRUST_COOKIE = "bluebird_admin_trusted_device"
 SUPER_ADMIN_TRUST_COOKIE = "bluebird_super_admin_trusted_device"
@@ -1348,6 +1371,60 @@ async def alarm_status(
     )
 
 
+@router.get("/alarm/push-stats", response_model=PushDeliveryStatsResponse)
+async def alarm_push_stats(
+    request: Request,
+    user_id: int = Query(...),
+    _: None = Depends(require_api_key),
+) -> PushDeliveryStatsResponse:
+    users = _users(request)
+    user = await users.get_user(user_id)
+    if user is None or not user.is_active or not is_dashboard_role(user.role):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
+    latest = await _alert_log(request).latest_alert()
+    if latest is None:
+        return PushDeliveryStatsResponse()
+    stats = await _alert_log(request).delivery_stats(latest.id)
+    return PushDeliveryStatsResponse(
+        total=stats.get("total", 0),
+        ok=stats.get("ok", 0),
+        failed=stats.get("failed", 0),
+        last_error=stats.get("last_error"),
+    )
+
+
+@router.get("/audit-log", response_model=AuditLogResponse)
+async def get_audit_log(
+    request: Request,
+    user_id: int = Query(...),
+    limit: int = Query(default=50, le=200),
+    _: None = Depends(require_api_key),
+) -> AuditLogResponse:
+    users = _users(request)
+    actor_id = await _require_active_user_with_any_permission(
+        users,
+        user_id,
+        permissions={PERM_MANAGE_OWN_TENANT_USERS, PERM_MANAGE_ASSIGNED_TENANT_USERS},
+    )
+    _ = actor_id
+    events = await _audit_log_svc(request).list_recent(limit=limit)
+    return AuditLogResponse(
+        events=[
+            AuditLogEntry(
+                id=e.id,
+                timestamp=e.timestamp,
+                event_type=e.event_type,
+                actor_user_id=e.actor_user_id,
+                actor_label=e.actor_label,
+                target_type=e.target_type,
+                target_id=e.target_id,
+                metadata=e.metadata,
+            )
+            for e in events
+        ]
+    )
+
+
 @router.post("/alarm/activate", response_model=AlarmStatusResponse)
 async def activate_alarm(
     body: AlarmActivateRequest,
@@ -1371,6 +1448,11 @@ async def activate_alarm(
     await _ensure_no_active_alarm(request)
 
     effective_slug = _tenant(request).slug
+    if not _check_alarm_rate_limit(effective_slug):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many alarm activations. Please wait before trying again.",
+        )
     trigger_ip = request.client.host if request.client else None
     trigger_user_agent = request.headers.get("user-agent")
     alert_id = await _alert_log(request).log_alert(
