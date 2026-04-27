@@ -1057,15 +1057,21 @@ class MainViewModel : ViewModel() {
             _state.update { it.copy(errorMsg = "Sign-in is required.") }
             return
         }
+        // Optimistic: remove immediately so the UI updates without waiting for the round-trip.
+        _state.update { it.copy(
+            isBusy = true,
+            errorMsg = null,
+            activeTeamAssists = it.activeTeamAssists.filter { ta -> ta.id != teamAssistId },
+        ) }
         viewModelScope.launch(Dispatchers.IO) {
-            _state.update { it.copy(isBusy = true, errorMsg = null) }
             runCatching { client!!.cancelTeamAssist(teamAssistId = teamAssistId, userId = userId, reasonText = reasonText, reasonCategory = reasonCategory) }
                 .onSuccess {
-                    val activeTeamAssists = runCatching { client!!.activeRequestHelp() }.getOrDefault(_state.value.activeTeamAssists)
-                    _state.update { it.copy(isBusy = false, successMsg = "Help request cancelled.", activeTeamAssists = activeTeamAssists) }
+                    val confirmed = runCatching { client!!.activeRequestHelp() }.getOrDefault(_state.value.activeTeamAssists)
+                    _state.update { it.copy(isBusy = false, successMsg = "Help request cancelled.", activeTeamAssists = confirmed) }
                 }
                 .onFailure { e ->
-                    _state.update { it.copy(isBusy = false, errorMsg = e.message ?: "Failed to cancel help request.") }
+                    val restored = runCatching { client!!.activeRequestHelp() }.getOrDefault(_state.value.activeTeamAssists)
+                    _state.update { it.copy(isBusy = false, errorMsg = e.message ?: "Failed to cancel help request.", activeTeamAssists = restored) }
                 }
         }
     }
