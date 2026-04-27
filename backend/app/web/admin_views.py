@@ -696,6 +696,144 @@ def _base_styles(theme: Optional[Mapping[str, str]] = None) -> str:
       vertical-align: middle;
       margin-left: 6px;
     }
+    /* ── Enterprise User Management ─────────────────────────────────────── */
+    .role-badge {
+      display: inline-flex; align-items: center; padding: 3px 10px;
+      border-radius: 999px; font-size: 0.73rem; font-weight: 700;
+      letter-spacing: 0.03em; white-space: nowrap; vertical-align: middle;
+    }
+    .rb-district_admin { background: linear-gradient(135deg,#5b21b6,#4338ca); color:#fff; }
+    .rb-admin, .rb-building_admin { background: rgba(27,95,228,.13); color:#1e40af; border:1px solid rgba(27,95,228,.22); }
+    .rb-teacher, .rb-staff { background: rgba(71,85,105,.09); color:#475569; border:1px solid rgba(71,85,105,.18); }
+    .rb-law_enforcement { background: rgba(180,83,9,.12); color:#92400e; border:1px solid rgba(180,83,9,.22); }
+    .rb-super_admin { background: linear-gradient(135deg,#0f172a,#1e293b); color:#e2e8f0; }
+    .um-avatar {
+      width:36px; height:36px; border-radius:50%; display:inline-flex;
+      align-items:center; justify-content:center; font-size:0.73rem;
+      font-weight:800; flex-shrink:0; letter-spacing:0.02em;
+    }
+    .ua-district_admin { background:linear-gradient(135deg,#5b21b6,#4338ca); color:#fff; }
+    .ua-admin, .ua-building_admin { background:rgba(27,95,228,.16); color:#1e40af; }
+    .ua-teacher, .ua-staff { background:rgba(71,85,105,.12); color:#475569; }
+    .ua-law_enforcement { background:rgba(180,83,9,.14); color:#92400e; }
+    .ua-super_admin { background:linear-gradient(135deg,#0f172a,#1e293b); color:#e2e8f0; }
+    .um-name-cell { display:flex; align-items:center; gap:12px; }
+    .um-name-stack { display:flex; flex-direction:column; gap:1px; }
+    .um-name { font-weight:600; font-size:0.92rem; color:var(--text); }
+    .um-sub { font-size:0.76rem; color:var(--muted); }
+    .um-table { border-collapse: collapse; width: 100%; }
+    .um-table thead th {
+      background:rgba(27,95,228,.04); border-bottom:2px solid var(--border);
+      font-size:0.72rem; font-weight:700; letter-spacing:0.05em;
+      text-transform:uppercase; color:var(--muted); padding:10px 12px; white-space:nowrap;
+    }
+    .um-table tbody tr {
+      cursor:pointer; border-bottom:1px solid rgba(0,0,0,.045);
+      transition:background 110ms ease;
+    }
+    .um-table tbody tr:hover { background:rgba(27,95,228,.055); }
+    .um-table tbody tr.um-row-active { background:rgba(27,95,228,.10); box-shadow:inset 3px 0 0 var(--accent); }
+    .um-table td { padding:12px 12px; vertical-align:middle; font-size:0.9rem; border:0; }
+    /* Slide panel */
+    .um-detail-panel {
+      position:fixed; top:0; right:-440px; width:420px; height:100vh;
+      background:#fff; border-left:1px solid var(--border);
+      box-shadow:-8px 0 40px rgba(0,0,0,.13); z-index:1000;
+      transition:right 260ms cubic-bezier(0.22,0.61,0.36,1);
+      overflow-y:auto; display:flex; flex-direction:column;
+    }
+    .um-detail-panel.open { right:0; }
+    .um-panel-overlay {
+      display:none; position:fixed; inset:0;
+      background:rgba(0,0,0,.18); z-index:999; backdrop-filter:blur(2px);
+    }
+    .um-panel-overlay.open { display:block; }
+    .um-panel-hd {
+      padding:22px 22px 16px; border-bottom:1px solid var(--border);
+      background:linear-gradient(180deg,rgba(27,95,228,.04),transparent);
+      position:relative; flex-shrink:0;
+    }
+    .um-panel-avatar {
+      width:52px; height:52px; border-radius:50%; display:flex;
+      align-items:center; justify-content:center; font-size:1.1rem;
+      font-weight:800; margin-bottom:12px;
+    }
+    .um-panel-close {
+      position:absolute; top:14px; right:14px; width:30px; height:30px;
+      border-radius:50%; border:1px solid var(--border); background:#fff;
+      cursor:pointer; display:flex; align-items:center; justify-content:center;
+      font-size:1rem; color:var(--muted); transition:background 120ms;
+      line-height:1;
+    }
+    .um-panel-close:hover { background:rgba(220,38,38,.1); color:var(--danger); }
+    .um-panel-name { font-size:1.05rem; font-weight:700; margin:0 0 3px; color:var(--text); }
+    .um-panel-meta { color:var(--muted); font-size:0.8rem; line-height:1.5; }
+    .um-panel-body { padding:18px 22px; display:flex; flex-direction:column; gap:18px; }
+    .um-panel-sect-label {
+      font-size:0.7rem; font-weight:700; text-transform:uppercase;
+      letter-spacing:0.08em; color:var(--muted); margin:0 0 8px;
+    }
+    .um-perm-list { display:flex; flex-direction:column; gap:4px; }
+    .um-perm-item {
+      display:flex; align-items:center; gap:8px; font-size:0.8rem;
+      padding:5px 10px; border-radius:8px; background:rgba(0,0,0,.025); color:var(--text);
+    }
+    .um-perm-dot { width:6px; height:6px; border-radius:50%; background:var(--success); flex-shrink:0; }
+    .um-panel-actions { display:flex; flex-direction:column; gap:8px; }
+    /* Security health bar */
+    .um-health-bar {
+      display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr));
+      gap:10px; margin-bottom:18px;
+    }
+    .um-hcard {
+      background:rgba(255,255,255,.92); border:1px solid var(--border);
+      border-radius:12px; padding:13px 16px; position:relative; overflow:hidden;
+    }
+    .um-hcard::before {
+      content:""; position:absolute; top:0; left:0; right:0;
+      height:3px; border-radius:3px 3px 0 0;
+    }
+    .um-hcard.hc-ok::before { background:var(--success); }
+    .um-hcard.hc-warn::before { background:var(--warning); }
+    .um-hcard.hc-danger::before { background:var(--danger); }
+    .um-hcard-label { font-size:0.7rem; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; color:var(--muted); margin-bottom:4px; }
+    .um-hcard-value { font-size:1.55rem; font-weight:800; line-height:1; color:var(--text); }
+    .um-hcard-sub { font-size:0.7rem; color:var(--muted); margin-top:3px; }
+    /* Role change modal */
+    .um-modal-wrap {
+      display:none; position:fixed; inset:0;
+      background:rgba(0,0,0,.4); z-index:1100;
+      backdrop-filter:blur(4px); align-items:center; justify-content:center;
+    }
+    .um-modal-wrap.open { display:flex; }
+    .um-modal {
+      background:#fff; border-radius:20px; padding:28px 30px;
+      max-width:420px; width:90%;
+      box-shadow:0 24px 64px rgba(0,0,0,.22);
+    }
+    .um-modal h3 { margin:0 0 8px; font-size:1.05rem; color:var(--text); }
+    .um-modal-desc { color:var(--muted); font-size:0.88rem; margin:0 0 14px; line-height:1.55; }
+    .um-modal-warning {
+      background:rgba(220,38,38,.08); border:1px solid rgba(220,38,38,.22);
+      border-radius:10px; padding:10px 14px; color:#b91c1c;
+      font-size:0.8rem; margin-bottom:18px; line-height:1.45;
+    }
+    .um-modal-actions { display:flex; gap:10px; justify-content:flex-end; }
+    /* Collapsible edit forms */
+    .um-edit-wrap { display:none; }
+    .um-edit-wrap.open { display:block; }
+    /* Toast */
+    .bb-toast {
+      position:fixed; bottom:26px; right:26px;
+      background:#1e293b; color:#fff;
+      padding:11px 18px; border-radius:14px; font-size:0.86rem; font-weight:500;
+      z-index:2000; opacity:0; transform:translateY(6px);
+      transition:opacity 220ms ease,transform 220ms ease;
+      box-shadow:0 8px 24px rgba(0,0,0,.22); pointer-events:none;
+    }
+    .bb-toast.show { opacity:1; transform:translateY(0); }
+    .bb-toast.ok { background:linear-gradient(135deg,#065f46,#047857); }
+    .bb-toast.err { background:linear-gradient(135deg,#991b1b,#dc2626); }
     """
 
 
@@ -2676,6 +2814,188 @@ def _render_device_rows(devices: Sequence[RegisteredDevice], users: Sequence[Use
     return "".join(rows)
 
 
+_ROLE_BADGE_LABEL: dict[str, str] = {
+    "district_admin": "District Admin",
+    "admin": "Admin",
+    "building_admin": "Building Admin",
+    "teacher": "Teacher",
+    "staff": "Staff",
+    "law_enforcement": "Law Enforcement",
+    "super_admin": "Super Admin",
+}
+
+_ROLE_PERMS_HUMAN: dict[str, list[str]] = {
+    "teacher":  ["Send help requests", "View incident feed", "Submit quiet period request"],
+    "staff":    ["Send help requests", "View incident feed", "Submit quiet period request"],
+    "law_enforcement": ["Send help requests", "Submit quiet period request", "View assigned incidents", "Receive school alerts"],
+    "admin":    ["Manage school users", "Trigger alerts", "Approve quiet requests", "Submit quiet period request"],
+    "building_admin": ["Manage school users", "Trigger alerts", "Approve quiet requests", "Submit quiet period request"],
+    "district_admin": ["Manage all school users", "Trigger alerts", "Approve quiet requests", "Manage district schools", "Generate access codes"],
+    "super_admin": ["Full platform access — unrestricted"],
+}
+
+
+def _um_role_badge(role: str) -> str:
+    label = _ROLE_BADGE_LABEL.get(role, role)
+    return f'<span class="role-badge rb-{escape(role)}">{escape(label)}</span>'
+
+
+def _um_avatar(name: str, role: str) -> str:
+    initials = "".join(w[0] for w in (name or "?").split()[:2]).upper() or "?"
+    return f'<div class="um-avatar ua-{escape(role)}">{escape(initials)}</div>'
+
+
+def _um_health_bar(users: "Sequence[UserRecord]") -> str:
+    total = len(users)
+    active = sum(1 for u in users if u.is_active)
+    login_enabled = sum(1 for u in users if getattr(u, "can_login", False))
+    da_count = sum(1 for u in users if u.role == "district_admin" and u.is_active)
+    if da_count >= 2:
+        da_cls, da_sub = "hc-ok", "Healthy — redundancy in place"
+    elif da_count == 1:
+        da_cls, da_sub = "hc-warn", "Warning — single point of failure"
+    else:
+        da_cls, da_sub = "hc-danger", "Critical — no district admin!"
+    sec_cls = "hc-ok" if da_count >= 1 else "hc-danger"
+    sec_label = "Healthy" if da_count >= 1 else "At Risk"
+    return (
+        '<div class="um-health-bar">'
+        f'<div class="um-hcard hc-ok"><div class="um-hcard-label">Total Users</div><div class="um-hcard-value">{total}</div><div class="um-hcard-sub">{active} active</div></div>'
+        f'<div class="um-hcard {da_cls}"><div class="um-hcard-label">District Admins</div><div class="um-hcard-value">{da_count}</div><div class="um-hcard-sub">{da_sub}</div></div>'
+        f'<div class="um-hcard hc-ok"><div class="um-hcard-label">Login Enabled</div><div class="um-hcard-value">{login_enabled}</div><div class="um-hcard-sub">Can access dashboard</div></div>'
+        f'<div class="um-hcard {sec_cls}"><div class="um-hcard-label">Security Status</div><div class="um-hcard-value" style="font-size:1.1rem;padding-top:2px;">{escape(sec_label)}</div><div class="um-hcard-sub">Role hierarchy integrity</div></div>'
+        '</div>'
+    )
+
+
+def _um_enterprise_table(
+    users: "Sequence[UserRecord]",
+    prefix: str,
+    *,
+    actor_role: str = "",
+    actor_user_id: Optional[int] = None,
+) -> str:
+    if not users:
+        return '<p class="mini-copy" style="padding:16px 0;">No users yet.</p>'
+    rows = []
+    for u in users:
+        is_self = actor_user_id is not None and u.id == actor_user_id
+        status_badge = (
+            '<span class="status-pill ok" style="font-size:.72rem;padding:2px 9px;min-height:0;">Active</span>'
+            if u.is_active else
+            '<span class="status-pill danger" style="font-size:.72rem;padding:2px 9px;min-height:0;">Inactive</span>'
+        )
+        last = escape(getattr(u, "last_login_at", None) or "Never")[:16].replace("T", " ")
+        title_str = f'<span class="um-sub">{escape(u.title)}</span>' if getattr(u, "title", "") else ""
+        login_str = escape(u.login_name or "—")
+        # Build user JSON for slide panel (no password fields)
+        user_json = json.dumps({
+            "id": u.id,
+            "name": u.name,
+            "role": u.role,
+            "title": getattr(u, "title", "") or "",
+            "login": u.login_name or "",
+            "phone": getattr(u, "phone_e164", "") or "",
+            "is_active": u.is_active,
+            "last_login": last,
+            "is_self": is_self,
+        })
+        self_badge = ' <span class="role-badge" style="background:rgba(27,95,228,.1);color:#1e40af;font-size:.68rem;">You</span>' if is_self else ""
+        rows.append(
+            f'<tr class="um-row" data-uid="{u.id}" data-user=\'{escape(user_json)}\' title="Click to view details">'
+            f'<td style="width:44px;">{_um_avatar(u.name, u.role)}</td>'
+            f'<td><div class="um-name-cell"><div class="um-name-stack"><span class="um-name">{escape(u.name)}{self_badge}</span>{title_str}</div></div></td>'
+            f'<td style="font-size:0.8rem;color:var(--muted);">{login_str}</td>'
+            f'<td>{_um_role_badge(u.role)}</td>'
+            f'<td>{status_badge}</td>'
+            f'<td style="color:var(--muted);font-size:0.8rem;">{last}</td>'
+            f'<td style="text-align:right;">'
+            f'<button class="button button-secondary um-edit-btn" style="min-height:32px;font-size:0.8rem;padding:0 12px;" '
+            f'data-uid="{u.id}" onclick="event.stopPropagation();umToggleEdit({u.id})">Edit</button>'
+            f'</td>'
+            f'</tr>'
+            f'<tr id="um-editrow-{u.id}" class="um-edit-row" style="display:none;">'
+            f'<td colspan="7" style="padding:0;">'
+            f'<div class="um-edit-inner" id="um-edit-{u.id}"></div>'
+            f'</td>'
+            f'</tr>'
+        )
+    return (
+        '<div class="table-wrap">'
+        '<table class="um-table">'
+        '<thead><tr>'
+        '<th></th><th>Name</th><th>Username</th><th>Role</th>'
+        '<th>Status</th><th>Last Login</th><th style="text-align:right;">Actions</th>'
+        '</tr></thead>'
+        '<tbody>' + "".join(rows) + '</tbody>'
+        '</table></div>'
+    )
+
+
+def _um_slide_panel() -> str:
+    return """
+<div class="um-panel-overlay" id="um-overlay"></div>
+<div class="um-detail-panel" id="um-panel">
+  <div class="um-panel-hd">
+    <button class="um-panel-close" id="um-panel-close" aria-label="Close">&#x2715;</button>
+    <div class="um-panel-avatar" id="up-avatar"></div>
+    <div class="um-panel-name" id="up-name"></div>
+    <div class="um-panel-meta" id="up-meta"></div>
+  </div>
+  <div class="um-panel-body">
+    <div>
+      <div class="um-panel-sect-label">Role &amp; Status</div>
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+        <span id="up-role-badge"></span>
+        <span id="up-status-pill"></span>
+      </div>
+    </div>
+    <div>
+      <div class="um-panel-sect-label">Access Permissions</div>
+      <div class="um-perm-list" id="up-perms"></div>
+    </div>
+    <div id="up-contact-sect">
+      <div class="um-panel-sect-label">Contact &amp; Login</div>
+      <div style="display:grid;gap:6px;font-size:0.83rem;">
+        <div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid rgba(0,0,0,.06);">
+          <span style="color:var(--muted);">Username</span><span id="up-login" style="font-weight:500;"></span>
+        </div>
+        <div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid rgba(0,0,0,.06);">
+          <span style="color:var(--muted);">Last login</span><span id="up-last-login" style="font-weight:500;"></span>
+        </div>
+        <div style="display:flex;justify-content:space-between;padding:5px 0;">
+          <span style="color:var(--muted);">User ID</span><span id="up-uid" style="font-weight:500;font-family:monospace;"></span>
+        </div>
+      </div>
+    </div>
+    <div>
+      <div class="um-panel-sect-label">Actions</div>
+      <div class="um-panel-actions" id="up-actions"></div>
+    </div>
+  </div>
+</div>
+"""
+
+
+def _um_role_modal() -> str:
+    return """
+<div class="um-modal-wrap" id="um-role-modal">
+  <div class="um-modal">
+    <h3>Confirm Role Change</h3>
+    <p class="um-modal-desc">
+      You are changing <strong id="rm-user"></strong> from
+      <strong id="rm-old-role"></strong> &rarr; <strong id="rm-new-role"></strong>.
+    </p>
+    <div class="um-modal-warning" id="rm-warning" style="display:none;"></div>
+    <div class="um-modal-actions">
+      <button class="button button-secondary" id="rm-cancel">Cancel</button>
+      <button class="button button-primary" id="rm-confirm">Confirm Change</button>
+    </div>
+  </div>
+</div>
+"""
+
+
 def _render_user_cards(
     users: Sequence[UserRecord],
     school_path_prefix: str,
@@ -2723,74 +3043,56 @@ def _render_user_cards(
         elif user.role in {"district_admin", "law_enforcement"}:
             assignment_block = f'<p class="mini-copy">Assigned tenants: {assignment_label}</p>'
         title_display = f' <span class="mini-copy">— {escape(user.title)}</span>' if user.title else ""
+        is_self = actor_user_id is not None and user.id == actor_user_id
+        role_field = (
+            '<p class="mini-copy" style="color:#b45309;margin:0;">You cannot change your own role.</p>'
+            f'<input type="hidden" name="role" value="{escape(user.role)}" />'
+            if is_self else (
+                '<select name="role" class="um-role-select">'
+                + f'<option value="teacher" {"selected" if user.role == "teacher" else ""}>Teacher / Standard</option>'
+                + f'<option value="staff" {"selected" if user.role == "staff" else ""}>Staff</option>'
+                + f'<option value="law_enforcement" {"selected" if user.role == "law_enforcement" else ""}>Law Enforcement</option>'
+                + f'<option value="building_admin" {"selected" if user.role == "building_admin" else ""}>Building Admin</option>'
+                + f'<option value="admin" {"selected" if user.role == "admin" else ""}>Admin</option>'
+                + (f'<option value="district_admin" {"selected" if user.role == "district_admin" else ""}>District Admin</option>' if _actor_can_change_roles else '')
+                + '</select>'
+            )
+        )
         cards.append(
-            f"""
-            <article class="user-card">
-              <form method="post" action="{prefix}/admin/users/{user.id}/update" class="stack">
-                <div class="panel-header">
-                  <div>
-                    <h3>{escape(user.name)}{title_display}</h3>
-                    <p class="mini-copy">User #{user.id} • created {escape(user.created_at)}</p>
-                    {tenant_badge}
-                  </div>
-                  <span class="status-pill {'ok' if user.is_active else 'danger'}">{'Active' if user.is_active else 'Inactive'}</span>
-                </div>
-                <div class="form-grid">
-                  <div class="field">
-                    <label>Name</label>
-                    <input name="name" value="{escape(user.name)}" />
-                  </div>
-                  <div class="field">
-                    <label>Role</label>
-                    {'<p class="mini-copy" style="color:var(--color-warning,#b45309);">You cannot change your own role.</p><input type="hidden" name="role" value="' + escape(user.role) + '" />' if actor_user_id is not None and user.id == actor_user_id else (
-                    '<select name="role">'
-                    + f'<option value="teacher" {"selected" if user.role == "teacher" else ""}>standard / teacher</option>'
-                    + f'<option value="law_enforcement" {"selected" if user.role == "law_enforcement" else ""}>law enforcement</option>'
-                    + f'<option value="staff" {"selected" if user.role == "staff" else ""}>staff</option>'
-                    + f'<option value="building_admin" {"selected" if user.role == "building_admin" else ""}>building admin</option>'
-                    + f'<option value="admin" {"selected" if user.role == "admin" else ""}>admin</option>'
-                    + (f'<option value="district_admin" {"selected" if user.role == "district_admin" else ""}>district admin</option>' if _actor_can_change_roles else '')
-                    + '</select>'
-                    )}
-                  </div>
-                  <div class="field">
-                    <label>Title</label>
-                    <input name="title" value="{user_title}" placeholder="optional job title, e.g. Principal" />
-                  </div>
-                  <div class="field">
-                    <label>Phone</label>
-                    <input name="phone_e164" value="{phone}" placeholder="+15551234567" />
-                  </div>
-                  <div class="field">
-                    <label>Username</label>
-                    <input name="login_name" value="{login_name}" placeholder="optional login username" />
-                  </div>
-                  <div class="field">
-                    <label>New password</label>
-                    <input name="password" type="password" placeholder="leave blank to keep current" />
-                  </div>
-                  <div class="checkbox-row">
-                    <input type="checkbox" name="is_active" value="1" {checked_active} />
-                    <span>Account active</span>
-                  </div>
-                  <div class="checkbox-row">
-                    <input type="checkbox" name="clear_login" value="1" {checked_clear_login} />
-                    <span>Clear login credentials</span>
-                  </div>
-                </div>
-                <div class="button-row">
-                  <button class="button button-primary" type="submit">Save user</button>
-                </div>
-                <p class="mini-copy">Dashboard login: <strong>{'enabled' if user.can_login else 'disabled'}</strong> • last login: {last_login}</p>
-              </form>
-              {assignment_block}
-              <form method="post" action="{prefix}/admin/users/{user.id}/delete" onsubmit="return confirm('Delete {escape(user.name)}? This cannot be undone.');">
-                <div class="button-row">
-                  <button class="button button-danger-outline" type="submit">Delete user</button>
-                </div>
-              </form>
-            </article>
-            """
+            f'<div id="um-editcard-{user.id}" class="user-card" style="display:none;border-left:3px solid var(--accent);margin-bottom:4px;">'
+            f'<form method="post" action="{prefix}/admin/users/{user.id}/update" class="stack"'
+            f' data-role-change="1" data-current-role="{escape(user.role)}" data-user-name="{escape(user.name)}">'
+            f'<div class="panel-header">'
+            f'<div style="display:flex;align-items:center;gap:12px;">'
+            f'{_um_avatar(user.name, user.role)}'
+            f'<div><h3 style="margin:0;">{escape(user.name)}{title_display}</h3>'
+            f'<p class="mini-copy" style="margin:2px 0 0;">User #{user.id} • created {escape(user.created_at)}{(" • " + escape(tenant_label)) if tenant_label else ""}</p></div>'
+            f'</div>'
+            f'<div style="display:flex;align-items:center;gap:8px;">'
+            f'{_um_role_badge(user.role)}'
+            f'<span class="status-pill {"ok" if user.is_active else "danger"}" style="font-size:.76rem;min-height:0;padding:3px 10px;">{"Active" if user.is_active else "Inactive"}</span>'
+            f'<button type="button" class="button button-secondary" style="min-height:30px;font-size:0.78rem;padding:0 10px;" onclick="umToggleEdit({user.id})">Close</button>'
+            f'</div></div>'
+            f'<div class="form-grid">'
+            f'<div class="field"><label>Name</label><input name="name" value="{escape(user.name)}" /></div>'
+            f'<div class="field"><label>Role</label>{role_field}</div>'
+            f'<div class="field"><label>Title</label><input name="title" value="{user_title}" placeholder="e.g. Principal" /></div>'
+            f'<div class="field"><label>Phone</label><input name="phone_e164" value="{phone}" placeholder="+15551234567" /></div>'
+            f'<div class="field"><label>Username</label><input name="login_name" value="{login_name}" placeholder="optional" /></div>'
+            f'<div class="field"><label>New password</label><input name="password" type="password" placeholder="leave blank to keep" /></div>'
+            f'<div class="checkbox-row"><input type="checkbox" name="is_active" value="1" {checked_active} /><span>Account active</span></div>'
+            f'<div class="checkbox-row"><input type="checkbox" name="clear_login" value="1" {checked_clear_login} /><span>Clear login credentials</span></div>'
+            f'</div>'
+            f'<div class="button-row">'
+            f'<button class="button button-primary" type="submit">Save changes</button>'
+            f'</div>'
+            f'<p class="mini-copy">Dashboard login: <strong>{"enabled" if user.can_login else "disabled"}</strong> • last login: {last_login}</p>'
+            f'</form>'
+            f'{assignment_block}'
+            f'<form method="post" action="{prefix}/admin/users/{user.id}/delete" onsubmit="return confirm(\'Delete {escape(user.name)}? This cannot be undone.\');">'
+            f'<div class="button-row"><button class="button button-danger-outline" type="submit">Delete user</button></div>'
+            f'</form>'
+            f'</div>'
         )
     return "".join(cards)
 
@@ -3837,9 +4139,198 @@ def render_admin_page(
     }}
     makeSearchFilter('audit-search', '#audit-events', 'tbody tr');
     makeSearchFilter('device-search', '#devices', 'tbody tr');
-    makeSearchFilter('user-search', '#user-management', '.user-card');
     makeSearchFilter('drill-search', '#drill-reports', 'tbody tr');
+    // User search — filters table rows (and mirrors to edit cards)
+    var userSearchEl = document.getElementById('user-search');
+    if (userSearchEl) {{
+      userSearchEl.addEventListener('input', function() {{
+        var q = userSearchEl.value.trim().toLowerCase();
+        document.querySelectorAll('.um-row').forEach(function(row) {{
+          var match = !q || row.textContent.toLowerCase().includes(q);
+          row.style.display = match ? '' : 'none';
+          // Also hide the paired edit row if visible
+          var uid = row.dataset.uid;
+          var editRow = document.getElementById('um-editcard-' + uid);
+          if (editRow && !match) editRow.style.display = 'none';
+        }});
+      }});
+    }}
   }});
+  </script>
+  <script>
+  /* ── Enterprise User Management ─────────────────────────────────────────── */
+  (function() {{
+    var ROLE_LABELS = {{
+      'teacher': 'Teacher / Standard', 'staff': 'Staff',
+      'law_enforcement': 'Law Enforcement', 'admin': 'Admin',
+      'building_admin': 'Building Admin', 'district_admin': 'District Admin',
+      'super_admin': 'Super Admin'
+    }};
+    var ROLE_PERMS = {{
+      'teacher': ['Send help requests', 'View incident feed', 'Submit quiet period request'],
+      'staff': ['Send help requests', 'View incident feed', 'Submit quiet period request'],
+      'law_enforcement': ['Send help requests', 'Submit quiet period request', 'View assigned incidents', 'Receive school alerts'],
+      'admin': ['Manage school users', 'Trigger alerts', 'Approve quiet requests', 'Submit quiet period request'],
+      'building_admin': ['Manage school users', 'Trigger alerts', 'Approve quiet requests', 'Submit quiet period request'],
+      'district_admin': ['Manage all school users', 'Trigger alerts', 'Approve quiet requests', 'Manage district schools', 'Generate access codes'],
+      'super_admin': ['Full platform access']
+    }};
+    var ROLE_BADGE_CLS = {{
+      'district_admin': 'rb-district_admin', 'admin': 'rb-admin',
+      'building_admin': 'rb-building_admin', 'teacher': 'rb-teacher',
+      'staff': 'rb-staff', 'law_enforcement': 'rb-law_enforcement', 'super_admin': 'rb-super_admin'
+    }};
+    var panel = document.getElementById('um-panel');
+    var overlay = document.getElementById('um-overlay');
+    var roleModal = document.getElementById('um-role-modal');
+    var pendingRoleForm = null;
+    var openEditId = null;
+
+    function roleBadgeHtml(role) {{
+      return '<span class="role-badge ' + (ROLE_BADGE_CLS[role] || '') + '">' + (ROLE_LABELS[role] || role) + '</span>';
+    }}
+
+    function openPanel(userData) {{
+      var role = userData.role || 'teacher';
+      // avatar
+      var av = document.getElementById('up-avatar');
+      if (av) {{
+        av.className = 'um-panel-avatar ua-' + role;
+        var initials = (userData.name || '?').split(' ').map(function(w){{return w[0]||'';}} ).join('').slice(0,2).toUpperCase();
+        av.textContent = initials;
+      }}
+      var el = function(id){{return document.getElementById(id);}};
+      if (el('up-name')) el('up-name').textContent = userData.name || '';
+      if (el('up-role-badge')) el('up-role-badge').innerHTML = roleBadgeHtml(role);
+      var statusCls = userData.is_active ? 'ok' : 'danger';
+      var statusTxt = userData.is_active ? 'Active' : 'Inactive';
+      if (el('up-status-pill')) el('up-status-pill').innerHTML = '<span class="status-pill ' + statusCls + '" style="font-size:.76rem;min-height:0;padding:3px 10px;">' + statusTxt + '</span>';
+      var metaParts = [];
+      if (userData.title) metaParts.push(userData.title);
+      if (userData.phone) metaParts.push(userData.phone);
+      if (el('up-meta')) el('up-meta').textContent = metaParts.join(' · ') || 'No additional info';
+      if (el('up-login')) el('up-login').textContent = userData.login || '—';
+      if (el('up-last-login')) el('up-last-login').textContent = userData.last_login || 'Never';
+      if (el('up-uid')) el('up-uid').textContent = '#' + userData.id;
+      // permissions
+      var perms = ROLE_PERMS[role] || [];
+      if (el('up-perms')) {{
+        el('up-perms').innerHTML = perms.map(function(p) {{
+          return '<div class="um-perm-item"><div class="um-perm-dot"></div><span>' + p + '</span></div>';
+        }}).join('') || '<span class="mini-copy">No permissions defined</span>';
+      }}
+      // actions
+      if (el('up-actions')) {{
+        var isSelf = userData.is_self;
+        var editBtn = '<button class="button button-primary" style="min-height:36px;font-size:0.82rem;" onclick="umToggleEdit(' + userData.id + ');umClosePanel();">Edit User</button>';
+        var selfNote = isSelf ? '<p class="mini-copy" style="color:#b45309;">You cannot modify your own account role.</p>' : '';
+        el('up-actions').innerHTML = editBtn + selfNote;
+      }}
+      // mark active row
+      document.querySelectorAll('.um-row').forEach(function(r){{r.classList.remove('um-row-active');}});
+      var activeRow = document.querySelector('.um-row[data-uid="' + userData.id + '"]');
+      if (activeRow) activeRow.classList.add('um-row-active');
+      // show
+      panel.classList.add('open');
+      overlay.classList.add('open');
+    }}
+
+    window.umClosePanel = function() {{
+      if (panel) panel.classList.remove('open');
+      if (overlay) overlay.classList.remove('open');
+      document.querySelectorAll('.um-row').forEach(function(r){{r.classList.remove('um-row-active');}});
+    }};
+
+    window.umToggleEdit = function(uid) {{
+      var card = document.getElementById('um-editcard-' + uid);
+      if (!card) return;
+      if (openEditId && openEditId !== uid) {{
+        var prev = document.getElementById('um-editcard-' + openEditId);
+        if (prev) prev.style.display = 'none';
+      }}
+      var nowOpen = card.style.display !== 'none';
+      card.style.display = nowOpen ? 'none' : 'block';
+      openEditId = nowOpen ? null : uid;
+      if (!nowOpen) card.scrollIntoView({{behavior: 'smooth', block: 'nearest'}});
+    }};
+
+    window.umToggleCreate = function() {{
+      var wrap = document.getElementById('um-create-wrap');
+      if (!wrap) return;
+      var nowOpen = wrap.style.display !== 'none';
+      wrap.style.display = nowOpen ? 'none' : 'block';
+      if (!nowOpen) wrap.scrollIntoView({{behavior: 'smooth', block: 'start'}});
+    }};
+
+    document.addEventListener('DOMContentLoaded', function() {{
+      // Table row click → open panel
+      document.querySelectorAll('.um-row').forEach(function(row) {{
+        row.addEventListener('click', function(e) {{
+          if (e.target.closest('button, a, input, select, form')) return;
+          try {{
+            var userData = JSON.parse(row.dataset.user);
+            openPanel(userData);
+          }} catch(err) {{}}
+        }});
+      }});
+
+      // Panel close
+      if (overlay) overlay.addEventListener('click', window.umClosePanel);
+      var closeBtn = document.getElementById('um-panel-close');
+      if (closeBtn) closeBtn.addEventListener('click', window.umClosePanel);
+
+      // Role change modal — intercept user-update form submit when role changes
+      document.querySelectorAll('form[data-role-change]').forEach(function(form) {{
+        form.addEventListener('submit', function(e) {{
+          if (form.dataset.skipConfirm) {{ delete form.dataset.skipConfirm; return; }}
+          var sel = form.querySelector('select[name="role"]');
+          if (!sel) return;
+          var oldRole = form.dataset.currentRole || '';
+          var newRole = sel.value;
+          if (!newRole || newRole === oldRole) return;
+          e.preventDefault();
+          pendingRoleForm = form;
+          var el = function(id){{return document.getElementById(id);}};
+          if (el('rm-user')) el('rm-user').textContent = form.dataset.userName || 'this user';
+          if (el('rm-old-role')) el('rm-old-role').textContent = ROLE_LABELS[oldRole] || oldRole;
+          if (el('rm-new-role')) el('rm-new-role').textContent = ROLE_LABELS[newRole] || newRole;
+          var warn = el('rm-warning');
+          if (warn) {{
+            if (newRole === 'district_admin') {{
+              warn.textContent = 'This grants full administrative control over the district. This action is audited.';
+              warn.style.display = '';
+            }} else if (newRole === 'admin' || newRole === 'building_admin') {{
+              warn.textContent = 'This grants dashboard access and admin capabilities. This action is audited.';
+              warn.style.display = '';
+            }} else {{
+              warn.style.display = 'none';
+            }}
+          }}
+          var confirmBtn = el('rm-confirm');
+          if (confirmBtn) {{
+            var isElevation = ['admin','building_admin','district_admin'].includes(newRole);
+            confirmBtn.className = isElevation ? 'button button-danger' : 'button button-primary';
+          }}
+          if (roleModal) roleModal.classList.add('open');
+        }});
+      }});
+
+      var rmCancel = document.getElementById('rm-cancel');
+      if (rmCancel) rmCancel.addEventListener('click', function() {{
+        if (roleModal) roleModal.classList.remove('open');
+        pendingRoleForm = null;
+      }});
+      var rmConfirm = document.getElementById('rm-confirm');
+      if (rmConfirm) rmConfirm.addEventListener('click', function() {{
+        if (roleModal) roleModal.classList.remove('open');
+        if (pendingRoleForm) {{
+          pendingRoleForm.dataset.skipConfirm = '1';
+          pendingRoleForm.submit();
+          pendingRoleForm = null;
+        }}
+      }});
+    }});
+  }})();
   </script>
   <script>
   /* ── Live branding preview ──────────────────────────────────────────────── */
@@ -4172,79 +4663,59 @@ def render_admin_page(
             <div class="panel-header">
               <div>
                 <p class="eyebrow">User Management</p>
-                <h2>Manage school user accounts</h2>
-                <p class="card-copy">Create, edit, and maintain staff/admin accounts in one dedicated workspace.</p>
-              </div>
-            </div>
-            <div class="metrics-grid">
-              <article class="metric-card"><div class="meta">Total users</div><div class="metric-value">{len(users)}</div></article>
-              <article class="metric-card"><div class="meta">Active users</div><div class="metric-value">{active_users}</div></article>
-              <article class="metric-card"><div class="meta">Login-enabled users</div><div class="metric-value">{login_enabled}</div></article>
-              <article class="metric-card"><div class="meta">Admin users</div><div class="metric-value">{role_counts.get("admin", 0)}</div></article>
-            </div>
-          </section>
-
-          <section class="panel command-section span-7" id="users"{_section_style("user-management")}>
-            <div class="panel-header">
-              <div>
-                <p class="eyebrow">Accounts</p>
-                <h2>Create a user</h2>
-                <p class="card-copy">Create standard users or new admins. Add a username and password if the account should be able to sign in.</p>
-              </div>
-            </div>
-            <form method="post" action="{prefix}/admin/users/create" class="stack">
-              <div class="form-grid">
-                <div class="field">
-                  <label>Name</label>
-                  <input name="name" />
-                </div>
-                <div class="field">
-                  <label>Role</label>
-                  <select name="role">
-                    <option value="teacher">Teacher / Standard</option>
-                    <option value="staff">Staff</option>
-                    <option value="law_enforcement">Law Enforcement</option>
-                    <option value="building_admin">Building Admin</option>
-                    {'<option value="district_admin">District Admin</option>' if current_user.role in {"district_admin", "super_admin"} else ''}
-                  </select>
-                </div>
-                <div class="field">
-                  <label>Title</label>
-                  <input name="title" placeholder="optional job title, e.g. Principal" />
-                </div>
-                <div class="field">
-                  <label>Phone</label>
-                  <input name="phone_e164" placeholder="+15551234567" />
-                </div>
-                <div class="field">
-                  <label>Username</label>
-                  <input name="login_name" placeholder="optional login username" />
-                </div>
-                <div class="field">
-                  <label>Password</label>
-                  <input name="password" type="password" placeholder="optional login password" />
-                </div>
-                <div class="checkbox-row">
-                  <input type="checkbox" name="must_change_password" value="1" id="must_change_password" />
-                  <label for="must_change_password">Require password change on first login</label>
-                </div>
+                <h2>Accounts &amp; Access Control</h2>
+                <p class="card-copy">Enterprise-grade user management. Role changes require confirmation and are fully audited.</p>
               </div>
               <div class="button-row">
-                <button class="button button-primary" type="submit">Create user</button>
-              </div>
-            </form>
-          </section>
-
-          <section class="panel command-section span-12"{_section_style("user-management")}>
-            <div class="panel-header">
-              <div>
-                <p class="eyebrow">Account Editor</p>
-                <h2>Edit existing users</h2>
-                <p class="card-copy">Update role, phone, active status, and login credentials without leaving the dashboard.</p>
+                <button class="button button-primary" style="min-height:38px;font-size:0.85rem;padding:0 16px;" onclick="umToggleCreate()">+ Add User</button>
               </div>
             </div>
-            <div class="table-search"><input type="search" id="user-search" placeholder="Search users by name, role, or status..." /></div>
-            <div class="user-grid">
+
+            {_um_health_bar(users)}
+
+            <div id="um-create-wrap" style="display:none;margin-bottom:18px;">
+              <div class="user-card" style="border-left:3px solid var(--success);">
+                <div class="panel-header">
+                  <div><h3 style="margin:0;">Create new user</h3><p class="mini-copy" style="margin:2px 0 0;">Fill in the fields below — username and password are optional.</p></div>
+                  <button type="button" class="button button-secondary" style="min-height:30px;font-size:0.78rem;padding:0 10px;" onclick="umToggleCreate()">Cancel</button>
+                </div>
+                <form method="post" action="{prefix}/admin/users/create" class="stack">
+                  <div class="form-grid">
+                    <div class="field"><label>Name</label><input name="name" placeholder="Full name" /></div>
+                    <div class="field">
+                      <label>Role</label>
+                      <select name="role">
+                        <option value="teacher">Teacher / Standard</option>
+                        <option value="staff">Staff</option>
+                        <option value="law_enforcement">Law Enforcement</option>
+                        <option value="building_admin">Building Admin</option>
+                        {'<option value="district_admin">District Admin</option>' if current_user.role in {"district_admin", "super_admin"} else ''}
+                      </select>
+                    </div>
+                    <div class="field"><label>Title</label><input name="title" placeholder="e.g. Principal" /></div>
+                    <div class="field"><label>Phone</label><input name="phone_e164" placeholder="+15551234567" /></div>
+                    <div class="field"><label>Username</label><input name="login_name" placeholder="optional login username" /></div>
+                    <div class="field"><label>Password</label><input name="password" type="password" placeholder="optional login password" /></div>
+                    <div class="checkbox-row">
+                      <input type="checkbox" name="must_change_password" value="1" id="must_change_password" />
+                      <label for="must_change_password">Require password change on first login</label>
+                    </div>
+                  </div>
+                  <div class="button-row">
+                    <button class="button button-primary" type="submit">Create user</button>
+                  </div>
+                </form>
+              </div>
+            </div>
+
+            <div class="table-search" style="margin-bottom:14px;">
+              <input type="search" id="user-search" placeholder="Search by name, username, or role..." style="max-width:320px;" />
+              <span class="mini-copy" style="margin-left:auto;">{len(users)} user{"s" if len(users) != 1 else ""} total</span>
+            </div>
+
+            {_um_enterprise_table(users, school_path_prefix, actor_role=str(getattr(current_user, "role", "") or ""), actor_user_id=current_user_id)}
+
+            <div id="um-edit-forms" style="margin-top:16px;">
               {_render_user_cards(
                   users,
                   school_path_prefix,
@@ -4257,6 +4728,9 @@ def render_admin_page(
               )}
             </div>
           </section>
+
+          {_um_slide_panel()}
+          {_um_role_modal()}
 
           {_access_codes_panel_html}
 

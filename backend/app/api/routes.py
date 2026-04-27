@@ -4584,6 +4584,20 @@ async def admin_update_user(
             "is_active": is_active is not None,
         },
     )
+    if existing_user.role != normalized_role:
+        _fire_audit(
+            request,
+            "user_role_changed",
+            actor_user_id=_session_user_id(request),
+            actor_label=_current_school_actor_label(request),
+            target_type="user",
+            target_id=str(user_id),
+            metadata={
+                "target_name": normalized_name,
+                "old_role": existing_user.role,
+                "new_role": normalized_role,
+            },
+        )
     _set_flash(request, message=f"Updated user {normalized_name}.")
     return RedirectResponse(url="/admin?section=user-management#users", status_code=status.HTTP_303_SEE_OTHER)
 
