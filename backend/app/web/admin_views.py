@@ -132,6 +132,8 @@ def _theme_vars(theme: Optional[Mapping[str, str]] = None) -> str:
       --nav-muted: rgba(148, 163, 184, 0.82);
       --brand-glow: color-mix(in srgb, var(--accent-strong) 18%, transparent);
       --brand-glow-soft: color-mix(in srgb, var(--accent) 10%, transparent);
+      --card: var(--color-card);
+      --surface: rgba(255,255,255,0.98);
       --success: {resolved["status_success"]};
       --success-soft: color-mix(in srgb, var(--success) 16%, transparent);
       --danger: {resolved["status_danger"]};
@@ -212,9 +214,13 @@ def _base_styles(theme: Optional[Mapping[str, str]] = None) -> str:
       background: rgba(255,255,255,0.86);
       font-size: 0.95rem;
     }
-    .status-pill.ok { color: var(--success); background: var(--success-soft); }
-    .status-pill.danger { color: var(--danger); background: var(--danger-soft); }
-    .status-pill.warn { color: var(--warning); background: color-mix(in srgb, var(--warning) 15%, white); }
+    .status-pill.ok      { color: var(--success); background: var(--success-soft); border-color: color-mix(in srgb, var(--success) 22%, transparent); }
+    .status-pill.danger  { color: var(--danger);  background: var(--danger-soft);  border-color: color-mix(in srgb, var(--danger)  22%, transparent); }
+    .status-pill.warn    { color: var(--warning); background: color-mix(in srgb, var(--warning) 15%, white); border-color: color-mix(in srgb, var(--warning) 22%, transparent); }
+    .status-pill.muted   { color: var(--muted);   background: rgba(0,0,0,0.05); border-color: rgba(0,0,0,0.08); }
+    .status-pill.offline { color: #64748b; background: rgba(100,116,139,0.09); border-color: rgba(100,116,139,0.18); }
+    .status-pill.info    { color: var(--info); background: color-mix(in srgb, var(--info) 11%, white); border-color: color-mix(in srgb, var(--info) 22%, transparent); }
+    .status-pill.quiet   { color: var(--quiet); background: color-mix(in srgb, var(--quiet) 11%, white); border-color: color-mix(in srgb, var(--quiet) 22%, transparent); }
     .login-panel { padding: 28px; display: grid; gap: 18px; align-content: center; }
     .stack { display: grid; gap: 14px; }
     .field { display: grid; gap: 6px; }
@@ -228,6 +234,12 @@ def _base_styles(theme: Optional[Mapping[str, str]] = None) -> str:
       padding: 0 14px;
       font: inherit;
       color: var(--text);
+      transition: border-color 120ms ease, box-shadow 120ms ease;
+    }
+    .field input:focus, .field select:focus, .field textarea:focus {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(27,95,228,0.14);
     }
     .field textarea { min-height: 110px; padding-top: 12px; padding-bottom: 12px; resize: vertical; }
     .button-row { display: flex; flex-wrap: wrap; gap: 12px; }
@@ -240,30 +252,82 @@ def _base_styles(theme: Optional[Mapping[str, str]] = None) -> str:
       font: inherit;
       font-weight: 700;
       cursor: pointer;
+      transition: filter 130ms ease, transform 120ms ease, background 130ms ease,
+                  border-color 130ms ease, box-shadow 130ms ease, opacity 130ms ease;
     }
-    .button-primary { background: linear-gradient(180deg, var(--accent-strong), var(--accent)); color: #fff; }
-    .button-secondary { background: rgba(255,255,255,0.9); color: var(--text); border: 1px solid var(--border); }
-    .button-danger { background: linear-gradient(180deg, color-mix(in srgb, var(--danger) 82%, #fff 18%), var(--danger-strong)); color: #fff; }
+    .button-primary {
+      background: linear-gradient(180deg, var(--accent-strong), var(--accent));
+      color: #fff;
+      box-shadow: 0 2px 8px rgba(27,95,228,0.22);
+    }
+    .button-primary:hover:not(:disabled) {
+      filter: brightness(1.09);
+      transform: translateY(-1px);
+      box-shadow: 0 4px 14px rgba(27,95,228,0.30);
+    }
+    .button-primary:active:not(:disabled) { transform: translateY(0); filter: brightness(0.96); }
+    .button-secondary {
+      background: rgba(255,255,255,0.9);
+      color: var(--text);
+      border: 1px solid var(--border);
+    }
+    .button-secondary:hover:not(:disabled) {
+      background: #fff;
+      border-color: var(--accent);
+      transform: translateY(-1px);
+      box-shadow: 0 2px 8px rgba(27,95,228,0.10);
+    }
+    .button-secondary:active:not(:disabled) { transform: translateY(0); }
+    .button-danger {
+      background: linear-gradient(180deg, color-mix(in srgb, var(--danger) 82%, #fff 18%), var(--danger-strong));
+      color: #fff;
+      box-shadow: 0 2px 8px rgba(220,38,38,0.18);
+    }
+    .button-danger:hover:not(:disabled) {
+      filter: brightness(1.07);
+      transform: translateY(-1px);
+      box-shadow: 0 4px 12px rgba(220,38,38,0.26);
+    }
+    .button-danger:active:not(:disabled) { transform: translateY(0); filter: brightness(0.96); }
     .button-danger-outline {
       background: color-mix(in srgb, var(--danger) 10%, #fff 90%);
       color: var(--danger);
       border: 1px solid color-mix(in srgb, var(--danger) 20%, transparent);
     }
+    .button-danger-outline:hover:not(:disabled) {
+      background: color-mix(in srgb, var(--danger) 16%, #fff 84%);
+      border-color: color-mix(in srgb, var(--danger) 38%, transparent);
+      transform: translateY(-1px);
+    }
+    .button:disabled, button:disabled, .button[disabled], button[disabled] {
+      opacity: 0.46;
+      cursor: not-allowed;
+      transform: none !important;
+      box-shadow: none !important;
+      filter: none !important;
+    }
+    .button:focus-visible, button:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
     .flash {
       padding: 14px 16px;
       border-radius: 16px;
       border: 1px solid var(--border);
+      border-left: 4px solid var(--accent);
       background: rgba(255,255,255,0.95);
       color: var(--text);
     }
     .flash.error {
       border-color: color-mix(in srgb, var(--danger) 24%, transparent);
-      background: color-mix(in srgb, var(--danger) 10%, #fff 90%);
+      border-left-color: var(--danger);
+      background: color-mix(in srgb, var(--danger) 8%, #fff 92%);
       color: color-mix(in srgb, var(--danger) 72%, #000 28%);
     }
     .flash.success {
       border-color: color-mix(in srgb, var(--success) 24%, transparent);
-      background: color-mix(in srgb, var(--success) 10%, #fff 90%);
+      border-left-color: var(--success);
+      background: color-mix(in srgb, var(--success) 8%, #fff 92%);
       color: color-mix(in srgb, var(--success) 72%, #000 28%);
     }
     .app-shell {
@@ -561,6 +625,20 @@ def _base_styles(theme: Optional[Mapping[str, str]] = None) -> str:
     @media (min-width: 701px) and (max-width: 1023px) {
       .school-grid { grid-template-columns: repeat(2, 1fr); }
     }
+    td.empty-state {
+      text-align: center;
+      padding: 36px 16px;
+      color: var(--muted);
+      font-size: 0.9rem;
+      border-top: none;
+    }
+    td.empty-state::before {
+      display: block;
+      font-size: 1.6rem;
+      margin-bottom: 8px;
+      opacity: 0.35;
+      content: "—";
+    }
     .count-badge {
       display: inline-flex;
       min-width: 22px;
@@ -587,7 +665,7 @@ def _render_flash(message: Optional[str], kind: str = "success") -> str:
 
 def _render_report_rows(reports: Sequence[ReportRecord]) -> str:
     if not reports:
-        return '<tr><td colspan="4" class="mini-copy">No user reports yet.</td></tr>'
+        return '<tr><td colspan="4" class="empty-state">No user reports yet.</td></tr>'
     rows = []
     for report in reports:
         note_text = report.note or (f"User #{report.user_id}" if report.user_id is not None else "No note")
@@ -599,7 +677,7 @@ def _render_report_rows(reports: Sequence[ReportRecord]) -> str:
 
 def _render_broadcast_rows(broadcasts: Sequence[BroadcastUpdateRecord]) -> str:
     if not broadcasts:
-        return '<tr><td colspan="3" class="mini-copy">No admin updates posted yet.</td></tr>'
+        return '<tr><td colspan="3" class="empty-state">No admin updates posted yet.</td></tr>'
     rows = []
     for item in broadcasts:
         actor = item.admin_label or (str(item.admin_user_id) if item.admin_user_id is not None else "admin")
@@ -611,7 +689,7 @@ def _render_broadcast_rows(broadcasts: Sequence[BroadcastUpdateRecord]) -> str:
 
 def _render_admin_message_rows(messages: Sequence[AdminMessageRecord], school_path_prefix: str) -> str:
     if not messages:
-        return '<tr><td colspan="7" class="mini-copy">No user messages yet.</td></tr>'
+        return '<tr><td colspan="7" class="empty-state">No user messages yet.</td></tr>'
     prefix = escape(school_path_prefix)
     rows = []
     for item in messages:
@@ -659,7 +737,7 @@ def _render_quiet_period_rows(
     include_actions: bool = True,
 ) -> str:
     if not records:
-        return '<tr><td colspan="7" class="mini-copy">No matching quiet period requests.</td></tr>'
+        return '<tr><td colspan="7" class="empty-state">No matching quiet period requests.</td></tr>'
     user_names = {user.id: user.name for user in users}
     prefix = escape(school_path_prefix)
     rows = []
@@ -709,7 +787,7 @@ def _render_request_help_rows(
     include_actions: bool = True,
 ) -> str:
     if not records:
-        return '<tr><td colspan="7" class="mini-copy">No active help requests.</td></tr>'
+        return '<tr><td colspan="7" class="empty-state">No active help requests.</td></tr>'
     user_names = {user.id: user.name for user in users}
     prefix = escape(school_path_prefix)
     rows = []
@@ -998,7 +1076,7 @@ def render_super_admin_page(
             "</tr>"
         )
         for item in school_rows
-    ) or '<tr><td colspan="5" class="mini-copy">No schools yet.</td></tr>'
+    ) or '<tr><td colspan="5" class="empty-state">No schools yet.</td></tr>'
     security_feedback = f"{_render_flash(flash_message, 'success')}{_render_flash(flash_error, 'error')}"
     platform_rows = "".join(
         (
@@ -1011,7 +1089,7 @@ def render_super_admin_page(
             "</tr>"
         )
         for item in platform_activity_rows
-    ) or '<tr><td colspan="5" class="mini-copy">No platform-super-admin activity recorded yet.</td></tr>'
+    ) or '<tr><td colspan="5" class="empty-state">No platform-super-admin activity recorded yet.</td></tr>'
     billing_table_rows = "".join(
         (
             "<tr>"
@@ -1046,7 +1124,7 @@ def render_super_admin_page(
             "</tr>"
         )
         for item in billing_rows
-    ) or '<tr><td colspan="8" class="mini-copy">No tenant billing records yet.</td></tr>'
+    ) or '<tr><td colspan="8" class="empty-state">No tenant billing records yet.</td></tr>'
 
     _status_class_map = {"active": "ok", "used": "warn", "expired": "warn", "revoked": "danger"}
     setup_code_rows = "".join(
@@ -1063,7 +1141,7 @@ def render_super_admin_page(
             "</tr>"
         )
         for c in setup_codes
-    ) or '<tr><td colspan="7" class="mini-copy">No setup codes generated yet.</td></tr>'
+    ) or '<tr><td colspan="7" class="empty-state">No setup codes generated yet.</td></tr>'
 
     section = active_section if active_section in {"schools", "billing", "platform-audit", "create-school", "security", "server-tools", "health", "email-tool", "setup-codes"} else "schools"
 
@@ -1167,7 +1245,7 @@ def render_super_admin_page(
         f"<td class='mini-copy'>{escape(hb.error_note or '')}</td>"
         f"</tr>"
         for hb in health_heartbeats
-    ) or '<tr><td colspan="8" class="mini-copy">No heartbeats recorded yet — monitor starts with the next background tick.</td></tr>'
+    ) or '<tr><td colspan="8" class="empty-state">No heartbeats recorded yet — monitor starts with the next background tick.</td></tr>'
 
     # ── Email tool computed vars ─────────────────────────────────────────────────
     _et_pill_cls = "ok" if email_configured else "danger"
@@ -1200,7 +1278,7 @@ def render_super_admin_page(
         f"<td class='mini-copy'>{escape(rec.error or '')}</td>"
         f"</tr>"
         for rec in email_log
-    ) or '<tr><td colspan="6" class="mini-copy">No emails sent yet.</td></tr>'
+    ) or '<tr><td colspan="6" class="empty-state">No emails sent yet.</td></tr>'
     _et_disabled = "disabled" if not email_configured else ""
 
     return f"""<!DOCTYPE html>
@@ -1626,7 +1704,7 @@ def _tenant_selector(
 
 def _render_alert_rows(alerts: Sequence[AlertRecord]) -> str:
     if not alerts:
-        return '<tr><td colspan="5" class="mini-copy">No alerts logged yet.</td></tr>'
+        return '<tr><td colspan="5" class="empty-state">No alerts logged yet.</td></tr>'
     rows = []
     for alert in alerts:
         actor = alert.triggered_by_label or (str(alert.triggered_by_user_id) if alert.triggered_by_user_id is not None else "Unknown")
@@ -1710,7 +1788,7 @@ def _render_school_cards(items: Sequence[Mapping[str, object]], school_path_pref
 
 def _render_drill_report_rows(alerts: Sequence[AlertRecord], prefix: str) -> str:
     if not alerts:
-        return '<tr><td colspan="5" class="mini-copy">No alerts logged yet.</td></tr>'
+        return '<tr><td colspan="5" class="empty-state">No alerts logged yet.</td></tr>'
     rows = []
     for alert in alerts:
         type_badge = (
@@ -1742,7 +1820,7 @@ def _render_drill_report_rows(alerts: Sequence[AlertRecord], prefix: str) -> str
 
 def _render_audit_event_rows(events: Sequence[AuditEventRecord]) -> str:
     if not events:
-        return '<tr><td colspan="5" class="mini-copy">No audit events recorded yet.</td></tr>'
+        return '<tr><td colspan="5" class="empty-state">No audit events recorded yet.</td></tr>'
     rows = []
     for evt in events:
         actor = escape(evt.actor_label or (f"User #{evt.actor_user_id}" if evt.actor_user_id is not None else "System"))
@@ -1783,7 +1861,7 @@ def _render_audit_event_rows(events: Sequence[AuditEventRecord]) -> str:
 
 def _render_activity_rows(alerts: Sequence[AlertRecord]) -> str:
     if not alerts:
-        return '<tr><td colspan="5" class="mini-copy">No alerts yet.</td></tr>'
+        return '<tr><td colspan="5" class="empty-state">No alerts yet.</td></tr>'
     rows = []
     for alert in alerts:
         actor = alert.triggered_by_label or (str(alert.triggered_by_user_id) if alert.triggered_by_user_id is not None else "System")
@@ -1806,7 +1884,7 @@ def _render_activity_rows(alerts: Sequence[AlertRecord]) -> str:
 
 def _render_device_rows(devices: Sequence[RegisteredDevice], users: Sequence[UserRecord], school_path_prefix: str) -> str:
     if not devices:
-        return '<tr><td colspan="8" class="mini-copy">No devices registered yet.</td></tr>'
+        return '<tr><td colspan="8" class="empty-state">No devices registered yet.</td></tr>'
     user_lookup = {user.id: user for user in users}
     prefix = escape(school_path_prefix)
     rows = []
@@ -2340,7 +2418,7 @@ def render_admin_page(
             "</tr>"
         )
         for r in access_code_records
-    ) or '<tr><td colspan="7" class="mini-copy">No access codes generated yet.</td></tr>'
+    ) or '<tr><td colspan="7" class="empty-state">No access codes generated yet.</td></tr>'
 
     def _section_style(name: str) -> str:
         return "" if section == name else ' style="display:none;"'
