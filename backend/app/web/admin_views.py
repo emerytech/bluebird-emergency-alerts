@@ -10,7 +10,7 @@ from typing import Mapping, Optional, Sequence
 from app.services.alert_log import AlertRecord
 from app.services.audit_log_service import AuditEventRecord
 from app.services.alarm_store import AlarmStateRecord
-from app.services.email_service import EmailLogRecord, TEMPLATE_KEYS as EMAIL_TEMPLATE_KEYS
+from app.services.email_service import EmailLogRecord, GmailSettings, SMTPConfig, TEMPLATE_KEYS as EMAIL_TEMPLATE_KEYS
 from app.services.health_monitor import HeartbeatRecord, HealthStatus, UptimeStats
 from app.services.device_registry import RegisteredDevice
 from app.services.incident_store import TeamAssistRecord
@@ -1263,6 +1263,8 @@ def render_super_admin_page(
     health_heartbeats: Sequence[HeartbeatRecord] = (),
     email_log: Sequence[EmailLogRecord] = (),
     email_configured: bool = False,
+    smtp_config: Optional[SMTPConfig] = None,
+    gmail_settings: Optional[GmailSettings] = None,
     platform_admin_emails: Sequence[str] = (),
     email_template_keys: Sequence[str] = (),
     setup_codes: Sequence[Mapping[str, object]] = (),
@@ -1351,7 +1353,7 @@ def render_super_admin_page(
         for c in setup_codes
     ) or '<tr><td colspan="7" class="empty-state">No setup codes generated yet.</td></tr>'
 
-    section = active_section if active_section in {"schools", "billing", "platform-audit", "create-school", "security", "server-tools", "health", "email-tool", "setup-codes", "noc", "msp", "platform-control"} else "schools"
+    section = active_section if active_section in {"schools", "billing", "platform-audit", "create-school", "security", "configuration", "server-tools", "health", "email-tool", "setup-codes", "noc", "msp", "platform-control"} else "schools"
 
     def _section_style(name: str) -> str:
         return "" if section == name else ' style="display:none;"'
@@ -1488,6 +1490,18 @@ def render_super_admin_page(
         for rec in email_log
     ) or '<tr><td colspan="6" class="empty-state">No emails sent yet.</td></tr>'
     _et_disabled = "disabled" if not email_configured else ""
+    _smtp = smtp_config or SMTPConfig(host="", port=587, username="", from_address="", use_tls=True, password_set=False)
+    _smtp_tls_checked = "checked" if _smtp.use_tls else ""
+    _smtp_password_status = "Saved" if _smtp.password_set else "Not saved"
+    _smtp_password_cls = "ok" if _smtp.password_set else "warn"
+    _gmail = gmail_settings
+    _gmail_address = escape(_gmail.gmail_address if _gmail else "")
+    _gmail_from_name = escape(_gmail.from_name if _gmail else "BlueBird Alerts")
+    _gmail_pw_status = "Saved" if (_gmail and _gmail.password_set) else "Not saved"
+    _gmail_pw_cls = "ok" if (_gmail and _gmail.password_set) else "warn"
+    _gmail_configured_pill = '<span class="status-pill ok">Configured</span>' if (_gmail and _gmail.configured) else '<span class="status-pill warn">Not configured</span>'
+    _gmail_updated = escape(_gmail.updated_at[:16].replace("T", " ") + " UTC" if (_gmail and _gmail.updated_at) else "Never")
+    _gmail_updated_by = escape(_gmail.updated_by or "—" if _gmail else "—")
 
     # ── NOC computed vars ────────────────────────────────────────────────────────
     _noc_hs = health_status
@@ -1724,6 +1738,7 @@ def render_super_admin_page(
             {_nav_item("platform-audit", "Platform Audit")}
             {_nav_item("health", "System Health", None if (not health_status or health_status.overall == 'ok') else "!")}
             {_nav_item("email-tool", "Email Tool")}
+            {_nav_item("configuration", "Configuration", None if email_configured else "!")}
             {_nav_item("setup-codes", "Setup Codes")}
             {_nav_item("security", "Security")}
             {_nav_item("server-tools", "Server Tools")}
@@ -2533,6 +2548,126 @@ def render_super_admin_page(
             </thead>
             <tbody>{_et_log_rows}</tbody>
           </table></div>
+        </section>
+        <section class="panel command-section" id="configuration"{_section_style("configuration")}>
+          <div class="panel-header hero-band">
+            <div>
+              <p class="eyebrow">Configuration</p>
+              <h1>Platform Settings</h1>
+              <p class="hero-copy">Manage runtime communication settings for the super admin console without editing the server environment.</p>
+            </div>
+            <div class="status-row">
+              <span class="status-pill {_et_pill_cls}"><strong>SMTP</strong>{_et_status_text}</span>
+              <span class="status-pill {_smtp_password_cls}"><strong>App password</strong>{_smtp_password_status}</span>
+            </div>
+          </div>
+          <div class="form-grid" style="gap:24px; align-items:start; grid-template-columns:minmax(0,1.2fr) minmax(280px,.8fr);">
+            <div class="stack" style="margin-bottom:28px;border:1px solid var(--border);border-radius:10px;padding:20px;">
+              <div class="panel-header" style="margin-bottom:12px;">
+                <div>
+                  <h2>Gmail Settings {_gmail_configured_pill}</h2>
+                  <p class="card-copy">Simple Gmail + App Password setup. Covers 99% of cases — use the SMTP form below for non-Gmail senders.</p>
+                </div>
+              </div>
+              <div class="metrics-grid" style="margin-bottom:16px;">
+                <article class="metric-card">
+                  <div class="meta">Gmail address</div>
+                  <div style="font-weight:700;">{_gmail_address or "—"}</div>
+                </article>
+                <article class="metric-card">
+                  <div class="meta">App password</div>
+                  <div class="metric-value"><span class="status-pill {_gmail_pw_cls}">{_gmail_pw_status}</span></div>
+                </article>
+                <article class="metric-card">
+                  <div class="meta">Last updated</div>
+                  <div style="font-size:0.85rem;">{_gmail_updated}</div>
+                  <div class="mini-copy">by {_gmail_updated_by}</div>
+                </article>
+              </div>
+              <form method="post" action="/super-admin/email-settings" class="stack">
+                <div class="form-grid">
+                  <div class="field">
+                    <label for="gmail_address">Gmail address</label>
+                    <input id="gmail_address" name="gmail_address" type="email" value="{_gmail_address}" placeholder="yourname@gmail.com" autocomplete="username" />
+                  </div>
+                  <div class="field">
+                    <label for="from_name">From name</label>
+                    <input id="from_name" name="from_name" value="{_gmail_from_name}" placeholder="BlueBird Alerts" />
+                  </div>
+                </div>
+                <div class="field">
+                  <label for="app_password">Google app password</label>
+                  <input id="app_password" name="app_password" type="password" placeholder="Leave blank to keep existing password" autocomplete="new-password" />
+                </div>
+                <div class="button-row">
+                  <button class="button button-primary" type="submit">Save Gmail Settings</button>
+                </div>
+              </form>
+              <form method="post" action="/super-admin/email-settings/test" class="stack" style="margin-top:12px;">
+                <div class="field">
+                  <label for="gmail_test_email">Send test email to</label>
+                  <input id="gmail_test_email" name="test_email" type="email" placeholder="you@example.com" autocomplete="off" />
+                </div>
+                <div class="button-row">
+                  <button class="button button-secondary" type="submit">Send Test Email</button>
+                </div>
+              </form>
+            </div>
+            <form method="post" action="/super-admin/configuration/smtp" class="stack">
+              <div class="panel-header" style="margin-bottom:4px;">
+                <div>
+                  <h2>Google Workspace SMTP</h2>
+                  <p class="card-copy">Use a Google app password for authenticated mail through Gmail SMTP.</p>
+                </div>
+              </div>
+              <div class="form-grid">
+                <div class="field">
+                  <label for="smtp_host">SMTP host</label>
+                  <input id="smtp_host" name="smtp_host" value="{escape(_smtp.host or 'smtp.gmail.com')}" placeholder="smtp.gmail.com" autocomplete="off" />
+                </div>
+                <div class="field">
+                  <label for="smtp_port">Port</label>
+                  <input id="smtp_port" name="smtp_port" type="number" min="1" max="65535" value="{int(_smtp.port or 587)}" />
+                </div>
+                <div class="field">
+                  <label for="smtp_username">Google Workspace email</label>
+                  <input id="smtp_username" name="smtp_username" type="email" value="{escape(_smtp.username)}" placeholder="alerts@yourdomain.org" autocomplete="username" />
+                </div>
+                <div class="field">
+                  <label for="smtp_from">From address</label>
+                  <input id="smtp_from" name="smtp_from" type="email" value="{escape(_smtp.from_address)}" placeholder="alerts@yourdomain.org" autocomplete="email" />
+                </div>
+              </div>
+              <div class="field">
+                <label for="smtp_password">Google app password</label>
+                <input id="smtp_password" name="smtp_password" type="password" placeholder="Leave blank to keep the saved password" autocomplete="new-password" />
+              </div>
+              <label class="mini-copy" style="display:flex;align-items:center;gap:8px;font-weight:700;color:var(--text);">
+                <input name="smtp_use_tls" type="checkbox" value="1" {_smtp_tls_checked} style="width:auto;" />
+                Use TLS / STARTTLS
+              </label>
+              <label class="mini-copy" style="display:flex;align-items:center;gap:8px;color:var(--muted);">
+                <input name="clear_smtp_password" type="checkbox" value="1" style="width:auto;" />
+                Clear saved app password
+              </label>
+              <div class="button-row">
+                <button class="button button-primary" type="submit">Save SMTP Settings</button>
+                <a class="button button-secondary" href="/super-admin?section=email-tool#email-tool">Open Email Tool</a>
+              </div>
+            </form>
+            <div class="metrics-grid">
+              <article class="metric-card" style="grid-column:1 / -1;">
+                <div class="meta">Gmail defaults</div>
+                <div style="margin-top:8px;font-weight:700;">smtp.gmail.com &middot; port 587 &middot; TLS on</div>
+                <p class="mini-copy">The username, from address, and Google app password should usually belong to the same Workspace mailbox.</p>
+              </article>
+              <article class="metric-card" style="grid-column:1 / -1;">
+                <div class="meta">Password handling</div>
+                <div style="margin-top:8px;font-weight:700;">Saved in the platform database</div>
+                <p class="mini-copy">For now this stores the app password so the backend can send mail after restarts. Use a dedicated Google app password, not your normal account password.</p>
+              </article>
+            </div>
+          </div>
         </section>
         <section class="panel command-section" id="security"{_section_style("security")}>
           <div class="panel-header">
@@ -3905,23 +4040,47 @@ def render_admin_page(
 
     _show_access_codes = str(getattr(current_user, "role", "")).strip().lower() in {"district_admin", "super_admin"}
     _ac_status_class = {"active": "ok", "used": "warn", "expired": "warn", "revoked": "danger"}
-    _access_code_rows = "".join(
-        (
+
+    def _ac_row(r) -> str:
+        _rid = int(getattr(r, "id", 0))
+        _code = str(getattr(r, "code", ""))
+        _status = str(getattr(r, "status", ""))
+        _is_active = _status == "active"
+        _qr_url = f"{prefix}/admin/access-codes/{_rid}/qr.png"
+        _print_url = f"{prefix}/admin/access-codes/{_rid}/print"
+        _download_url = f"{prefix}/admin/access-codes/{_rid}/qr.png"
+        _qr_img = (
+            f'<img src="{_qr_url}" alt="QR {escape(_code)}" width="80" height="80"'
+            f' style="display:block;image-rendering:pixelated;border:1px solid #ddd;border-radius:4px;" />'
+            if _is_active else
+            '<span class="mini-copy" style="color:var(--muted);">—</span>'
+        )
+        _action_buttons = (
+            f'<a href="{_download_url}" download="bluebird-invite-{escape(_code)}.png"'
+            f' class="button button-secondary" style="font-size:0.75rem;padding:4px 10px;text-decoration:none;">Download QR</a>'
+            f'<a href="{_print_url}" target="_blank"'
+            f' class="button button-secondary" style="font-size:0.75rem;padding:4px 10px;text-decoration:none;">Print Sheet</a>'
+        ) if _is_active else ""
+        return (
             "<tr>"
-            f"<td><code>{escape(str(getattr(r, 'code', '')))}</code></td>"
+            f"<td style='min-width:90px;'>{_qr_img}</td>"
+            f"<td><code style='font-size:1rem;letter-spacing:.05em;'>{escape(_code)}</code></td>"
             f"<td>{escape(str(getattr(r, 'role', '')))}</td>"
             f"<td>{escape(str(getattr(r, 'title', '') or '—'))}</td>"
-            f"<td><span class=\"status-pill {_ac_status_class.get(str(getattr(r, 'status', '')), 'warn')}\">{escape(str(getattr(r, 'status', '')))}</span></td>"
+            f"<td><span class=\"status-pill {_ac_status_class.get(_status, 'warn')}\">{escape(_status)}</span></td>"
             f"<td>{escape(str(getattr(r, 'expires_at', ''))[:16])}</td>"
             f"<td>{int(getattr(r, 'use_count', 0))}/{int(getattr(r, 'max_uses', 1))}</td>"
-            f"<td>"
-            f"<form method=\"post\" action=\"{prefix}/admin/access-codes/{int(getattr(r, 'id', 0))}/revoke\""
-            f" onsubmit=\"return confirm('Revoke this code?');\"><button class=\"button button-danger-outline\" type=\"submit\" {'disabled' if str(getattr(r, 'status', '')) != 'active' else ''}>Revoke</button></form>"
-            f"</td>"
+            f"<td><div style='display:flex;flex-direction:column;gap:4px;align-items:flex-start;'>"
+            f"{_action_buttons}"
+            f"<form method=\"post\" action=\"{prefix}/admin/access-codes/{_rid}/revoke\""
+            f" onsubmit=\"return confirm('Revoke this code?');\" style='margin:0;'>"
+            f"<button class=\"button button-danger-outline\" type=\"submit\""
+            f" style='font-size:0.75rem;padding:4px 10px;' {'disabled' if not _is_active else ''}>Revoke</button></form>"
+            f"</div></td>"
             "</tr>"
         )
-        for r in access_code_records
-    ) or '<tr><td colspan="7" class="empty-state">No access codes generated yet.</td></tr>'
+
+    _access_code_rows = "".join(_ac_row(r) for r in access_code_records) or '<tr><td colspan="8" class="empty-state">No access codes generated yet.</td></tr>'
 
     _client_type_label = {"mobile": "Mobile", "web": "Web"}
     _client_type_class = {"mobile": "rb-law_enforcement", "web": "rb-admin"}
@@ -4101,7 +4260,7 @@ def render_admin_page(
             </form>
             <div class="table-wrapper">
               <table class="data-table">
-                <thead><tr><th>Code</th><th>Role</th><th>Title</th><th>Status</th><th>Expires</th><th>Uses</th><th></th></tr></thead>
+                <thead><tr><th>QR</th><th>Code</th><th>Role</th><th>Title</th><th>Status</th><th>Expires</th><th>Uses</th><th>Actions</th></tr></thead>
                 <tbody>{_access_code_rows}</tbody>
               </table>
             </div>
@@ -4668,6 +4827,7 @@ def render_admin_page(
               {(" — by " + escape(alarm_state.activated_by_label or (f"User #{alarm_state.activated_by_user_id}" if alarm_state.activated_by_user_id is not None else "system"))) if alarm_state.activated_at else ""}
               {(" at " + escape(alarm_state.activated_at)) if alarm_state.activated_at else ""}
               {(" — Training label: " + escape(alarm_state.training_label or "This is a drill")) if alarm_state.is_training else ""}
+              {(" — Silent audio test" if getattr(alarm_state, "silent_audio", False) else "")}
             </div>
             <form method="post" action="{prefix}/admin/alarm/deactivate" class="stack" data-confirm-deactivate>
               <div class="button-row">
@@ -4684,6 +4844,10 @@ def render_admin_page(
               <div class="checkbox-row" style="background:color-mix(in srgb,var(--warning) 10%,white);border-color:color-mix(in srgb,var(--warning) 25%,transparent);">
                 <input type="checkbox" name="is_training" value="1" id="is_training" checked />
                 <label for="is_training">Training mode — no real push/SMS delivery</label>
+              </div>
+              <div class="checkbox-row" style="background:rgba(14,165,233,.08);border-color:rgba(14,165,233,.22);">
+                <input type="checkbox" name="silent_audio" value="1" id="silent_audio" />
+                <label for="silent_audio">Silent audio test — show alarm screens without siren volume</label>
               </div>
               <div class="field">
                 <label for="alarm_message">Alarm message</label>

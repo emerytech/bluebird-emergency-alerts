@@ -490,6 +490,7 @@ struct ContentView: View {
     @State private var alarmMessage: String?
     @State private var alarmIsTraining = false
     @State private var alarmTrainingLabel: String?
+    @State private var alarmSilentAudio = false
     @State private var alarmAcknowledgementCount = 0
     @State private var alarmCurrentUserAcknowledged = false
     @State private var showAlarmTakeover = false
@@ -507,6 +508,7 @@ struct ContentView: View {
     @State private var showQuietPeriodCenter = false
     @State private var quietPeriodReason = ""
     @State private var trainingModeEnabled = false
+    @State private var silentTrainingAudioEnabled = false
     @State private var trainingLabel = "This is a drill"
     @State private var isSubmittingQuickAction = false
     @State private var teamAssistForwardRecipients: [MessageRecipient] = []
@@ -862,12 +864,15 @@ struct ContentView: View {
             UIApplication.shared.isIdleTimerDisabled = isActive
             if isActive {
                 showAlarmTakeover = true
-                alertController.startAlarmAudio()
+                syncAlarmAudio()
             } else {
                 showAlarmTakeover = false
-                alertController.stopAlarmAudio()
+                syncAlarmAudio()
             }
             updateAlertFeedbackState()
+        }
+        .onChange(of: alarmSilentAudio) { _, _ in
+            syncAlarmAudio()
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
@@ -876,7 +881,7 @@ struct ContentView: View {
                     handleIncomingAlarmNotification(pendingAlarmUserInfo)
                 } else if alarmIsActive {
                     showAlarmTakeover = true
-                    alertController.startAlarmAudio()
+                    syncAlarmAudio()
                 }
             }
             updateAlertFeedbackState()
@@ -897,6 +902,14 @@ struct ContentView: View {
             UIApplication.shared.isIdleTimerDisabled = false
             alertController.stopAlarmAudio()
             alertFeedbackController.stop()
+        }
+    }
+
+    private func syncAlarmAudio() {
+        if alarmIsActive && !alarmSilentAudio {
+            alertController.startAlarmAudio()
+        } else {
+            alertController.stopAlarmAudio()
         }
     }
 
@@ -938,9 +951,12 @@ struct ContentView: View {
         if let body, !body.isEmpty {
             alarmMessage = body
         }
+        if let silent = userInfo?["silent_audio"] as? Bool {
+            alarmSilentAudio = silent
+        }
         alarmIsActive = true
         showAlarmTakeover = true
-        alertController.startAlarmAudio()
+        syncAlarmAudio()
         updateAlertFeedbackState()
         Task {
             await refreshIncidentFeed()
@@ -1504,6 +1520,19 @@ struct ContentView: View {
                         .labelsHidden()
                 }
                 if trainingModeEnabled {
+                    HStack(spacing: 10) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Silent Alarm Audio")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(textPrimary)
+                            Text("Show the alarm flow without siren volume.")
+                                .font(.caption)
+                                .foregroundStyle(textMuted)
+                        }
+                        Spacer()
+                        Toggle("", isOn: $silentTrainingAudioEnabled)
+                            .labelsHidden()
+                    }
                     TextField("", text: $trainingLabel, prompt: Text("Training label (e.g., This is a drill)").foregroundStyle(placeholderMuted))
                         .foregroundStyle(.white)
                         .padding(.horizontal, 14)
@@ -2058,6 +2087,7 @@ struct ContentView: View {
             alarmMessage = alarm.message
             alarmIsTraining = alarm.isTraining
             alarmTrainingLabel = alarm.trainingLabel
+            alarmSilentAudio = alarm.silentAudio
             alarmAcknowledgementCount = alarm.acknowledgementCount
             alarmCurrentUserAcknowledged = alarm.currentUserAcknowledged
             anySuccess = true
@@ -2113,13 +2143,15 @@ struct ContentView: View {
                 userID: userID,
                 message: trimmed,
                 isTraining: isAdminSession && trainingModeEnabled,
-                trainingLabel: isAdminSession && trainingModeEnabled ? trainingLabel : nil
+                trainingLabel: isAdminSession && trainingModeEnabled ? trainingLabel : nil,
+                silentAudio: isAdminSession && trainingModeEnabled && silentTrainingAudioEnabled
             )
             alarmIsActive = true
             alarmMessage = trimmed
             alarmIsTraining = isAdminSession && trainingModeEnabled
             alarmTrainingLabel = alarmIsTraining ? trainingLabel : nil
-            alertController.startAlarmAudio()
+            alarmSilentAudio = alarmIsTraining && silentTrainingAudioEnabled
+            syncAlarmAudio()
             appState.registeredDeviceCount = response.deviceCount
             if isAdminSession && trainingModeEnabled {
                 appState.lastStatus = "Training alert #\(response.alertId) started. Local recipients: \(response.attempted)."
@@ -2182,10 +2214,11 @@ struct ContentView: View {
             alarmMessage = response.message
             alarmIsTraining = response.isTraining
             alarmTrainingLabel = response.trainingLabel
+            alarmSilentAudio = response.silentAudio
             appState.lastStatus = response.isActive ? "Alarm remains active." : "Alarm disabled."
             appState.lastError = nil
             if !response.isActive {
-                alertController.stopAlarmAudio()
+                syncAlarmAudio()
             }
             await refreshIncidentFeed()
         } catch {
@@ -2672,10 +2705,11 @@ struct ContentView: View {
                 if let v = a["message"] as? String { alarmMessage = v }
                 if let v = a["is_training"] as? Bool { alarmIsTraining = v }
                 alarmTrainingLabel = a["training_label"] as? String
+                if let v = a["silent_audio"] as? Bool { alarmSilentAudio = v }
             }
             if alarmIsActive && !wasActive {
                 showAlarmTakeover = true
-                alertController.startAlarmAudio()
+                syncAlarmAudio()
                 updateAlertFeedbackState()
             }
             Task { await refreshIncidentFeed() }
@@ -2685,7 +2719,8 @@ struct ContentView: View {
             alarmMessage = nil
             alarmIsTraining = false
             alarmTrainingLabel = nil
-            alertController.stopAlarmAudio()
+            alarmSilentAudio = false
+            syncAlarmAudio()
             updateAlertFeedbackState()
             Task { await refreshIncidentFeed() }
 
@@ -2695,10 +2730,13 @@ struct ContentView: View {
                 if let v = a["message"] as? String { alarmMessage = v }
                 if let v = a["is_training"] as? Bool { alarmIsTraining = v }
                 alarmTrainingLabel = a["training_label"] as? String
+                if let v = a["silent_audio"] as? Bool { alarmSilentAudio = v }
             }
             if !alarmIsActive {
-                alertController.stopAlarmAudio()
+                syncAlarmAudio()
                 updateAlertFeedbackState()
+            } else {
+                syncAlarmAudio()
             }
             Task { await refreshIncidentFeed() }
 

@@ -1,10 +1,12 @@
 package com.ets3d.bluebirdalertsandroid
 
+import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import com.google.firebase.messaging.FirebaseMessagingService
@@ -15,6 +17,9 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
+
+private const val SILENT_NOTIF_CH = "bluebird_info"
+private const val SILENT_NOTIF_ID = 1002
 
 class BlueBirdFirebaseMessagingService : FirebaseMessagingService() {
     override fun onCreate() {
@@ -37,6 +42,41 @@ class BlueBirdFirebaseMessagingService : FirebaseMessagingService() {
             ?: message.data["body"]
             ?: message.data["message"]
             ?: "Emergency alert received."
+
+        // Detect whether this device belongs to the user who triggered the alarm.
+        val triggeredByUid = message.data["triggered_by_user_id"]?.toIntOrNull()
+        val silentForSender = message.data["silent_for_sender"] == "1"
+        val storedUid = applicationContext
+            .getSharedPreferences("bluebird_prefs", Context.MODE_PRIVATE)
+            .getString("user_id", "")?.toIntOrNull()
+        val isSilentForMe = silentForSender
+            && triggeredByUid != null
+            && storedUid != null
+            && triggeredByUid == storedUid
+
+        AlarmLaunchCoordinator.publish(
+            title = title,
+            body = body,
+            tenantSlug = message.data["tenant_slug"],
+            isSilentForMe = isSilentForMe,
+        )
+
+        if (isSilentForMe) {
+            // Sender gets a discreet confirmation — no siren, no vibration, no screen wake.
+            ensureSilentNotificationChannel(applicationContext)
+            val silentNotification = NotificationCompat.Builder(this, SILENT_NOTIF_CH)
+                .setSmallIcon(R.mipmap.ic_launcher)
+                .setContentTitle("Alert sent")
+                .setContentText("Your emergency alert has been sent to your school.")
+                .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+                .setAutoCancel(true)
+                .build()
+            (getSystemService(NOTIFICATION_SERVICE) as NotificationManager)
+                .notify(SILENT_NOTIF_ID, silentNotification)
+            return
+        }
+
+        // Non-sender: full alarm behavior.
         val soundUri = Uri.parse("android.resource://$packageName/${R.raw.bluebird_alarm}")
 
         val launchIntent = Intent(this, MainActivity::class.java).apply {
@@ -52,7 +92,6 @@ class BlueBirdFirebaseMessagingService : FirebaseMessagingService() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
 
-        AlarmLaunchCoordinator.publish(title = title, body = body, tenantSlug = message.data["tenant_slug"])
         wakeScreenForAlert()
 
         val notification = NotificationCompat.Builder(this, NOTIF_CH)
@@ -75,6 +114,22 @@ class BlueBirdFirebaseMessagingService : FirebaseMessagingService() {
 
         (getSystemService(NOTIFICATION_SERVICE) as NotificationManager)
             .notify(ALERT_PUSH_NOTIFICATION_ID, notification)
+    }
+
+    private fun ensureSilentNotificationChannel(context: Context) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        if (manager.getNotificationChannel(SILENT_NOTIF_CH) != null) return
+        val channel = NotificationChannel(
+            SILENT_NOTIF_CH,
+            "BlueBird Info",
+            NotificationManager.IMPORTANCE_DEFAULT,
+        ).apply {
+            description = "Confirmation and status notifications"
+            enableVibration(false)
+            setSound(null, null)
+        }
+        manager.createNotificationChannel(channel)
     }
 
     private fun wakeScreenForAlert() {

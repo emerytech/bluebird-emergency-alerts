@@ -97,6 +97,32 @@ class QuietPeriodStore:
     async def expire_old(self) -> None:
         await anyio.to_thread.run_sync(self._expire_old_sync)
 
+    def _expire_and_return_sync(self) -> List[QuietPeriodRecord]:
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, user_id, reason, status, requested_at, approved_at, approved_by_user_id, approved_by_label, expires_at
+                FROM quiet_period_requests
+                WHERE status = 'approved'
+                  AND expires_at IS NOT NULL
+                  AND expires_at <= ?;
+                """,
+                (now,),
+            ).fetchall()
+            if not rows:
+                return []
+            ids = [int(row[0]) for row in rows]
+            placeholders = ",".join("?" * len(ids))
+            conn.execute(
+                f"UPDATE quiet_period_requests SET status = 'expired' WHERE id IN ({placeholders});",
+                ids,
+            )
+        return [self._row_to_record(row) for row in rows]
+
+    async def expire_and_return(self) -> List[QuietPeriodRecord]:
+        return await anyio.to_thread.run_sync(self._expire_and_return_sync)
+
     def _request_sync(self, user_id: int, reason: Optional[str]) -> QuietPeriodRecord:
         self._expire_old_sync()
         requested_at = datetime.now(timezone.utc).isoformat()

@@ -35,7 +35,7 @@ struct APIClient {
         return try JSONDecoder().decode(RegisterDeviceResponse.self, from: data)
     }
 
-    func panic(userID: Int, message: String, isTraining: Bool = false, trainingLabel: String? = nil) async throws -> PanicResponse {
+    func panic(userID: Int, message: String, isTraining: Bool = false, trainingLabel: String? = nil, silentAudio: Bool = false) async throws -> PanicResponse {
         let url = baseURL.appendingPathComponent("panic")
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -46,7 +46,8 @@ struct APIClient {
                 userID: userID,
                 message: message,
                 isTraining: isTraining,
-                trainingLabel: trainingLabel?.trimmingCharacters(in: .whitespacesAndNewlines)
+                trainingLabel: trainingLabel?.trimmingCharacters(in: .whitespacesAndNewlines),
+                silentAudio: silentAudio
             )
         )
 
@@ -504,12 +505,14 @@ private struct PanicRequest: Encodable {
     let message: String
     let isTraining: Bool
     let trainingLabel: String?
+    let silentAudio: Bool
 
     enum CodingKeys: String, CodingKey {
         case userID = "user_id"
         case message
         case isTraining = "is_training"
         case trainingLabel = "training_label"
+        case silentAudio = "silent_audio"
     }
 }
 
@@ -576,6 +579,7 @@ struct AlarmStatusResponse: Decodable {
     let message: String?
     let isTraining: Bool
     let trainingLabel: String?
+    let silentAudio: Bool
     let acknowledgementCount: Int
     let currentUserAcknowledged: Bool
 
@@ -584,6 +588,7 @@ struct AlarmStatusResponse: Decodable {
         case message
         case isTraining = "is_training"
         case trainingLabel = "training_label"
+        case silentAudio = "silent_audio"
         case acknowledgementCount = "acknowledgement_count"
         case currentUserAcknowledged = "current_user_acknowledged"
     }
@@ -593,6 +598,7 @@ struct AlarmStatusResponse: Decodable {
         isActive = try container.decodeIfPresent(Bool.self, forKey: .isActive) ?? false
         message = try container.decodeIfPresent(String.self, forKey: .message)
         isTraining = try container.decodeIfPresent(Bool.self, forKey: .isTraining) ?? false
+        silentAudio = try container.decodeIfPresent(Bool.self, forKey: .silentAudio) ?? false
         trainingLabel = try container.decodeIfPresent(String.self, forKey: .trainingLabel)
         acknowledgementCount = try container.decodeIfPresent(Int.self, forKey: .acknowledgementCount) ?? 0
         currentUserAcknowledged = try container.decodeIfPresent(Bool.self, forKey: .currentUserAcknowledged) ?? false

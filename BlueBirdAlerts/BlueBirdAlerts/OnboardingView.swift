@@ -96,6 +96,7 @@ struct OnboardingView: View {
 
     @State private var step: OnboardingStep = .enterCode
     @State private var codeText = ""
+    @State private var tenantSlugText = ""
     @State private var nameText = ""
     @State private var usernameText = ""
     @State private var passwordText = ""
@@ -180,8 +181,14 @@ struct OnboardingView: View {
     private var enterCodeStep: some View {
         VStack(spacing: 16) {
             CardView {
-                SectionContainer("Invite Code") {
-                    TextInput(text: $codeText, placeholder: "Enter your 8-character code")
+                SectionContainer("District & Invite Code") {
+                    TextInput(text: $tenantSlugText, placeholder: "District code (e.g. nen)")
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+                    Text("Enter the district code provided by your administrator.")
+                        .font(.caption)
+                        .foregroundStyle(DSColor.textSecondary)
+                    TextInput(text: $codeText, placeholder: "Enter your 8-character invite code")
                         .autocorrectionDisabled()
                         .textInputAutocapitalization(.characters)
                     if let errorMessage {
@@ -280,6 +287,7 @@ struct OnboardingView: View {
             Button("Try a Different Code") {
                 step = .enterCode
                 codeText = ""
+                tenantSlugText = ""
                 errorMessage = nil
             }
             .font(.footnote.weight(.semibold))
@@ -399,12 +407,9 @@ struct OnboardingView: View {
 
     private func validateCode() async {
         let code = codeText.trimmingCharacters(in: .whitespaces).uppercased()
+        let tenantSlug = tenantSlugText.trimmingCharacters(in: .whitespaces).lowercased()
         guard !code.isEmpty else { return }
-        // Tenant slug is embedded in the code metadata; for manual entry, we don't know it yet.
-        // The validate-code endpoint requires tenant_slug. For manual entry, we need the user
-        // to also know their school slug. We'll ask them to enter it.
-        // For simplicity: show a field to enter tenant_slug when manual code is entered.
-        await validateCodeWith(code: code, tenantSlug: "")
+        await validateCodeWith(code: code, tenantSlug: tenantSlug)
     }
 
     private func validateCodeWith(code: String, tenantSlug: String) async {
@@ -414,7 +419,7 @@ struct OnboardingView: View {
         defer { isBusy = false }
 
         if tenantSlug.isEmpty {
-            // For manual code entry without knowing tenant, check as a setup code first
+            // No district code → try as a district admin setup code
             do {
                 let result = try await api.validateSetupCode(code: code)
                 if result.valid, let slug = result.tenantSlug, let name = result.tenantName {
@@ -428,10 +433,11 @@ struct OnboardingView: View {
                     return
                 }
             } catch {}
-            errorMessage = "Could not validate code. Make sure you entered it correctly, or scan the QR code instead."
+            errorMessage = "Could not validate code. Enter your district code above if you have an invite code."
             return
         }
 
+        // Regular invite code — validate against the specified district
         do {
             let result = try await api.validateInviteCode(code: code, tenantSlug: tenantSlug)
             if result.valid {
@@ -443,12 +449,10 @@ struct OnboardingView: View {
                     tenantName: result.tenantName ?? tenantSlug
                 )
             } else {
-                errorMessage = result.error ?? "Code is invalid or expired."
-                step = .enterCode
+                errorMessage = result.error ?? "Code is invalid, expired, or already used."
             }
         } catch {
             errorMessage = "Could not validate code: \(error.localizedDescription)"
-            step = .enterCode
         }
     }
 

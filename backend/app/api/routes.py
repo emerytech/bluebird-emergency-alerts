@@ -93,6 +93,9 @@ from app.models.schemas import (
     ValidateSetupCodeResponse,
     CreateDistrictAdminRequest,
     SendInviteEmailRequest,
+    GmailSettingsResponse,
+    GmailSettingsUpdateRequest,
+    CustomerMessageRequest,
 )
 from app.services.access_code_service import AccessCodeService
 from app.services.alert_broadcaster import BroadcastPlan, AlertBroadcaster
@@ -367,7 +370,7 @@ def _admin_section(value: Optional[str]) -> str:
 
 def _super_admin_section(value: Optional[str]) -> str:
     normalized = str(value or "").strip().lower()
-    if normalized in {"schools", "billing", "platform-audit", "create-school", "security", "server-tools", "health", "email-tool", "setup-codes", "noc", "msp", "platform-control"}:
+    if normalized in {"schools", "billing", "platform-audit", "create-school", "security", "configuration", "server-tools", "health", "email-tool", "setup-codes", "noc", "msp", "platform-control"}:
         return normalized
     return "schools"
 
@@ -798,12 +801,15 @@ async def _publish_alert_event(
             "message": cast(Optional[str], _state_field(state, "message", None)),
             "is_training": bool(_state_field(state, "is_training", False)),
             "training_label": cast(Optional[str], _state_field(state, "training_label", None)),
+            "silent_audio": bool(_state_field(state, "silent_audio", False)),
             "current_alert_id": active_alert_id,
             "acknowledgement_count": acknowledgement_count,
             "activated_at": cast(Optional[str], _state_field(state, "activated_at", None)),
             "activated_by_label": cast(Optional[str], _state_field(state, "activated_by_label", None)),
             "deactivated_at": cast(Optional[str], _state_field(state, "deactivated_at", None)),
             "deactivated_by_label": cast(Optional[str], _state_field(state, "deactivated_by_label", None)),
+            "triggered_by_user_id": cast(Optional[int], _state_field(state, "activated_by_user_id", None)),
+            "silent_for_sender": True,
         },
     }
     if alert_id is not None:
@@ -1270,6 +1276,28 @@ async def _send_basic_push(
         await _fcm(request).send_bulk(fcm_tokens, message)
 
 
+async def _send_quiet_period_push_bg(
+    apns: object,
+    fcm: object,
+    apns_tokens: list[str],
+    fcm_tokens: list[str],
+    title: str,
+    message: str,
+    extra_data: Optional[dict] = None,
+) -> None:
+    """Fire-and-forget push with custom title for quiet period status changes."""
+    try:
+        coros = []
+        if apns_tokens:
+            coros.append(apns.send_with_data(apns_tokens, title, message, extra_data=extra_data))  # type: ignore[union-attr]
+        if fcm_tokens:
+            coros.append(fcm.send_with_data(fcm_tokens, title, message, extra_data=extra_data or {}))  # type: ignore[union-attr]
+        if coros:
+            await asyncio.gather(*coros)
+    except Exception:
+        logger.debug("quiet_period_push_bg failed title=%s", title, exc_info=True)
+
+
 def _to_admin_inbox_item(item: AdminMessageRecord) -> AdminMessageInboxItem:
     return AdminMessageInboxItem(
         message_id=item.id,
@@ -1561,6 +1589,7 @@ async def alarm_status(
             message=None,
             is_training=False,
             training_label=None,
+            silent_audio=False,
             activated_at=None,
             activated_by_user_id=None,
             activated_by_label=None,
@@ -1582,6 +1611,7 @@ async def alarm_status(
         message=cast(Optional[str], _state_field(state, "message", None)),
         is_training=bool(_state_field(state, "is_training", False)),
         training_label=cast(Optional[str], _state_field(state, "training_label", None)),
+        silent_audio=bool(_state_field(state, "silent_audio", False)),
         current_alert_id=current_alert_id,
         acknowledgement_count=acknowledgement_count,
         current_user_acknowledged=current_user_acknowledged,
@@ -1675,6 +1705,7 @@ async def activate_alarm(
     )
     is_training = bool(body.is_training)
     training_label = body.training_label.strip() if body.training_label else None
+    silent_audio = bool(body.silent_audio) and is_training
     if is_training and triggered_by_user_id is not None:
         await _require_dashboard_admin_id(users, triggered_by_user_id)
 
@@ -1705,6 +1736,7 @@ async def activate_alarm(
         activated_by_label=_current_school_actor_label(request),
         is_training=is_training,
         training_label=training_label,
+        silent_audio=silent_audio,
     )
     apns_tokens: list[str] = []
     fcm_tokens: list[str] = []
@@ -1748,6 +1780,8 @@ async def activate_alarm(
             fcm_tokens=fcm_tokens,
             sms_numbers=sms_numbers,
             tenant_slug=effective_slug,
+            triggered_by_user_id=triggered_by_user_id,
+            silent_for_sender=True,
         )
         background_tasks.add_task(_broadcaster(request).broadcast_panic, alert_id=alert_id, message=body.message, plan=plan)
 
@@ -1776,6 +1810,7 @@ async def activate_alarm(
             "message": body.message,
             "is_training": is_training,
             "training_label": training_label,
+            "silent_audio": silent_audio,
             "apns_count": len(apns_tokens),
             "fcm_count": len(fcm_tokens),
             "sms_count": len(sms_numbers),
@@ -1788,6 +1823,7 @@ async def activate_alarm(
         message=cast(Optional[str], _state_field(state, "message", None)),
         is_training=bool(_state_field(state, "is_training", False)),
         training_label=cast(Optional[str], _state_field(state, "training_label", None)),
+        silent_audio=bool(_state_field(state, "silent_audio", False)),
         current_alert_id=alert_id,
         acknowledgement_count=0,
         current_user_acknowledged=False,
@@ -1797,6 +1833,8 @@ async def activate_alarm(
         deactivated_at=cast(Optional[str], _state_field(state, "deactivated_at", None)),
         deactivated_by_user_id=cast(Optional[int], _state_field(state, "deactivated_by_user_id", None)),
         deactivated_by_label=cast(Optional[str], _state_field(state, "deactivated_by_label", None)),
+        triggered_by_user_id=triggered_by_user_id,
+        silent_for_sender=True,
     )
 
 
@@ -1833,6 +1871,7 @@ async def deactivate_alarm(
         message=cast(Optional[str], _state_field(state, "message", None)),
         is_training=bool(_state_field(state, "is_training", False)),
         training_label=cast(Optional[str], _state_field(state, "training_label", None)),
+        silent_audio=bool(_state_field(state, "silent_audio", False)),
         current_alert_id=None,
         acknowledgement_count=0,
         current_user_acknowledged=False,
@@ -3508,6 +3547,8 @@ async def super_admin_dashboard(
             health_heartbeats=health_heartbeats,
             email_log=email_log,
             email_configured=es.is_configured(),
+            smtp_config=es.smtp_config(),
+            gmail_settings=await es.get_gmail_settings(),
             platform_admin_emails=request.app.state.settings.platform_admin_email_list,  # type: ignore[attr-defined]
             email_template_keys=EMAIL_TEMPLATE_KEYS,
             setup_codes=_setup_codes,
@@ -4149,6 +4190,165 @@ async def super_admin_health_email_test(
     return RedirectResponse(url=_super_admin_url("email-tool"), status_code=status.HTTP_303_SEE_OTHER)
 
 
+@router.post("/super-admin/configuration/smtp", include_in_schema=False)
+async def super_admin_save_smtp_configuration(
+    request: Request,
+    smtp_host: str = Form(default=""),
+    smtp_port: int = Form(default=587),
+    smtp_username: str = Form(default=""),
+    smtp_password: str = Form(default=""),
+    smtp_from: str = Form(default=""),
+    smtp_use_tls: Optional[str] = Form(default=None),
+    clear_smtp_password: Optional[str] = Form(default=None),
+) -> RedirectResponse:
+    _require_super_admin(request)
+    host = smtp_host.strip()
+    from_address = smtp_from.strip()
+    username = smtp_username.strip()
+    if not host:
+        _set_flash(request, error="SMTP host is required.")
+        return RedirectResponse(url=_super_admin_url("configuration"), status_code=status.HTTP_303_SEE_OTHER)
+    if smtp_port < 1 or smtp_port > 65535:
+        _set_flash(request, error="SMTP port must be between 1 and 65535.")
+        return RedirectResponse(url=_super_admin_url("configuration"), status_code=status.HTTP_303_SEE_OTHER)
+    if not from_address or "@" not in from_address:
+        _set_flash(request, error="Enter a valid From email address.")
+        return RedirectResponse(url=_super_admin_url("configuration"), status_code=status.HTTP_303_SEE_OTHER)
+    try:
+        await _email_service(request).save_smtp_config(
+            host=host,
+            port=int(smtp_port),
+            username=username,
+            from_address=from_address,
+            use_tls=bool(smtp_use_tls),
+            password=smtp_password,
+            clear_password=bool(clear_smtp_password),
+        )
+    except Exception as exc:
+        _set_flash(request, error=f"Could not save SMTP settings: {exc}")
+        return RedirectResponse(url=_super_admin_url("configuration"), status_code=status.HTTP_303_SEE_OTHER)
+    _set_flash(request, message="SMTP configuration saved. Use Email Tool to send a test message.")
+    return RedirectResponse(url=_super_admin_url("configuration"), status_code=status.HTTP_303_SEE_OTHER)
+
+
+# ── Gmail Settings ─────────────────────────────────────────────────────────────
+
+
+@router.get("/super-admin/email-settings", include_in_schema=False)
+async def super_admin_get_gmail_settings(request: Request) -> GmailSettingsResponse:
+    _require_super_admin(request)
+    gs = await _email_service(request).get_gmail_settings()
+    return GmailSettingsResponse(
+        gmail_address=gs.gmail_address,
+        from_name=gs.from_name,
+        password_set=gs.password_set,
+        updated_at=gs.updated_at,
+        updated_by=gs.updated_by,
+        configured=gs.configured,
+    )
+
+
+@router.post("/super-admin/email-settings", include_in_schema=False)
+async def super_admin_save_gmail_settings(
+    request: Request,
+    gmail_address: str = Form(default=""),
+    from_name: str = Form(default="BlueBird Alerts"),
+    app_password: str = Form(default=""),
+) -> RedirectResponse:
+    _require_super_admin(request)
+    addr = gmail_address.strip().lower()
+    if not addr or "@" not in addr:
+        _set_flash(request, error="Enter a valid Gmail address.")
+        return RedirectResponse(url=_super_admin_url("configuration"), status_code=status.HTTP_303_SEE_OTHER)
+    admin = await _platform_admins(request).get_by_id(_super_admin_id(request) or 0)
+    actor = admin.login_name if admin else "super_admin"
+    await _email_service(request).save_gmail_settings(
+        gmail_address=addr,
+        from_name=from_name.strip() or "BlueBird Alerts",
+        app_password=app_password.strip() or None,
+        updated_by=actor,
+    )
+    logger.info("super_admin email_settings_updated actor=%s gmail=%s", actor, addr)
+    _set_flash(request, message="Gmail settings saved.")
+    return RedirectResponse(url=_super_admin_url("configuration"), status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.post("/super-admin/email-settings/test", include_in_schema=False)
+async def super_admin_test_gmail_settings(
+    request: Request,
+    test_email: str = Form(default=""),
+) -> RedirectResponse:
+    _require_super_admin(request)
+    addr = test_email.strip()
+    if not addr or "@" not in addr:
+        _set_flash(request, error="Enter a valid email address for the test.")
+        return RedirectResponse(url=_super_admin_url("configuration"), status_code=status.HTTP_303_SEE_OTHER)
+    es = _email_service(request)
+    gs = await es.get_gmail_settings()
+    if not gs.configured:
+        _set_flash(request, error="Gmail is not configured. Save Gmail settings first.")
+        return RedirectResponse(url=_super_admin_url("configuration"), status_code=status.HTTP_303_SEE_OTHER)
+    ok = await es.send_email(
+        to_address=addr,
+        subject="BlueBird Alerts — Test Email",
+        body=(
+            "This is a test email from the BlueBird Alerts platform.\n\n"
+            "If you received this, Gmail SMTP is working correctly.\n\n"
+            "— BlueBird Alerts Platform"
+        ),
+        event_type="gmail_test",
+    )
+    admin = await _platform_admins(request).get_by_id(_super_admin_id(request) or 0)
+    actor = admin.login_name if admin else "super_admin"
+    logger.info("super_admin test_email_sent actor=%s to=%s ok=%s", actor, addr, ok)
+    if ok:
+        _set_flash(request, message=f"Test email sent to {addr}.")
+    else:
+        _set_flash(request, error=f"Test email to {addr} failed. Check Gmail settings and email log.")
+    return RedirectResponse(url=_super_admin_url("configuration"), status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.post("/super-admin/customers/{school_slug}/message", include_in_schema=False)
+async def super_admin_send_customer_message(
+    request: Request,
+    school_slug: str,
+    subject: str = Form(default=""),
+    body: str = Form(default=""),
+) -> RedirectResponse:
+    _require_super_admin(request)
+    subject = subject.strip()
+    body = body.strip()
+    if not subject or not body:
+        _set_flash(request, error="Subject and message body are required.")
+        return RedirectResponse(url=_super_admin_url("schools"), status_code=status.HTTP_303_SEE_OTHER)
+
+    school = _tenant_manager(request).school_for_slug(school_slug)
+    if school is None:
+        _set_flash(request, error="School not found.")
+        return RedirectResponse(url=_super_admin_url("schools"), status_code=status.HTTP_303_SEE_OTHER)
+
+    tenant_ctx = _tenant_manager(request).get(school)
+    email_addresses = await tenant_ctx.user_store.list_emails_by_role(["district_admin", "building_admin"])
+
+    admin = await _platform_admins(request).get_by_id(_super_admin_id(request) or 0)
+    actor = admin.login_name if admin else "super_admin"
+    es = _email_service(request)
+
+    if not es.is_configured():
+        logger.info("super_admin customer_message NOT sent (unconfigured) actor=%s school=%s", actor, school_slug)
+        _set_flash(request, error="Email is not configured. Message logged but not sent.")
+        return RedirectResponse(url=_super_admin_url("schools"), status_code=status.HTTP_303_SEE_OTHER)
+
+    if not email_addresses:
+        _set_flash(request, error=f"No email addresses found for admins in {school.name}.")
+        return RedirectResponse(url=_super_admin_url("schools"), status_code=status.HTTP_303_SEE_OTHER)
+
+    count = await es.send_to_addresses(email_addresses, subject=subject, body=body, event_type="customer_message")
+    logger.info("super_admin customer_message_sent actor=%s school=%s count=%d/%d", actor, school_slug, count, len(email_addresses))
+    _set_flash(request, message=f"Message sent to {count}/{len(email_addresses)} admin(s) at {school.name}.")
+    return RedirectResponse(url=_super_admin_url("schools"), status_code=status.HTTP_303_SEE_OTHER)
+
+
 @router.post("/admin/super-admin/exit", include_in_schema=False)
 async def admin_exit_super_admin_access(request: Request) -> RedirectResponse:
     if _super_admin_ok(request):
@@ -4287,6 +4487,7 @@ async def admin_activate_alarm(
     message: str = Form(...),
     is_training: Optional[str] = Form(default=None),
     training_label: str = Form(default=""),
+    silent_audio: Optional[str] = Form(default=None),
 ) -> RedirectResponse:
     await _require_dashboard_admin(request)
     # When a district admin is managing a different school than the one they
@@ -4305,6 +4506,7 @@ async def admin_activate_alarm(
             user_id=None if is_cross_tenant else _session_user_id(request),
             is_training=(is_training == "1"),
             training_label=training_label.strip() or None,
+            silent_audio=(silent_audio == "1"),
         ),
         request,
         background_tasks,
@@ -5554,10 +5756,25 @@ async def approve_quiet_period_request_api(
         target_id=str(record.id),
         metadata={"requester_user_id": int(record.user_id)},
     )
-    await _publish_simple_event(request, event="quiet_request_updated", extra={
+    try:
+        # Bypass quiet suppression: the recipient IS the user just granted quiet,
+        # so _push_tokens_for_scope would filter them out. Query registry directly.
+        _target_uid = int(record.user_id)
+        _push_apns = [d.token for d in await _registry(request).list_by_provider("apns") if d.user_id == _target_uid and d.is_valid]
+        _push_fcm = [d.token for d in await _registry(request).list_by_provider("fcm") if d.user_id == _target_uid and d.is_valid]
+        await _send_quiet_period_push_bg(
+            _apns(request), _fcm(request), _push_apns, _push_fcm,
+            title="Quiet Period Approved",
+            message="Your quiet period request has been approved.",
+            extra_data={"type": "quiet_period_update", "status": "approved", "quiet_period_id": str(record.id)},
+        )
+    except Exception:
+        logger.debug("quiet_period approve push failed user_id=%s", record.user_id, exc_info=True)
+    await _publish_simple_event(request, event="quiet_period_approved", extra={
         "request_id": record.id,
-        "status": record.status,
-        "event_id": f"qru_{record.id}_approved",
+        "user_id": record.user_id,
+        "expires_at": record.expires_at,
+        "event_id": f"qra_{record.id}",
     })
     return _to_quiet_period_summary(record)
 
@@ -5597,10 +5814,22 @@ async def deny_quiet_period_request_api(
         target_id=str(record.id),
         metadata={"requester_user_id": int(record.user_id)},
     )
-    await _publish_simple_event(request, event="quiet_request_updated", extra={
+    try:
+        _target_uid = int(record.user_id)
+        _push_apns = [d.token for d in await _registry(request).list_by_provider("apns") if d.user_id == _target_uid and d.is_valid]
+        _push_fcm = [d.token for d in await _registry(request).list_by_provider("fcm") if d.user_id == _target_uid and d.is_valid]
+        await _send_quiet_period_push_bg(
+            _apns(request), _fcm(request), _push_apns, _push_fcm,
+            title="Quiet Period Denied",
+            message="Your quiet period request has been denied.",
+            extra_data={"type": "quiet_period_update", "status": "denied", "quiet_period_id": str(record.id)},
+        )
+    except Exception:
+        logger.debug("quiet_period deny push failed user_id=%s", record.user_id, exc_info=True)
+    await _publish_simple_event(request, event="quiet_period_denied", extra={
         "request_id": record.id,
-        "status": record.status,
-        "event_id": f"qru_{record.id}_denied",
+        "user_id": record.user_id,
+        "event_id": f"qrd_{record.id}",
     })
     return _to_quiet_period_summary(record)
 
@@ -5879,6 +6108,7 @@ async def panic(
     triggered_by_user_id = await _require_alarm_trigger_user(users, body.user_id)
     is_training = bool(body.is_training)
     training_label = body.training_label.strip() if body.training_label else None
+    silent_audio = bool(body.silent_audio) and is_training
     if is_training:
         await _require_dashboard_admin_id(users, triggered_by_user_id)
 
@@ -5904,6 +6134,7 @@ async def panic(
         activated_by_label=_current_school_actor_label(request),
         is_training=is_training,
         training_label=training_label,
+        silent_audio=silent_audio,
     )
 
     apns_devices = [] if is_training else await _registry(request).list_by_provider("apns")
@@ -5956,6 +6187,8 @@ async def panic(
         plan = BroadcastPlan(apns_tokens=apns_tokens, fcm_tokens=fcm_tokens, sms_numbers=sms_numbers, tenant_slug=_panic_tenant_slug)
         background_tasks.add_task(_broadcaster(request).broadcast_panic, alert_id=alert_id, message=body.message, plan=plan)
 
+    await _publish_alert_event(request, event="alert_triggered", alert_id=alert_id)
+
     return PanicResponse(
         alert_id=alert_id,
         device_count=device_count,
@@ -5977,6 +6210,7 @@ def _tenant_manager(req: Request):
 
 def _build_access_code_response(rec, school) -> AccessCodeResponse:
     base_domain = ""
+    _qr = AccessCodeService.qr_payload(rec.code, rec.tenant_slug)
     return AccessCodeResponse(
         id=rec.id,
         code=rec.code,
@@ -5990,7 +6224,8 @@ def _build_access_code_response(rec, school) -> AccessCodeResponse:
         max_uses=rec.max_uses,
         use_count=rec.use_count,
         status=rec.status,
-        qr_payload=AccessCodeService.qr_payload(rec.code, rec.tenant_slug),
+        qr_payload=_qr,
+        qr_payload_json=_qr,
         invite_url=AccessCodeService.invite_url(rec.code, rec.tenant_slug, base_domain or "app.bluebirdalerts.com"),
     )
 
@@ -6022,10 +6257,14 @@ async def onboarding_create_account(request: Request, body: CreateAccountFromCod
     rec = await _access_codes(request).validate_code(body.code, body.tenant_slug)
     if rec is None:
         return ValidateCodeResponse(valid=False, error="Code is invalid, expired, or already used.")
+    # Enforce: public signup codes may not create elevated roles.
+    if rec.role not in CODEGEN_ALLOWED_ROLES:
+        return ValidateCodeResponse(valid=False, error="This code cannot be used for public signup.")
     school = _tenant_manager(request).school_for_slug(rec.tenant_slug)
     if school is None:
         return ValidateCodeResponse(valid=False, error="School not found.")
-    user_store: UserStore = _tenant_manager(request).get(school).user_store
+    tenant_ctx = _tenant_manager(request).get(school)
+    user_store: UserStore = tenant_ctx.user_store
     try:
         await user_store.create_user(
             name=body.name.strip(),
@@ -6043,6 +6282,26 @@ async def onboarding_create_account(request: Request, body: CreateAccountFromCod
     if not consumed:
         logger.warning("onboarding consume_code failed code_id=%s — user already created", rec.id)
     logger.info("onboarding user created tenant=%s role=%s login=%s", rec.tenant_slug, rec.role, body.login_name)
+    # Audit: both events fire asynchronously; failures must not block the response.
+    _login = body.login_name.strip().lower()
+    try:
+        await tenant_ctx.audit_log_service.log_event(
+            tenant_slug=rec.tenant_slug,
+            event_type="access_code_used",
+            actor_label=f"signup:{_login}",
+            target_type="access_code",
+            target_id=str(rec.id),
+            metadata={"role": rec.role, "code_id": rec.id},
+        )
+        await tenant_ctx.audit_log_service.log_event(
+            tenant_slug=rec.tenant_slug,
+            event_type="user_created_from_code",
+            actor_label=f"signup:{_login}",
+            target_type="user",
+            metadata={"role": rec.role, "code_id": rec.id},
+        )
+    except Exception:
+        logger.debug("Audit log failed for onboarding create_account tenant=%s", rec.tenant_slug, exc_info=True)
     return ValidateCodeResponse(
         valid=True,
         role=rec.role,
@@ -6192,6 +6451,7 @@ async def admin_generate_access_code(request: Request, body: GenerateAccessCodeR
     )
     school = _tenant_manager(request).school_for_slug(tenant_slug)
     base_domain = str(request.app.state.settings.BASE_DOMAIN).strip()
+    _qr = AccessCodeService.qr_payload(rec.code, rec.tenant_slug)
     return AccessCodeResponse(
         id=rec.id,
         code=rec.code,
@@ -6205,7 +6465,8 @@ async def admin_generate_access_code(request: Request, body: GenerateAccessCodeR
         max_uses=rec.max_uses,
         use_count=rec.use_count,
         status=rec.status,
-        qr_payload=AccessCodeService.qr_payload(rec.code, rec.tenant_slug),
+        qr_payload=_qr,
+        qr_payload_json=_qr,
         invite_url=AccessCodeService.invite_url(rec.code, rec.tenant_slug, base_domain or "app.bluebirdalerts.com"),
     )
 
@@ -6236,11 +6497,238 @@ async def admin_list_access_codes(request: Request, limit: int = Query(default=2
             use_count=r.use_count,
             status=r.status,
             qr_payload=AccessCodeService.qr_payload(r.code, r.tenant_slug),
+            qr_payload_json=AccessCodeService.qr_payload(r.code, r.tenant_slug),
             invite_url=AccessCodeService.invite_url(r.code, r.tenant_slug, base_domain or "app.bluebirdalerts.com"),
         )
         for r in records
     ]
     return AccessCodeListResponse(codes=codes)
+
+
+@router.get("/admin/access-codes/{code_id}/qr")
+async def admin_get_access_code_qr(request: Request, code_id: int) -> JSONResponse:
+    """Return the QR payload for a specific access code (JSON — front end renders the image)."""
+    await _require_dashboard_admin(request)
+    effective_role = str(getattr(getattr(request.state, "admin_user", None), "role", "")).strip()
+    if not can_generate_codes(effective_role):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only district admins may view access codes.")
+    tenant_slug = str(getattr(request.state, "school_slug", "")).strip()
+    records = await _access_codes(request).list_codes(tenant_slug, limit=500)
+    rec = next((r for r in records if r.id == code_id), None)
+    if rec is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Code not found.")
+    import json as _json
+    payload_json = AccessCodeService.qr_payload(rec.code, rec.tenant_slug)
+    return JSONResponse({
+        "code_id": rec.id,
+        "code": rec.code,
+        "tenant_slug": rec.tenant_slug,
+        "qr_payload": _json.loads(payload_json),
+        "qr_payload_json": payload_json,
+    })
+
+
+def _qr_png_bytes(payload_json: str, box_size: int = 10, border: int = 4) -> bytes:
+    """Generate a QR code PNG and return raw bytes using Pillow."""
+    import io
+    import qrcode
+    qr = qrcode.QRCode(
+        version=None,
+        error_correction=qrcode.constants.ERROR_CORRECT_M,
+        box_size=box_size,
+        border=border,
+    )
+    qr.add_data(payload_json)
+    qr.make(fit=True)
+    img = qr.make_image(fill_color="black", back_color="white")
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+@router.get("/admin/access-codes/{code_id}/qr.png", include_in_schema=False)
+async def admin_get_access_code_qr_png(request: Request, code_id: int) -> StreamingResponse:
+    """Return a QR code as a PNG image for the given access code."""
+    await _require_dashboard_admin(request)
+    effective_role = str(getattr(getattr(request.state, "admin_user", None), "role", "")).strip()
+    if not can_generate_codes(effective_role):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only district admins may view access codes.")
+    tenant_slug = str(getattr(request.state, "school_slug", "")).strip()
+    records = await _access_codes(request).list_codes(tenant_slug, limit=500)
+    rec = next((r for r in records if r.id == code_id), None)
+    if rec is None or rec.status != "active":
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Code not found or not active.")
+    payload_json = AccessCodeService.qr_payload(rec.code, rec.tenant_slug)
+    png_bytes = await anyio.to_thread.run_sync(lambda: _qr_png_bytes(payload_json))
+    return StreamingResponse(
+        iter([png_bytes]),
+        media_type="image/png",
+        headers={"Content-Disposition": f'inline; filename="bluebird-invite-{rec.code}.png"'},
+    )
+
+
+@router.get("/admin/access-codes/{code_id}/print", include_in_schema=False)
+async def admin_get_access_code_print(request: Request, code_id: int) -> HTMLResponse:
+    """Return a printable HTML onboarding sheet for a single access code."""
+    from html import escape as _esc
+    import base64 as _b64
+    await _require_dashboard_admin(request)
+    effective_role = str(getattr(getattr(request.state, "admin_user", None), "role", "")).strip()
+    if not can_generate_codes(effective_role):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only district admins may view access codes.")
+    tenant_slug = str(getattr(request.state, "school_slug", "")).strip()
+    school = request.state.school
+    school_name = _esc(str(getattr(school, "name", tenant_slug)))
+    records = await _access_codes(request).list_codes(tenant_slug, limit=500)
+    rec = next((r for r in records if r.id == code_id), None)
+    if rec is None or rec.status != "active":
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Code not found or not active.")
+    payload_json = AccessCodeService.qr_payload(rec.code, rec.tenant_slug)
+    png_bytes = await anyio.to_thread.run_sync(lambda: _qr_png_bytes(payload_json, box_size=14, border=4))
+    qr_b64 = _b64.b64encode(png_bytes).decode("ascii")
+    code_display = _esc(rec.code)
+    slug_display = _esc(rec.tenant_slug)
+    role_display = _esc(role_display_label(rec.role))
+    return HTMLResponse(f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>BlueBird Alerts — Onboarding Sheet</title>
+  <style>
+    * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+    body {{
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
+      background: #fff;
+      color: #111;
+      padding: 40px 48px;
+      max-width: 680px;
+      margin: 0 auto;
+    }}
+    .header {{
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      border-bottom: 2px solid #1a3a5c;
+      padding-bottom: 16px;
+      margin-bottom: 28px;
+    }}
+    .header-logo {{ font-size: 2rem; }}
+    .header-text h1 {{ font-size: 1.4rem; font-weight: 700; color: #1a3a5c; }}
+    .header-text p {{ font-size: 0.9rem; color: #555; margin-top: 2px; }}
+    .school-name {{
+      font-size: 1.1rem;
+      font-weight: 600;
+      color: #1a3a5c;
+      margin-bottom: 24px;
+      text-align: center;
+    }}
+    .headline {{
+      font-size: 1.35rem;
+      font-weight: 700;
+      text-align: center;
+      margin-bottom: 28px;
+      color: #111;
+    }}
+    .qr-block {{
+      text-align: center;
+      margin: 0 auto 28px;
+    }}
+    .qr-block img {{
+      width: 240px;
+      height: 240px;
+      image-rendering: pixelated;
+      border: 1px solid #ddd;
+      padding: 8px;
+      background: #fff;
+    }}
+    .code-fallback {{
+      text-align: center;
+      margin-bottom: 28px;
+    }}
+    .code-label {{ font-size: 0.8rem; color: #666; margin-bottom: 4px; }}
+    .code-value {{
+      font-family: "Courier New", monospace;
+      font-size: 2rem;
+      font-weight: 700;
+      letter-spacing: 0.15em;
+      color: #1a3a5c;
+      border: 2px dashed #1a3a5c;
+      display: inline-block;
+      padding: 8px 24px;
+      border-radius: 6px;
+    }}
+    .meta {{ text-align: center; font-size: 0.8rem; color: #888; margin-bottom: 28px; }}
+    .instructions {{
+      border-top: 1px solid #e0e0e0;
+      padding-top: 20px;
+    }}
+    .instructions h2 {{ font-size: 1rem; font-weight: 700; margin-bottom: 12px; }}
+    .instructions ol {{ padding-left: 20px; }}
+    .instructions li {{
+      font-size: 0.95rem;
+      line-height: 1.7;
+      color: #222;
+    }}
+    .footer {{
+      margin-top: 32px;
+      font-size: 0.75rem;
+      color: #aaa;
+      text-align: center;
+      border-top: 1px solid #eee;
+      padding-top: 12px;
+    }}
+    @media print {{
+      body {{ padding: 20px 24px; }}
+      @page {{ margin: 15mm; }}
+    }}
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="header-logo">&#127284;</div>
+    <div class="header-text">
+      <h1>BlueBird Alerts</h1>
+      <p>Emergency notification platform</p>
+    </div>
+  </div>
+
+  <p class="school-name">{school_name}</p>
+
+  <p class="headline">Scan to join BlueBird Alerts</p>
+
+  <div class="qr-block">
+    <img src="data:image/png;base64,{qr_b64}" alt="QR Code for {code_display}" />
+  </div>
+
+  <div class="code-fallback">
+    <p class="code-label">Or enter this code manually</p>
+    <span class="code-value">{code_display}</span>
+  </div>
+
+  <div class="meta">District code: {slug_display} &nbsp;&middot;&nbsp; Role: {role_display}</div>
+
+  <div class="instructions">
+    <h2>How to set up your account:</h2>
+    <ol>
+      <li>Download the <strong>BlueBird Alerts</strong> app from the App Store or Google Play</li>
+      <li>Open the app and tap <strong>Get Started</strong></li>
+      <li>Scan this QR code &mdash; or enter your district code and the code above manually</li>
+      <li>Create your username and password</li>
+      <li>You&rsquo;re ready to receive emergency alerts</li>
+    </ol>
+  </div>
+
+  <div class="footer">
+    Generated by BlueBird Alerts &nbsp;&middot;&nbsp; {school_name}
+  </div>
+</body>
+<script>
+  window.addEventListener("load", function() {{
+    setTimeout(function() {{ window.print(); }}, 400);
+  }});
+</script>
+</html>""")
 
 
 @router.post("/admin/access-codes/{code_id}/revoke", include_in_schema=False)

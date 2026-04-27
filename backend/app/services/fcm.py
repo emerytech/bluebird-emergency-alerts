@@ -55,28 +55,92 @@ class FCMClient:
     def is_configured(self) -> bool:
         return self._settings.fcm_is_configured()
 
-    async def send_bulk(self, tokens: List[str], message: str) -> List[FCMSendResult]:
+    async def send_bulk(self, tokens: List[str], message: str, extra_data: Optional[dict] = None) -> List[FCMSendResult]:
         if not tokens:
             return []
         if not self._app:
             return [FCMSendResult(token=t, ok=False, status_code=None, reason="fcm_not_configured") for t in tokens]
-        return await anyio.to_thread.run_sync(self._send_bulk_sync, tokens, message)
+        return await anyio.to_thread.run_sync(self._send_bulk_sync, tokens, message, extra_data or {})
 
-    def _send_bulk_sync(self, tokens: List[str], message: str) -> List[FCMSendResult]:
+    async def send_with_data(
+        self,
+        tokens: List[str],
+        title: str,
+        body: str,
+        extra_data: Optional[dict] = None,
+    ) -> List[FCMSendResult]:
+        if not tokens:
+            return []
+        if not self._app:
+            return [FCMSendResult(token=t, ok=False, status_code=None, reason="fcm_not_configured") for t in tokens]
+        return await anyio.to_thread.run_sync(
+            self._send_with_data_sync, tokens, title, body, extra_data or {}
+        )
+
+    def _send_with_data_sync(
+        self,
+        tokens: List[str],
+        title: str,
+        body: str,
+        extra_data: dict,
+    ) -> List[FCMSendResult]:
         assert self._app is not None
+        data: dict = {
+            "title": title,
+            "body": body,
+            "message": body,
+            "channel_id": "bluebird_alerts",
+        }
+        data.update({str(k): str(v) for k, v in extra_data.items()})
         messages = [
             messaging.Message(
                 token=token,
-                data={
-                    "title": "BlueBird Alert",
-                    "body": message,
-                    "message": message,
-                    "sound": "bluebird_alarm",
-                    "channel_id": "bluebird_alerts",
-                    "full_screen": "1",
-                    "open_alarm": "1",
-                    "category": "alarm",
-                },
+                data=data,
+                android=messaging.AndroidConfig(priority="high"),
+            )
+            for token in tokens
+        ]
+        try:
+            batch = messaging.send_each(messages, app=self._app)
+        except firebase_exceptions.FirebaseError as exc:
+            self._logger.exception("FCM send_with_data batch failed")
+            return [
+                FCMSendResult(token=token, ok=False, status_code=None, reason=str(exc))
+                for token in tokens
+            ]
+        results: List[FCMSendResult] = []
+        for token, response in zip(tokens, batch.responses):
+            if response.success:
+                results.append(FCMSendResult(token=token, ok=True, status_code=200, reason=None))
+                continue
+            exc = response.exception
+            results.append(
+                FCMSendResult(
+                    token=token,
+                    ok=False,
+                    status_code=getattr(exc, "http_response", None).status_code if getattr(exc, "http_response", None) else None,
+                    reason=str(exc) if exc else "fcm_send_failed",
+                )
+            )
+        return results
+
+    def _send_bulk_sync(self, tokens: List[str], message: str, extra_data: dict = {}) -> List[FCMSendResult]:
+        assert self._app is not None
+        data: dict = {
+            "title": "BlueBird Alert",
+            "body": message,
+            "message": message,
+            "sound": "bluebird_alarm",
+            "channel_id": "bluebird_alerts",
+            "full_screen": "1",
+            "open_alarm": "1",
+            "category": "alarm",
+        }
+        data.update({str(k): str(v) for k, v in extra_data.items()})
+        messages = [
+            messaging.Message(
+                token=token,
+                data=data,
                 android=messaging.AndroidConfig(
                     priority="high",
                 ),

@@ -259,7 +259,7 @@ def test_push_fcm_isolation(client: TestClient, login_super_admin, monkeypatch) 
 
     sent: list[tuple[list, str]] = []
 
-    async def _fake_fcm(tokens: list[str], message: str) -> list:
+    async def _fake_fcm(tokens: list[str], message: str, extra_data=None) -> list:
         sent.append((list(tokens), message))
         return []
 
@@ -286,7 +286,7 @@ def test_push_fcm_isolation_reverse(client: TestClient, login_super_admin, monke
 
     sent: list[tuple[list, str]] = []
 
-    async def _fake_fcm(tokens: list[str], message: str) -> list:
+    async def _fake_fcm(tokens: list[str], message: str, extra_data=None) -> list:
         sent.append((list(tokens), message))
         return []
 
@@ -420,7 +420,7 @@ def test_training_push_not_sent_to_any_tenant(
 
     sent: list = []
 
-    async def _fake_fcm(tokens: list[str], message: str) -> list:
+    async def _fake_fcm(tokens: list[str], message: str, extra_data=None) -> list:
         sent.append(list(tokens))
         return []
 

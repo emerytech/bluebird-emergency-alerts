@@ -80,6 +80,49 @@ async def _health_check_loop(app: FastAPI, interval: int) -> None:
             logger.warning("Health check loop error: %s", exc)
 
 
+async def _quiet_period_expiry_loop(app: FastAPI, interval: float = 45.0) -> None:
+    """
+    Background loop that expires approved quiet periods whose expires_at has passed.
+    Emits a WebSocket event and audit log entry for each expired record.
+    """
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            tenant_manager: TenantManager = app.state.tenant_manager
+            alert_hub: AlertHub = app.state.alert_hub
+            for tenant in list(tenant_manager._cache.values()):
+                try:
+                    expired = await tenant.quiet_period_store.expire_and_return()
+                    for record in expired:
+                        try:
+                            await tenant.audit_log_service.log_event(
+                                tenant_slug=tenant.slug,
+                                event_type="quiet_period_expired",
+                                actor_label="system",
+                                target_type="quiet_period_request",
+                                target_id=str(record.id),
+                                metadata={"user_id": record.user_id},
+                            )
+                        except Exception:
+                            logger.debug("qp_expiry audit log failed tenant=%s", tenant.slug)
+                        try:
+                            await alert_hub.publish(tenant.slug, {
+                                "event": "quiet_period_expired",
+                                "tenant_slug": tenant.slug,
+                                "request_id": record.id,
+                                "user_id": record.user_id,
+                                "event_id": f"qpe_{record.id}",
+                            })
+                        except Exception:
+                            logger.debug("qp_expiry ws publish failed tenant=%s", tenant.slug)
+                except Exception:
+                    logger.debug("qp_expiry error tenant=%s", tenant.slug, exc_info=True)
+        except asyncio.CancelledError:
+            break
+        except Exception as exc:
+            logger.warning("qp_expiry loop error: %s", exc)
+
+
 def _normalize_tenant_candidate(value: str) -> str:
     return _TENANT_CLEAN_RE.sub("-", value.strip().lower()).strip("-")
 
@@ -150,12 +193,20 @@ async def lifespan(app: FastAPI):
     health_task = asyncio.create_task(
         _health_check_loop(app, settings.HEALTH_CHECK_INTERVAL)
     )
+    qp_expiry_task = asyncio.create_task(
+        _quiet_period_expiry_loop(app, interval=45.0)
+    )
 
     yield
 
     health_task.cancel()
+    qp_expiry_task.cancel()
     try:
         await health_task
+    except asyncio.CancelledError:
+        pass
+    try:
+        await qp_expiry_task
     except asyncio.CancelledError:
         pass
 

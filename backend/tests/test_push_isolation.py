@@ -117,7 +117,7 @@ def test_alarm_fcm_sends_only_tenant_a_tokens(
 
     fcm_calls: list[tuple[list[str], str]] = []
 
-    async def _fake_fcm(tokens: list[str], message: str):
+    async def _fake_fcm(tokens: list[str], message: str, extra_data=None):
         fcm_calls.append((list(tokens), message))
         return []
 
@@ -148,7 +148,7 @@ def test_alarm_fcm_tenant_b_tokens_not_sent_when_a_triggers(
 
     fcm_calls: list[tuple[list[str], str]] = []
 
-    async def _fake_fcm(tokens: list[str], message: str):
+    async def _fake_fcm(tokens: list[str], message: str, extra_data=None):
         fcm_calls.append((list(tokens), message))
         return []
 
@@ -188,7 +188,7 @@ def test_alarm_apns_sends_only_tenant_a_tokens(
 
     apns_calls: list[tuple[list[str], str]] = []
 
-    async def _fake_apns(tokens: list[str], message: str):
+    async def _fake_apns(tokens: list[str], message: str, extra_data=None):
         apns_calls.append((list(tokens), message))
         return []
 
@@ -224,11 +224,11 @@ def test_training_alarm_sends_no_push(
     apns_calls: list = []
     fcm_calls: list = []
 
-    async def _fake_apns(tokens: list[str], message: str):
+    async def _fake_apns(tokens: list[str], message: str, extra_data=None):
         apns_calls.append(list(tokens))
         return []
 
-    async def _fake_fcm(tokens: list[str], message: str):
+    async def _fake_fcm(tokens: list[str], message: str, extra_data=None):
         fcm_calls.append(list(tokens))
         return []
 
@@ -312,7 +312,7 @@ def test_quiet_user_token_excluded_from_alarm_push(
 
     fcm_calls: list[tuple[list[str], str]] = []
 
-    async def _fake_fcm(tokens: list[str], message: str):
+    async def _fake_fcm(tokens: list[str], message: str, extra_data=None):
         fcm_calls.append((list(tokens), message))
         return []
 
@@ -347,7 +347,7 @@ def test_panic_endpoint_sends_only_triggered_tenant_fcm_tokens(
 
     fcm_calls: list[tuple[list[str], str]] = []
 
-    async def _fake_fcm(tokens: list[str], message: str):
+    async def _fake_fcm(tokens: list[str], message: str, extra_data=None):
         fcm_calls.append((list(tokens), message))
         return []
 
@@ -373,7 +373,7 @@ def test_panic_training_sends_no_push(
 
     fcm_calls: list = []
 
-    async def _fake_fcm(tokens: list[str], message: str):
+    async def _fake_fcm(tokens: list[str], message: str, extra_data=None):
         fcm_calls.append(list(tokens))
         return []
 

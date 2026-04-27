@@ -18,6 +18,7 @@ class RegisteredDevice:
     user_id: int | None = None
     first_user_id: int | None = None
     last_seen_at: str | None = None
+    is_valid: bool = True
 
 
 class DeviceRegistry:
@@ -53,6 +54,7 @@ class DeviceRegistry:
                     first_user_id INTEGER NULL,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     last_seen_at TEXT NULL,
+                    is_valid INTEGER NOT NULL DEFAULT 1,
                     PRIMARY KEY (push_provider, token)
                 );
                 """
@@ -67,6 +69,10 @@ class DeviceRegistry:
             if "last_seen_at" not in cols:
                 conn.execute(
                     "ALTER TABLE registered_devices ADD COLUMN last_seen_at TEXT NULL;"
+                )
+            if "is_valid" not in cols:
+                conn.execute(
+                    "ALTER TABLE registered_devices ADD COLUMN is_valid INTEGER NOT NULL DEFAULT 1;"
                 )
 
     def _register_sync(
@@ -134,9 +140,9 @@ class DeviceRegistry:
             with self._connect() as conn:
                 rows = conn.execute(
                     """
-                    SELECT token, platform, push_provider, device_name, user_id, first_user_id, last_seen_at
+                    SELECT token, platform, push_provider, device_name, user_id, first_user_id, last_seen_at, is_valid
                     FROM registered_devices
-                    WHERE push_provider = ?
+                    WHERE push_provider = ? AND is_valid = 1
                     ORDER BY created_at ASC, rowid ASC;
                     """,
                     (push_provider,),
@@ -150,6 +156,7 @@ class DeviceRegistry:
                 user_id=int(row[4]) if row[4] is not None else None,
                 first_user_id=int(row[5]) if row[5] is not None else None,
                 last_seen_at=str(row[6]) if row[6] is not None else None,
+                is_valid=bool(row[7]),
             )
             for row in rows
         ]
@@ -162,7 +169,7 @@ class DeviceRegistry:
             with self._connect() as conn:
                 rows = conn.execute(
                     """
-                    SELECT token, platform, push_provider, device_name, user_id, first_user_id, last_seen_at
+                    SELECT token, platform, push_provider, device_name, user_id, first_user_id, last_seen_at, is_valid
                     FROM registered_devices
                     ORDER BY created_at ASC, rowid ASC;
                     """
@@ -176,6 +183,7 @@ class DeviceRegistry:
                 user_id=int(row[4]) if row[4] is not None else None,
                 first_user_id=int(row[5]) if row[5] is not None else None,
                 last_seen_at=str(row[6]) if row[6] is not None else None,
+                is_valid=bool(row[7]),
             )
             for row in rows
         ]
@@ -248,3 +256,27 @@ class DeviceRegistry:
     async def touch(self, token: str, push_provider: str) -> None:
         """Refresh last_seen_at without changing any other fields. Safe to fire as a background task."""
         await anyio.to_thread.run_sync(self._touch_sync, token, push_provider)
+
+    def _mark_invalid_sync(self, token: str, push_provider: str) -> None:
+        with self._lock:
+            with self._connect() as conn:
+                conn.execute(
+                    "UPDATE registered_devices SET is_valid = 0 WHERE token = ? AND push_provider = ?;",
+                    (token, push_provider),
+                )
+
+    async def mark_invalid(self, token: str, push_provider: str) -> None:
+        """Mark a specific token as invalid (e.g. after a push delivery failure)."""
+        await anyio.to_thread.run_sync(self._mark_invalid_sync, token, push_provider)
+
+    def _mark_invalid_by_user_sync(self, user_id: int) -> None:
+        with self._lock:
+            with self._connect() as conn:
+                conn.execute(
+                    "UPDATE registered_devices SET is_valid = 0 WHERE user_id = ?;",
+                    (user_id,),
+                )
+
+    async def mark_invalid_by_user(self, user_id: int) -> None:
+        """Mark all tokens for a user as invalid (e.g. when the user is deactivated)."""
+        await anyio.to_thread.run_sync(self._mark_invalid_by_user_sync, user_id)

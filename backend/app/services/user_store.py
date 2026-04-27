@@ -26,6 +26,7 @@ class UserRecord:
     must_change_password: bool = False
     totp_enabled: bool = False
     title: Optional[str] = None
+    email: Optional[str] = None
 
 
 class UserStore:
@@ -87,6 +88,8 @@ class UserStore:
             conn.execute("ALTER TABLE users ADD COLUMN totp_secret TEXT NULL;")
         if "title" not in cols:
             conn.execute("ALTER TABLE users ADD COLUMN title TEXT NULL;")
+        if "email" not in cols:
+            conn.execute("ALTER TABLE users ADD COLUMN email TEXT NULL;")
 
     def _create_user_sync(
         self,
@@ -145,7 +148,7 @@ class UserStore:
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT id, created_at, name, role, phone_e164, is_active, login_name, password_hash, last_login_at, must_change_password, totp_secret, title
+                SELECT id, created_at, name, role, phone_e164, is_active, login_name, password_hash, last_login_at, must_change_password, totp_secret, title, email
                 FROM users
                 ORDER BY id ASC;
                 """
@@ -165,6 +168,7 @@ class UserStore:
                 must_change_password=bool(int(row[9])) if row[9] is not None else False,
                 totp_enabled=bool(row[10]),
                 title=str(row[11]) if row[11] is not None else None,
+                email=str(row[12]) if len(row) > 12 and row[12] is not None else None,
             )
             for row in rows
         ]
@@ -236,7 +240,7 @@ class UserStore:
         with self._connect() as conn:
             row = conn.execute(
                 """
-                SELECT id, created_at, name, role, phone_e164, is_active, login_name, password_hash, last_login_at, must_change_password, totp_secret, title
+                SELECT id, created_at, name, role, phone_e164, is_active, login_name, password_hash, last_login_at, must_change_password, totp_secret, title, email
                 FROM users
                 WHERE id = ?
                 LIMIT 1;
@@ -514,3 +518,29 @@ class UserStore:
 
     async def verify_current_password(self, user_id: int, password: str) -> bool:
         return await anyio.to_thread.run_sync(self._verify_current_password_sync, int(user_id), password)
+
+    def _set_email_sync(self, user_id: int, email: Optional[str]) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE users SET email = ? WHERE id = ?;",
+                (email.strip().lower() if email else None, int(user_id)),
+            )
+
+    async def set_email(self, user_id: int, email: Optional[str]) -> None:
+        await anyio.to_thread.run_sync(self._set_email_sync, int(user_id), email)
+
+    def _list_emails_by_role_sync(self, roles: List[str]) -> List[str]:
+        placeholders = ",".join(["?"] * len(roles))
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT email FROM users
+                WHERE is_active = 1 AND email IS NOT NULL AND role IN ({placeholders})
+                ORDER BY id ASC;
+                """,
+                tuple(roles),
+            ).fetchall()
+        return [str(r[0]) for r in rows if r and r[0]]
+
+    async def list_emails_by_role(self, roles: List[str]) -> List[str]:
+        return await anyio.to_thread.run_sync(self._list_emails_by_role_sync, list(roles))

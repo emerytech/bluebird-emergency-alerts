@@ -107,11 +107,12 @@ class TenantManager:
 
             db_path = self.db_path_for_slug(normalized)
             alert_log = AlertLog(db_path)
+            _registry = DeviceRegistry(db_path)
             tenant = TenantContext(
                 school=school,
                 slug=normalized,
                 db_path=db_path,
-                device_registry=DeviceRegistry(db_path),
+                device_registry=_registry,
                 alert_log=alert_log,
                 alarm_store=AlarmStore(db_path),
                 report_store=ReportStore(db_path),
@@ -124,6 +125,7 @@ class TenantManager:
                     fcm=self._fcm,
                     twilio=self._twilio,
                     alert_log=alert_log,
+                    registry=_registry,
                 ),
                 audit_log_service=AuditLogService(db_path),
                 drill_report_service=DrillReportService(db_path),

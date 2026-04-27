@@ -88,6 +88,39 @@ def test_super_admin_billing_panel_and_controls(client: TestClient, login_super_
     assert updated.free_reason is None
 
 
+def test_super_admin_can_save_smtp_configuration(client: TestClient, login_super_admin) -> None:
+    login_super_admin()
+
+    page = client.get("/super-admin?section=configuration", follow_redirects=False)
+    assert page.status_code == 200
+    assert "Google Workspace SMTP" in page.text
+    assert "smtp.gmail.com" in page.text
+
+    response = client.post(
+        "/super-admin/configuration/smtp",
+        data={
+            "smtp_host": "smtp.gmail.com",
+            "smtp_port": "587",
+            "smtp_username": "alerts@example.org",
+            "smtp_password": "app-password-123",
+            "smtp_from": "alerts@example.org",
+            "smtp_use_tls": "1",
+        },
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert response.headers.get("location") == "/super-admin?section=configuration#configuration"
+
+    smtp_config = client.app.state.email_service.smtp_config()
+    assert smtp_config.configured is True
+    assert smtp_config.host == "smtp.gmail.com"
+    assert smtp_config.port == 587
+    assert smtp_config.username == "alerts@example.org"
+    assert smtp_config.from_address == "alerts@example.org"
+    assert smtp_config.use_tls is True
+    assert smtp_config.password_set is True
+
+
 def test_super_admin_school_enter_and_exit_scope(client: TestClient, login_super_admin) -> None:
     login_super_admin()
     _create_school(client, name="Oak Ridge", slug="oak-ridge")

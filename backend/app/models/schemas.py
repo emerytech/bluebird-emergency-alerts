@@ -369,6 +369,7 @@ class PanicRequest(BaseModel):
     user_id: Optional[int] = Field(default=None, description="Optional user_id attribution (who triggered).")
     is_training: bool = Field(default=False)
     training_label: Optional[str] = Field(default=None, max_length=120)
+    silent_audio: bool = Field(default=False)
 
 
 class AlarmStatusResponse(BaseModel):
@@ -376,6 +377,7 @@ class AlarmStatusResponse(BaseModel):
     message: Optional[str] = None
     is_training: bool = False
     training_label: Optional[str] = None
+    silent_audio: bool = False
     current_alert_id: Optional[int] = None
     acknowledgement_count: int = 0
     current_user_acknowledged: bool = False
@@ -386,6 +388,8 @@ class AlarmStatusResponse(BaseModel):
     deactivated_by_user_id: Optional[int] = None
     deactivated_by_label: Optional[str] = None
     broadcasts: List[BroadcastUpdateSummary] = []
+    triggered_by_user_id: Optional[int] = None
+    silent_for_sender: bool = True
 
 
 class AlarmActivateRequest(BaseModel):
@@ -393,6 +397,7 @@ class AlarmActivateRequest(BaseModel):
     user_id: Optional[int] = Field(default=None)
     is_training: bool = Field(default=False)
     training_label: Optional[str] = Field(default=None, max_length=120)
+    silent_audio: bool = Field(default=False)
 
 
 class AlarmDeactivateRequest(BaseModel):
@@ -614,8 +619,9 @@ class AccessCodeResponse(BaseModel):
     max_uses: int
     use_count: int
     status: str
-    qr_payload: str   # JSON string ready for QR encoding
-    invite_url: str   # deep-link/web fallback URL pre-filled with code
+    qr_payload: str       # JSON string ready for QR encoding (content for QR image)
+    qr_payload_json: str  # same content, explicit field for mobile SDK consumers
+    invite_url: str       # deep-link/web fallback URL pre-filled with code
 
 
 class AccessCodeListResponse(BaseModel):
@@ -666,3 +672,23 @@ class CreateDistrictAdminRequest(BaseModel):
 class SendInviteEmailRequest(BaseModel):
     email: str = Field(..., min_length=3, max_length=254)
     code_id: int
+
+
+class GmailSettingsResponse(BaseModel):
+    gmail_address: str
+    from_name: str
+    password_set: bool
+    updated_at: Optional[str] = None
+    updated_by: Optional[str] = None
+    configured: bool
+
+
+class GmailSettingsUpdateRequest(BaseModel):
+    gmail_address: str = Field(..., min_length=3, max_length=254)
+    from_name: str = Field(default="BlueBird Alerts", max_length=100)
+    app_password: Optional[str] = Field(default=None, max_length=200)
+
+
+class CustomerMessageRequest(BaseModel):
+    subject: str = Field(..., min_length=1, max_length=200)
+    body: str = Field(..., min_length=1, max_length=5000)

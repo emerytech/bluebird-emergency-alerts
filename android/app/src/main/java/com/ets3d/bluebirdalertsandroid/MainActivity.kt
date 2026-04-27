@@ -153,6 +153,7 @@ data class AlarmLaunchEvent(
     val title: String,
     val body: String,
     val tenantSlug: String? = null,
+    val isSilentForMe: Boolean = false,
     val receivedAtMillis: Long = System.currentTimeMillis(),
 )
 
@@ -160,8 +161,13 @@ object AlarmLaunchCoordinator {
     private val _event = MutableStateFlow<AlarmLaunchEvent?>(null)
     val event: StateFlow<AlarmLaunchEvent?> get() = _event
 
-    fun publish(title: String, body: String, tenantSlug: String? = null) {
-        _event.value = AlarmLaunchEvent(title = title, body = body, tenantSlug = tenantSlug?.takeIf { it.isNotBlank() })
+    fun publish(title: String, body: String, tenantSlug: String? = null, isSilentForMe: Boolean = false) {
+        _event.value = AlarmLaunchEvent(
+            title = title,
+            body = body,
+            tenantSlug = tenantSlug?.takeIf { it.isNotBlank() },
+            isSilentForMe = isSilentForMe,
+        )
     }
 }
 
@@ -559,6 +565,9 @@ data class AlarmStatus(
     val broadcasts: List<BroadcastUpdate> = emptyList(),
     val acknowledgementCount: Int = 0,
     val currentUserAcknowledged: Boolean = false,
+    val triggeredByUserId: Int? = null,
+    val silentForSender: Boolean = true,
+    val isSilentForCurrentUser: Boolean = false,
 )
 
 data class IncidentFeedItem(
@@ -754,13 +763,14 @@ class MainViewModel : ViewModel() {
         }
     }
 
-    fun handleAlarmLaunch(message: String) {
+    fun handleAlarmLaunch(message: String, isSilentForMe: Boolean = false) {
         val normalized = message.trim()
         _state.update {
             it.copy(
                 alarm = it.alarm.copy(
                     isActive = true,
                     message = normalized.ifBlank { it.alarm.message ?: "Emergency alert received." },
+                    isSilentForCurrentUser = isSilentForMe,
                 ),
                 successMsg = null,
                 errorMsg = null,
@@ -1301,12 +1311,18 @@ class MainViewModel : ViewModel() {
         when (event) {
             "alarm_activated", "alert_triggered" -> {
                 val a = alarm ?: return
+                val triggeredByUid = a.optInt("triggered_by_user_id", -1).takeIf { it > 0 }
+                val silentForSender = a.optBoolean("silent_for_sender", true)
+                val isSilentForMe = silentForSender && triggeredByUid != null && triggeredByUid == cachedUserId
                 _state.update { s ->
                     s.copy(alarm = s.alarm.copy(
                         isActive = a.optBoolean("is_active", true),
                         message = a.optString("message").ifBlank { null },
                         isTraining = a.optBoolean("is_training", false),
                         trainingLabel = a.optString("training_label").ifBlank { null },
+                        triggeredByUserId = triggeredByUid,
+                        silentForSender = silentForSender,
+                        isSilentForCurrentUser = isSilentForMe,
                     ))
                 }
             }
@@ -2049,7 +2065,6 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
             return@LaunchedEffect
         }
         activePanel = DashboardPanel.Home
-        showAlarmTakeover = true
         showSettingsScreen = false
         showDeactivateDialog = false
         showReportDialog = false
@@ -2057,11 +2072,17 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
         showQuietDeleteConfirmOverlay = false
         showTeamAssistDialog = false
         replyTarget = null
-        vm.handleAlarmLaunch(event.body)
+        if (event.isSilentForMe) {
+            // Sender gets discreet confirmation — no alarm takeover, no siren.
+            vm.handleAlarmLaunch(event.body, isSilentForMe = true)
+        } else {
+            showAlarmTakeover = true
+            vm.handleAlarmLaunch(event.body)
+        }
     }
 
-    LaunchedEffect(state.alarm.isActive) {
-        showAlarmTakeover = state.alarm.isActive
+    LaunchedEffect(state.alarm.isActive, state.alarm.isSilentForCurrentUser) {
+        showAlarmTakeover = state.alarm.isActive && !state.alarm.isSilentForCurrentUser
     }
 
     // Dismiss flash messages after 3s
@@ -3296,17 +3317,35 @@ private fun QuietPeriodStatusBanner(
 ) {
     val normalized = status.status?.lowercase().orEmpty()
     if (normalized.isBlank()) return
+
+    // Countdown timer for approved state — ticks every second.
+    var secondsLeft by remember(status.expiresAt) { mutableStateOf(0L) }
+    LaunchedEffect(status.expiresAt, normalized) {
+        if (normalized != "approved" || status.expiresAt == null) return@LaunchedEffect
+        while (true) {
+            val expiry = try { Instant.parse(status.expiresAt).toEpochMilli() } catch (_: Exception) { 0L }
+            secondsLeft = maxOf(0L, (expiry - System.currentTimeMillis()) / 1000)
+            if (secondsLeft <= 0L) break
+            delay(1000L)
+        }
+    }
+
     val bg: Color
     val border: Color
     val fg: Color
     val text: String
     when (normalized) {
         "approved" -> {
-            val until = formatIsoForBanner(status.expiresAt)?.let { " until $it" } ?: ""
+            val countdown = when {
+                secondsLeft > 3600 -> "${secondsLeft / 3600}h ${(secondsLeft % 3600) / 60}m"
+                secondsLeft > 60 -> "${secondsLeft / 60}m ${secondsLeft % 60}s"
+                secondsLeft > 0 -> "${secondsLeft}s"
+                else -> formatIsoForBanner(status.expiresAt) ?: "soon"
+            }
             bg = AlarmRed.copy(alpha = 0.14f)
             border = AlarmRed.copy(alpha = 0.32f)
             fg = AlarmRed
-            text = "Quiet period ACTIVE$until"
+            text = "Quiet period ACTIVE — Ends in $countdown"
         }
         "pending" -> {
             bg = DSColor.Info.copy(alpha = 0.12f)
@@ -4856,13 +4895,14 @@ private fun AlertFeedbackEffect(
     hapticsEnabled: Boolean,
     flashlightEnabled: Boolean,
     screenFlashEnabled: Boolean,
+    silentForMe: Boolean = false,
 ): AlertFeedbackState {
     val ctx = LocalContext.current
     val appCtx = remember { ctx.applicationContext }
     val feedbackState by AlertFeedbackController.state.collectAsState()
 
-    DisposableEffect(isAlarmActive, isTrainingAlarm, hapticsEnabled, flashlightEnabled, screenFlashEnabled) {
-        if (isAlarmActive) {
+    DisposableEffect(isAlarmActive, isTrainingAlarm, hapticsEnabled, flashlightEnabled, screenFlashEnabled, silentForMe) {
+        if (isAlarmActive && !silentForMe) {
             AlertFeedbackController.start(
                 appCtx,
                 isTraining = isTrainingAlarm,
@@ -4888,12 +4928,12 @@ private fun AlertFeedbackEffect(
 }
 
 @Composable
-private fun AlarmSoundEffect(isAlarmActive: Boolean, isTrainingAlarm: Boolean) {
+private fun AlarmSoundEffect(isAlarmActive: Boolean, isTrainingAlarm: Boolean, silentForMe: Boolean = false) {
     val ctx = LocalContext.current
     val appCtx = remember { ctx.applicationContext }
 
-    DisposableEffect(isAlarmActive, isTrainingAlarm) {
-        if (isAlarmActive) {
+    DisposableEffect(isAlarmActive, isTrainingAlarm, silentForMe) {
+        if (isAlarmActive && !silentForMe) {
             AlarmAudioController.start(appCtx, isTraining = isTrainingAlarm)
         } else {
             AlarmAudioController.stop()
@@ -5960,6 +6000,7 @@ private sealed class OnboardingStep {
 private fun OnboardingSheet(onDismiss: () -> Unit) {
     var step by remember { mutableStateOf<OnboardingStep>(OnboardingStep.EnterCode) }
     var codeText by remember { mutableStateOf("") }
+    var tenantSlugText by remember { mutableStateOf("") }
     var nameText by remember { mutableStateOf("") }
     var usernameText by remember { mutableStateOf("") }
     var passwordText by remember { mutableStateOf("") }
@@ -6011,9 +6052,18 @@ private fun OnboardingSheet(onDismiss: () -> Unit) {
             when (val s = step) {
                 is OnboardingStep.EnterCode -> {
                     Text(
-                        "Enter your 8-character invite code to create your account.",
+                        "Enter your district code and invite code to create your account.",
                         fontSize = 14.sp,
                         color = DSColor.TextSecondary,
+                    )
+                    OutlinedTextField(
+                        value = tenantSlugText,
+                        onValueChange = { tenantSlugText = it.trim().lowercase() },
+                        label = { Text("District Code") },
+                        placeholder = { Text("e.g. nen") },
+                        supportingText = { Text("Enter the district code provided by your administrator. Leave blank for district admin setup codes.") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
                     )
                     OutlinedTextField(
                         value = codeText,
@@ -6030,22 +6080,41 @@ private fun OnboardingSheet(onDismiss: () -> Unit) {
                         text = if (isBusy) "Checking…" else "Validate Code",
                         onClick = {
                             val code = codeText.trim().uppercase()
-                            if (code.length < 4) { error = "Enter a valid code."; return@PrimaryButton }
+                            val slug = tenantSlugText.trim().lowercase()
+                            if (code.length < 4) { error = "Enter a valid invite code."; return@PrimaryButton }
                             scope.launch(Dispatchers.IO) {
                                 isBusy = true; error = null
                                 runCatching {
-                                    val res = client.validateSetupCode(code)
-                                    if (res.optBoolean("valid", false)) {
-                                        step = OnboardingStep.Validated(
-                                            role = "district_admin",
-                                            roleLabel = "District Admin",
-                                            title = null,
-                                            tenantSlug = res.optString("tenant_slug"),
-                                            tenantName = res.optString("tenant_name"),
-                                            isSetup = true,
-                                        )
+                                    if (slug.isNotBlank()) {
+                                        // Regular invite code — requires district slug
+                                        val res = client.validateInviteCode(code, slug)
+                                        if (res.optBoolean("valid", false)) {
+                                            step = OnboardingStep.Validated(
+                                                role = res.optString("role"),
+                                                roleLabel = res.optString("role_label").ifBlank { res.optString("role") },
+                                                title = res.optNullableString("title"),
+                                                tenantSlug = res.optString("tenant_slug"),
+                                                tenantName = res.optString("tenant_name"),
+                                                isSetup = false,
+                                            )
+                                        } else {
+                                            error = res.optString("error").ifBlank { "Invalid or expired code." }
+                                        }
                                     } else {
-                                        error = res.optString("error").ifBlank { "Invalid or expired code." }
+                                        // No district slug → try district admin setup code
+                                        val res = client.validateSetupCode(code)
+                                        if (res.optBoolean("valid", false)) {
+                                            step = OnboardingStep.Validated(
+                                                role = "district_admin",
+                                                roleLabel = "District Admin",
+                                                title = null,
+                                                tenantSlug = res.optString("tenant_slug"),
+                                                tenantName = res.optString("tenant_name"),
+                                                isSetup = true,
+                                            )
+                                        } else {
+                                            error = res.optString("error").ifBlank { "Invalid or expired code. Enter your district code above if you have an invite code." }
+                                        }
                                     }
                                 }.onFailure { error = it.message }
                                 isBusy = false
@@ -6080,7 +6149,7 @@ private fun OnboardingSheet(onDismiss: () -> Unit) {
                         enabled = true,
                         modifier = Modifier.fillMaxWidth().height(52.dp),
                     )
-                    TextButton(onClick = { step = OnboardingStep.EnterCode; codeText = ""; error = null }) {
+                    TextButton(onClick = { step = OnboardingStep.EnterCode; codeText = ""; tenantSlugText = ""; error = null }) {
                         Text("Try a Different Code", color = DSColor.TextSecondary, fontSize = 13.sp)
                     }
                 }

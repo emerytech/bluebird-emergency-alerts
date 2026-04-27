@@ -71,6 +71,55 @@ def test_training_panic_skips_live_broadcast_and_marks_alarm_state(client: TestC
     assert state["is_active"] is True
     assert state["is_training"] is True
     assert state["training_label"] == "This is a drill"
+    assert state["silent_audio"] is False
+
+
+def test_training_panic_can_run_with_silent_alarm_audio(client: TestClient, login_super_admin) -> None:
+    login_super_admin()
+    _create_school(client, name="Silent Training", slug="silent-training")
+    admin_id = _create_user(client, "silent-training", name="Silent Admin", role="admin")
+
+    response = client.post(
+        "/silent-training/panic",
+        headers={"X-API-Key": "test-api-key"},
+        json={
+            "message": "Silent training drill",
+            "user_id": admin_id,
+            "is_training": True,
+            "training_label": "Quiet house test",
+            "silent_audio": True,
+        },
+    )
+    assert response.status_code == 200, response.text
+
+    status = client.get(
+        "/silent-training/alarm/status",
+        headers={"X-API-Key": "test-api-key"},
+    )
+    assert status.status_code == 200, status.text
+    state = status.json()
+    assert state["is_active"] is True
+    assert state["is_training"] is True
+    assert state["silent_audio"] is True
+
+
+def test_live_alarm_ignores_silent_audio_flag(client: TestClient, login_super_admin) -> None:
+    login_super_admin()
+    _create_school(client, name="Live Silent Guard", slug="live-silent-guard")
+    admin_id = _create_user(client, "live-silent-guard", name="Live Admin", role="admin")
+
+    response = client.post(
+        "/live-silent-guard/alarm/activate",
+        headers={"X-API-Key": "test-api-key"},
+        json={
+            "message": "Live alarm should still use audio",
+            "user_id": admin_id,
+            "is_training": False,
+            "silent_audio": True,
+        },
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["silent_audio"] is False
 
 
 def test_training_alert_requires_admin_role(client: TestClient, login_super_admin) -> None:

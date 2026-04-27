@@ -16,6 +16,7 @@ class AlarmStateRecord:
     message: Optional[str] = None
     is_training: bool = False
     training_label: Optional[str] = None
+    silent_audio: bool = False
     activated_at: Optional[str] = None
     activated_by_user_id: Optional[int] = None
     activated_by_label: Optional[str] = None
@@ -52,6 +53,7 @@ class AlarmStore:
                     message TEXT NULL,
                     is_training INTEGER NOT NULL DEFAULT 0,
                     training_label TEXT NULL,
+                    silent_audio INTEGER NOT NULL DEFAULT 0,
                     activated_at TEXT NULL,
                     activated_by_user_id INTEGER NULL,
                     activated_by_label TEXT NULL,
@@ -65,11 +67,11 @@ class AlarmStore:
             conn.execute(
                 """
                 INSERT INTO alarm_state (
-                    id, is_active, tenant_slug, message, is_training, training_label,
+                    id, is_active, tenant_slug, message, is_training, training_label, silent_audio,
                     activated_at, activated_by_user_id, activated_by_label,
                     deactivated_at, deactivated_by_user_id, deactivated_by_label
                 )
-                VALUES (1, 0, '', NULL, 0, NULL, NULL, NULL, NULL, NULL, NULL, NULL)
+                VALUES (1, 0, '', NULL, 0, NULL, 0, NULL, NULL, NULL, NULL, NULL, NULL)
                 ON CONFLICT(id) DO NOTHING;
                 """
             )
@@ -80,6 +82,8 @@ class AlarmStore:
             conn.execute("ALTER TABLE alarm_state ADD COLUMN is_training INTEGER NOT NULL DEFAULT 0;")
         if "training_label" not in cols:
             conn.execute("ALTER TABLE alarm_state ADD COLUMN training_label TEXT NULL;")
+        if "silent_audio" not in cols:
+            conn.execute("ALTER TABLE alarm_state ADD COLUMN silent_audio INTEGER NOT NULL DEFAULT 0;")
         if "activated_by_label" not in cols:
             conn.execute("ALTER TABLE alarm_state ADD COLUMN activated_by_label TEXT NULL;")
         if "deactivated_by_label" not in cols:
@@ -91,7 +95,7 @@ class AlarmStore:
         with self._connect() as conn:
             row = conn.execute(
                 """
-                SELECT is_active, tenant_slug, message, is_training, training_label,
+                SELECT is_active, tenant_slug, message, is_training, training_label, silent_audio,
                        activated_at, activated_by_user_id, activated_by_label,
                        deactivated_at, deactivated_by_user_id, deactivated_by_label
                 FROM alarm_state
@@ -106,12 +110,13 @@ class AlarmStore:
             message=str(row[2]) if row[2] is not None else None,
             is_training=bool(int(row[3])),
             training_label=str(row[4]) if row[4] is not None else None,
-            activated_at=str(row[5]) if row[5] is not None else None,
-            activated_by_user_id=int(row[6]) if row[6] is not None else None,
-            activated_by_label=str(row[7]) if row[7] is not None else None,
-            deactivated_at=str(row[8]) if row[8] is not None else None,
-            deactivated_by_user_id=int(row[9]) if row[9] is not None else None,
-            deactivated_by_label=str(row[10]) if row[10] is not None else None,
+            silent_audio=bool(int(row[5])),
+            activated_at=str(row[6]) if row[6] is not None else None,
+            activated_by_user_id=int(row[7]) if row[7] is not None else None,
+            activated_by_label=str(row[8]) if row[8] is not None else None,
+            deactivated_at=str(row[9]) if row[9] is not None else None,
+            deactivated_by_user_id=int(row[10]) if row[10] is not None else None,
+            deactivated_by_label=str(row[11]) if row[11] is not None else None,
         )
 
     async def get_state(self) -> AlarmStateRecord:
@@ -124,6 +129,7 @@ class AlarmStore:
         activated_by_label: Optional[str],
         is_training: bool,
         training_label: Optional[str],
+        silent_audio: bool,
         tenant_slug: str,
     ) -> AlarmStateRecord:
         activated_at = datetime.now(timezone.utc).isoformat()
@@ -136,6 +142,7 @@ class AlarmStore:
                     message = ?,
                     is_training = ?,
                     training_label = ?,
+                    silent_audio = ?,
                     activated_at = ?,
                     activated_by_user_id = ?,
                     activated_by_label = ?,
@@ -149,6 +156,7 @@ class AlarmStore:
                     message,
                     1 if is_training else 0,
                     training_label,
+                    1 if silent_audio else 0,
                     activated_at,
                     activated_by_user_id,
                     activated_by_label,
@@ -165,6 +173,7 @@ class AlarmStore:
         activated_by_label: Optional[str] = None,
         is_training: bool = False,
         training_label: Optional[str] = None,
+        silent_audio: bool = False,
     ) -> AlarmStateRecord:
         return await anyio.to_thread.run_sync(
             self._activate_sync,
@@ -173,6 +182,7 @@ class AlarmStore:
             activated_by_label,
             bool(is_training),
             training_label.strip() if training_label else None,
+            bool(silent_audio),
             str(tenant_slug).strip().lower(),
         )
 
@@ -191,6 +201,7 @@ class AlarmStore:
                     tenant_slug = ?,
                     is_training = 0,
                     training_label = NULL,
+                    silent_audio = 0,
                     deactivated_at = ?,
                     deactivated_by_user_id = ?,
                     deactivated_by_label = ?
