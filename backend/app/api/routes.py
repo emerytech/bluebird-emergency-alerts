@@ -152,6 +152,8 @@ from app.web.admin_views import (
     render_super_admin_page,
     render_totp_page,
 )
+import qrcode
+import qrcode.constants
 
 
 router = APIRouter()
@@ -6530,8 +6532,6 @@ async def admin_get_access_code_qr(request: Request, code_id: int) -> JSONRespon
 
 def _qr_png_bytes(payload_json: str, box_size: int = 10, border: int = 4) -> bytes:
     """Generate a QR code PNG and return raw bytes using Pillow."""
-    import io
-    import qrcode
     qr = qrcode.QRCode(
         version=None,
         error_correction=qrcode.constants.ERROR_CORRECT_M,
