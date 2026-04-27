@@ -2687,13 +2687,21 @@ async def admin_setup(
         if not await _schools(request).verify_setup_pin(slug=school.slug, setup_pin=setup_pin):
             _set_flash(request, error="Invalid school setup PIN.")
             return RedirectResponse(url="/admin/login", status_code=status.HTTP_303_SEE_OTHER)
-    await _users(request).create_user(
-        name=name.strip(),
-        role="admin",
-        phone_e164=None,
-        login_name=login_name.strip(),
-        password=password,
-    )
+    try:
+        await _users(request).create_user(
+            name=name.strip(),
+            role="admin",
+            phone_e164=None,
+            login_name=login_name.strip(),
+            password=password,
+        )
+    except Exception as exc:
+        import sqlite3 as _sqlite3
+        if isinstance(exc.__cause__, _sqlite3.IntegrityError) or isinstance(exc, _sqlite3.IntegrityError) or "UNIQUE" in str(exc):
+            _set_flash(request, error="That username is already taken. Choose a different one.")
+        else:
+            _set_flash(request, error=f"Could not create admin account: {exc}")
+        return RedirectResponse(url="/admin/login", status_code=status.HTTP_303_SEE_OTHER)
     _set_flash(request, message="Admin account created. Sign in to continue.")
     return RedirectResponse(url="/admin/login", status_code=status.HTTP_303_SEE_OTHER)
 
@@ -4166,7 +4174,8 @@ async def admin_create_user(
             title=normalized_title,
         )
     except Exception as exc:
-        _set_flash(request, error=f"Could not create user: {exc}")
+        msg = "That username is already taken." if "UNIQUE" in str(exc) else f"Could not create user: {exc}"
+        _set_flash(request, error=msg)
         return RedirectResponse(url="/admin?section=user-management#users", status_code=status.HTTP_303_SEE_OTHER)
     _fire_audit(
         request,
