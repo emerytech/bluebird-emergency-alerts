@@ -24,7 +24,10 @@ import android.os.VibratorManager
 import android.util.Log
 import android.widget.Toast
 import androidx.activity.compose.setContent
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import com.journeyapps.barcodescanner.ScanContract
+import com.journeyapps.barcodescanner.ScanOptions
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.BorderStroke
@@ -6012,6 +6015,72 @@ private fun OnboardingSheet(onDismiss: () -> Unit) {
     val shakeOffset = remember { Animatable(0f) }
     val haptic = LocalHapticFeedback.current
 
+    fun doValidate(code: String, slug: String) {
+        if (code.length < 4) { error = "Enter a valid invite code."; return }
+        scope.launch(Dispatchers.IO) {
+            isBusy = true; error = null
+            runCatching {
+                if (slug.isNotBlank()) {
+                    val res = client.validateInviteCode(code, slug)
+                    if (res.optBoolean("valid", false)) {
+                        step = OnboardingStep.Validated(
+                            role = res.optString("role"),
+                            roleLabel = res.optString("role_label").ifBlank { res.optString("role") },
+                            title = res.optString("title").takeIf { it.isNotBlank() },
+                            tenantSlug = res.optString("tenant_slug"),
+                            tenantName = res.optString("tenant_name"),
+                            isSetup = false,
+                        )
+                    } else {
+                        error = res.optString("error").ifBlank { "Invalid or expired code." }
+                    }
+                } else {
+                    val res = client.validateSetupCode(code)
+                    if (res.optBoolean("valid", false)) {
+                        step = OnboardingStep.Validated(
+                            role = "district_admin",
+                            roleLabel = "District Admin",
+                            title = null,
+                            tenantSlug = res.optString("tenant_slug"),
+                            tenantName = res.optString("tenant_name"),
+                            isSetup = true,
+                        )
+                    } else {
+                        error = res.optString("error").ifBlank { "Invalid or expired code. Enter your district code above if you have an invite code." }
+                    }
+                }
+            }.onFailure { error = it.message }
+            isBusy = false
+        }
+    }
+
+    val qrScanLauncher = rememberLauncherForActivityResult(ScanContract()) { result ->
+        val content = result.contents ?: return@rememberLauncherForActivityResult
+        try {
+            val json = JSONObject(content)
+            when (json.optString("type")) {
+                "bluebird_invite" -> {
+                    val code = json.getString("code").trim().uppercase()
+                    val slug = json.getString("tenant_slug").trim().lowercase()
+                    codeText = code
+                    tenantSlugText = slug
+                    doValidate(code, slug)
+                }
+                "bluebird_setup" -> {
+                    val code = json.getString("code").trim().uppercase()
+                    codeText = code
+                    tenantSlugText = ""
+                    doValidate(code, "")
+                }
+                else -> {
+                    error = "This QR code is not a BlueBird invite code."
+                }
+            }
+        } catch (e: Exception) {
+            error = "Could not read QR code. Try entering the code manually."
+        }
+    }
+
     fun triggerShake() {
         scope.launch {
             repeat(3) {
@@ -6052,10 +6121,34 @@ private fun OnboardingSheet(onDismiss: () -> Unit) {
             when (val s = step) {
                 is OnboardingStep.EnterCode -> {
                     Text(
-                        "Enter your district code and invite code to create your account.",
+                        "Scan your invite QR code or enter the code manually.",
                         fontSize = 14.sp,
                         color = DSColor.TextSecondary,
                     )
+                    OutlinedButton(
+                        onClick = {
+                            qrScanLauncher.launch(
+                                ScanOptions()
+                                    .setDesiredBarcodeFormats(ScanOptions.QR_CODE)
+                                    .setPrompt("Scan your BlueBird invite QR code")
+                                    .setBeepEnabled(true)
+                                    .setBarcodeImageEnabled(false)
+                            )
+                        },
+                        modifier = Modifier.fillMaxWidth().height(52.dp),
+                        border = BorderStroke(1.5.dp, BluePrimary),
+                        enabled = !isBusy,
+                    ) {
+                        Text("Scan QR Code", color = BluePrimary, fontSize = 15.sp, fontWeight = FontWeight.Medium)
+                    }
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        HorizontalDivider(modifier = Modifier.weight(1f), color = DSColor.Border)
+                        Text("  or enter manually  ", fontSize = 12.sp, color = DSColor.TextSecondary)
+                        HorizontalDivider(modifier = Modifier.weight(1f), color = DSColor.Border)
+                    }
                     OutlinedTextField(
                         value = tenantSlugText,
                         onValueChange = { tenantSlugText = it.trim().lowercase() },
@@ -6078,48 +6171,7 @@ private fun OnboardingSheet(onDismiss: () -> Unit) {
                     }
                     PrimaryButton(
                         text = if (isBusy) "Checking…" else "Validate Code",
-                        onClick = {
-                            val code = codeText.trim().uppercase()
-                            val slug = tenantSlugText.trim().lowercase()
-                            if (code.length < 4) { error = "Enter a valid invite code."; return@PrimaryButton }
-                            scope.launch(Dispatchers.IO) {
-                                isBusy = true; error = null
-                                runCatching {
-                                    if (slug.isNotBlank()) {
-                                        // Regular invite code — requires district slug
-                                        val res = client.validateInviteCode(code, slug)
-                                        if (res.optBoolean("valid", false)) {
-                                            step = OnboardingStep.Validated(
-                                                role = res.optString("role"),
-                                                roleLabel = res.optString("role_label").ifBlank { res.optString("role") },
-                                                title = res.optNullableString("title"),
-                                                tenantSlug = res.optString("tenant_slug"),
-                                                tenantName = res.optString("tenant_name"),
-                                                isSetup = false,
-                                            )
-                                        } else {
-                                            error = res.optString("error").ifBlank { "Invalid or expired code." }
-                                        }
-                                    } else {
-                                        // No district slug → try district admin setup code
-                                        val res = client.validateSetupCode(code)
-                                        if (res.optBoolean("valid", false)) {
-                                            step = OnboardingStep.Validated(
-                                                role = "district_admin",
-                                                roleLabel = "District Admin",
-                                                title = null,
-                                                tenantSlug = res.optString("tenant_slug"),
-                                                tenantName = res.optString("tenant_name"),
-                                                isSetup = true,
-                                            )
-                                        } else {
-                                            error = res.optString("error").ifBlank { "Invalid or expired code. Enter your district code above if you have an invite code." }
-                                        }
-                                    }
-                                }.onFailure { error = it.message }
-                                isBusy = false
-                            }
-                        },
+                        onClick = { doValidate(codeText.trim().uppercase(), tenantSlugText.trim().lowercase()) },
                         enabled = !isBusy && codeText.trim().length >= 4,
                         isLoading = isBusy,
                         modifier = Modifier.fillMaxWidth().height(52.dp),
