@@ -307,7 +307,7 @@ def test_incident_create_triggers_fcm_push(client: TestClient, login_super_admin
 
     push_calls: list[tuple[list[str], str]] = []
 
-    async def _fake_send_bulk(tokens: list[str], message: str):
+    async def _fake_send_bulk(tokens: list[str], message: str, extra_data: dict | None = None):
         push_calls.append((list(tokens), message))
         return []
 
@@ -333,7 +333,7 @@ def test_team_assist_push_targets_assigned_user_only(client: TestClient, login_s
 
     push_calls: list[tuple[list[str], str]] = []
 
-    async def _fake_send_bulk(tokens: list[str], message: str):
+    async def _fake_send_bulk(tokens: list[str], message: str, extra_data: dict | None = None):
         push_calls.append((list(tokens), message))
         return []
 

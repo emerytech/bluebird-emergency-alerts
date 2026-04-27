@@ -1273,12 +1273,13 @@ async def _send_basic_push(
     *,
     message: str,
     target_user_ids: Optional[set[int]] = None,
+    extra_data: Optional[dict] = None,
 ) -> None:
     apns_tokens, fcm_tokens = await _push_tokens_for_scope(request, target_user_ids=target_user_ids)
     if apns_tokens:
-        await _apns(request).send_bulk(apns_tokens, message)
+        await _apns(request).send_bulk(apns_tokens, message, extra_data=extra_data)
     if fcm_tokens:
-        await _fcm(request).send_bulk(fcm_tokens, message)
+        await _fcm(request).send_bulk(fcm_tokens, message, extra_data=extra_data)
 
 
 async def _send_quiet_period_push_bg(
@@ -5132,6 +5133,11 @@ async def create_incident(
         _send_basic_push,
         request,
         message=f"Incident active: {incident.type}",
+        extra_data={
+            "type": "emergency",
+            "triggered_by_user_id": str(creator_id),
+            "silent_for_sender": "true",
+        },
     )
     return IncidentSummary(
         id=incident.id,
@@ -5210,6 +5216,11 @@ async def create_team_assist(
         request,
         message=f"{get_feature_label('request_help')}: {get_feature_label(team_assist.type)}",
         target_user_ids=set(target_user_ids),
+        extra_data={
+            "type": "help_request",
+            "triggered_by_user_id": str(creator_id),
+            "silent_for_sender": "true",
+        },
     )
     return _to_team_assist_summary(team_assist)
 
