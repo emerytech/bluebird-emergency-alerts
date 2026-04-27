@@ -96,6 +96,8 @@ from app.models.schemas import (
     GmailSettingsResponse,
     GmailSettingsUpdateRequest,
     CustomerMessageRequest,
+    HelpRequestCancellationAnalyticsResponse,
+    HelpRequestCancellationCategoryBreakdown,
 )
 from app.services.access_code_service import AccessCodeService
 from app.services.alert_broadcaster import BroadcastPlan, AlertBroadcaster
@@ -5367,6 +5369,26 @@ async def cancel_team_assist(
         },
     )
     return _to_team_assist_summary(updated)
+
+
+@router.get("/admin/help-requests/analytics", response_model=HelpRequestCancellationAnalyticsResponse)
+async def help_request_cancellation_analytics(
+    request: Request,
+    _: None = Depends(require_api_key),
+) -> HelpRequestCancellationAnalyticsResponse:
+    data = await _incident_store(request).help_request_cancellation_analytics()
+    total = data["total"]
+    cancelled = data["cancelled"]
+    rate = round(cancelled / total, 4) if total > 0 else 0.0
+    return HelpRequestCancellationAnalyticsResponse(
+        total_requests=total,
+        cancelled=cancelled,
+        cancellation_rate=rate,
+        breakdown_by_category=[
+            HelpRequestCancellationCategoryBreakdown(category=cat, count=cnt)
+            for cat, cnt in data["breakdown"]
+        ],
+    )
 
 
 @router.get("/team-assist/active", response_model=TeamAssistListResponse)

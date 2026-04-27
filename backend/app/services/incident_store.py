@@ -683,3 +683,27 @@ class IncidentStore:
 
     async def list_notification_logs(self, *, limit: int = 100) -> List[NotificationLogRecord]:
         return await anyio.to_thread.run_sync(self._list_notification_logs_sync, int(limit))
+
+    def _help_request_cancellation_analytics_sync(self) -> dict[str, Any]:
+        with self._connect() as conn:
+            total = conn.execute("SELECT COUNT(*) FROM team_assists;").fetchone()[0]
+            cancelled = conn.execute(
+                "SELECT COUNT(*) FROM team_assists WHERE status = 'cancelled';"
+            ).fetchone()[0]
+            breakdown_rows = conn.execute(
+                """
+                SELECT COALESCE(cancel_reason_category, 'unknown'), COUNT(*)
+                FROM team_assists
+                WHERE status = 'cancelled'
+                GROUP BY COALESCE(cancel_reason_category, 'unknown')
+                ORDER BY COUNT(*) DESC;
+                """
+            ).fetchall()
+        return {
+            "total": int(total),
+            "cancelled": int(cancelled),
+            "breakdown": [(str(row[0]), int(row[1])) for row in breakdown_rows],
+        }
+
+    async def help_request_cancellation_analytics(self) -> dict[str, Any]:
+        return await anyio.to_thread.run_sync(self._help_request_cancellation_analytics_sync)

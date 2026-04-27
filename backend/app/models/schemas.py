@@ -716,3 +716,15 @@ class GmailSettingsUpdateRequest(BaseModel):
 class CustomerMessageRequest(BaseModel):
     subject: str = Field(..., min_length=1, max_length=200)
     body: str = Field(..., min_length=1, max_length=5000)
+
+
+class HelpRequestCancellationCategoryBreakdown(BaseModel):
+    category: str
+    count: int
+
+
+class HelpRequestCancellationAnalyticsResponse(BaseModel):
+    total_requests: int
+    cancelled: int
+    cancellation_rate: float
+    breakdown_by_category: List[HelpRequestCancellationCategoryBreakdown]
