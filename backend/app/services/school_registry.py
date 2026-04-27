@@ -40,6 +40,7 @@ class DistrictRecord:
     sidebar_start: Optional[str] = None
     sidebar_end: Optional[str] = None
     logo_path: Optional[str] = None
+    brand_lock_enabled: bool = False
 
 
 @dataclass(frozen=True)
@@ -66,7 +67,7 @@ class SchoolRecord:
 # SQL fragment shared by every districts SELECT to keep column ordering consistent.
 _DISTRICT_COLS = """
     id, created_at, name, slug, organization_id, is_active,
-    accent, accent_strong, sidebar_start, sidebar_end, logo_path
+    accent, accent_strong, sidebar_start, sidebar_end, logo_path, brand_lock_enabled
 """
 
 # SQL fragment shared by every schools SELECT to keep column ordering consistent.
@@ -192,14 +193,37 @@ class SchoolRegistry:
                 "CREATE INDEX IF NOT EXISTS idx_operator_notes_slug ON operator_notes(tenant_slug);"
             )
 
+            # Theme version history: immutable snapshots per save; rollback creates a new version.
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS theme_versions (
+                    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created_at    TEXT    NOT NULL,
+                    scope_type    TEXT    NOT NULL,
+                    scope_slug    TEXT    NOT NULL,
+                    version_num   INTEGER NOT NULL DEFAULT 1,
+                    accent        TEXT    NOT NULL DEFAULT '',
+                    accent_strong TEXT    NOT NULL DEFAULT '',
+                    sidebar_start TEXT    NOT NULL DEFAULT '',
+                    sidebar_end   TEXT    NOT NULL DEFAULT '',
+                    created_by    TEXT    NOT NULL DEFAULT '',
+                    notes         TEXT    NULL
+                );
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_theme_versions_slug ON theme_versions(scope_slug, scope_type);"
+            )
+
     def _migrate_districts_table(self, conn: sqlite3.Connection) -> None:
         cols = {str(row[1]) for row in conn.execute("PRAGMA table_info(districts);").fetchall()}
         for col, ddl in [
-            ("accent",        "ALTER TABLE districts ADD COLUMN accent TEXT NULL;"),
-            ("accent_strong", "ALTER TABLE districts ADD COLUMN accent_strong TEXT NULL;"),
-            ("sidebar_start", "ALTER TABLE districts ADD COLUMN sidebar_start TEXT NULL;"),
-            ("sidebar_end",   "ALTER TABLE districts ADD COLUMN sidebar_end TEXT NULL;"),
-            ("logo_path",     "ALTER TABLE districts ADD COLUMN logo_path TEXT NULL;"),
+            ("accent",              "ALTER TABLE districts ADD COLUMN accent TEXT NULL;"),
+            ("accent_strong",       "ALTER TABLE districts ADD COLUMN accent_strong TEXT NULL;"),
+            ("sidebar_start",       "ALTER TABLE districts ADD COLUMN sidebar_start TEXT NULL;"),
+            ("sidebar_end",         "ALTER TABLE districts ADD COLUMN sidebar_end TEXT NULL;"),
+            ("logo_path",           "ALTER TABLE districts ADD COLUMN logo_path TEXT NULL;"),
+            ("brand_lock_enabled",  "ALTER TABLE districts ADD COLUMN brand_lock_enabled INTEGER NOT NULL DEFAULT 0;"),
         ]:
             if col not in cols:
                 conn.execute(ddl)
@@ -262,7 +286,7 @@ class SchoolRegistry:
     @staticmethod
     def _district_from_row(row: sqlite3.Row | tuple) -> DistrictRecord:
         # 0=id, 1=created_at, 2=name, 3=slug, 4=organization_id, 5=is_active,
-        # 6=accent, 7=accent_strong, 8=sidebar_start, 9=sidebar_end, 10=logo_path
+        # 6=accent, 7=accent_strong, 8=sidebar_start, 9=sidebar_end, 10=logo_path, 11=brand_lock_enabled
         return DistrictRecord(
             id=int(row[0]),
             created_at=str(row[1]),
@@ -275,6 +299,7 @@ class SchoolRegistry:
             sidebar_start=str(row[8]) if len(row) > 8 and row[8] is not None else None,
             sidebar_end=str(row[9]) if len(row) > 9 and row[9] is not None else None,
             logo_path=str(row[10]) if len(row) > 10 and row[10] is not None else None,
+            brand_lock_enabled=bool(int(row[11])) if len(row) > 11 and row[11] is not None else False,
         )
 
     # ── Schools ───────────────────────────────────────────────────────────────
@@ -810,6 +835,104 @@ class SchoolRegistry:
 
     async def delete_operator_note(self, note_id: int) -> bool:
         return await anyio.to_thread.run_sync(self._delete_note_sync, int(note_id))
+
+    # ── Brand lock ────────────────────────────────────────────────────────────
+
+    def _set_brand_lock_sync(self, district_id: int, enabled: bool) -> Optional[DistrictRecord]:
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE districts SET brand_lock_enabled = ? WHERE id = ?;",
+                (1 if enabled else 0, int(district_id)),
+            )
+            row = conn.execute(
+                f"SELECT {_DISTRICT_COLS} FROM districts WHERE id = ? LIMIT 1;",
+                (int(district_id),),
+            ).fetchone()
+        return self._district_from_row(row) if row is not None else None
+
+    async def set_district_brand_lock(self, *, district_id: int, enabled: bool) -> Optional[DistrictRecord]:
+        return await anyio.to_thread.run_sync(self._set_brand_lock_sync, int(district_id), enabled)
+
+    # ── Theme version history ──────────────────────────────────────────────────
+
+    def _save_theme_version_sync(
+        self,
+        scope_type: str, scope_slug: str,
+        accent: str, accent_strong: str, sidebar_start: str, sidebar_end: str,
+        created_by: str, notes: Optional[str],
+    ) -> dict:
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT COALESCE(MAX(version_num), 0) FROM theme_versions WHERE scope_slug = ? AND scope_type = ?;",
+                (scope_slug.strip().lower(), scope_type),
+            ).fetchone()
+            next_ver = int(row[0]) + 1 if row else 1
+            cur = conn.execute(
+                """INSERT INTO theme_versions
+                   (created_at, scope_type, scope_slug, version_num, accent, accent_strong,
+                    sidebar_start, sidebar_end, created_by, notes)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);""",
+                (now, scope_type, scope_slug.strip().lower(), next_ver,
+                 (accent or "").strip(), (accent_strong or "").strip(),
+                 (sidebar_start or "").strip(), (sidebar_end or "").strip(),
+                 (created_by or "").strip(), notes),
+            )
+        return {"id": cur.lastrowid, "created_at": now, "scope_type": scope_type,
+                "scope_slug": scope_slug, "version_num": next_ver,
+                "accent": accent, "accent_strong": accent_strong,
+                "sidebar_start": sidebar_start, "sidebar_end": sidebar_end,
+                "created_by": created_by, "notes": notes}
+
+    async def save_theme_version(
+        self, *, scope_type: str, scope_slug: str,
+        accent: str, accent_strong: str, sidebar_start: str, sidebar_end: str,
+        created_by: str, notes: Optional[str] = None,
+    ) -> dict:
+        return await anyio.to_thread.run_sync(
+            self._save_theme_version_sync,
+            scope_type, scope_slug, accent, accent_strong, sidebar_start, sidebar_end,
+            created_by, notes,
+        )
+
+    def _list_theme_versions_sync(self, scope_type: str, scope_slug: str, limit: int) -> list:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT id, created_at, scope_type, scope_slug, version_num,
+                          accent, accent_strong, sidebar_start, sidebar_end, created_by, notes
+                   FROM theme_versions
+                   WHERE scope_slug = ? AND scope_type = ?
+                   ORDER BY version_num DESC LIMIT ?;""",
+                (scope_slug.strip().lower(), scope_type, int(limit)),
+            ).fetchall()
+        return [
+            {"id": r[0], "created_at": r[1], "scope_type": r[2], "scope_slug": r[3],
+             "version_num": r[4], "accent": r[5] or "", "accent_strong": r[6] or "",
+             "sidebar_start": r[7] or "", "sidebar_end": r[8] or "",
+             "created_by": r[9] or "", "notes": r[10]}
+            for r in rows
+        ]
+
+    async def list_theme_versions(self, *, scope_type: str, scope_slug: str, limit: int = 20) -> list:
+        return await anyio.to_thread.run_sync(self._list_theme_versions_sync, scope_type, scope_slug, int(limit))
+
+    def _get_theme_version_sync(self, version_id: int) -> Optional[dict]:
+        with self._connect() as conn:
+            row = conn.execute(
+                """SELECT id, created_at, scope_type, scope_slug, version_num,
+                          accent, accent_strong, sidebar_start, sidebar_end, created_by, notes
+                   FROM theme_versions WHERE id = ? LIMIT 1;""",
+                (int(version_id),),
+            ).fetchone()
+        if row is None:
+            return None
+        return {"id": row[0], "created_at": row[1], "scope_type": row[2], "scope_slug": row[3],
+                "version_num": row[4], "accent": row[5] or "", "accent_strong": row[6] or "",
+                "sidebar_start": row[7] or "", "sidebar_end": row[8] or "",
+                "created_by": row[9] or "", "notes": row[10]}
+
+    async def get_theme_version(self, version_id: int) -> Optional[dict]:
+        return await anyio.to_thread.run_sync(self._get_theme_version_sync, int(version_id))
 
     # ── Slug aliases ─────────────────────────────────────────────────────────
     # Maps old slugs to canonical ones so old API clients keep working.

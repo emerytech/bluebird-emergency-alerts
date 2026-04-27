@@ -468,14 +468,12 @@ def _extract_logo_colors(image_data: bytes) -> Optional[dict[str, str]]:
 async def _resolve_effective_branding(school, school_registry: "SchoolRegistry") -> dict:
     """
     Cascade: school colors/logo → district colors/logo → empty (defaults apply in CSS).
-    Returns a dict with keys: accent, accent_strong, sidebar_start, sidebar_end, logo_url.
+    When brand_lock_enabled on the district, school-level colors are suppressed and district
+    branding is authoritative. Returns dict with keys: accent, accent_strong, sidebar_start,
+    sidebar_end, logo_url, brand_locked (bool).
     """
     school_theme = _school_theme(school)
     school_logo = getattr(school, "logo_path", None) or None
-
-    # If the school has any color set, it wins completely; no cascade needed.
-    if any(v for v in school_theme.values()):
-        return {**school_theme, "logo_url": school_logo}
 
     district_id = getattr(school, "district_id", None)
     if district_id is not None:
@@ -488,10 +486,20 @@ async def _resolve_effective_branding(school, school_registry: "SchoolRegistry")
                 "sidebar_end":   getattr(district, "sidebar_end", None) or "",
             }
             district_logo = getattr(district, "logo_path", None) or None
+            brand_locked = bool(getattr(district, "brand_lock_enabled", False))
+            if brand_locked:
+                # District branding is authoritative — school colors are suppressed.
+                return {**district_theme, "logo_url": school_logo or district_logo, "brand_locked": True}
+            if any(v for v in school_theme.values()):
+                return {**school_theme, "logo_url": school_logo, "brand_locked": False}
             if any(v for v in district_theme.values()) or district_logo:
-                return {**district_theme, "logo_url": school_logo or district_logo}
+                return {**district_theme, "logo_url": school_logo or district_logo, "brand_locked": False}
 
-    return {**school_theme, "logo_url": school_logo}
+    # If the school has any color set, it wins completely.
+    if any(v for v in school_theme.values()):
+        return {**school_theme, "logo_url": school_logo, "brand_locked": False}
+
+    return {**school_theme, "logo_url": school_logo, "brand_locked": False}
 
 
 def _tenant(req: Request):
@@ -1457,6 +1465,33 @@ async def get_school_branding(slug: str, request: Request) -> JSONResponse:
     })
 
 
+@router.get("/{slug}/theme", include_in_schema=False)
+async def get_school_theme(slug: str, request: Request) -> JSONResponse:
+    """Public endpoint — identical to /{slug}/branding but named for mobile WS context."""
+    from app.services.tenant_manager import TenantManager
+    tenant_manager: TenantManager = request.app.state.tenant_manager  # type: ignore[attr-defined]
+    school = tenant_manager.school_for_slug(slug)
+    if school is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="School not found")
+    branding = await _resolve_effective_branding(school, _schools(request))
+    base_url = str(getattr(request.app.state.settings, "BASE_URL", "") or "").rstrip("/")
+    logo_url = branding.get("logo_url")
+    if logo_url and not logo_url.startswith("http") and base_url:
+        logo_url = base_url + logo_url
+    return JSONResponse({
+        "type": "theme_updated",
+        "slug": school.slug,
+        "name": school.name,
+        "accent": branding.get("accent") or "#1b5fe4",
+        "accent_strong": branding.get("accent_strong") or "#2f84ff",
+        "sidebar_start": branding.get("sidebar_start") or "#092054",
+        "sidebar_end": branding.get("sidebar_end") or "#071536",
+        "logo_url": logo_url,
+        "brand_locked": bool(branding.get("brand_locked", False)),
+        "has_custom_branding": bool(branding.get("accent") or branding.get("logo_url")),
+    })
+
+
 @router.get("/config/labels")
 async def config_labels(_: None = Depends(require_api_key)) -> dict[str, str]:
     return FEATURE_LABELS
@@ -1947,10 +1982,14 @@ async def admin_dashboard(
 
     _settings_history: list = []
     _theme_presets: list = []
+    _theme_versions: list = []
     _extracted_theme_colors: Optional[dict[str, str]] = None
     if selected_section == "settings":
-        _settings_history = await _settings_store(request).get_history(limit=50)
-        _theme_presets = await _schools(request).list_theme_presets(str(request.state.school.slug))
+        _settings_history, _theme_presets, _theme_versions = await asyncio.gather(
+            _settings_store(request).get_history(limit=50),
+            _schools(request).list_theme_presets(str(request.state.school.slug)),
+            _schools(request).list_theme_versions(scope_type="school", scope_slug=str(request.state.school.slug), limit=15),
+        )
         _extracted_theme_colors = request.session.pop("extracted_theme_colors", None)  # type: ignore[assignment]
 
     _admin_role = str(getattr(request.state.admin_user, "role", "")).strip().lower()
@@ -1959,8 +1998,9 @@ async def admin_dashboard(
         _access_code_records = await _access_codes(request).list_codes(str(request.state.school.slug), limit=200)
     _base_domain = str(getattr(request.app.state.settings, "BASE_DOMAIN", "") or "app.bluebirdalerts.com").strip()
     _effective_branding = await _resolve_effective_branding(request.state.school, _schools(request))
-    _effective_theme = {k: v for k, v in _effective_branding.items() if k != "logo_url"}
+    _effective_theme = {k: v for k, v in _effective_branding.items() if k not in ("logo_url", "brand_locked")}
     _effective_logo_url = _effective_branding.get("logo_url") or None
+    _brand_locked = bool(_effective_branding.get("brand_locked", False))
 
     html = render_admin_page(
         school_name=request.state.school.name,
@@ -2024,6 +2064,8 @@ async def admin_dashboard(
         theme_presets=_theme_presets,
         extracted_theme_colors=_extracted_theme_colors,
         school_district_id=getattr(request.state.school, "district_id", None),
+        brand_locked=_brand_locked,
+        theme_versions=_theme_versions,
     )
     return HTMLResponse(content=html)
 
@@ -2166,6 +2208,16 @@ async def admin_settings_update_colors(
     await _require_dashboard_admin(request)
 
     school = request.state.school
+    _admin_role = str(getattr(request.state.admin_user, "role", "")).strip().lower()
+
+    # Enforce brand lock — non-super-admins cannot override district branding when locked.
+    district_id = getattr(school, "district_id", None)
+    if district_id is not None and _admin_role != "super_admin":
+        _district = await _schools(request).get_district(int(district_id))
+        if _district is not None and getattr(_district, "brand_lock_enabled", False):
+            _set_flash(request, error="Brand lock is enabled for this district. Contact your super admin to change branding.")
+            return RedirectResponse(url=_school_url(request, "/admin?section=settings"), status_code=status.HTTP_303_SEE_OTHER)
+
     old_theme = _school_theme(school)
 
     new_accent = accent.strip() or None
@@ -2203,6 +2255,25 @@ async def admin_settings_update_colors(
         metadata={"accent": new_accent, "accent_strong": new_accent_strong,
                   "sidebar_start": new_sidebar_start, "sidebar_end": new_sidebar_end},
     )
+    # Save immutable theme version snapshot.
+    await _schools(request).save_theme_version(
+        scope_type="school", scope_slug=str(school.slug),
+        accent=new_accent or "", accent_strong=new_accent_strong or "",
+        sidebar_start=new_sidebar_start or "", sidebar_end=new_sidebar_end or "",
+        created_by=actor_label,
+    )
+    # Live-push theme to connected mobile clients.
+    _hub = getattr(request.app.state, "alert_hub", None)
+    if _hub is not None:
+        await _hub.publish(str(school.slug), {
+            "event": "theme_updated",
+            "type": "theme_updated",
+            "tenant_slug": str(school.slug),
+            "accent": new_accent or "#1b5fe4",
+            "accent_strong": new_accent_strong or "#2f84ff",
+            "sidebar_start": new_sidebar_start or "#092054",
+            "sidebar_end": new_sidebar_end or "#071536",
+        })
     _set_flash(request, message="Theme colors updated.")
     return RedirectResponse(url=_school_url(request, "/admin?section=settings"), status_code=status.HTTP_303_SEE_OTHER)
 
@@ -2311,6 +2382,98 @@ async def admin_apply_theme_to_district(request: Request) -> JSONResponse:
         metadata={"district_id": int(district_id), "schools_updated": len(d_schools)},
     )
     return JSONResponse({"ok": True, "updated": len(d_schools)})
+
+
+# ── Theme version history endpoints ───────────────────────────────────────────
+
+@router.get("/admin/themes/history", include_in_schema=False)
+async def admin_list_theme_history(request: Request) -> JSONResponse:
+    await _require_dashboard_admin(request)
+    school = request.state.school
+    versions = await _schools(request).list_theme_versions(
+        scope_type="school", scope_slug=str(school.slug), limit=20
+    )
+    return JSONResponse({"versions": versions})
+
+
+@router.post("/admin/themes/history/{version_id}/rollback", include_in_schema=False)
+async def admin_rollback_theme_version(request: Request, version_id: int) -> JSONResponse:
+    await _require_dashboard_admin(request)
+    school = request.state.school
+    ver = await _schools(request).get_theme_version(int(version_id))
+    if ver is None or ver.get("scope_slug") != str(school.slug):
+        raise HTTPException(status_code=404, detail="Version not found")
+
+    # Apply the rolled-back colors.
+    await _schools(request).update_theme(
+        slug=str(school.slug),
+        accent=ver["accent"] or None,
+        accent_strong=ver["accent_strong"] or None,
+        sidebar_start=ver["sidebar_start"] or None,
+        sidebar_end=ver["sidebar_end"] or None,
+    )
+    actor_label = str(getattr(request.state.admin_user, "name", "") or "")
+    # Rollback creates a new version entry (immutable history).
+    await _schools(request).save_theme_version(
+        scope_type="school", scope_slug=str(school.slug),
+        accent=ver["accent"] or "", accent_strong=ver["accent_strong"] or "",
+        sidebar_start=ver["sidebar_start"] or "", sidebar_end=ver["sidebar_end"] or "",
+        created_by=actor_label,
+        notes=f"Rolled back from v{ver['version_num']}",
+    )
+    await _audit_log_svc(request).log_event(
+        tenant_slug=str(school.slug),
+        event_type="theme.version_rolled_back",
+        actor_label=actor_label or None,
+        metadata={"from_version": ver["version_num"], "version_id": version_id},
+    )
+    # Live-push rolled-back theme to connected clients.
+    _hub = getattr(request.app.state, "alert_hub", None)
+    if _hub is not None:
+        await _hub.publish(str(school.slug), {
+            "event": "theme_updated",
+            "type": "theme_updated",
+            "tenant_slug": str(school.slug),
+            "accent": ver["accent"] or "#1b5fe4",
+            "accent_strong": ver["accent_strong"] or "#2f84ff",
+            "sidebar_start": ver["sidebar_start"] or "#092054",
+            "sidebar_end": ver["sidebar_end"] or "#071536",
+        })
+    return JSONResponse({"ok": True, "version": ver})
+
+
+# ── Brand lock endpoints (super_admin only) ────────────────────────────────────
+
+@router.post("/super-admin/districts/{district_id}/brand-lock/enable", include_in_schema=False)
+async def super_admin_enable_brand_lock(request: Request, district_id: int) -> JSONResponse:
+    _require_super_admin(request)
+    district = await _schools(request).set_district_brand_lock(district_id=int(district_id), enabled=True)
+    if district is None:
+        raise HTTPException(status_code=404, detail="District not found")
+    actor_label = str(getattr(request.state, "super_admin_login_name", "") or "super_admin")
+    await _audit_log_svc(request).log_event(
+        tenant_slug=str(district.slug),
+        event_type="brand_lock_enabled",
+        actor_label=actor_label or None,
+        metadata={"district_id": district_id, "district_name": district.name},
+    )
+    return JSONResponse({"ok": True, "district": district.slug, "brand_lock_enabled": True})
+
+
+@router.post("/super-admin/districts/{district_id}/brand-lock/disable", include_in_schema=False)
+async def super_admin_disable_brand_lock(request: Request, district_id: int) -> JSONResponse:
+    _require_super_admin(request)
+    district = await _schools(request).set_district_brand_lock(district_id=int(district_id), enabled=False)
+    if district is None:
+        raise HTTPException(status_code=404, detail="District not found")
+    actor_label = str(getattr(request.state, "super_admin_login_name", "") or "super_admin")
+    await _audit_log_svc(request).log_event(
+        tenant_slug=str(district.slug),
+        event_type="brand_lock_disabled",
+        actor_label=actor_label or None,
+        metadata={"district_id": district_id, "district_name": district.name},
+    )
+    return JSONResponse({"ok": True, "district": district.slug, "brand_lock_enabled": False})
 
 
 @router.post("/admin/settings/undo/{change_id}", include_in_schema=False)
@@ -3225,6 +3388,7 @@ async def super_admin_dashboard(
             "schools": [{"slug": str(getattr(s, "slug", "")), "name": str(getattr(s, "name", ""))} for s in _ds],
             "alarm_count": _d_alarm, "ws_total": _d_ws, "last_activity": _d_last,
             "status": _d_status, "billing_ok": all(b in {"active", "trial", "free"} for b in _d_bills) if _d_bills else True,
+            "brand_locked": bool(getattr(_d, "brand_lock_enabled", False)),
         })
     for _s in _ungrouped_schools:
         _s_noc = _noc_by_slug.get(str(getattr(_s, "slug", "")), {})
@@ -3239,6 +3403,20 @@ async def super_admin_dashboard(
             "status": "alarm" if _s_noc.get("alarm_active") else ("healthy" if bool(getattr(_s, "is_active", True)) else "offline"),
             "billing_ok": _s_bill in {"active", "trial", "free"},
         })
+    # ── Platform Control stats ────────────────────────────────────────────────
+    _branded_schools = sum(1 for s in schools if any([s.accent, s.accent_strong, s.sidebar_start, s.logo_path]))
+    _locked_districts = sum(1 for d in _all_districts if getattr(d, "brand_lock_enabled", False))
+    _active_schools = sum(1 for s in schools if s.is_active)
+    _platform_stats: dict[str, object] = {
+        "total_schools": len(schools),
+        "active_schools": _active_schools,
+        "branded_schools": _branded_schools,
+        "branding_coverage_pct": round(100 * _branded_schools / max(len(schools), 1)),
+        "total_districts": len(_all_districts),
+        "locked_districts": _locked_districts,
+        "alarm_schools": sum(1 for t in _noc_tenant_data if t.get("alarm_active")),
+        "ws_connections": sum(int(t.get("ws_connections") or 0) for t in _noc_tenant_data),
+    }
     return HTMLResponse(
         render_super_admin_page(
             base_domain=request.app.state.settings.BASE_DOMAIN,  # type: ignore[attr-defined]
@@ -3273,6 +3451,7 @@ async def super_admin_dashboard(
             noc_tenant_data=list(_noc_tenant_data),
             noc_uptime_seconds=_noc_uptime,
             msp_districts=msp_districts,
+            platform_stats=_platform_stats,
         )
     )
 

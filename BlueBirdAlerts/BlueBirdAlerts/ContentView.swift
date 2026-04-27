@@ -2717,6 +2717,17 @@ struct ContentView: View {
         case "help_request_acknowledged", "help_request_resolved":
             Task { await refreshIncidentFeed() }
 
+        case "theme_updated":
+            let themeAccent = json["accent"] as? String ?? ""
+            let themeAccentStrong = json["accent_strong"] as? String ?? ""
+            let themeSidebarStart = json["sidebar_start"] as? String ?? ""
+            if !themeAccent.isEmpty || !themeSidebarStart.isEmpty {
+                DSBranding.apply(
+                    primary: themeSidebarStart.isEmpty ? themeAccent : themeSidebarStart,
+                    accent: themeAccent.isEmpty ? themeAccentStrong : themeAccent
+                )
+            }
+
         default:
             #if DEBUG
             print("[WS] Unknown event type: '\(event)'")

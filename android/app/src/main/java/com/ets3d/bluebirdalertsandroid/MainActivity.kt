@@ -621,6 +621,10 @@ data class UiState(
     val selectedTenantName: String = "",
     val userTitle: String = "",
     val districtTenants: List<TenantOverviewItem> = emptyList(),
+    val themeAccent: String? = null,
+    val themeAccentStrong: String? = null,
+    val themeSidebarStart: String? = null,
+    val themeSidebarEnd: String? = null,
 )
 
 // ── ViewModel ──────────────────────────────────────────────────────────────────
@@ -1330,6 +1334,20 @@ class MainViewModel : ViewModel() {
                 viewModelScope.launch(Dispatchers.IO) {
                     runCatching { client!!.activeRequestHelp() }
                         .onSuccess { result -> _state.update { it.copy(activeTeamAssists = result) } }
+                }
+            }
+            "theme_updated" -> {
+                val accent = j.optString("accent").ifBlank { null }
+                val accentStrong = j.optString("accent_strong").ifBlank { null }
+                val sidebarStart = j.optString("sidebar_start").ifBlank { null }
+                val sidebarEnd = j.optString("sidebar_end").ifBlank { null }
+                if (accent != null || sidebarStart != null) {
+                    _state.update { it.copy(
+                        themeAccent = accent ?: it.themeAccent,
+                        themeAccentStrong = accentStrong ?: it.themeAccentStrong,
+                        themeSidebarStart = sidebarStart ?: it.themeSidebarStart,
+                        themeSidebarEnd = sidebarEnd ?: it.themeSidebarEnd,
+                    ) }
                 }
             }
         }

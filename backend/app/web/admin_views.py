@@ -1082,6 +1082,30 @@ def render_totp_page(
 </html>"""
 
 
+def _pctrl_district_lock_rows(districts: "Sequence[Mapping[str, object]]") -> str:
+    district_only = [d for d in districts if d.get("is_district")]
+    if not district_only:
+        return "<tr><td colspan='5' style='color:var(--muted);padding:12px;'>No districts provisioned yet.</td></tr>"
+    parts = []
+    for d in district_only:
+        did = d.get("id") or 0
+        locked = bool(d.get("brand_locked"))
+        pill_cls = "warn" if locked else "ok"
+        pill_label = "Locked" if locked else "Open"
+        btn_label = "Disable Lock" if locked else "Enable Lock"
+        js_arg = "false" if locked else "true"
+        parts.append(
+            "<tr>"
+            f"<td><strong>{escape(str(d.get('name', '?')))}</strong></td>"
+            f"<td><code>{escape(str(d.get('slug', '?')))}</code></td>"
+            f"<td>{int(d.get('school_count', 0))}</td>"
+            f'<td><span class="pctrl-pill {pill_cls}">{pill_label}</span></td>'
+            f'<td><button class="pctrl-lock-btn" onclick="pctrlToggleLock({did},{js_arg})">{btn_label}</button></td>'
+            "</tr>"
+        )
+    return "".join(parts)
+
+
 def render_super_admin_page(
     *,
     base_domain: str,
@@ -1108,6 +1132,7 @@ def render_super_admin_page(
     noc_tenant_data: Sequence[Mapping[str, object]] = (),
     noc_uptime_seconds: int = 0,
     msp_districts: Sequence[Mapping[str, object]] = (),
+    platform_stats: Optional[Mapping[str, object]] = None,
 ) -> str:
     rows = "".join(
         (
@@ -1188,7 +1213,7 @@ def render_super_admin_page(
         for c in setup_codes
     ) or '<tr><td colspan="7" class="empty-state">No setup codes generated yet.</td></tr>'
 
-    section = active_section if active_section in {"schools", "billing", "platform-audit", "create-school", "security", "server-tools", "health", "email-tool", "setup-codes", "noc", "msp"} else "schools"
+    section = active_section if active_section in {"schools", "billing", "platform-audit", "create-school", "security", "server-tools", "health", "email-tool", "setup-codes", "noc", "msp", "platform-control"} else "schools"
 
     def _section_style(name: str) -> str:
         return "" if section == name else ' style="display:none;"'
@@ -1493,6 +1518,7 @@ def render_super_admin_page(
           <div class="nav-group">
             <p class="nav-label">Control</p>
           <nav class="nav-list">
+            {_nav_item("platform-control", "Platform Control")}
             {_nav_item("msp", "MSP Dashboard", "!" if any(str(d.get("status","")) == "alarm" for d in msp_districts) else (str(len(msp_districts)) if msp_districts else None))}
             {_nav_item("noc", "Operations", "!" if (health_status and health_status.overall != "ok") or any(bool(t.get("alarm_active")) for t in noc_tenant_data) else None)}
             {_nav_item("schools", "Schools", str(len(school_rows)) if school_rows else None)}
@@ -1517,6 +1543,92 @@ def render_super_admin_page(
         </section>
       </aside>
       <section class="content-stack workspace">
+        <section class="panel command-section" id="platform-control"{_section_style("platform-control")}>
+          <style>
+          .pctrl-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:18px;margin-bottom:28px;}
+          .pctrl-card{background:var(--card,#fff);border:1px solid var(--border);border-radius:14px;padding:22px 20px;position:relative;overflow:hidden;}
+          .pctrl-card-hdr{font-size:.72rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin-bottom:12px;}
+          .pctrl-kpi{font-size:2.4rem;font-weight:800;line-height:1;margin:0 0 4px;}
+          .pctrl-sub{font-size:.78rem;color:var(--muted);}
+          .pctrl-pill{display:inline-block;padding:2px 8px;border-radius:99px;font-size:.72rem;font-weight:700;background:var(--border);}
+          .pctrl-pill.ok{background:#dcfce7;color:#15803d;}
+          .pctrl-pill.warn{background:#fef9c3;color:#854d0e;}
+          .pctrl-pill.danger{background:#fee2e2;color:#b91c1c;}
+          .pctrl-district-table{width:100%;border-collapse:collapse;font-size:.85rem;}
+          .pctrl-district-table th{text-align:left;padding:8px 10px;color:var(--muted);font-weight:600;border-bottom:1px solid var(--border);}
+          .pctrl-district-table td{padding:8px 10px;border-bottom:1px solid var(--border);}
+          .pctrl-lock-btn{padding:4px 12px;border-radius:6px;border:1px solid var(--border);font-size:.75rem;cursor:pointer;background:var(--bg-offset,#f8fafc);}
+          </style>
+          <div class="panel-header hero-band">
+            <div>
+              <p class="eyebrow">Super Admin</p>
+              <h1>Platform Control</h1>
+              <p class="hero-copy">SaaS-level visibility across all tenants — branding health, district brand lock, system status, and coverage metrics.</p>
+            </div>
+          </div>
+
+          <p class="eyebrow" style="margin-bottom:12px;">Branding Health</p>
+          <div class="pctrl-grid">
+            <div class="pctrl-card">
+              <p class="pctrl-card-hdr">Branding Coverage</p>
+              <p class="pctrl-kpi">{int((platform_stats or {}).get("branding_coverage_pct", 0))}%</p>
+              <p class="pctrl-sub">{int((platform_stats or {}).get("branded_schools", 0))} of {int((platform_stats or {}).get("total_schools", 0))} schools have custom branding</p>
+            </div>
+            <div class="pctrl-card">
+              <p class="pctrl-card-hdr">Brand-Locked Districts</p>
+              <p class="pctrl-kpi">{int((platform_stats or {}).get("locked_districts", 0))}</p>
+              <p class="pctrl-sub">of {int((platform_stats or {}).get("total_districts", 0))} districts have brand lock enabled</p>
+            </div>
+            <div class="pctrl-card">
+              <p class="pctrl-card-hdr">Active Schools</p>
+              <p class="pctrl-kpi">{int((platform_stats or {}).get("active_schools", 0))}</p>
+              <p class="pctrl-sub">{int((platform_stats or {}).get("total_schools", 0))} total provisioned tenants</p>
+            </div>
+            <div class="pctrl-card">
+              <p class="pctrl-card-hdr">Live Connections</p>
+              <p class="pctrl-kpi">{int((platform_stats or {}).get("ws_connections", 0))}</p>
+              <p class="pctrl-sub">{int((platform_stats or {}).get("alarm_schools", 0))} school{'s' if int((platform_stats or {}).get("alarm_schools", 0)) != 1 else ''} with active alarm</p>
+            </div>
+          </div>
+
+          <p class="eyebrow" style="margin-bottom:12px;margin-top:4px;">District Brand Lock</p>
+          <p class="card-copy" style="margin-bottom:14px;">When brand lock is enabled for a district, school admins cannot override branding — district colors become authoritative.</p>
+          <div style="overflow-x:auto;margin-bottom:28px;">
+            <table class="pctrl-district-table">
+              <thead><tr><th>District</th><th>Slug</th><th>Schools</th><th>Brand Lock</th><th>Action</th></tr></thead>
+              <tbody>
+              {_pctrl_district_lock_rows(msp_districts)}
+              </tbody>
+            </table>
+          </div>
+
+          <p class="eyebrow" style="margin-bottom:12px;margin-top:4px;">System Health</p>
+          <div class="pctrl-grid">
+            <div class="pctrl-card">
+              <p class="pctrl-card-hdr">API Status</p>
+              <p class="pctrl-kpi" style="font-size:1.6rem;">{"OK" if health_status and health_status.overall == "ok" else "Degraded"}</p>
+              <p class="pctrl-sub"><span class="pctrl-pill {"ok" if health_status and health_status.overall == "ok" else "danger"}">{"healthy" if health_status and health_status.overall == "ok" else health_status.overall if health_status else "unknown"}</span></p>
+            </div>
+            <div class="pctrl-card">
+              <p class="pctrl-card-hdr">Email Service</p>
+              <p class="pctrl-kpi" style="font-size:1.6rem;">{"Active" if email_configured else "Off"}</p>
+              <p class="pctrl-sub"><span class="pctrl-pill {"ok" if email_configured else "warn"}">{"configured" if email_configured else "not configured"}</span></p>
+            </div>
+          </div>
+
+          <script>
+          function pctrlToggleLock(districtId,enable){{
+            var action=enable?'Enable':'Disable';
+            if(!confirm(action+' brand lock for this district? '+(enable?'School admins will not be able to override branding.':'School admins will be able to set their own branding.')))return;
+            var endpoint='/super-admin/districts/'+districtId+'/brand-lock/'+(enable?'enable':'disable');
+            fetch(endpoint,{{method:'POST',headers:{{'X-Requested-With':'XMLHttpRequest'}}}})
+              .then(function(r){{return r.json();}})
+              .then(function(d){{if(d.ok){{location.reload();}}else{{alert('Failed to update brand lock');}};}})
+              .catch(function(){{alert('Network error');}});
+          }}
+          </script>
+        </section>
+
         <section class="panel command-section" id="msp"{_section_style("msp")}>
           <div class="panel-header hero-band">
             <div>
@@ -2928,6 +3040,55 @@ def _bbp_extracted_banner(prefix: str, extracted: Optional[dict]) -> str:
     )
 
 
+def _bbp_version_history_html(prefix: str, theme_versions: list) -> str:
+    """Render the theme version history section for the branding settings panel."""
+    if not theme_versions:
+        inner = '<p style="color:var(--muted);font-size:.85rem;">No saved versions yet. Versions are created automatically when you save colors.</p>'
+    else:
+        rows = []
+        for v in theme_versions:
+            ts = str(v.get("created_at", "") or "")[:16].replace("T", " ")
+            ver_num = v.get("version_num", "")
+            created_by = escape(str(v.get("created_by", "") or "—"))
+            notes_html = ""
+            if v.get("notes"):
+                notes_html = '<em style="font-size:.75rem;color:var(--muted);">' + escape(str(v["notes"])) + "</em>"
+            swatches = "".join(
+                '<span title="' + k + '" style="display:inline-block;width:14px;height:14px;'
+                'border-radius:3px;border:1px solid rgba(0,0,0,.15);background:'
+                + escape(str(v.get(k, "") or "#cccccc"))
+                + ';"></span>'
+                for k in ["accent", "accent_strong", "sidebar_start", "sidebar_end"]
+            )
+            vid = int(v.get("id", 0))
+            btn = (
+                '<button type="button" class="button button-secondary"'
+                ' style="min-height:28px;padding:0 10px;font-size:.78rem;"'
+                ' onclick="bbRollback(' + repr(prefix) + ',' + str(vid) + ',' + repr(str(ver_num)) + ')">Restore</button>'
+            )
+            rows.append(
+                '<div style="display:flex;align-items:center;gap:10px;background:var(--bg-offset,#f8fafc);'
+                'border:1px solid var(--border);border-radius:8px;padding:9px 12px;font-size:.82rem;">'
+                '<span style="color:var(--muted);min-width:100px;">' + escape(ts) + "</span>"
+                '<span style="font-weight:600;color:var(--muted);min-width:32px;">v' + str(ver_num) + "</span>"
+                '<span style="display:flex;gap:4px;flex-shrink:0;">' + swatches + "</span>"
+                '<span style="flex:1;color:var(--muted);">' + created_by + "</span>"
+                + notes_html
+                + btn
+                + "</div>"
+            )
+        inner = "".join(rows)
+    return (
+        '<div style="margin-top:24px;padding-top:20px;border-top:1px solid var(--border);">'
+        '<p class="eyebrow" style="margin-bottom:8px;">Theme Version History</p>'
+        '<p class="card-copy" style="margin-bottom:12px;">Each color save creates an immutable snapshot. '
+        "Roll back to any previous version — rollback creates a new entry in history.</p>"
+        '<div style="display:flex;flex-direction:column;gap:8px;" id="bbp-version-list">'
+        + inner
+        + "</div></div>"
+    )
+
+
 def _render_settings_panels(
     prefix: str,
     school_name: str,
@@ -2940,6 +3101,8 @@ def _render_settings_panels(
     extracted_theme_colors: Optional[dict] = None,
     admin_role: str = "",
     has_district: bool = False,
+    brand_locked: bool = False,
+    theme_versions: list = [],
 ) -> str:
     # ── School Info ──────────────────────────────────────────────────────────
     logo_preview = (
@@ -3052,6 +3215,14 @@ def _render_settings_panels(
             </div>
           </div>
 
+          {f'''<div style="background:linear-gradient(90deg,#fef2f2,#fee2e2);border:1px solid #fca5a5;border-radius:10px;padding:14px 18px;margin-bottom:20px;display:flex;align-items:center;gap:14px;">
+            <span style="font-size:1.4rem;">🔒</span>
+            <div>
+              <p style="margin:0;font-weight:700;color:#b91c1c;font-size:.95rem;">Brand Lock Active</p>
+              <p style="margin:4px 0 0;font-size:.82rem;color:#7f1d1d;">This district\'s branding is locked by a super admin. Colors are controlled at the district level and cannot be changed here.</p>
+            </div>
+          </div>''' if brand_locked else ""}
+
           {_bbp_extracted_banner(prefix, extracted_theme_colors)}
 
           <!-- Preset toolbar -->
@@ -3073,7 +3244,7 @@ def _render_settings_panels(
 
           <!-- Main grid: pickers | preview -->
           <div style="display:grid;grid-template-columns:minmax(0,1fr) 236px;gap:32px;align-items:start;">
-            <form method="post" action="{prefix}/admin/settings/colors" id="bbp-colors-form">
+            <form method="post" action="{prefix}/admin/settings/colors" id="bbp-colors-form" {'style="pointer-events:none;opacity:.5;" aria-disabled="true"' if brand_locked and admin_role != "super_admin" else ""}>
               {_bbp_field("accent", "Primary / accent color", t_accent, "#1b5fe4")}
               {_bbp_field("accent_strong", "Accent strong — button hover", t_accent_strong, "#2f84ff")}
               {_bbp_field("sidebar_start", "Sidebar gradient start", t_sidebar_start, "#092054")}
@@ -3166,11 +3337,23 @@ def _render_settings_panels(
           {f'''<div style="margin-top:24px;padding-top:20px;border-top:1px solid var(--border);">
             <p class="eyebrow" style="margin-bottom:8px;">District Branding</p>
             <p class="card-copy" style="margin-bottom:12px;">Push this school\'s current branding to all schools in the district. Each school\'s individual settings will be overwritten.</p>
-            <button type="button" class="button button-secondary" onclick="bbApplyDistrict('{prefix}')">Apply to all schools in district</button>
+            <button type="button" class="button button-secondary"
+              onclick="if(confirm(\'Apply this school\\\'s colors to ALL schools in the district? This will overwrite their individual branding.\')){{bbApplyDistrict(\'{prefix}\')}}">Apply to all schools in district</button>
             <span id="bbp-district-msg" style="display:none;margin-left:12px;color:var(--color-ok,#22c55e);font-size:.85rem;"></span>
           </div>''' if has_district and admin_role in ("district_admin", "super_admin") else ""}
 
+          {_bbp_version_history_html(prefix, theme_versions)}
+
           {_BRANDING_JS}
+          <script>
+          function bbRollback(prefix,versionId,versionNum){{
+            if(!confirm('Restore theme to v'+versionNum+'? This will apply those colors and create a new history entry.'))return;
+            fetch(prefix+'/admin/themes/history/'+versionId+'/rollback',{{method:'POST',headers:{{'X-Requested-With':'XMLHttpRequest'}}}})
+              .then(function(r){{return r.json();}})
+              .then(function(d){{if(d.ok){{location.reload();}}else{{alert('Rollback failed');}};}})
+              .catch(function(){{alert('Network error');}});
+          }}
+          </script>
         </section>
 
         <section class="panel command-section" id="settings-history"{hidden}>
@@ -3236,6 +3419,8 @@ def render_admin_page(
     theme_presets: Sequence[Mapping[str, object]] = (),
     extracted_theme_colors: Optional[Mapping[str, str]] = None,
     school_district_id: Optional[int] = None,
+    brand_locked: bool = False,
+    theme_versions: Sequence[Mapping[str, object]] = (),
 ) -> str:
     prefix = escape(school_path_prefix)
     role_counts = Counter(user.role for user in users)
@@ -3771,7 +3956,7 @@ def render_admin_page(
           </div>
         </section>
 
-        {_render_settings_panels(prefix, school_name, school_slug, settings_history, school_logo_url, theme, _section_style, theme_presets=list(theme_presets), extracted_theme_colors=dict(extracted_theme_colors) if extracted_theme_colors else None, admin_role=str(getattr(current_user, "role", "") or ""), has_district=school_district_id is not None)}
+        {_render_settings_panels(prefix, school_name, school_slug, settings_history, school_logo_url, theme, _section_style, theme_presets=list(theme_presets), extracted_theme_colors=dict(extracted_theme_colors) if extracted_theme_colors else None, admin_role=str(getattr(current_user, "role", "") or ""), has_district=school_district_id is not None, brand_locked=brand_locked, theme_versions=list(theme_versions))}
 
         <section class="panel command-section" id="security"{_section_style("settings")}>
           <div class="panel-header">
