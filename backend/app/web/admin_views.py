@@ -3475,6 +3475,43 @@ def _render_settings_panels(
         if school_logo_url else ""
     )
     hidden = _section_style("settings")
+
+    _brand_lock_banner = (
+        '<div style="background:linear-gradient(90deg,#fef2f2,#fee2e2);border:1px solid #fca5a5;border-radius:10px;'
+        'padding:14px 18px;margin-bottom:20px;display:flex;align-items:center;gap:14px;">'
+        '<span style="font-size:1.4rem;">\U0001f512</span>'
+        "<div>"
+        '<p style="margin:0;font-weight:700;color:#b91c1c;font-size:.95rem;">Brand Lock Active</p>'
+        "<p style=\"margin:4px 0 0;font-size:.82rem;color:#7f1d1d;\">This district's branding is locked by a super admin. "
+        "Colors are controlled at the district level and cannot be changed here.</p>"
+        "</div></div>"
+    ) if brand_locked else ""
+
+    _district_branding_push = ""
+    if has_district and admin_role in ("district_admin", "super_admin"):
+        _confirm_msg = "Apply this school's colors to ALL schools in the district? This will overwrite their individual branding."
+        _district_branding_push = (
+            '<div style="margin-top:24px;padding-top:20px;border-top:1px solid var(--border);">'
+            '<p class="eyebrow" style="margin-bottom:8px;">District Branding</p>'
+            "<p class=\"card-copy\" style=\"margin-bottom:12px;\">Push this school's current branding to all schools in the district. "
+            "Each school's individual settings will be overwritten.</p>"
+            f'<button type="button" class="button button-secondary"'
+            f" onclick=\"if(confirm('{_confirm_msg.replace(chr(39), chr(39))}')){{bbApplyDistrict('{prefix}')}}\">"
+            "Apply to all schools in district</button>"
+            '<span id="bbp-district-msg" style="display:none;margin-left:12px;color:var(--color-ok,#22c55e);font-size:.85rem;"></span>'
+            "</div>"
+        )
+
+    _builtin_preset_opts = "".join(
+        '<option value="'
+        + escape(
+            str({"accent": p["accent"], "accent_strong": p["accent_strong"], "sidebar_start": p["sidebar_start"], "sidebar_end": p["sidebar_end"]}).replace("'", "&#39;")
+        )
+        + '">'
+        + escape(str(p.get("name", "")))
+        + "</option>"
+        for p in _GLOBAL_PRESETS
+    )
     return f"""
         <section class="panel command-section" id="school-info"{hidden}>
           <div class="panel-header">
@@ -3524,13 +3561,7 @@ def _render_settings_panels(
             </div>
           </div>
 
-          {f'''<div style="background:linear-gradient(90deg,#fef2f2,#fee2e2);border:1px solid #fca5a5;border-radius:10px;padding:14px 18px;margin-bottom:20px;display:flex;align-items:center;gap:14px;">
-            <span style="font-size:1.4rem;">🔒</span>
-            <div>
-              <p style="margin:0;font-weight:700;color:#b91c1c;font-size:.95rem;">Brand Lock Active</p>
-              <p style="margin:4px 0 0;font-size:.82rem;color:#7f1d1d;">This district\'s branding is locked by a super admin. Colors are controlled at the district level and cannot be changed here.</p>
-            </div>
-          </div>''' if brand_locked else ""}
+          {_brand_lock_banner}
 
           {_bbp_extracted_banner(prefix, extracted_theme_colors)}
 
@@ -3538,7 +3569,7 @@ def _render_settings_panels(
           <div class="bbp-preset-bar">
             <select id="bbp-sel" style="flex:1;min-width:140px;max-width:220px;">
               <option value="">Select a theme preset…</option>
-              <optgroup label="Built-in themes">{"".join(f'<option value=\'{escape(str({"accent":p["accent"],"accent_strong":p["accent_strong"],"sidebar_start":p["sidebar_start"],"sidebar_end":p["sidebar_end"]}).replace(chr(39),"&#39;"))}\'>{escape(p["name"])}</option>' for p in _GLOBAL_PRESETS)}</optgroup>
+              <optgroup label="Built-in themes">{_builtin_preset_opts}</optgroup>
               {f'<optgroup label="Saved presets">{"".join(_bbp_saved_opt(p) for p in theme_presets if not p.get("is_global"))}</optgroup>' if theme_presets else ""}
             </select>
             <button type="button" class="button button-secondary" onclick="bbLoadPreset()">Load</button>
@@ -3643,13 +3674,7 @@ def _render_settings_panels(
             </div>
           </div>
 
-          {f'''<div style="margin-top:24px;padding-top:20px;border-top:1px solid var(--border);">
-            <p class="eyebrow" style="margin-bottom:8px;">District Branding</p>
-            <p class="card-copy" style="margin-bottom:12px;">Push this school\'s current branding to all schools in the district. Each school\'s individual settings will be overwritten.</p>
-            <button type="button" class="button button-secondary"
-              onclick="if(confirm(\'Apply this school\\\'s colors to ALL schools in the district? This will overwrite their individual branding.\')){{bbApplyDistrict(\'{prefix}\')}}">Apply to all schools in district</button>
-            <span id="bbp-district-msg" style="display:none;margin-left:12px;color:var(--color-ok,#22c55e);font-size:.85rem;"></span>
-          </div>''' if has_district and admin_role in ("district_admin", "super_admin") else ""}
+          {_district_branding_push}
 
           {_bbp_version_history_html(prefix, theme_versions)}
 
@@ -3730,6 +3755,8 @@ def render_admin_page(
     school_district_id: Optional[int] = None,
     brand_locked: bool = False,
     theme_versions: Sequence[Mapping[str, object]] = (),
+    active_sessions: Sequence[object] = (),
+    sessions_users_by_id: Mapping[int, object] = {},
 ) -> str:
     prefix = escape(school_path_prefix)
     role_counts = Counter(user.role for user in users)
@@ -3740,7 +3767,7 @@ def render_admin_page(
     alarm_status_class = "danger" if alarm_state.is_active and not alarm_state.is_training else ("warn" if alarm_state.is_active else "ok")
     alarm_status_label = "TRAINING ACTIVE" if alarm_state.is_active and alarm_state.is_training else ("ALARM ACTIVE" if alarm_state.is_active else "Alarm clear")
     security_feedback = f"{_render_flash(flash_message, 'success')}{_render_flash(flash_error, 'error')}"
-    section = active_section if active_section in {"dashboard", "user-management", "access-codes", "quiet-periods", "audit-logs", "settings", "drill-reports", "district"} else "dashboard"
+    section = active_section if active_section in {"dashboard", "user-management", "access-codes", "quiet-periods", "audit-logs", "settings", "drill-reports", "district", "devices"} else "dashboard"
     quiet_period_total = len(quiet_periods_active) + len(quiet_periods_history)
     refresh_meta = '<meta http-equiv="refresh" content="30">' if section in {"dashboard", "district"} else ""
     show_district_nav = str(getattr(current_user, "role", "")).strip().lower() in {"district_admin", "super_admin"}
@@ -3786,6 +3813,40 @@ def render_admin_page(
         )
         for r in access_code_records
     ) or '<tr><td colspan="7" class="empty-state">No access codes generated yet.</td></tr>'
+
+    _client_type_label = {"mobile": "Mobile", "web": "Web"}
+    _client_type_class = {"mobile": "rb-law_enforcement", "web": "rb-admin"}
+
+    def _fmt_dt(raw: str) -> str:
+        return str(raw or "")[:16].replace("T", " ")
+
+    _session_rows = "".join(
+        (
+            "<tr>"
+            "<td>"
+            + (
+                lambda u, s: (
+                    f'<span class="um-avatar ua-{escape(str(getattr(u, "role", ""))[:20])}" style="width:28px;height:28px;font-size:11px;margin-right:8px;">'
+                    + escape("".join(w[0].upper() for w in str(getattr(u, "name", "?")).split()[:2]))
+                    + "</span>"
+                    + escape(str(getattr(u, "name", f"user #{s.user_id}")))
+                )
+            )(sessions_users_by_id.get(int(getattr(s, "user_id", 0))), s)
+            + "</td>"
+            + f'<td><span class="role-badge {_client_type_class.get(str(getattr(s, "client_type", "mobile")), "rb-teacher")}">'
+            + escape(_client_type_label.get(str(getattr(s, "client_type", "mobile")), str(getattr(s, "client_type", ""))))
+            + "</span></td>"
+            + f'<td class="mini-copy">{escape(str(getattr(sessions_users_by_id.get(int(getattr(s, "user_id", 0))), "role", "—")))}</td>'
+            + f'<td class="mini-copy">{escape(_fmt_dt(str(getattr(s, "last_seen_at", ""))))}</td>'
+            + f'<td class="mini-copy">{escape(_fmt_dt(str(getattr(s, "created_at", ""))))}</td>'
+            + f'<td><form method="post" action="{prefix}/admin/devices/{int(getattr(s, "id", 0))}/revoke"'
+            + ' onsubmit="return confirm(\'Force logout this device session?\');">'
+            + '<button class="button button-danger-outline" type="submit" style="font-size:12px;padding:4px 14px;min-height:auto;">Force Logout</button>'
+            + "</form></td>"
+            + "</tr>"
+        )
+        for s in active_sessions
+    ) or '<tr><td colspan="6" class="empty-state">No active device sessions.</td></tr>'
 
     def _section_style(name: str) -> str:
         return "" if section == name else ' style="display:none;"'
@@ -4404,6 +4465,7 @@ def render_admin_page(
             {_nav_item("audit-logs", "Audit Logs")}
             {_nav_item("settings", "Settings")}
             {_nav_item("district", "District Overview") if show_district_nav else ""}
+            {_nav_item("devices", "Active Devices") if show_district_nav else ""}
           </nav>
           </div>
           <div class="shell-actions">
@@ -5069,6 +5131,36 @@ def render_admin_page(
             }};
           }})();
           </script>
+
+          <section class="panel command-section span-12" id="devices"{_section_style("devices")}>
+            <div class="panel-header">
+              <div>
+                <p class="eyebrow">Device Management</p>
+                <h2>Active Devices</h2>
+                <p class="card-copy">All active login sessions for <strong>{escape(selected_tenant_name)}</strong>. Force logout revokes the session immediately — the device must re-authenticate on next use.</p>
+              </div>
+              <div class="status-row">
+                <span class="status-pill ok"><strong>{len(active_sessions)}</strong> active session{"s" if len(active_sessions) != 1 else ""}</span>
+              </div>
+            </div>
+            <div class="table-wrap" style="overflow-x:auto;margin-top:16px;">
+              <table class="um-table" style="width:100%;border-collapse:collapse;">
+                <thead>
+                  <tr style="text-align:left;border-bottom:2px solid var(--border);">
+                    <th style="padding:8px 12px;font-size:13px;font-weight:600;">User</th>
+                    <th style="padding:8px 12px;font-size:13px;font-weight:600;">Client</th>
+                    <th style="padding:8px 12px;font-size:13px;font-weight:600;">Role</th>
+                    <th style="padding:8px 12px;font-size:13px;font-weight:600;">Last Seen</th>
+                    <th style="padding:8px 12px;font-size:13px;font-weight:600;">Session Created</th>
+                    <th style="padding:8px 12px;font-size:13px;font-weight:600;">Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {_session_rows}
+                </tbody>
+              </table>
+            </div>
+          </section>
 
         </section>
       </section>

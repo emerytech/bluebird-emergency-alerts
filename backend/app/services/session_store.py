@@ -131,6 +131,36 @@ class SessionStore:
                 (token,),
             )
 
+    def _list_active_sync(self, user_id: Optional[int] = None) -> list:
+        with self._connect() as conn:
+            if user_id is not None:
+                rows = conn.execute(
+                    """SELECT id, user_id, tenant_slug, session_token, client_type,
+                              is_active, created_at, last_seen_at
+                       FROM user_sessions
+                       WHERE is_active = 1 AND tenant_slug = ? AND user_id = ?
+                       ORDER BY last_seen_at DESC;""",
+                    (self._tenant_slug, int(user_id)),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """SELECT id, user_id, tenant_slug, session_token, client_type,
+                              is_active, created_at, last_seen_at
+                       FROM user_sessions
+                       WHERE is_active = 1 AND tenant_slug = ?
+                       ORDER BY last_seen_at DESC;""",
+                    (self._tenant_slug,),
+                ).fetchall()
+        return [self._row_to_record(r) for r in rows]
+
+    def _invalidate_by_id_sync(self, session_id: int) -> bool:
+        with self._connect() as conn:
+            cur = conn.execute(
+                "UPDATE user_sessions SET is_active = 0 WHERE id = ? AND tenant_slug = ? AND is_active = 1;",
+                (int(session_id), self._tenant_slug),
+            )
+        return (cur.rowcount or 0) > 0
+
     # ── public async API ───────────────────────────────────────────────────
 
     async def create_session(self, *, user_id: int, client_type: str) -> SessionRecord:
@@ -150,3 +180,11 @@ class SessionStore:
     async def invalidate(self, token: str) -> None:
         """Explicitly deactivate a session (logout)."""
         await anyio.to_thread.run_sync(lambda: self._invalidate_sync(token))
+
+    async def list_active(self, *, user_id: Optional[int] = None) -> list:
+        """List all active sessions for this tenant, ordered by last_seen_at desc."""
+        return await anyio.to_thread.run_sync(lambda: self._list_active_sync(user_id))
+
+    async def invalidate_by_id(self, session_id: int) -> bool:
+        """Deactivate a session by its row ID. Returns True if a session was revoked."""
+        return await anyio.to_thread.run_sync(lambda: self._invalidate_by_id_sync(session_id))

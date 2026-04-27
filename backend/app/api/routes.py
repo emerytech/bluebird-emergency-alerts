@@ -360,7 +360,7 @@ def _pop_flash(request: Request) -> tuple[Optional[str], Optional[str]]:
 
 def _admin_section(value: Optional[str]) -> str:
     normalized = str(value or "").strip().lower()
-    if normalized in {"dashboard", "user-management", "access-codes", "quiet-periods", "audit-logs", "settings", "drill-reports", "district"}:
+    if normalized in {"dashboard", "user-management", "access-codes", "quiet-periods", "audit-logs", "settings", "drill-reports", "district", "devices"}:
         return normalized
     return "dashboard"
 
@@ -1962,9 +1962,9 @@ async def admin_dashboard(
     ]
     quiet_periods_history = [item for item in quiet_periods_all if item.status not in {"pending", "approved"}]
     selected_section = _admin_section(section)
-    # Gate district section to district_admin and super_admin
-    if selected_section == "district":
-        _admin_role = str(getattr(request.state.admin_user, "role", "")).strip().lower()
+    _admin_role = str(getattr(request.state.admin_user, "role", "")).strip().lower()
+    # Gate district and devices sections to district_admin and super_admin
+    if selected_section in {"district", "devices"}:
         if _admin_role not in {"district_admin", "super_admin"}:
             selected_section = "dashboard"
     flash_message, flash_error = _pop_flash(request)
@@ -1987,6 +1987,13 @@ async def admin_dashboard(
         _district_items = await _build_district_overview_items(
             request, admin_user=request.state.admin_user
         )
+
+    _active_sessions: list = []
+    _sessions_users_by_id: dict = {}
+    if selected_section == "devices":
+        _active_sessions = await _sessions(request).list_active()
+        _users_map = {u.id: u for u in users}
+        _sessions_users_by_id = {s.user_id: _users_map[s.user_id] for s in _active_sessions if s.user_id in _users_map}
 
     _ws_api_key = str(getattr(request.app.state.settings, "API_KEY", "") or "")
     _ws_user_id = int(getattr(request.state.admin_user, "id", 0) or 0)
@@ -2078,6 +2085,8 @@ async def admin_dashboard(
         school_district_id=getattr(request.state.school, "district_id", None),
         brand_locked=_brand_locked,
         theme_versions=_theme_versions,
+        active_sessions=_active_sessions,
+        sessions_users_by_id=_sessions_users_by_id,
     )
     return HTMLResponse(content=html)
 
@@ -2830,6 +2839,30 @@ async def admin_totp_submit(
     if user.must_change_password:
         return response
     return response
+
+
+@router.post("/admin/devices/{session_id}/revoke", include_in_schema=False)
+async def admin_revoke_device_session(request: Request, session_id: int) -> RedirectResponse:
+    await _require_dashboard_admin(request)
+    _actor_role = str(getattr(request.state.admin_user, "role", "")).strip().lower()
+    if _actor_role not in {"district_admin", "super_admin"}:
+        _set_flash(request, error="Only district administrators can revoke device sessions.")
+        return RedirectResponse(url=_school_url(request, "/admin?section=devices"), status_code=status.HTTP_303_SEE_OTHER)
+    revoked = await _sessions(request).invalidate_by_id(session_id)
+    if revoked:
+        _fire_audit(
+            request,
+            "session_revoked",
+            actor_user_id=int(getattr(request.state.admin_user, "id", 0) or 0),
+            actor_label=str(getattr(request.state.admin_user, "name", "") or ""),
+            target_type="session",
+            target_id=str(session_id),
+            metadata={"channel": "web_admin"},
+        )
+        _set_flash(request, message="Device session revoked.")
+    else:
+        _set_flash(request, error="Session not found or already inactive.")
+    return RedirectResponse(url=_school_url(request, "/admin?section=devices"), status_code=status.HTTP_303_SEE_OTHER)
 
 
 @router.post("/admin/logout", include_in_schema=False)
