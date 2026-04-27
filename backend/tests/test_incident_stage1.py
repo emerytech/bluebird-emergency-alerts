@@ -185,11 +185,12 @@ def test_team_assist_admin_action_records_actor_label(client: TestClient, login_
     assert all(item["id"] != team_assist_id for item in active_after.json()["team_assists"])
 
 
-def test_team_assist_cancel_requires_requester_and_admin_confirmation(client: TestClient, login_super_admin) -> None:
+def test_team_assist_requester_cancel_immediate(client: TestClient, login_super_admin) -> None:
+    """Requester cancels their own request immediately — no dual confirmation required."""
     login_super_admin()
     _create_school(client, name="Assist Cancel", slug="assist-cancel")
     teacher_id = _create_user(client, "assist-cancel", name="Cancel Teacher", role="teacher")
-    admin_id = _create_user(client, "assist-cancel", name="Cancel Admin", role="admin")
+    admin_id = _create_user(client, "assist-cancel", name="Cancel Admin", role="district_admin")
 
     created = client.post(
         "/assist-cancel/team-assist/create",
@@ -199,25 +200,24 @@ def test_team_assist_cancel_requires_requester_and_admin_confirmation(client: Te
     assert created.status_code == 200
     team_assist_id = int(created.json()["id"])
 
-    teacher_confirm = client.post(
+    # Single call by requester cancels immediately
+    cancel_resp = client.post(
+        f"/assist-cancel/team-assist/{team_assist_id}/cancel",
+        json={"user_id": teacher_id, "cancel_reason_text": "Resolved on my own", "cancel_reason_category": "false_alarm"},
+        headers={"X-API-Key": "test-api-key"},
+    )
+    assert cancel_resp.status_code == 200
+    assert cancel_resp.json()["status"] == "cancelled"
+    assert cancel_resp.json()["cancelled_by_user_id"] == teacher_id
+    assert cancel_resp.json()["cancel_reason_text"] == "Resolved on my own"
+
+    # Old dual-confirmation endpoint must be gone
+    old_endpoint = client.post(
         f"/assist-cancel/team-assist/{team_assist_id}/cancel-confirm",
         json={"user_id": teacher_id},
         headers={"X-API-Key": "test-api-key"},
     )
-    assert teacher_confirm.status_code == 200
-    assert teacher_confirm.json()["status"] == "cancel_pending"
-    assert teacher_confirm.json()["cancel_requester_confirmed"] is True
-    assert teacher_confirm.json()["cancel_admin_confirmed"] is False
-
-    admin_confirm = client.post(
-        f"/assist-cancel/team-assist/{team_assist_id}/cancel-confirm",
-        json={"user_id": admin_id},
-        headers={"X-API-Key": "test-api-key"},
-    )
-    assert admin_confirm.status_code == 200
-    assert admin_confirm.json()["status"] == "cancelled"
-    assert admin_confirm.json()["cancel_requester_confirmed"] is True
-    assert admin_confirm.json()["cancel_admin_confirmed"] is True
+    assert old_endpoint.status_code in {404, 405}, "cancel-confirm endpoint must no longer exist"
 
 
 def test_incident_permission_guard_blocks_non_admin(client: TestClient, login_super_admin) -> None:

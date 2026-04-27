@@ -365,7 +365,7 @@ class IncidentStore:
                     cancel_reason_text,
                     cancel_reason_category
                 FROM team_assists
-                WHERE status NOT IN ('cancelled', 'resolved')
+                WHERE status NOT IN ('cancelled', 'resolved', 'cancel_pending')
                 ORDER BY id DESC
                 LIMIT ?;
                 """,
@@ -538,131 +538,6 @@ class IncidentStore:
                 acted_by_label=acted_by_label,
                 forward_to_user_id=int(forward_to_user_id) if forward_to_user_id is not None else None,
                 forward_to_label=forward_to_label,
-            )
-        )
-
-    def _confirm_team_assist_cancel_sync(
-        self,
-        *,
-        team_assist_id: int,
-        actor_user_id: int,
-        actor_role: str,
-        actor_label: str,
-    ) -> Optional[TeamAssistRecord]:
-        now = datetime.now(timezone.utc).isoformat()
-        with self._connect() as conn:
-            row = conn.execute(
-                """
-                SELECT
-                    id,
-                    type,
-                    created_by,
-                    assigned_team_ids_json,
-                    status,
-                    created_at,
-                    acted_by_user_id,
-                    acted_by_label,
-                    forward_to_user_id,
-                    forward_to_label,
-                    cancel_requester_confirmed_at,
-                    cancel_admin_confirmed_at,
-                    cancel_admin_user_id,
-                    cancel_admin_label,
-                    cancelled_by_user_id,
-                    cancelled_at,
-                    cancel_reason_text,
-                    cancel_reason_category
-                FROM team_assists
-                WHERE id = ?
-                LIMIT 1;
-                """,
-                (int(team_assist_id),),
-            ).fetchone()
-            if row is None:
-                return None
-            current = self._team_assist_from_row(row)
-            requester_confirmed_at = current.cancel_requester_confirmed_at
-            admin_confirmed_at = current.cancel_admin_confirmed_at
-            admin_user_id = current.cancel_admin_user_id
-            admin_label = current.cancel_admin_label
-
-            if int(actor_user_id) == int(current.created_by):
-                requester_confirmed_at = requester_confirmed_at or now
-            if actor_role.lower() == "admin" and int(actor_user_id) != int(current.created_by):
-                admin_confirmed_at = admin_confirmed_at or now
-                admin_user_id = int(actor_user_id)
-                admin_label = actor_label
-
-            next_status = "cancelled" if requester_confirmed_at and admin_confirmed_at else "cancel_pending"
-            conn.execute(
-                """
-                UPDATE team_assists
-                SET
-                    status = ?,
-                    cancel_requester_confirmed_at = ?,
-                    cancel_admin_confirmed_at = ?,
-                    cancel_admin_user_id = ?,
-                    cancel_admin_label = ?,
-                    acted_by_user_id = ?,
-                    acted_by_label = ?
-                WHERE id = ?;
-                """,
-                (
-                    next_status,
-                    requester_confirmed_at,
-                    admin_confirmed_at,
-                    int(admin_user_id) if admin_user_id is not None else None,
-                    admin_label,
-                    int(actor_user_id),
-                    actor_label,
-                    int(team_assist_id),
-                ),
-            )
-            updated_row = conn.execute(
-                """
-                SELECT
-                    id,
-                    type,
-                    created_by,
-                    assigned_team_ids_json,
-                    status,
-                    created_at,
-                    acted_by_user_id,
-                    acted_by_label,
-                    forward_to_user_id,
-                    forward_to_label,
-                    cancel_requester_confirmed_at,
-                    cancel_admin_confirmed_at,
-                    cancel_admin_user_id,
-                    cancel_admin_label,
-                    cancelled_by_user_id,
-                    cancelled_at,
-                    cancel_reason_text,
-                    cancel_reason_category
-                FROM team_assists
-                WHERE id = ?
-                LIMIT 1;
-                """,
-                (int(team_assist_id),),
-            ).fetchone()
-        if updated_row is None:
-            return None
-        return self._team_assist_from_row(updated_row)
-
-    async def confirm_team_assist_cancel(
-        self,
-        *,
-        team_assist_id: int,
-        actor_user_id: int,
-        actor_role: str,
-        actor_label: str,
-    ) -> Optional[TeamAssistRecord]:
-        return await anyio.to_thread.run_sync(
-            lambda: self._confirm_team_assist_cancel_sync(
-                team_assist_id=int(team_assist_id),
-                actor_user_id=int(actor_user_id),
-                actor_role=actor_role,
-                actor_label=actor_label,
             )
         )
 

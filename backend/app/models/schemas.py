@@ -499,9 +499,6 @@ class TeamAssistSummary(BaseModel):
     acted_by_label: Optional[str] = None
     forward_to_user_id: Optional[int] = None
     forward_to_label: Optional[str] = None
-    cancel_requester_confirmed: bool = False
-    cancel_admin_confirmed: bool = False
-    cancel_admin_label: Optional[str] = None
     # requester-initiated cancel fields
     cancelled_by_user_id: Optional[int] = None
     cancelled_at: Optional[str] = None
@@ -525,10 +522,6 @@ class TeamAssistActionRequest(BaseModel):
         if normalized not in {"acknowledge", "responding", "forward", "resolve"}:
             raise ValueError("action must be acknowledge, responding, forward, or resolve")
         return normalized
-
-
-class TeamAssistCancelConfirmRequest(BaseModel):
-    user_id: int
 
 
 class TeamAssistCancelRequest(BaseModel):

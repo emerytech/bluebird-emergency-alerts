@@ -3,13 +3,12 @@ Help-request cancel endpoint tests.
 
 Invariants:
   1. Requester can cancel their own active request (immediate, no second confirmation).
-  2. cancel_reason_text is required — empty string rejected.
+  2. cancel_reason_text is required — blank string rejected.
   3. cancel_reason_category is required — empty string rejected.
   4. A different user cannot cancel someone else's request (403).
   5. Cannot cancel an already-closed (cancelled/resolved) request (409).
   6. Audit log entry created with correct fields.
-  7. cancel-confirm legacy endpoint still works (no regression).
-  8. cancel_reason_text/category appear in the response.
+  7. Single call cancels immediately — no intermediate cancel_pending state.
 """
 from __future__ import annotations
 
@@ -172,32 +171,29 @@ def test_audit_log_created_on_cancel(client: TestClient, login_super_admin) -> N
 
 
 # ---------------------------------------------------------------------------
-# 7. Legacy cancel-confirm still works (no regression)
-# ---------------------------------------------------------------------------
-
-def test_legacy_cancel_confirm_still_works(client: TestClient, login_super_admin) -> None:
-    requester_id, _, _ = _setup(client, login_super_admin, "hc7")
-    ta_id = _create_help_request(client, "hc7", user_id=requester_id)
-
-    resp = client.post(
-        f"/hc7/request-help/{ta_id}/cancel-confirm",
-        headers=API_KEY,
-        json={"user_id": requester_id},
-    )
-    assert resp.status_code == 200, resp.text
-    # Legacy flow sets cancel_pending until admin also confirms
-    assert resp.json()["status"] in {"cancel_pending", "cancelled"}
-
-
-# ---------------------------------------------------------------------------
-# 8. No dual-confirmation required — single call cancels immediately
+# 7. No dual-confirmation required — single call cancels immediately
 # ---------------------------------------------------------------------------
 
 def test_single_call_cancels_immediately(client: TestClient, login_super_admin) -> None:
-    requester_id, _, _ = _setup(client, login_super_admin, "hc8")
-    ta_id = _create_help_request(client, "hc8", user_id=requester_id)
+    requester_id, _, _ = _setup(client, login_super_admin, "hc7")
+    ta_id = _create_help_request(client, "hc7", user_id=requester_id)
 
-    resp = _cancel(client, "hc8", team_assist_id=ta_id, user_id=requester_id)
+    resp = _cancel(client, "hc7", team_assist_id=ta_id, user_id=requester_id)
     assert resp.status_code == 200
     # Must be "cancelled" on the first call — no intermediate "cancel_pending"
     assert resp.json()["status"] == "cancelled"
+
+
+def test_cancel_confirm_endpoint_gone(client: TestClient, login_super_admin) -> None:
+    """Verify the removed dual-confirmation endpoint returns 405 (method not allowed) or 404."""
+    requester_id, _, _ = _setup(client, login_super_admin, "hc8")
+    ta_id = _create_help_request(client, "hc8", user_id=requester_id)
+
+    resp = client.post(
+        f"/hc8/request-help/{ta_id}/cancel-confirm",
+        headers=API_KEY,
+        json={"user_id": requester_id},
+    )
+    assert resp.status_code in {404, 405}, (
+        f"cancel-confirm endpoint should be gone, got {resp.status_code}"
+    )

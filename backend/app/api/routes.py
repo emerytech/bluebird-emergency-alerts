@@ -52,7 +52,6 @@ from app.models.schemas import (
     SelectTenantResponse,
     TeamAssistCreateRequest,
     TeamAssistActionRequest,
-    TeamAssistCancelConfirmRequest,
     TeamAssistCancelRequest,
     TeamAssistListResponse,
     TeamAssistSummary,
@@ -1207,9 +1206,6 @@ def _to_team_assist_summary(item) -> TeamAssistSummary:
         acted_by_label=item.acted_by_label,
         forward_to_user_id=item.forward_to_user_id,
         forward_to_label=item.forward_to_label,
-        cancel_requester_confirmed=bool(item.cancel_requester_confirmed_at),
-        cancel_admin_confirmed=bool(item.cancel_admin_confirmed_at),
-        cancel_admin_label=item.cancel_admin_label,
         cancelled_by_user_id=item.cancelled_by_user_id,
         cancelled_at=item.cancelled_at,
         cancel_reason_text=item.cancel_reason_text,
@@ -5368,59 +5364,6 @@ async def cancel_team_assist(
             "cancelled_by_label": actor.name,
             "cancel_reason_text": body.cancel_reason_text.strip(),
             "cancel_reason_category": body.cancel_reason_category.strip(),
-        },
-    )
-    return _to_team_assist_summary(updated)
-
-
-@router.post("/team-assist/{team_assist_id}/cancel-confirm", response_model=TeamAssistSummary)
-@router.post("/request-help/{team_assist_id}/cancel-confirm", response_model=TeamAssistSummary)
-async def team_assist_cancel_confirm(
-    team_assist_id: int,
-    body: TeamAssistCancelConfirmRequest,
-    request: Request,
-    _: None = Depends(require_api_key),
-) -> TeamAssistSummary:
-    users = _users(request)
-    actor_id = await _require_active_user_with_any_permission(
-        users,
-        body.user_id,
-        permissions={PERM_REQUEST_HELP, PERM_TRIGGER_OWN_TENANT_ALERTS, PERM_MANAGE_ASSIGNED_TENANT_INCIDENTS},
-    )
-    actor = await users.get_user(actor_id)
-    if actor is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Acting user not found")
-
-    existing = await _incident_store(request).get_team_assist(team_assist_id)
-    if existing is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Request help item not found")
-    if existing.status == "cancelled":
-        return _to_team_assist_summary(existing)
-    if not can_any(actor.role, {PERM_TRIGGER_OWN_TENANT_ALERTS, PERM_MANAGE_ASSIGNED_TENANT_INCIDENTS}) and actor.id != existing.created_by:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only an admin or the initiating requester can confirm cancellation",
-        )
-
-    updated = await _incident_store(request).confirm_team_assist_cancel(
-        team_assist_id=team_assist_id,
-        actor_user_id=actor.id,
-        actor_role=actor.role,
-        actor_label=actor.name,
-    )
-    if updated is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Request help item not found")
-
-    await _incident_store(request).create_notification_log(
-        user_id=updated.created_by,
-        type_value="team_assist_cancel_confirmation",
-        payload={
-            "team_assist_id": updated.id,
-            "status": updated.status,
-            "confirmed_by_user_id": actor.id,
-            "confirmed_by_label": actor.name,
-            "requester_confirmed": bool(updated.cancel_requester_confirmed_at),
-            "admin_confirmed": bool(updated.cancel_admin_confirmed_at),
         },
     )
     return _to_team_assist_summary(updated)
