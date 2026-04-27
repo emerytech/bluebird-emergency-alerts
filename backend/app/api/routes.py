@@ -1775,6 +1775,36 @@ def _build_server_info(request: Request) -> dict:
     }
 
 
+async def _fetch_school_status(school: object, tenant_ctx: object) -> dict:
+    """Fetch all per-school data needed for district overview in two parallel batches."""
+    alarm_state, latest_alert = await asyncio.gather(
+        tenant_ctx.alarm_store.get_state(),
+        tenant_ctx.alert_log.latest_alert(),
+    )
+    is_active = bool(getattr(alarm_state, "is_active", False))
+    if latest_alert is not None and is_active:
+        ack_count, school_users = await asyncio.gather(
+            tenant_ctx.alert_log.acknowledgement_count(latest_alert.id),
+            tenant_ctx.user_store.list_users(),
+        )
+    else:
+        school_users = await tenant_ctx.user_store.list_users()
+        ack_count = 0
+    expected_users = sum(1 for u in school_users if u.is_active)
+    ack_rate = round((ack_count / expected_users * 100.0) if expected_users > 0 else 0.0, 1)
+    return {
+        "tenant_slug": str(getattr(school, "slug", "")),
+        "tenant_name": str(getattr(school, "name", "")),
+        "alarm_is_active": is_active,
+        "alarm_is_training": bool(getattr(alarm_state, "is_training", False)),
+        "alarm_message": str(getattr(alarm_state, "message", "") or ""),
+        "last_alert_at": latest_alert.created_at if latest_alert else None,
+        "ack_count": ack_count,
+        "expected_users": expected_users,
+        "ack_rate": ack_rate,
+    }
+
+
 async def _build_district_overview_items(request: Request, *, admin_user) -> list[dict]:
     current_school = request.state.school
     all_schools = await _schools(request).list_schools()
@@ -1795,32 +1825,11 @@ async def _build_district_overview_items(request: Request, *, admin_user) -> lis
                 if slug:
                     accessible[slug] = school
 
-    items: list[dict] = []
-    for school in sorted(accessible.values(), key=lambda s: str(getattr(s, "name", "")).lower()):
-        tenant_ctx = request.app.state.tenant_manager.get(school)  # type: ignore[attr-defined]
-        alarm_state = await tenant_ctx.alarm_store.get_state()
-        latest_alert = await tenant_ctx.alert_log.latest_alert()
-
-        ack_count = 0
-        if latest_alert is not None and bool(getattr(alarm_state, "is_active", False)):
-            ack_count = await tenant_ctx.alert_log.acknowledgement_count(latest_alert.id)
-
-        school_users = await tenant_ctx.user_store.list_users()
-        expected_users = sum(1 for u in school_users if u.is_active)
-        ack_rate = round((ack_count / expected_users * 100.0) if expected_users > 0 else 0.0, 1)
-
-        items.append({
-            "tenant_slug": str(getattr(school, "slug", "")),
-            "tenant_name": str(getattr(school, "name", "")),
-            "alarm_is_active": bool(getattr(alarm_state, "is_active", False)),
-            "alarm_is_training": bool(getattr(alarm_state, "is_training", False)),
-            "alarm_message": str(getattr(alarm_state, "message", "") or ""),
-            "last_alert_at": latest_alert.created_at if latest_alert else None,
-            "ack_count": ack_count,
-            "expected_users": expected_users,
-            "ack_rate": ack_rate,
-        })
-    return items
+    school_list = sorted(accessible.values(), key=lambda s: str(getattr(s, "name", "")).lower())
+    return list(await asyncio.gather(*[
+        _fetch_school_status(school, request.app.state.tenant_manager.get(school))  # type: ignore[attr-defined]
+        for school in school_list
+    ]))
 
 
 @router.get("/admin", response_class=HTMLResponse, include_in_schema=False)
@@ -4553,33 +4562,27 @@ async def district_overview(
                     accessible[slug] = school
         accessible_schools = sorted(accessible.values(), key=lambda s: str(getattr(s, "name", "")).lower())
 
-    items: list[TenantOverviewItem] = []
-    for school in accessible_schools:
-        tenant_ctx = request.app.state.tenant_manager.get(school)  # type: ignore[attr-defined]
-        alarm_state = await tenant_ctx.alarm_store.get_state()
-        latest_alert = await tenant_ctx.alert_log.latest_alert()
-
-        ack_count = 0
-        if latest_alert is not None and bool(getattr(alarm_state, "is_active", False)):
-            ack_count = await tenant_ctx.alert_log.acknowledgement_count(latest_alert.id)
-
-        school_users = await tenant_ctx.user_store.list_users()
-        expected_users = sum(1 for u in school_users if u.is_active)
-        ack_rate = round((ack_count / expected_users * 100.0) if expected_users > 0 else 0.0, 1)
-
-        items.append(TenantOverviewItem(
-            tenant_slug=str(getattr(school, "slug", "")),
-            tenant_name=str(getattr(school, "name", "")),
-            alarm_is_active=bool(getattr(alarm_state, "is_active", False)),
-            alarm_message=cast(Optional[str], getattr(alarm_state, "message", None)),
-            alarm_is_training=bool(getattr(alarm_state, "is_training", False)),
-            last_alert_at=latest_alert.created_at if latest_alert else None,
-            acknowledgement_count=ack_count,
-            expected_user_count=expected_users,
-            acknowledgement_rate=ack_rate,
-        ))
-
-    items.sort(key=lambda i: i.tenant_name.lower())
+    raw_items = await asyncio.gather(*[
+        _fetch_school_status(school, request.app.state.tenant_manager.get(school))  # type: ignore[attr-defined]
+        for school in accessible_schools
+    ])
+    items = sorted(
+        [
+            TenantOverviewItem(
+                tenant_slug=d["tenant_slug"],
+                tenant_name=d["tenant_name"],
+                alarm_is_active=d["alarm_is_active"],
+                alarm_message=cast(Optional[str], d["alarm_message"] or None),
+                alarm_is_training=d["alarm_is_training"],
+                last_alert_at=d["last_alert_at"],
+                acknowledgement_count=d["ack_count"],
+                expected_user_count=d["expected_users"],
+                acknowledgement_rate=d["ack_rate"],
+            )
+            for d in raw_items
+        ],
+        key=lambda i: i.tenant_name.lower(),
+    )
     return DistrictOverviewResponse(tenant_count=len(items), tenants=items)
 
 
