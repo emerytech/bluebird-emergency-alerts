@@ -367,7 +367,7 @@ def _admin_section(value: Optional[str]) -> str:
 
 def _super_admin_section(value: Optional[str]) -> str:
     normalized = str(value or "").strip().lower()
-    if normalized in {"schools", "billing", "platform-audit", "create-school", "security", "server-tools", "health", "email-tool", "setup-codes"}:
+    if normalized in {"schools", "billing", "platform-audit", "create-school", "security", "server-tools", "health", "email-tool", "setup-codes", "noc", "msp", "platform-control"}:
         return normalized
     return "schools"
 
