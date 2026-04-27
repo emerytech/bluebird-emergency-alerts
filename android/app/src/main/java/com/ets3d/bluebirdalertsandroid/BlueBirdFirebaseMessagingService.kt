@@ -63,15 +63,21 @@ class BlueBirdFirebaseMessagingService : FirebaseMessagingService() {
             body = body,
             tenantSlug = message.data["tenant_slug"],
             isSilentForMe = isSilentForMe,
+            type = alertType,
         )
 
         if (isSilentForMe) {
             // Sender gets a discreet confirmation — no siren, no vibration, no screen wake.
             ensureSilentNotificationChannel(applicationContext)
+            val (silentTitle, silentBody) = if (isHelpRequest) {
+                "Help request sent" to "Your help request has been sent to your team."
+            } else {
+                "Alert sent" to "Your emergency alert has been sent to your school."
+            }
             val silentNotification = NotificationCompat.Builder(this, SILENT_NOTIF_CH)
                 .setSmallIcon(R.mipmap.ic_launcher)
-                .setContentTitle("Alert sent")
-                .setContentText("Your emergency alert has been sent to your school.")
+                .setContentTitle(silentTitle)
+                .setContentText(silentBody)
                 .setPriority(NotificationCompat.PRIORITY_DEFAULT)
                 .setAutoCancel(true)
                 .build()
@@ -86,6 +92,7 @@ class BlueBirdFirebaseMessagingService : FirebaseMessagingService() {
             putExtra(EXTRA_OPEN_ALARM, true)
             putExtra(EXTRA_ALARM_TITLE, title)
             putExtra(EXTRA_ALARM_MESSAGE, body)
+            putExtra(EXTRA_ALERT_TYPE, alertType)
         }
         val pendingIntent = PendingIntent.getActivity(
             this,

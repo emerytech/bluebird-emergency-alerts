@@ -139,6 +139,7 @@ private const val TAG_ACTIVATION = "BluebirdActivation"
 internal const val EXTRA_OPEN_ALARM = "bluebird_open_alarm"
 internal const val EXTRA_ALARM_TITLE = "bluebird_alarm_title"
 internal const val EXTRA_ALARM_MESSAGE = "bluebird_alarm_message"
+internal const val EXTRA_ALERT_TYPE = "bluebird_alert_type"
 private const val KEY_SELECTED_TENANT_SLUG = "selected_tenant_slug"
 private const val KEY_SELECTED_TENANT_NAME = "selected_tenant_name"
 private const val KEY_USER_TITLE = "user_title"
@@ -157,6 +158,7 @@ data class AlarmLaunchEvent(
     val body: String,
     val tenantSlug: String? = null,
     val isSilentForMe: Boolean = false,
+    val type: String = "",
     val receivedAtMillis: Long = System.currentTimeMillis(),
 )
 
@@ -164,12 +166,13 @@ object AlarmLaunchCoordinator {
     private val _event = MutableStateFlow<AlarmLaunchEvent?>(null)
     val event: StateFlow<AlarmLaunchEvent?> get() = _event
 
-    fun publish(title: String, body: String, tenantSlug: String? = null, isSilentForMe: Boolean = false) {
+    fun publish(title: String, body: String, tenantSlug: String? = null, isSilentForMe: Boolean = false, type: String = "") {
         _event.value = AlarmLaunchEvent(
             title = title,
             body = body,
             tenantSlug = tenantSlug?.takeIf { it.isNotBlank() },
             isSilentForMe = isSilentForMe,
+            type = type,
         )
     }
 }
@@ -1474,10 +1477,14 @@ class MainActivity : FragmentActivity() {
     private fun applyAlarmLaunchFlags(intent: Intent?) {
         if (intent?.getBooleanExtra(EXTRA_OPEN_ALARM, false) != true) return
 
-        applyAlarmWindowFlags(active = true)
+        val alertType = intent.getStringExtra(EXTRA_ALERT_TYPE) ?: ""
+        if (alertType != "help_request") {
+            applyAlarmWindowFlags(active = true)
+        }
         AlarmLaunchCoordinator.publish(
             title = intent.getStringExtra(EXTRA_ALARM_TITLE).orEmpty().ifBlank { "BlueBird Alert" },
             body = intent.getStringExtra(EXTRA_ALARM_MESSAGE).orEmpty().ifBlank { "Emergency alert received." },
+            type = alertType,
         )
     }
 
@@ -2072,6 +2079,13 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
         showQuietDeleteConfirmOverlay = false
         showTeamAssistDialog = false
         replyTarget = null
+        if (event.type == "help_request") {
+            // Help requests: refresh the feed and switch to the help requests tab.
+            // Do NOT activate emergency alarm state or show the takeover screen.
+            vm.refreshIncidentFeeds()
+            feedTab = 1
+            return@LaunchedEffect
+        }
         if (event.isSilentForMe) {
             // Sender gets discreet confirmation — no alarm takeover, no siren.
             vm.handleAlarmLaunch(event.body, isSilentForMe = true)
@@ -2099,6 +2113,7 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
     AlarmSoundEffect(
         isAlarmActive = state.alarm.isActive,
         isTrainingAlarm = state.alarm.isTraining,
+        silentForMe = state.alarm.isSilentForCurrentUser,
     )
     val alertFeedbackState = AlertFeedbackEffect(
         isAlarmActive = state.alarm.isActive,
@@ -2106,6 +2121,7 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
         hapticsEnabled = hapticAlertsOn,
         flashlightEnabled = flashlightAlertsOn,
         screenFlashEnabled = screenFlashAlertsOn,
+        silentForMe = state.alarm.isSilentForCurrentUser,
     )
     DisposableEffect(state.alarm.isActive) {
         val activity = ctx.findActivity()
