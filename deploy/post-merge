@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# .git/hooks/post-merge
+# Auto-deploys whenever `git pull` merges new commits on the server.
+#
+# Install:
+#   cp deploy/post-merge /srv/bluebird/repo/.git/hooks/post-merge
+#   chmod +x /srv/bluebird/repo/.git/hooks/post-merge
+#
+# Only activates on the server (deploy.sh will no-op if BLUEBIRD_ROOT doesn't exist).
+
+DEPLOY_SCRIPT="/srv/bluebird/deploy.sh"
+
+if [[ -x "$DEPLOY_SCRIPT" ]]; then
+  echo "[post-merge] Running BlueBird deploy ..."
+  bash "$DEPLOY_SCRIPT"
+else
+  echo "[post-merge] $DEPLOY_SCRIPT not found — skipping auto-deploy."
+fi
