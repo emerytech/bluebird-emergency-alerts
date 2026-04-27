@@ -264,6 +264,11 @@ def _drill_report_svc(req: Request) -> DrillReportService:
 def _users(req: Request) -> UserStore:
     return _tenant(req).user_store  # type: ignore[attr-defined]
 
+
+def _sessions(req: Request):
+    return _tenant(req).session_store  # type: ignore[attr-defined]
+
+
 def _broadcaster(req: Request) -> AlertBroadcaster:
     return _tenant(req).broadcaster  # type: ignore[attr-defined]
 
@@ -1520,6 +1525,8 @@ async def mobile_login(body: MobileLoginRequest, request: Request) -> MobileLogi
         target_id=str(user.id),
         metadata={"login_name": body.login_name, "channel": "mobile"},
     )
+    client_type = body.client_type if body.client_type in ("mobile", "web") else "mobile"
+    session = await _sessions(request).create_session(user_id=user.id, client_type=client_type)
     quiet_period = await _quiet_periods(request).active_for_user(user_id=user.id)
     quiet_mode_active = await _is_effective_quiet_user(request, user_id=user.id)
     return MobileLoginResponse(
@@ -1532,6 +1539,7 @@ async def mobile_login(body: MobileLoginRequest, request: Request) -> MobileLogi
         can_deactivate_alarm=_can_deactivate_alarm(user.role),
         quiet_period_expires_at=quiet_period.expires_at if quiet_period else None,
         quiet_mode_active=quiet_mode_active,
+        session_token=session.session_token,
     )
 
 

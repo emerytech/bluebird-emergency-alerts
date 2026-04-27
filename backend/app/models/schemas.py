@@ -140,6 +140,7 @@ class UsersResponse(BaseModel):
 class MobileLoginRequest(BaseModel):
     login_name: str = Field(..., min_length=1, max_length=120)
     password: str = Field(..., min_length=1, max_length=240)
+    client_type: str = "mobile"
 
     @field_validator("login_name")
     @classmethod
@@ -167,6 +168,7 @@ class MobileLoginResponse(BaseModel):
     can_deactivate_alarm: bool = False
     quiet_period_expires_at: Optional[str] = None
     quiet_mode_active: bool = False
+    session_token: Optional[str] = None
 
 
 class PublicSchoolSummary(BaseModel):

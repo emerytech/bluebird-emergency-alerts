@@ -21,6 +21,7 @@ from app.services.apns import APNsClient
 from app.services.incident_store import IncidentStore
 from app.services.tenant_settings_store import TenantSettingsStore
 from app.services.user_store import UserStore
+from app.services.session_store import SessionStore
 
 
 _SLUG_RE = re.compile(r"[^a-z0-9-]+")
@@ -43,6 +44,7 @@ class TenantContext:
     incident_store: IncidentStore
     quiet_period_store: QuietPeriodStore
     user_store: UserStore
+    session_store: SessionStore
     broadcaster: AlertBroadcaster
     audit_log_service: AuditLogService
     drill_report_service: DrillReportService
@@ -116,6 +118,7 @@ class TenantManager:
                 incident_store=IncidentStore(db_path),
                 quiet_period_store=QuietPeriodStore(db_path),
                 user_store=UserStore(db_path),
+                session_store=SessionStore(db_path, normalized),
                 broadcaster=AlertBroadcaster(
                     apns=self._apns,
                     fcm=self._fcm,
