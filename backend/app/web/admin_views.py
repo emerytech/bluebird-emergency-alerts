@@ -490,6 +490,77 @@ def _base_styles(theme: Optional[Mapping[str, str]] = None) -> str:
       font-size: 0.92rem;
       color: var(--text);
     }
+    .school-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+      gap: 16px;
+    }
+    .school-card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 18px 20px;
+      cursor: pointer;
+      user-select: none;
+      transition: transform 150ms ease, box-shadow 150ms ease, border-color 150ms ease;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .school-card:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 6px 20px rgba(0,0,0,0.12);
+    }
+    .school-card.drag-over { outline: 2px solid var(--color-primary, #1B5FE4); }
+    .school-card--alarm  { border-color: rgba(220,38,38,0.45); background: rgba(220,38,38,0.04); }
+    .school-card--training { border-color: rgba(180,83,9,0.45); background: rgba(180,83,9,0.04); }
+    .school-card--alarm:hover  { border-color: rgba(220,38,38,0.7); }
+    .school-card--training:hover { border-color: rgba(180,83,9,0.7); }
+    .school-card-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 10px;
+    }
+    .school-card-name {
+      font-size: 15px;
+      font-weight: 600;
+      line-height: 1.35;
+      color: var(--text);
+      flex: 1;
+      min-width: 0;
+      overflow-wrap: break-word;
+    }
+    .school-card-message {
+      color: var(--muted);
+      font-size: 0.78rem;
+      line-height: 1.4;
+      margin: 0;
+    }
+    .school-card-footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-top: auto;
+    }
+    .school-card-last { color: var(--muted); font-size: 0.75rem; }
+    .school-card-drag {
+      color: var(--muted);
+      font-size: 16px;
+      cursor: grab;
+      padding: 2px 4px;
+      flex-shrink: 0;
+      opacity: 0.5;
+    }
+    @media (max-width: 700px) {
+      .school-grid { grid-template-columns: 1fr; }
+    }
+    @media (min-width: 701px) and (max-width: 1023px) {
+      .school-grid { grid-template-columns: repeat(2, 1fr); }
+    }
     .count-badge {
       display: inline-flex;
       min-width: 22px;
@@ -1576,11 +1647,11 @@ def _render_alert_rows(alerts: Sequence[AlertRecord]) -> str:
     return "".join(rows)
 
 
-def _render_district_rows(items: Sequence[Mapping[str, object]], school_path_prefix: str) -> str:
+def _render_school_cards(items: Sequence[Mapping[str, object]], school_path_prefix: str) -> str:
     if not items:
-        return '<tr><td colspan="6" class="mini-copy">No schools found.</td></tr>'
+        return '<p class="mini-copy">No schools found.</p>'
     prefix = escape(school_path_prefix)
-    rows = []
+    cards = []
     for item in items:
         slug = str(item.get("tenant_slug", ""))
         name = str(item.get("tenant_name", slug))
@@ -1594,13 +1665,18 @@ def _render_district_rows(items: Sequence[Mapping[str, object]], school_path_pre
 
         if is_active and is_training:
             status_badge = '<span class="status-pill warn">TRAINING</span>'
+            card_mod = "school-card--training"
         elif is_active:
             status_badge = '<span class="status-pill danger">LOCKDOWN</span>'
+            card_mod = "school-card--alarm"
         else:
             status_badge = '<span class="status-pill ok">All Clear</span>'
+            card_mod = "school-card--ok"
 
-        message_note = f'<div class="mini-copy">{escape(message[:80])}</div>' if is_active and message else ""
-
+        message_note = (
+            f'<p class="school-card-message">{escape(message[:80])}</p>'
+            if is_active and message else ""
+        )
         last_alert_str = escape(str(last_alert_at)[:16].replace("T", " ")) if last_alert_at else "—"
 
         if expected_users == 0:
@@ -1613,23 +1689,23 @@ def _render_district_rows(items: Sequence[Mapping[str, object]], school_path_pre
             ack_html = f'<span class="status-pill danger">{ack_count}/{expected_users} ({ack_rate:.0f}%)</span>'
 
         manage_url = f"{prefix}/admin?tenant={escape(slug)}&section=dashboard"
-        drag_handle = (
-            "<td style='cursor:grab;color:#aaa;text-align:center;width:28px;' "
-            "class='dist-drag-handle' title='Drag to reorder'>&#9776;</td>"
+        cards.append(
+            f"<div class='school-card {card_mod}' draggable='true'"
+            f" data-slug='{escape(slug)}' data-tenant-slug='{escape(slug)}'"
+            f" data-expected-users='{expected_users}' data-href='{manage_url}'>"
+            f"  <div class='school-card-header'>"
+            f"    <span class='school-card-drag' title='Drag to reorder'>&#9776;</span>"
+            f"    <span class='school-card-name'>{escape(name)}</span>"
+            f"    {status_badge}"
+            f"  </div>"
+            f"  {message_note}"
+            f"  <div class='school-card-footer'>"
+            f"    <span class='school-card-last'>&#128337; {last_alert_str} UTC</span>"
+            f"    {ack_html}"
+            f"  </div>"
+            f"</div>"
         )
-        rows.append(
-            f"<tr draggable='true' data-slug='{escape(slug)}' data-tenant-slug='{escape(slug)}'"
-            f" data-expected-users='{expected_users}' style='transition:opacity .15s;'>"
-            f"{drag_handle}"
-            f"<td><strong>{escape(name)}</strong></td>"
-            f"<td class='dist-status-cell'>{status_badge}{message_note}</td>"
-            f"<td class='mini-copy dist-last-cell'>{last_alert_str}</td>"
-            f"<td class='dist-ack-cell'>{ack_html}</td>"
-            f"<td><a class='button button-secondary' href='{manage_url}'"
-            f" style='font-size:13px;padding:6px 14px;min-height:auto;'>Manage</a></td>"
-            "</tr>"
-        )
-    return "".join(rows)
+    return "".join(cards)
 
 
 def _render_drill_report_rows(alerts: Sequence[AlertRecord], prefix: str) -> str:
@@ -3275,31 +3351,28 @@ def render_admin_page(
             </div>
             <div class="flash" style="margin-bottom:16px;">
               <strong>Alert controls are disabled in District Overview.</strong>
-              Select a school below to activate or deactivate alerts.
-              Drag rows to reorder schools within your district.
+              Click a school card to manage alerts. Drag cards to reorder.
             </div>
-            <table class="data-table" id="district-order-table">
-              <thead>
-                <tr><th style="width:28px;"></th><th>School</th><th>Status</th><th>Last Alert (UTC)</th><th>Ack Rate</th><th>Actions</th></tr>
-              </thead>
-              <tbody id="district-order-tbody">
-                {_render_district_rows(district_overview_items, school_path_prefix)}
-              </tbody>
-            </table>
+            <div class="school-grid" id="school-card-grid">
+              {_render_school_cards(district_overview_items, school_path_prefix)}
+            </div>
           </section>
           <script>
           (function() {{
-            var tbody = document.getElementById('district-order-tbody');
+            var grid = document.getElementById('school-card-grid');
             var saveBtn = document.getElementById('dist-save-order-btn');
             var statusEl = document.getElementById('dist-order-status');
-            if (!tbody) return;
+            if (!grid) return;
             var dragSrc = null;
             var originalOrder = null;
+            var didDrag = false;
+
+            function cards() {{
+              return Array.from(grid.querySelectorAll('.school-card[data-slug]'));
+            }}
 
             function getSlugOrder() {{
-              return Array.from(tbody.querySelectorAll('tr[data-slug]')).map(function(r) {{
-                return r.getAttribute('data-slug');
-              }});
+              return cards().map(function(c) {{ return c.getAttribute('data-slug'); }});
             }}
 
             function markDirty() {{
@@ -3307,45 +3380,49 @@ def render_admin_page(
               if (statusEl) {{ statusEl.style.display = 'none'; statusEl.textContent = ''; }}
             }}
 
-            tbody.addEventListener('dragstart', function(e) {{
-              dragSrc = e.target.closest('tr[data-slug]');
+            grid.addEventListener('click', function(e) {{
+              if (didDrag) {{ didDrag = false; return; }}
+              var card = e.target.closest('.school-card[data-href]');
+              if (!card) return;
+              window.location.href = card.getAttribute('data-href');
+            }});
+
+            grid.addEventListener('dragstart', function(e) {{
+              dragSrc = e.target.closest('.school-card[data-slug]');
               if (!dragSrc) return;
               if (originalOrder === null) originalOrder = getSlugOrder();
+              didDrag = true;
               dragSrc.style.opacity = '0.4';
               e.dataTransfer.effectAllowed = 'move';
               e.dataTransfer.setData('text/plain', dragSrc.getAttribute('data-slug'));
             }});
 
-            tbody.addEventListener('dragend', function(e) {{
-              var row = e.target.closest('tr[data-slug]');
-              if (row) row.style.opacity = '';
-              tbody.querySelectorAll('tr[data-slug]').forEach(function(r) {{
-                r.classList.remove('drag-over');
-              }});
+            grid.addEventListener('dragend', function(e) {{
+              var card = e.target.closest('.school-card[data-slug]');
+              if (card) card.style.opacity = '';
+              cards().forEach(function(c) {{ c.classList.remove('drag-over'); }});
             }});
 
-            tbody.addEventListener('dragover', function(e) {{
+            grid.addEventListener('dragover', function(e) {{
               e.preventDefault();
               e.dataTransfer.dropEffect = 'move';
-              var target = e.target.closest('tr[data-slug]');
+              var target = e.target.closest('.school-card[data-slug]');
               if (!target || target === dragSrc) return;
-              tbody.querySelectorAll('tr[data-slug]').forEach(function(r) {{
-                r.classList.remove('drag-over');
-              }});
+              cards().forEach(function(c) {{ c.classList.remove('drag-over'); }});
               target.classList.add('drag-over');
             }});
 
-            tbody.addEventListener('drop', function(e) {{
+            grid.addEventListener('drop', function(e) {{
               e.preventDefault();
-              var target = e.target.closest('tr[data-slug]');
+              var target = e.target.closest('.school-card[data-slug]');
               if (!target || !dragSrc || target === dragSrc) return;
-              var rows = Array.from(tbody.querySelectorAll('tr[data-slug]'));
-              var srcIdx = rows.indexOf(dragSrc);
-              var tgtIdx = rows.indexOf(target);
+              var list = cards();
+              var srcIdx = list.indexOf(dragSrc);
+              var tgtIdx = list.indexOf(target);
               if (srcIdx < tgtIdx) {{
-                tbody.insertBefore(dragSrc, target.nextSibling);
+                grid.insertBefore(dragSrc, target.nextSibling);
               }} else {{
-                tbody.insertBefore(dragSrc, target);
+                grid.insertBefore(dragSrc, target);
               }}
               markDirty();
             }});
@@ -3371,11 +3448,6 @@ def render_admin_page(
                 if (statusEl) {{ statusEl.textContent = 'Network error — try again.'; statusEl.style.display = ''; }}
               }});
             }};
-
-            // Highlight drop target
-            document.head.insertAdjacentHTML('beforeend',
-              '<style>tr.drag-over td {{ outline: 2px solid var(--color-primary, #1a73e8); }}</style>'
-            );
           }})();
           </script>
 
