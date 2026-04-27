@@ -2684,11 +2684,14 @@ def _render_user_cards(
     tenant_options: Sequence[Mapping[str, str]] = (),
     user_tenant_assignments: Optional[Mapping[int, Sequence[str]]] = None,
     allow_assignment_edit: bool = False,
+    actor_role: str = "",
+    actor_user_id: Optional[int] = None,
 ) -> str:
     if not users:
         return '<div class="mini-copy">No users yet.</div>'
     cards = []
     prefix = escape(school_path_prefix)
+    _actor_can_change_roles = actor_role in {"district_admin", "super_admin"}
     for user in users:
         checked_active = "checked" if user.is_active else ""
         checked_clear_login = ""
@@ -2739,12 +2742,16 @@ def _render_user_cards(
                   </div>
                   <div class="field">
                     <label>Role</label>
-                    <select name="role">
-                      <option value="teacher" {'selected' if user.role == 'teacher' else ''}>standard / teacher</option>
-                      <option value="law_enforcement" {'selected' if user.role == 'law_enforcement' else ''}>law enforcement</option>
-                      <option value="admin" {'selected' if user.role == 'admin' else ''}>admin</option>
-                      <option value="district_admin" {'selected' if user.role == 'district_admin' else ''}>district admin</option>
-                    </select>
+                    {'<p class="mini-copy" style="color:var(--color-warning,#b45309);">You cannot change your own role.</p><input type="hidden" name="role" value="' + escape(user.role) + '" />' if actor_user_id is not None and user.id == actor_user_id else (
+                    '<select name="role">'
+                    + f'<option value="teacher" {"selected" if user.role == "teacher" else ""}>standard / teacher</option>'
+                    + f'<option value="law_enforcement" {"selected" if user.role == "law_enforcement" else ""}>law enforcement</option>'
+                    + f'<option value="staff" {"selected" if user.role == "staff" else ""}>staff</option>'
+                    + f'<option value="building_admin" {"selected" if user.role == "building_admin" else ""}>building admin</option>'
+                    + f'<option value="admin" {"selected" if user.role == "admin" else ""}>admin</option>'
+                    + (f'<option value="district_admin" {"selected" if user.role == "district_admin" else ""}>district admin</option>' if _actor_can_change_roles else '')
+                    + '</select>'
+                    )}
                   </div>
                   <div class="field">
                     <label>Title</label>
@@ -4198,7 +4205,7 @@ def render_admin_page(
                     <option value="staff">Staff</option>
                     <option value="law_enforcement">Law Enforcement</option>
                     <option value="building_admin">Building Admin</option>
-                    <option value="district_admin">District Admin</option>
+                    {'<option value="district_admin">District Admin</option>' if current_user.role in {"district_admin", "super_admin"} else ''}
                   </select>
                 </div>
                 <div class="field">
@@ -4245,6 +4252,8 @@ def render_admin_page(
                   tenant_options=[{"id": str(item.get("id", "")), "slug": str(item.get("slug", "")), "name": str(item.get("name", ""))} for item in tenant_options],
                   user_tenant_assignments=user_tenant_assignments,
                   allow_assignment_edit=(current_user.role in {"district_admin", "super_admin"}),
+                  actor_role=str(getattr(current_user, "role", "") or ""),
+                  actor_user_id=current_user_id,
               )}
             </div>
           </section>

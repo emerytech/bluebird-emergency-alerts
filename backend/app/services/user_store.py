@@ -389,6 +389,16 @@ class UserStore:
     async def count_other_dashboard_admins(self, excluded_user_id: int) -> int:
         return await anyio.to_thread.run_sync(self._count_other_dashboard_admins_sync, int(excluded_user_id))
 
+    def _count_district_admins_sync(self) -> int:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM users WHERE role = 'district_admin' AND is_active = 1;"
+            ).fetchone()
+        return int(row[0]) if row else 0
+
+    async def count_district_admins(self) -> int:
+        return await anyio.to_thread.run_sync(self._count_district_admins_sync)
+
     def _authenticate_user_sync(self, login_name: str, password: str) -> Optional[UserRecord]:
         with self._connect() as conn:
             row = conn.execute(

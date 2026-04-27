@@ -120,6 +120,10 @@ from app.services.permissions import (
     PERM_REQUEST_HELP,
     PERM_SUBMIT_QUIET_REQUEST,
     PERM_TRIGGER_OWN_TENANT_ALERTS,
+    ROLE_ADMIN,
+    ROLE_BUILDING_ADMIN,
+    ROLE_DISTRICT_ADMIN,
+    ROLE_SUPER_ADMIN,
     can,
     can_any,
     can_deactivate_alarm as _can_deactivate_alarm,
@@ -4133,6 +4137,8 @@ async def admin_create_user(
     title: str = Form(default=""),
 ) -> RedirectResponse:
     await _require_dashboard_admin(request)
+    actor = request.state.admin_user
+    actor_role = str(getattr(actor, "role", "")).strip().lower()
     normalized_name = name.strip()
     normalized_role = role.strip().lower()
     normalized_phone = phone_e164.strip() or None
@@ -4142,6 +4148,9 @@ async def admin_create_user(
         return RedirectResponse(url="/admin?section=user-management#users", status_code=status.HTTP_303_SEE_OTHER)
     if normalized_role not in valid_tenant_roles():
         _set_flash(request, error="Role must be one of: building_admin, teacher, staff, law_enforcement, district_admin.")
+        return RedirectResponse(url="/admin?section=user-management#users", status_code=status.HTTP_303_SEE_OTHER)
+    if normalized_role == ROLE_DISTRICT_ADMIN and actor_role not in {ROLE_DISTRICT_ADMIN, ROLE_SUPER_ADMIN}:
+        _set_flash(request, error="Only district admins can create district admin accounts.")
         return RedirectResponse(url="/admin?section=user-management#users", status_code=status.HTTP_303_SEE_OTHER)
     if bool(login_name.strip()) != bool(password.strip()):
         _set_flash(request, error="Provide both username and password to enable login for a user.")
@@ -4511,6 +4520,9 @@ async def admin_update_user(
     title: str = Form(default=""),
 ) -> RedirectResponse:
     await _require_dashboard_admin(request)
+    actor = request.state.admin_user
+    actor_role = str(getattr(actor, "role", "")).strip().lower()
+    actor_id = int(getattr(actor, "id", 0) or 0)
     existing_user = await _users(request).get_user(user_id)
     if existing_user is None:
         _set_flash(request, error=f"User #{user_id} was not found.")
@@ -4524,6 +4536,21 @@ async def admin_update_user(
     if normalized_role not in valid_tenant_roles():
         _set_flash(request, error="Role must be one of: building_admin, teacher, staff, law_enforcement, district_admin.")
         return RedirectResponse(url="/admin?section=user-management#users", status_code=status.HTTP_303_SEE_OTHER)
+    # Block self role modification
+    if actor_id == user_id and normalized_role != existing_user.role:
+        _set_flash(request, error="You cannot change your own role.")
+        return RedirectResponse(url="/admin?section=user-management#users", status_code=status.HTTP_303_SEE_OTHER)
+    # Only district_admin/super_admin may assign or remove the district_admin role
+    role_is_changing = normalized_role != existing_user.role
+    if role_is_changing and actor_role not in {ROLE_DISTRICT_ADMIN, ROLE_SUPER_ADMIN}:
+        _set_flash(request, error="Only district admins can change user roles.")
+        return RedirectResponse(url="/admin?section=user-management#users", status_code=status.HTTP_303_SEE_OTHER)
+    # Protect last district admin — prevent demoting if they are the only one
+    if existing_user.role == ROLE_DISTRICT_ADMIN and normalized_role != ROLE_DISTRICT_ADMIN:
+        da_count = await _users(request).count_district_admins()
+        if da_count <= 1:
+            _set_flash(request, error="Cannot remove the last district admin account.")
+            return RedirectResponse(url="/admin?section=user-management#users", status_code=status.HTTP_303_SEE_OTHER)
     if clear_login is None and bool(login_name.strip()) != bool(password.strip()) and bool(password.strip()):
         _set_flash(request, error="To change credentials, provide both username and password.")
         return RedirectResponse(url="/admin?section=user-management#users", status_code=status.HTTP_303_SEE_OTHER)
@@ -4826,7 +4853,7 @@ async def create_team_assist(
     background_tasks: BackgroundTasks,
     _: None = Depends(require_api_key),
 ) -> TeamAssistSummary:
-    creator_id = await _require_active_user_with_permission(_users(request), body.user_id, permission=PERM_REQUEST_HELP)
+    creator_id = await _require_active_user(_users(request), body.user_id)
     team_assist = await _incident_store(request).create_team_assist(
         type_value=body.type,
         created_by=creator_id,
@@ -5504,6 +5531,32 @@ async def get_my_quiet_request(
     return _to_quiet_period_summary(record)
 
 
+@router.delete("/quiet-periods/active", response_model=QuietPeriodSummary)
+async def cancel_active_quiet_period(
+    request: Request,
+    user_id: int = Query(..., ge=1),
+    actor_user_id: Optional[int] = Query(None, ge=1),
+    _: None = Depends(require_api_key),
+) -> QuietPeriodSummary:
+    """Cancel the active quiet period for a user by user_id only.
+    The requester can cancel their own, or an admin/district_admin can cancel on behalf."""
+    effective_actor_id = actor_user_id if actor_user_id is not None else user_id
+    actor = await _users(request).get_user(effective_actor_id)
+    if actor is None or not actor.is_active:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Actor user not found or inactive")
+    if effective_actor_id != user_id:
+        if actor.role not in {ROLE_DISTRICT_ADMIN, ROLE_ADMIN, ROLE_SUPER_ADMIN}:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to cancel another user's quiet period")
+    user = await _users(request).get_user(user_id)
+    if user is None or not user.is_active:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found or inactive")
+    record = await _quiet_periods(request).cancel_active_for_user(user_id=user_id)
+    if record is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No active quiet period found for this user")
+    await _deactivate_law_enforcement_quiet_state_for_user(request, user_id=int(record.user_id))
+    return _to_quiet_period_summary(record)
+
+
 @router.delete("/quiet-periods/request/{request_id}", response_model=QuietPeriodSummary)
 async def cancel_quiet_period_request(
     request_id: int,
@@ -5519,7 +5572,10 @@ async def cancel_quiet_period_request(
         user_id=user_id,
     )
     if record is None or record.user_id != user_id:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Quiet period request not found")
+        # Fallback: cancel by user_id only in case client has a stale request_id
+        record = await _quiet_periods(request).cancel_active_for_user(user_id=user_id)
+    if record is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No active quiet period found for this user")
     if record.status not in {"cancelled"}:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Quiet period request is not cancellable")
     await _deactivate_law_enforcement_quiet_state_for_user(request, user_id=int(record.user_id))
@@ -5541,7 +5597,10 @@ async def delete_quiet_period_request(
         user_id=body.user_id,
     )
     if record is None or record.user_id != body.user_id:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Quiet period request not found")
+        # Fallback: cancel by user_id only in case client has a stale request_id
+        record = await _quiet_periods(request).cancel_active_for_user(user_id=body.user_id)
+    if record is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No active quiet period found for this user")
     if record.status not in {"cancelled"}:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Quiet period request is not deletable")
     await _deactivate_law_enforcement_quiet_state_for_user(request, user_id=int(record.user_id))
