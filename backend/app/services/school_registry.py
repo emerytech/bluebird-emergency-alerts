@@ -159,6 +159,39 @@ class SchoolRegistry:
                 """
             )
 
+            # Theme presets: saved color combinations per tenant (or NULL for global).
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS tenant_theme_presets (
+                    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created_at    TEXT    NOT NULL,
+                    tenant_slug   TEXT    NULL,
+                    name          TEXT    NOT NULL,
+                    accent        TEXT    NOT NULL DEFAULT '',
+                    accent_strong TEXT    NOT NULL DEFAULT '',
+                    sidebar_start TEXT    NOT NULL DEFAULT '',
+                    sidebar_end   TEXT    NOT NULL DEFAULT '',
+                    created_by    TEXT    NOT NULL DEFAULT ''
+                );
+                """
+            )
+
+            # Operator notes: super-admin-only internal notes per district/school.
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS operator_notes (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created_at  TEXT    NOT NULL,
+                    tenant_slug TEXT    NOT NULL,
+                    note_text   TEXT    NOT NULL,
+                    created_by  TEXT    NOT NULL
+                );
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_operator_notes_slug ON operator_notes(tenant_slug);"
+            )
+
     def _migrate_districts_table(self, conn: sqlite3.Connection) -> None:
         cols = {str(row[1]) for row in conn.execute("PRAGMA table_info(districts);").fetchall()}
         for col, ddl in [
@@ -676,6 +709,107 @@ class SchoolRegistry:
 
     async def update_district_logo_path(self, *, district_id: int, logo_path: Optional[str]) -> Optional[DistrictRecord]:
         return await anyio.to_thread.run_sync(self._update_district_logo_path_sync, int(district_id), logo_path)
+
+    # ── Theme presets ─────────────────────────────────────────────────────────
+
+    def _add_theme_preset_sync(
+        self, tenant_slug: str, name: str,
+        accent: str, accent_strong: str, sidebar_start: str, sidebar_end: str,
+        created_by: str,
+    ) -> dict:
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            cur = conn.execute(
+                """INSERT INTO tenant_theme_presets
+                   (created_at, tenant_slug, name, accent, accent_strong, sidebar_start, sidebar_end, created_by)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?);""",
+                (now, tenant_slug.strip().lower(), name.strip(),
+                 (accent or "").strip(), (accent_strong or "").strip(),
+                 (sidebar_start or "").strip(), (sidebar_end or "").strip(),
+                 created_by.strip()),
+            )
+            pid = cur.lastrowid
+        return {"id": pid, "created_at": now, "tenant_slug": tenant_slug,
+                "name": name, "accent": accent, "accent_strong": accent_strong,
+                "sidebar_start": sidebar_start, "sidebar_end": sidebar_end,
+                "created_by": created_by, "is_global": False}
+
+    async def add_theme_preset(
+        self, *, tenant_slug: str, name: str,
+        accent: str, accent_strong: str, sidebar_start: str, sidebar_end: str,
+        created_by: str,
+    ) -> dict:
+        return await anyio.to_thread.run_sync(
+            self._add_theme_preset_sync,
+            tenant_slug, name, accent, accent_strong, sidebar_start, sidebar_end, created_by,
+        )
+
+    def _list_theme_presets_sync(self, tenant_slug: str) -> list:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT id, created_at, tenant_slug, name, accent, accent_strong,
+                          sidebar_start, sidebar_end, created_by
+                   FROM tenant_theme_presets
+                   WHERE tenant_slug = ? OR tenant_slug IS NULL
+                   ORDER BY (tenant_slug IS NULL) DESC, name ASC;""",
+                (tenant_slug.strip().lower(),),
+            ).fetchall()
+        return [
+            {"id": r[0], "created_at": r[1], "tenant_slug": r[2], "name": r[3],
+             "accent": r[4] or "", "accent_strong": r[5] or "",
+             "sidebar_start": r[6] or "", "sidebar_end": r[7] or "",
+             "created_by": r[8] or "", "is_global": r[2] is None}
+            for r in rows
+        ]
+
+    async def list_theme_presets(self, tenant_slug: str) -> list:
+        return await anyio.to_thread.run_sync(self._list_theme_presets_sync, tenant_slug)
+
+    def _delete_theme_preset_sync(self, preset_id: int, tenant_slug: str) -> bool:
+        with self._connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM tenant_theme_presets WHERE id = ? AND tenant_slug = ?;",
+                (int(preset_id), tenant_slug.strip().lower()),
+            )
+        return (cur.rowcount or 0) > 0
+
+    async def delete_theme_preset(self, preset_id: int, tenant_slug: str) -> bool:
+        return await anyio.to_thread.run_sync(self._delete_theme_preset_sync, int(preset_id), tenant_slug)
+
+    # ── Operator notes ────────────────────────────────────────────────────────
+    # Super-admin-only internal notes per district or school. Never exposed to tenants.
+
+    def _add_note_sync(self, tenant_slug: str, note_text: str, created_by: str) -> dict[str, object]:
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            cur = conn.execute(
+                "INSERT INTO operator_notes (created_at, tenant_slug, note_text, created_by) VALUES (?, ?, ?, ?);",
+                (now, tenant_slug.strip().lower(), note_text.strip(), created_by.strip()),
+            )
+            note_id = cur.lastrowid
+        return {"id": note_id, "created_at": now, "tenant_slug": tenant_slug, "note_text": note_text, "created_by": created_by}
+
+    async def add_operator_note(self, *, tenant_slug: str, note_text: str, created_by: str) -> dict[str, object]:
+        return await anyio.to_thread.run_sync(self._add_note_sync, tenant_slug, note_text, created_by)
+
+    def _list_notes_sync(self, tenant_slug: str) -> list[dict[str, object]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT id, created_at, tenant_slug, note_text, created_by FROM operator_notes WHERE tenant_slug = ? ORDER BY created_at DESC;",
+                (tenant_slug.strip().lower(),),
+            ).fetchall()
+        return [{"id": r[0], "created_at": r[1], "tenant_slug": r[2], "note_text": r[3], "created_by": r[4]} for r in rows]
+
+    async def list_operator_notes(self, tenant_slug: str) -> list[dict[str, object]]:
+        return await anyio.to_thread.run_sync(self._list_notes_sync, tenant_slug)
+
+    def _delete_note_sync(self, note_id: int) -> bool:
+        with self._connect() as conn:
+            cur = conn.execute("DELETE FROM operator_notes WHERE id = ?;", (int(note_id),))
+        return (cur.rowcount or 0) > 0
+
+    async def delete_operator_note(self, note_id: int) -> bool:
+        return await anyio.to_thread.run_sync(self._delete_note_sync, int(note_id))
 
     # ── Slug aliases ─────────────────────────────────────────────────────────
     # Maps old slugs to canonical ones so old API clients keep working.

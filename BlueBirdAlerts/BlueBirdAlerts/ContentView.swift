@@ -1556,7 +1556,7 @@ struct ContentView: View {
     private var quietPeriodCenterPage: some View {
         ScrollView {
             VStack(spacing: 14) {
-                if let pending = myQuietRequest, pending.status?.lowercased() == "pending" {
+                if myQuietRequest?.status?.lowercased() == "pending" {
                     card {
                         VStack(alignment: .leading, spacing: 12) {
                             HStack(alignment: .top) {
@@ -1577,12 +1577,12 @@ struct ContentView: View {
                                     )
                                     .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                             }
-                            if let requestedAt = pending.requestedAt {
+                            if let requestedAt = myQuietRequest?.requestedAt {
                                 Text("Requested: \(requestedAt)")
                                     .font(.subheadline)
                                     .foregroundStyle(DSColor.textSecondary)
                             }
-                            if let reason = pending.reason, !reason.isEmpty {
+                            if let reason = myQuietRequest?.reason, !reason.isEmpty {
                                 Text("Reason: \(reason)")
                                     .font(.subheadline)
                                     .foregroundStyle(DSColor.textSecondary)
@@ -1607,19 +1607,79 @@ struct ContentView: View {
                             }
                         }
                     }
-                    .confirmationDialog(
-                        "Cancel this quiet period request?",
-                        isPresented: $showCancelQuietRequestConfirm,
-                        titleVisibility: .visible
-                    ) {
-                        Button("Cancel Request", role: .destructive) {
-                            Task { await cancelQuietPeriodRequest() }
+                } else if myQuietRequest?.status?.lowercased() == "approved" {
+                    card {
+                        VStack(alignment: .leading, spacing: 12) {
+                            HStack(alignment: .top) {
+                                Text("Quiet Period Active")
+                                    .font(.headline)
+                                    .foregroundStyle(DSColor.textPrimary)
+                                Spacer()
+                                Text("Active")
+                                    .font(.caption)
+                                    .fontWeight(.semibold)
+                                    .foregroundStyle(DSColor.success)
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 4)
+                                    .background(DSColor.success.opacity(0.12))
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                            .stroke(DSColor.success.opacity(0.35), lineWidth: 1)
+                                    )
+                                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                            }
+                            if let label = myQuietRequest?.approvedByLabel {
+                                Text("Approved by: \(label)")
+                                    .font(.subheadline)
+                                    .foregroundStyle(DSColor.textSecondary)
+                            }
+                            if let expiresAt = myQuietRequest?.expiresAt {
+                                Text("Expires: \(expiresAt)")
+                                    .font(.subheadline)
+                                    .foregroundStyle(DSColor.textSecondary)
+                            }
+                            Button {
+                                showCancelQuietRequestConfirm = true
+                            } label: {
+                                Text(isCancellingQuietRequest ? "Ending..." : "End Quiet Period")
+                                    .font(.body)
+                                    .fontWeight(.semibold)
+                                    .foregroundStyle(DSColor.danger)
+                                    .frame(maxWidth: .infinity, minHeight: 44)
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                            .stroke(DSColor.danger.opacity(0.5), lineWidth: 1.5)
+                                    )
+                            }
+                            .buttonStyle(PressableScaleButtonStyle())
+                            .disabled(isCancellingQuietRequest)
+                            if let feedback = quietPeriodLocalFeedback {
+                                flashBanner(message: feedback, isError: quietPeriodLocalIsError)
+                            }
                         }
-                        Button("Keep Request", role: .cancel) {}
-                    } message: {
-                        Text("This will cancel your pending quiet period request.")
                     }
                 } else {
+                    if myQuietRequest?.status?.lowercased() == "denied" {
+                        card {
+                            HStack(spacing: 10) {
+                                Image(systemName: "xmark.circle.fill")
+                                    .foregroundStyle(DSColor.danger)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Request Denied")
+                                        .font(.subheadline)
+                                        .fontWeight(.semibold)
+                                        .foregroundStyle(DSColor.textPrimary)
+                                    if let label = myQuietRequest?.approvedByLabel {
+                                        Text("by \(label)")
+                                            .font(.caption)
+                                            .foregroundStyle(DSColor.textSecondary)
+                                    }
+                                }
+                                Spacer()
+                            }
+                            .padding(.vertical, 2)
+                        }
+                    }
                     card {
                         SectionContainer("Request Quiet Period") {
                             Text("Share optional context for approvers.")
@@ -1658,6 +1718,28 @@ struct ContentView: View {
         .navigationBarTitleDisplayMode(.inline)
         .onAppear {
             Task { await loadMyQuietRequest() }
+        }
+        .confirmationDialog(
+            myQuietRequest?.status?.lowercased() == "approved"
+                ? "End your active quiet period?"
+                : "Cancel this quiet period request?",
+            isPresented: $showCancelQuietRequestConfirm,
+            titleVisibility: .visible
+        ) {
+            Button(
+                myQuietRequest?.status?.lowercased() == "approved" ? "End Quiet Period" : "Cancel Request",
+                role: .destructive
+            ) {
+                Task { await cancelQuietPeriodRequest() }
+            }
+            Button(
+                myQuietRequest?.status?.lowercased() == "approved" ? "Keep Quiet Period" : "Keep Request",
+                role: .cancel
+            ) {}
+        } message: {
+            Text(myQuietRequest?.status?.lowercased() == "approved"
+                 ? "Push notifications will resume immediately."
+                 : "This will cancel your pending quiet period request.")
         }
     }
 
@@ -2427,8 +2509,8 @@ struct ContentView: View {
     private func loadMyQuietRequest() async {
         guard let userID = appState.userID else { return }
         do {
-            let result = try await api.myQuietRequest(userID: userID)
-            myQuietRequest = (result.status?.lowercased() == "pending") ? result : nil
+            let result = try await api.quietPeriodStatus(userID: userID)
+            myQuietRequest = result.status != nil ? result : nil
         } catch {
             myQuietRequest = nil
         }
@@ -2627,6 +2709,7 @@ struct ContentView: View {
 
         case "quiet_request_created", "quiet_request_updated":
             if isAdminSession { Task { await loadAdminQuietPeriodRequests() } }
+            Task { await loadMyQuietRequest() }
 
         case "message_received":
             break

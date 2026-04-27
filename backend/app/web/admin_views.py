@@ -625,6 +625,48 @@ def _base_styles(theme: Optional[Mapping[str, str]] = None) -> str:
     @media (min-width: 701px) and (max-width: 1023px) {
       .school-grid { grid-template-columns: repeat(2, 1fr); }
     }
+    /* ── MSP Dashboard ─────────────────────────────────────────────────── */
+    .msp-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+      gap: 16px;
+      margin-bottom: 28px;
+    }
+    .msp-card {
+      background: var(--card, #fff);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 16px 18px 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      transition: box-shadow 0.15s, transform 0.15s;
+    }
+    .msp-card:hover { box-shadow: 0 4px 16px rgba(0,0,0,0.09); transform: translateY(-1px); }
+    .msp-card-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+    .msp-card-type { font-size: 0.68rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+    .msp-card-name { font-size: 1rem; font-weight: 700; margin: 2px 0 0; }
+    .msp-card-meta { display: flex; gap: 12px; font-size: 0.78rem; color: var(--muted); flex-wrap: wrap; }
+    .msp-card-badges { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; min-height: 16px; }
+    .msp-card-actions { margin-top: 4px; }
+    .msp-detail-drawer {
+      grid-column: 1 / -1;
+      background: var(--bg-offset, #f8fafc);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 20px 24px;
+      margin-bottom: 4px;
+    }
+    .msp-detail-drawer h4 { font-size: 0.85rem; font-weight: 600; margin: 0 0 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+    .msp-school-list { list-style: none; margin: 0 0 12px; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+    .msp-school-row { display: flex; align-items: center; justify-content: space-between; padding: 6px 10px; background: var(--card); border: 1px solid var(--border); border-radius: 6px; font-size: 0.83rem; }
+    .msp-note-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
+    .msp-note-item { background: var(--card); border: 1px solid var(--border); border-radius: 6px; padding: 8px 12px; font-size: 0.82rem; display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+    .msp-note-meta { font-size: 0.72rem; color: var(--muted); margin-top: 2px; }
+    .msp-search-bar { display: flex; gap: 10px; align-items: center; margin-bottom: 16px; }
+    .msp-search-bar input { flex: 1; }
+    @media (max-width: 700px) { .msp-grid { grid-template-columns: 1fr; } }
+
     td.empty-state {
       text-align: center;
       padding: 36px 16px;
@@ -1063,6 +1105,9 @@ def render_super_admin_page(
     email_template_keys: Sequence[str] = (),
     setup_codes: Sequence[Mapping[str, object]] = (),
     schools_by_slug: Mapping[str, object] = {},
+    noc_tenant_data: Sequence[Mapping[str, object]] = (),
+    noc_uptime_seconds: int = 0,
+    msp_districts: Sequence[Mapping[str, object]] = (),
 ) -> str:
     rows = "".join(
         (
@@ -1143,7 +1188,7 @@ def render_super_admin_page(
         for c in setup_codes
     ) or '<tr><td colspan="7" class="empty-state">No setup codes generated yet.</td></tr>'
 
-    section = active_section if active_section in {"schools", "billing", "platform-audit", "create-school", "security", "server-tools", "health", "email-tool", "setup-codes"} else "schools"
+    section = active_section if active_section in {"schools", "billing", "platform-audit", "create-school", "security", "server-tools", "health", "email-tool", "setup-codes", "noc", "msp"} else "schools"
 
     def _section_style(name: str) -> str:
         return "" if section == name else ' style="display:none;"'
@@ -1281,6 +1326,148 @@ def render_super_admin_page(
     ) or '<tr><td colspan="6" class="empty-state">No emails sent yet.</td></tr>'
     _et_disabled = "disabled" if not email_configured else ""
 
+    # ── NOC computed vars ────────────────────────────────────────────────────────
+    _noc_hs = health_status
+    _noc_overall = _noc_hs.overall if _noc_hs else "unknown"
+    _noc_pill_cls = {"ok": "ok", "degraded": "warn", "error": "danger"}.get(_noc_overall, "")
+    _noc_label = {"ok": "Healthy", "degraded": "Degraded", "error": "Down"}.get(_noc_overall, "Unknown")
+    _noc_api_cls = "ok" if _noc_hs and _noc_hs.overall != "error" else "danger"
+    _noc_db_cls = "ok" if (_noc_hs and _noc_hs.db_ok) else "danger"
+    _noc_db_text = "OK" if (_noc_hs and _noc_hs.db_ok) else "Error"
+    _noc_ws = str(_noc_hs.ws_connections if _noc_hs else 0)
+    _noc_tenant_count = str(len(noc_tenant_data))
+    _noc_has_alarm = any(bool(t.get("alarm_active")) for t in noc_tenant_data)
+
+    def _fmt_uptime(sec: int) -> str:
+        if sec <= 0:
+            return "—"
+        d, rem = divmod(sec, 86400)
+        h, rem = divmod(rem, 3600)
+        m = rem // 60
+        if d > 0:
+            return f"{d}d {h}h"
+        if h > 0:
+            return f"{h}h {m}m"
+        return f"{m}m"
+
+    _noc_uptime_str = _fmt_uptime(noc_uptime_seconds)
+
+    def _noc_tenant_card(t: Mapping[str, object]) -> str:
+        slug = escape(str(t.get("slug", "")))
+        name = escape(str(t.get("name", slug)))
+        is_alarm = bool(t.get("alarm_active"))
+        card_mod = "school-card--alarm" if is_alarm else "school-card--ok"
+        status_pill = "danger" if is_alarm else "ok"
+        status_text = "Alarm Active" if is_alarm else "Normal"
+        ws = int(t.get("ws_connections") or 0)
+        last_at_raw = str(t.get("last_alert_at") or "")
+        last_at = last_at_raw[:16].replace("T", " ") + " UTC" if last_at_raw else "No alerts"
+        ack_count = int(t.get("ack_count") or 0)
+        user_count = int(t.get("user_count") or 0)
+        ack_html = f'<div class="school-card-message">{ack_count}/{user_count} acknowledged</div>' if is_alarm and user_count > 0 else ""
+        alarm_msg_raw = str(t.get("alarm_message") or "")
+        alarm_msg_html = f'<p class="school-card-message">{escape(alarm_msg_raw[:60])}</p>' if alarm_msg_raw else ""
+        return (
+            f'<div class="school-card {card_mod}" onclick="window.location=\'/super-admin?section=schools\'">'
+            f'<div class="school-card-header">'
+            f'<span class="school-card-name">{name}</span>'
+            f'<span class="status-pill {status_pill}" style="font-size:0.7rem;padding:2px 8px;">{status_text}</span>'
+            f'</div>'
+            f'{alarm_msg_html}'
+            f'<div class="school-card-footer">'
+            f'<span class="school-card-last">WS: {ws} &nbsp;·&nbsp; {escape(last_at)}</span>'
+            f'</div>'
+            f'{ack_html}'
+            f'</div>'
+        )
+
+    _noc_tenant_cards_html = "".join(_noc_tenant_card(t) for t in noc_tenant_data) or \
+        '<p class="mini-copy" style="padding:16px 0;">No tenants provisioned yet.</p>'
+
+    _noc_alarm_banner_html = (
+        f'<div class="flash error" id="noc-alarm-banner" style="margin-bottom:16px;">'
+        f'🔴 ALARM ACTIVE in: {escape(", ".join(str(t.get("name","")) for t in noc_tenant_data if t.get("alarm_active")))}'
+        f'</div>'
+    ) if _noc_has_alarm else '<div id="noc-alarm-banner" style="display:none;"></div>'
+
+    _noc_sys_banner_html = (
+        f'<div class="flash error" id="noc-sys-banner" style="margin-bottom:16px;">'
+        f'⚠ System status: {escape(_noc_label)}'
+        + (f' — {escape(_noc_hs.error_note)}' if _noc_hs and _noc_hs.error_note else "")
+        + '</div>'
+    ) if _noc_hs and _noc_overall in ("error", "degraded") else \
+        '<div id="noc-sys-banner" style="display:none;"></div>'
+
+    # ── MSP computed vars ─────────────────────────────────────────────────────
+    _msp_alarm_districts = [d for d in msp_districts if str(d.get("status", "")) == "alarm"]
+    _msp_has_alarm = bool(_msp_alarm_districts)
+
+    _MSP_STATUS_COLORS = {"alarm": "#ef4444", "healthy": "#22c55e", "empty": "#94a3b8", "offline": "#64748b"}
+    _MSP_STATUS_LABELS = {"alarm": "Alarm Active", "healthy": "Healthy", "empty": "No Schools", "offline": "Offline"}
+    _MSP_STATUS_PILL   = {"alarm": "danger", "healthy": "ok", "empty": "", "offline": ""}
+
+    def _msp_customer_card(d: Mapping[str, object]) -> str:
+        slug = escape(str(d.get("slug", "")))
+        name = escape(str(d.get("name", slug)))
+        status = str(d.get("status", "healthy"))
+        pill_cls = _MSP_STATUS_PILL.get(status, "")
+        pill_label = _MSP_STATUS_LABELS.get(status, status.title())
+        school_count = int(d.get("school_count") or 0)
+        alarm_count = int(d.get("alarm_count") or 0)
+        ws = int(d.get("ws_total") or 0)
+        last_raw = str(d.get("last_activity") or "")
+        last_fmt = last_raw[:16].replace("T", " ") + " UTC" if last_raw else "No alerts"
+        is_district = bool(d.get("is_district"))
+        billing_ok = bool(d.get("billing_ok", True))
+        type_tag = "District" if is_district else "School"
+        border_color = _MSP_STATUS_COLORS.get(status, "#94a3b8")
+        alarm_badge = f'<span style="color:#ef4444;font-size:0.75rem;font-weight:600;">⚠ {alarm_count} alarm</span>' if alarm_count > 0 else ""
+        billing_badge = "" if billing_ok else '<span style="color:#f59e0b;font-size:0.75rem;font-weight:600;margin-left:8px;">Billing</span>'
+        return (
+            f'<div class="msp-card" data-slug="{slug}" data-status="{escape(status)}" data-name="{name}" '
+            f'style="border-left:4px solid {border_color};">'
+            f'<div class="msp-card-header">'
+            f'<div>'
+            f'<span class="msp-card-type">{type_tag}</span>'
+            f'<h3 class="msp-card-name">{name}</h3>'
+            f'</div>'
+            f'<span class="status-pill {pill_cls}" style="font-size:0.7rem;padding:2px 10px;white-space:nowrap;">{pill_label}</span>'
+            f'</div>'
+            f'<div class="msp-card-meta">'
+            f'<span>{school_count} school{"s" if school_count != 1 else ""}</span>'
+            f'<span>WS: {ws}</span>'
+            f'<span style="color:var(--text-muted);font-size:0.75rem;">{escape(last_fmt)}</span>'
+            f'</div>'
+            f'<div class="msp-card-badges">{alarm_badge}{billing_badge}</div>'
+            f'<div class="msp-card-actions">'
+            f'<button class="button button-secondary" style="font-size:0.78rem;padding:4px 12px;" '
+            f'onclick="mspOpenDetail(\'{slug}\')" type="button">Details</button>'
+            f'</div>'
+            f'</div>'
+        )
+
+    _msp_cards_html = "".join(_msp_customer_card(d) for d in msp_districts) or \
+        '<p class="mini-copy" style="padding:24px 0;">No districts or schools configured yet.</p>'
+
+    _msp_global_alerts_html = ""
+    if _msp_has_alarm:
+        _msp_rows = "".join(
+            f'<tr>'
+            f'<td><span class="status-pill danger" style="font-size:0.7rem;">Alarm</span></td>'
+            f'<td><strong>{escape(str(d.get("name", "")))}</strong></td>'
+            f'<td>{int(d.get("alarm_count") or 0)} active</td>'
+            f'<td><button class="button button-secondary" style="font-size:0.75rem;padding:3px 10px;" '
+            f'onclick="mspOpenDetail(\'{escape(str(d.get("slug", "")))}\')" type="button">View</button></td>'
+            f'</tr>'
+            for d in sorted(msp_districts, key=lambda x: (0 if x.get("status") == "alarm" else 1, str(x.get("name", ""))))
+            if d.get("status") == "alarm"
+        )
+        _msp_global_alerts_html = (
+            f'<div class="flash error" style="margin-bottom:16px;" id="msp-alarm-strip">'
+            f'🔴 ACTIVE ALARMS: {escape(", ".join(str(d.get("name","")) for d in _msp_alarm_districts))}'
+            f'</div>'
+        )
+
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1306,6 +1493,8 @@ def render_super_admin_page(
           <div class="nav-group">
             <p class="nav-label">Control</p>
           <nav class="nav-list">
+            {_nav_item("msp", "MSP Dashboard", "!" if any(str(d.get("status","")) == "alarm" for d in msp_districts) else (str(len(msp_districts)) if msp_districts else None))}
+            {_nav_item("noc", "Operations", "!" if (health_status and health_status.overall != "ok") or any(bool(t.get("alarm_active")) for t in noc_tenant_data) else None)}
             {_nav_item("schools", "Schools", str(len(school_rows)) if school_rows else None)}
             {_nav_item("billing", "Billing", str(len(billing_rows)) if billing_rows else None)}
             {_nav_item("create-school", "Create School")}
@@ -1328,6 +1517,458 @@ def render_super_admin_page(
         </section>
       </aside>
       <section class="content-stack workspace">
+        <section class="panel command-section" id="msp"{_section_style("msp")}>
+          <div class="panel-header hero-band">
+            <div>
+              <p class="eyebrow">Service Provider</p>
+              <h1>MSP Dashboard</h1>
+              <p class="hero-copy">Customer operations: district &amp; school health, active incidents, push delivery, and operator notes — all in one view.</p>
+            </div>
+            <div class="status-row">
+              <span class="status-pill {'danger' if _msp_has_alarm else 'ok'}" id="msp-overall-pill">{'⚠ Alarm Active' if _msp_has_alarm else 'All Healthy'}</span>
+              <span class="status-pill" style="font-size:0.75rem;" id="msp-last-refresh">Live</span>
+            </div>
+          </div>
+          {_msp_global_alerts_html}
+          <div class="msp-search-bar">
+            <input type="search" id="msp-search" placeholder="Search customers, districts, schools…" oninput="mspFilter(this.value)" />
+            <select id="msp-status-filter" onchange="mspFilter(document.getElementById('msp-search').value)" style="max-width:160px;">
+              <option value="">All statuses</option>
+              <option value="alarm">Alarm Active</option>
+              <option value="healthy">Healthy</option>
+              <option value="empty">No Schools</option>
+              <option value="offline">Offline</option>
+            </select>
+          </div>
+          <div class="msp-grid" id="msp-customer-grid">
+            {_msp_cards_html}
+          </div>
+          <!-- Detail drawer rendered here by JS -->
+          <div id="msp-detail-drawer" style="display:none;"></div>
+
+          <script>
+          (function() {{
+            var _openSlug = null;
+
+            function mspIsVisible() {{
+              var el = document.getElementById('msp');
+              return el && el.style.display !== 'none';
+            }}
+            window.mspFilter = function(q) {{
+              var statusF = (document.getElementById('msp-status-filter') || {{}}).value || '';
+              var term = (q || '').trim().toLowerCase();
+              var cards = document.querySelectorAll('#msp-customer-grid .msp-card');
+              cards.forEach(function(c) {{
+                var name = (c.dataset.name || '').toLowerCase();
+                var slug = (c.dataset.slug || '').toLowerCase();
+                var status = (c.dataset.status || '');
+                var matchQ = !term || name.indexOf(term) >= 0 || slug.indexOf(term) >= 0;
+                var matchS = !statusF || status === statusF;
+                c.style.display = (matchQ && matchS) ? '' : 'none';
+              }});
+            }};
+
+            window.mspOpenDetail = function(slug) {{
+              if (_openSlug === slug) {{
+                _openSlug = null;
+                document.getElementById('msp-detail-drawer').style.display = 'none';
+                return;
+              }}
+              _openSlug = slug;
+              var drawer = document.getElementById('msp-detail-drawer');
+              drawer.style.display = '';
+              drawer.innerHTML = '<div style="padding:20px;color:var(--muted);">Loading…</div>';
+              Promise.all([
+                fetch('/super-admin/msp/district/' + encodeURIComponent(slug)).then(function(r) {{ return r.ok ? r.json() : null; }}),
+              ]).then(function(results) {{
+                var d = results[0];
+                if (!d) {{ drawer.innerHTML = '<p style="color:#ef4444;padding:16px;">Failed to load detail.</p>'; return; }}
+                drawer.innerHTML = _renderDetail(d);
+                _setupNoteForm(drawer, slug);
+              }}).catch(function(e) {{
+                drawer.innerHTML = '<p style="color:#ef4444;padding:16px;">Error: ' + e + '</p>';
+              }});
+            }};
+
+            function _fmt(iso) {{
+              if (!iso) return '—';
+              try {{ return iso.substring(0,16).replace('T',' ') + ' UTC'; }} catch(e) {{ return iso; }}
+            }}
+
+            function _renderDetail(d) {{
+              var schoolsHtml = (d.schools || []).map(function(s) {{
+                var noc = (d.noc || []).find(function(n) {{ return n.slug === s.slug; }}) || {{}};
+                var push = (d.push || []).find(function(p) {{ return p.slug === s.slug; }}) || {{}};
+                var alarm = !!noc.alarm_active;
+                var pillCls = alarm ? 'danger' : 'ok';
+                var pillLabel = alarm ? 'Alarm' : 'Normal';
+                var failed = push.failed || 0;
+                return '<li class="msp-school-row">'
+                  + '<div><strong>' + s.name + '</strong><span style="font-size:0.72rem;color:var(--muted);margin-left:6px;">/' + s.slug + '</span></div>'
+                  + '<div style="display:flex;align-items:center;gap:8px;">'
+                  + '<span class="status-pill ' + pillCls + '" style="font-size:0.68rem;padding:2px 8px;">' + pillLabel + '</span>'
+                  + (failed > 0 ? '<span style="color:#ef4444;font-size:0.75rem;">' + failed + ' failed</span>' : '')
+                  + '<a class="button button-secondary" href="/super-admin/schools/' + s.slug + '/enter" style="font-size:0.75rem;padding:3px 10px;text-decoration:none;" onclick="this.closest(\'form\') || this.insertAdjacentHTML(\'afterend\',\'<form method=post action=\\\'/super-admin/schools/' + s.slug + '/enter\\\'><input type=hidden name=_go value=1></form>\') ; this.nextElementSibling.submit(); return false;">Open Admin</a>'
+                  + '</div>'
+                  + '</li>';
+              }}).join('') || '<li style="color:var(--muted);font-size:0.83rem;padding:6px 0;">No schools.</li>';
+
+              var notesHtml = (d.notes || []).map(function(n) {{
+                return '<div class="msp-note-item" id="msp-note-' + n.id + '">'
+                  + '<div><div>' + _esc(n.note_text) + '</div><div class="msp-note-meta">' + _esc(n.created_by) + ' · ' + _fmt(n.created_at) + '</div></div>'
+                  + '<button class="button button-danger-outline" style="font-size:0.72rem;padding:2px 8px;flex-shrink:0;" onclick="mspDeleteNote(' + n.id + ',\'' + _esc(d.slug) + '\')" type="button">Remove</button>'
+                  + '</div>';
+              }}).join('') || '<p style="color:var(--muted);font-size:0.82rem;margin:0 0 8px;">No notes yet.</p>';
+
+              var activeAlarms = (d.noc || []).filter(function(n) {{ return n.alarm_active; }});
+              var alarmHtml = activeAlarms.length ? activeAlarms.map(function(n) {{
+                return '<div style="background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.3);border-radius:6px;padding:8px 12px;margin-bottom:6px;font-size:0.82rem;">'
+                  + '<strong style="color:#ef4444;">' + _esc(n.name) + '</strong>'
+                  + (n.alarm_message ? '<p style="margin:4px 0 0;">' + _esc(n.alarm_message) + '</p>' : '')
+                  + '<div style="font-size:0.72rem;color:var(--muted);margin-top:4px;">' + (n.ack_count||0) + '/' + (n.user_count||0) + ' acknowledged</div>'
+                  + '</div>';
+              }}).join('') : '<p style="color:var(--muted);font-size:0.82rem;margin:0;">No active alarms.</p>';
+
+              return '<div class="msp-detail-drawer">'
+                + '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">'
+                + '<h2 style="margin:0;font-size:1.1rem;">' + _esc(d.name) + '</h2>'
+                + '<button class="button button-secondary" style="font-size:0.75rem;" onclick="mspOpenDetail(\'' + _esc(d.slug) + '\')" type="button">Close</button>'
+                + '</div>'
+                + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;">'
+                + '<div>'
+                  + '<h4>Schools / Buildings</h4>'
+                  + '<ul class="msp-school-list">' + schoolsHtml + '</ul>'
+                  + '<h4>Active Alarms</h4>' + alarmHtml
+                + '</div>'
+                + '<div>'
+                  + '<h4>Operator Notes</h4>'
+                  + '<div class="msp-note-list" id="msp-notes-' + _esc(d.slug) + '">' + notesHtml + '</div>'
+                  + '<form class="msp-note-form" data-slug="' + _esc(d.slug) + '" style="display:flex;gap:8px;align-items:flex-end;">'
+                  + '<div class="field" style="flex:1;margin:0;">'
+                  + '<textarea name="note_text" rows="2" placeholder="Add internal note…" style="width:100%;resize:vertical;"></textarea>'
+                  + '</div>'
+                  + '<button class="button button-primary" type="submit" style="font-size:0.8rem;padding:6px 14px;align-self:flex-end;">Add</button>'
+                  + '</form>'
+                + '</div>'
+                + '</div>'
+                + '</div>';
+            }}
+
+            function _esc(s) {{
+              return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+            }}
+
+            function _setupNoteForm(drawer, slug) {{
+              var form = drawer.querySelector('.msp-note-form');
+              if (!form) return;
+              form.addEventListener('submit', function(e) {{
+                e.preventDefault();
+                var text = (form.querySelector('[name=note_text]') || {{}}).value || '';
+                if (!text.trim()) return;
+                fetch('/super-admin/msp/notes', {{
+                  method: 'POST',
+                  headers: {{'Content-Type': 'application/json'}},
+                  body: JSON.stringify({{tenant_slug: slug, note_text: text.trim()}})
+                }}).then(function(r) {{ return r.ok ? r.json() : null; }}).then(function(d) {{
+                  if (!d || !d.note) return;
+                  var n = d.note;
+                  var list = document.getElementById('msp-notes-' + slug);
+                  if (list) {{
+                    var p = list.querySelector('p');
+                    if (p) p.remove();
+                    var item = document.createElement('div');
+                    item.className = 'msp-note-item';
+                    item.id = 'msp-note-' + n.id;
+                    item.innerHTML = '<div><div>' + _esc(n.note_text) + '</div><div class="msp-note-meta">' + _esc(n.created_by) + ' · ' + _fmt(n.created_at) + '</div></div>'
+                      + '<button class="button button-danger-outline" style="font-size:0.72rem;padding:2px 8px;flex-shrink:0;" onclick="mspDeleteNote(' + n.id + ',\'' + _esc(slug) + '\')" type="button">Remove</button>';
+                    list.prepend(item);
+                    form.querySelector('[name=note_text]').value = '';
+                  }}
+                }}).catch(function() {{}});
+              }});
+            }}
+
+            window.mspDeleteNote = function(noteId, slug) {{
+              if (!confirm('Remove this note?')) return;
+              fetch('/super-admin/msp/notes/' + noteId, {{method: 'DELETE'}}).then(function(r) {{ return r.ok; }}).then(function(ok) {{
+                if (ok) {{ var el = document.getElementById('msp-note-' + noteId); if (el) el.remove(); }}
+              }}).catch(function() {{}});
+            }};
+
+            function mspRefreshCards() {{
+              if (!mspIsVisible()) return;
+              fetch('/super-admin/tenant-health').then(function(r) {{ return r.ok ? r.json() : null; }}).then(function(d) {{
+                if (!d || !d.tenants) return;
+                var bySlug = {{}};
+                d.tenants.forEach(function(t) {{ bySlug[t.slug] = t; }});
+                var alarmNames = [];
+                var cards = document.querySelectorAll('#msp-customer-grid .msp-card');
+                cards.forEach(function(card) {{
+                  var slug = card.dataset.slug;
+                  var t = bySlug[slug];
+                  if (!t) return;
+                  var alarm = !!t.alarm_active;
+                  if (alarm) alarmNames.push(card.dataset.name || slug);
+                  var newStatus = alarm ? 'alarm' : 'healthy';
+                  card.dataset.status = newStatus;
+                  card.style.borderLeftColor = alarm ? '#ef4444' : '#22c55e';
+                  var pill = card.querySelector('.status-pill');
+                  if (pill) {{
+                    pill.className = 'status-pill ' + (alarm ? 'danger' : 'ok');
+                    pill.textContent = alarm ? 'Alarm Active' : 'Healthy';
+                  }}
+                  var badges = card.querySelector('.msp-card-badges');
+                  if (badges) {{
+                    var existing = badges.querySelector('.msp-alarm-badge');
+                    if (alarm && !existing) {{
+                      var b = document.createElement('span');
+                      b.className = 'msp-alarm-badge';
+                      b.style.cssText = 'color:#ef4444;font-size:0.75rem;font-weight:600;';
+                      b.textContent = '⚠ 1 alarm';
+                      badges.prepend(b);
+                    }} else if (!alarm && existing) {{
+                      existing.remove();
+                    }}
+                  }}
+                }});
+                var strip = document.getElementById('msp-alarm-strip');
+                if (strip) {{
+                  if (alarmNames.length) {{
+                    strip.style.display = '';
+                    strip.textContent = '🔴 ACTIVE ALARMS: ' + alarmNames.join(', ');
+                  }} else {{
+                    strip.style.display = 'none';
+                  }}
+                }}
+                var pill = document.getElementById('msp-overall-pill');
+                if (pill) {{
+                  pill.className = 'status-pill ' + (alarmNames.length ? 'danger' : 'ok');
+                  pill.textContent = alarmNames.length ? '⚠ Alarm Active' : 'All Healthy';
+                }}
+                var ts = document.getElementById('msp-last-refresh');
+                if (ts) ts.textContent = 'Updated ' + new Date().toISOString().substring(11,16) + ' UTC';
+              }}).catch(function() {{}});
+            }}
+
+            mspRefreshCards();
+            setInterval(mspRefreshCards, 15000);
+          }})();
+          </script>
+        </section>
+        <section class="panel command-section" id="noc"{_section_style("noc")}>
+          <div class="panel-header hero-band">
+            <div>
+              <p class="eyebrow">Live Operations</p>
+              <h1>Operations Center</h1>
+              <p class="hero-copy">Real-time system health, active alarms, push delivery, and cross-tenant activity. Refreshes automatically.</p>
+            </div>
+            <div class="status-row">
+              <span class="status-pill {_noc_pill_cls}" id="noc-overall-pill"><strong>System</strong>{_noc_label}</span>
+              <span class="status-pill" id="noc-last-update" style="font-size:0.75rem;font-weight:400;">Live</span>
+            </div>
+          </div>
+          {_noc_sys_banner_html}
+          {_noc_alarm_banner_html}
+          <div class="kpi-grid" style="grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:24px;">
+            <div class="kpi-card">
+              <p class="kpi-label">API</p>
+              <p class="kpi-value" id="noc-api-status" style="font-size:1.25rem;color:{'#22c55e' if _noc_api_cls == 'ok' else '#ef4444'};">{"OK" if _noc_api_cls == "ok" else "Error"}</p>
+            </div>
+            <div class="kpi-card">
+              <p class="kpi-label">Database</p>
+              <p class="kpi-value" id="noc-db-status" style="font-size:1.25rem;color:{'#22c55e' if _noc_db_cls == 'ok' else '#ef4444'};">{_noc_db_text}</p>
+            </div>
+            <div class="kpi-card">
+              <p class="kpi-label">WS Connections</p>
+              <p class="kpi-value" id="noc-ws-count" style="font-size:1.25rem;">{_noc_ws}</p>
+            </div>
+            <div class="kpi-card">
+              <p class="kpi-label">Active Tenants</p>
+              <p class="kpi-value" id="noc-tenant-count" style="font-size:1.25rem;">{_noc_tenant_count}</p>
+            </div>
+            <div class="kpi-card">
+              <p class="kpi-label">Uptime</p>
+              <p class="kpi-value" id="noc-uptime" style="font-size:1.25rem;">{_noc_uptime_str}</p>
+            </div>
+          </div>
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;padding-bottom:8px;border-bottom:1px solid var(--border);">
+            <h3 style="font-size:1rem;font-weight:600;margin:0;">Tenant Health</h3>
+            <span style="font-size:0.75rem;color:var(--text-muted);" id="noc-grid-ts"></span>
+          </div>
+          <div class="school-grid" id="noc-tenant-grid" style="margin-bottom:28px;">
+            {_noc_tenant_cards_html}
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-bottom:8px;">
+            <div>
+              <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;padding-bottom:8px;border-bottom:1px solid var(--border);">
+                <h3 style="font-size:1rem;font-weight:600;margin:0;">Live Activity</h3>
+                <span style="font-size:0.75rem;color:var(--text-muted);" id="noc-activity-ts"></span>
+              </div>
+              <div class="table-wrap" style="max-height:300px;overflow-y:auto;">
+                <table class="data-table" style="font-size:0.8rem;">
+                  <thead><tr><th>Time (UTC)</th><th>School</th><th>Event</th><th>By</th></tr></thead>
+                  <tbody id="noc-activity-body"><tr><td colspan="4" style="color:var(--text-muted);padding:12px 0;">Loading&hellip;</td></tr></tbody>
+                </table>
+              </div>
+            </div>
+            <div>
+              <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;padding-bottom:8px;border-bottom:1px solid var(--border);">
+                <h3 style="font-size:1rem;font-weight:600;margin:0;">Push Delivery</h3>
+                <span style="font-size:0.75rem;color:var(--text-muted);" id="noc-push-ts"></span>
+              </div>
+              <div class="table-wrap" style="max-height:300px;overflow-y:auto;">
+                <table class="data-table" style="font-size:0.8rem;">
+                  <thead><tr><th>School</th><th>Sent</th><th>OK</th><th>Failed</th><th>Last Alert</th></tr></thead>
+                  <tbody id="noc-push-body"><tr><td colspan="5" style="color:var(--text-muted);padding:12px 0;">Loading&hellip;</td></tr></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+          <script>
+          (function() {{
+            function _nocVisible() {{
+              var el = document.getElementById('noc');
+              return el && el.style.display !== 'none';
+            }}
+            function _fmtIso(iso) {{
+              if (!iso) return '—';
+              try {{ return iso.substring(0, 16).replace('T', ' ') + ' UTC'; }} catch(e) {{ return String(iso); }}
+            }}
+            function _fmtUptime(s) {{
+              s = s || 0;
+              var d = Math.floor(s / 86400), r = s % 86400, h = Math.floor(r / 3600), m = Math.floor((r % 3600) / 60);
+              if (d > 0) return d + 'd ' + h + 'h';
+              if (h > 0) return h + 'h ' + m + 'm';
+              return m + 'm';
+            }}
+            function _setHtml(id, html) {{ var el = document.getElementById(id); if (el) el.innerHTML = html; }}
+            function _setText(id, txt) {{ var el = document.getElementById(id); if (el) el.textContent = txt; }}
+            function _nowUtc() {{ return new Date().toISOString().substring(11, 16) + ' UTC'; }}
+
+            function fetchMetrics() {{
+              if (!_nocVisible()) return;
+              fetch('/super-admin/metrics').then(function(r) {{ return r.ok ? r.json() : null; }}).then(function(d) {{
+                if (!d) return;
+                var pillMap = {{ok: 'ok', degraded: 'warn', error: 'danger'}};
+                var labelMap = {{ok: 'Healthy', degraded: 'Degraded', error: 'Down'}};
+                var pillEl = document.getElementById('noc-overall-pill');
+                if (pillEl) {{
+                  pillEl.className = 'status-pill' + (pillMap[d.status] ? ' ' + pillMap[d.status] : '');
+                  pillEl.innerHTML = '<strong>System</strong>' + (labelMap[d.status] || d.status);
+                }}
+                var apiEl = document.getElementById('noc-api-status');
+                if (apiEl) {{
+                  var apiOk = d.status !== 'error';
+                  apiEl.textContent = apiOk ? 'OK' : 'Error';
+                  apiEl.style.color = apiOk ? '#22c55e' : '#ef4444';
+                }}
+                var dbEl = document.getElementById('noc-db-status');
+                if (dbEl) {{
+                  dbEl.textContent = d.db ? 'OK' : 'Error';
+                  dbEl.style.color = d.db ? '#22c55e' : '#ef4444';
+                }}
+                _setText('noc-ws-count', d.ws_connections != null ? String(d.ws_connections) : '—');
+                _setText('noc-tenant-count', d.active_tenants != null ? String(d.active_tenants) : '—');
+                _setText('noc-uptime', _fmtUptime(d.uptime_seconds));
+                _setText('noc-last-update', 'Updated ' + _nowUtc());
+                var sb = document.getElementById('noc-sys-banner');
+                if (sb) {{
+                  if (d.status === 'ok') {{
+                    sb.style.display = 'none';
+                  }} else {{
+                    sb.style.display = '';
+                    sb.textContent = '⚠ System status: ' + (labelMap[d.status] || d.status);
+                  }}
+                }}
+              }}).catch(function() {{}});
+            }}
+
+            function fetchTenantHealth() {{
+              if (!_nocVisible()) return;
+              fetch('/super-admin/tenant-health').then(function(r) {{ return r.ok ? r.json() : null; }}).then(function(d) {{
+                if (!d || !d.tenants) return;
+                var alarmNames = [];
+                var html = d.tenants.map(function(t) {{
+                  var alarm = !!t.alarm_active;
+                  if (alarm) alarmNames.push(t.name || t.slug);
+                  var msg = alarm && t.alarm_message ? '<p class="school-card-message">' + String(t.alarm_message).substring(0, 60) + '</p>' : '';
+                  var ack = alarm && t.user_count > 0 ? '<div class="school-card-message">' + t.ack_count + '/' + t.user_count + ' acknowledged</div>' : '';
+                  return '<div class="school-card ' + (alarm ? 'school-card--alarm' : 'school-card--ok') + '" onclick="window.location=\'/super-admin?section=schools\'">'
+                    + '<div class="school-card-header">'
+                    + '<span class="school-card-name">' + (t.name || t.slug) + '</span>'
+                    + '<span class="status-pill ' + (alarm ? 'danger' : 'ok') + '" style="font-size:0.7rem;padding:2px 8px;">' + (alarm ? 'Alarm Active' : 'Normal') + '</span>'
+                    + '</div>' + msg
+                    + '<div class="school-card-footer"><span class="school-card-last">WS: ' + (t.ws_connections || 0) + ' &nbsp;&middot;&nbsp; ' + _fmtIso(t.last_alert_at) + '</span></div>'
+                    + ack + '</div>';
+                }}).join('') || '<p class="mini-copy" style="padding:16px 0;">No tenants provisioned yet.</p>';
+                _setHtml('noc-tenant-grid', html);
+                _setText('noc-grid-ts', _nowUtc());
+                var ab = document.getElementById('noc-alarm-banner');
+                if (ab) {{
+                  if (alarmNames.length) {{
+                    ab.style.display = '';
+                    ab.textContent = '🔴 ALARM ACTIVE in: ' + alarmNames.join(', ');
+                  }} else {{
+                    ab.style.display = 'none';
+                  }}
+                }}
+              }}).catch(function() {{}});
+            }}
+
+            function fetchActivity() {{
+              if (!_nocVisible()) return;
+              fetch('/super-admin/system-activity?limit=40').then(function(r) {{ return r.ok ? r.json() : null; }}).then(function(d) {{
+                if (!d || !d.events) return;
+                var tbody = document.getElementById('noc-activity-body');
+                if (!tbody) return;
+                if (!d.events.length) {{
+                  tbody.innerHTML = '<tr><td colspan="4" style="color:var(--text-muted);padding:12px 0;">No recent activity.</td></tr>';
+                  return;
+                }}
+                tbody.innerHTML = d.events.slice(0, 30).map(function(e) {{
+                  return '<tr>'
+                    + '<td style="white-space:nowrap;">' + _fmtIso(e.created_at || e.timestamp) + '</td>'
+                    + '<td>' + (e.school || e.tenant || '—') + '</td>'
+                    + '<td>' + (e.action || e.event || '—') + '</td>'
+                    + '<td>' + (e.by || e.user || '—') + '</td>'
+                    + '</tr>';
+                }}).join('');
+                _setText('noc-activity-ts', '— ' + _nowUtc());
+              }}).catch(function() {{}});
+            }}
+
+            function fetchPushStats() {{
+              if (!_nocVisible()) return;
+              fetch('/super-admin/push-stats').then(function(r) {{ return r.ok ? r.json() : null; }}).then(function(d) {{
+                if (!d || !d.tenants) return;
+                var tbody = document.getElementById('noc-push-body');
+                if (!tbody) return;
+                if (!d.tenants.length) {{
+                  tbody.innerHTML = '<tr><td colspan="5" style="color:var(--text-muted);padding:12px 0;">No push data yet.</td></tr>';
+                  return;
+                }}
+                tbody.innerHTML = d.tenants.map(function(t) {{
+                  var failStyle = t.failed > 0 ? ' style="color:#ef4444;"' : '';
+                  return '<tr>'
+                    + '<td>' + (t.name || t.slug) + '</td>'
+                    + '<td>' + (t.total || 0) + '</td>'
+                    + '<td>' + (t.ok || 0) + '</td>'
+                    + '<td' + failStyle + '>' + (t.failed || 0) + '</td>'
+                    + '<td style="white-space:nowrap;">' + _fmtIso(t.last_alert_at) + '</td>'
+                    + '</tr>';
+                }}).join('');
+                _setText('noc-push-ts', '— ' + _nowUtc());
+              }}).catch(function() {{}});
+            }}
+
+            fetchMetrics(); fetchTenantHealth(); fetchActivity(); fetchPushStats();
+            setInterval(fetchMetrics, 10000);
+            setInterval(fetchTenantHealth, 10000);
+            setInterval(fetchActivity, 15000);
+            setInterval(fetchPushStats, 30000);
+          }})();
+          </script>
+        </section>
         <section class="panel command-section" id="schools"{_section_style("schools")}>
           <div class="panel-header hero-band">
             <div>
@@ -2094,6 +2735,199 @@ def render_change_password_page(
 </html>"""
 
 
+_BRANDING_CSS = """<style>
+.bbp-preset-bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:14px 18px;background:var(--bg-offset,#f8fafc);border:1px solid var(--border);border-radius:10px;margin-bottom:20px;}
+.bbp-preset-bar select{flex:1;min-width:160px;max-width:240px;}
+.bbp-field{margin-bottom:18px;}
+.bbp-label{font-size:.82rem;font-weight:600;display:block;margin-bottom:6px;}
+.bbp-row{display:flex;gap:8px;align-items:center;}
+.bbp-swatch-big{width:40px;height:40px;border-radius:8px;flex-shrink:0;cursor:pointer;border:2px solid rgba(0,0,0,.12);box-shadow:0 2px 6px rgba(0,0,0,.15);transition:transform .1s;}
+.bbp-swatch-big:hover{transform:scale(1.08);}
+.bbp-hex{flex:1;font-family:monospace;font-size:.88rem;letter-spacing:.04em;}
+.bbp-chevron{padding:4px 10px;background:none;border:1px solid var(--border);border-radius:6px;cursor:pointer;color:var(--muted);line-height:1;}
+.bbp-panel{margin-top:8px;background:var(--card,#fff);border:1px solid var(--border);border-radius:10px;padding:12px 14px;box-shadow:0 6px 24px rgba(0,0,0,.1);position:relative;z-index:20;}
+.bbp-palette{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;}
+.bbp-pal-sw{width:22px;height:22px;border-radius:5px;cursor:pointer;border:2px solid transparent;transition:transform .1s,border-color .1s;}
+.bbp-pal-sw:hover{transform:scale(1.2);border-color:rgba(0,0,0,.3);}
+.bbp-sliders{display:flex;flex-direction:column;gap:9px;}
+.bbp-slider-row{display:flex;align-items:center;gap:10px;font-size:.72rem;color:var(--muted);}
+.bbp-slider-row>span{width:14px;font-weight:700;flex-shrink:0;}
+.bbp-hue-rail{flex:1;height:12px;border-radius:6px;background:linear-gradient(to right,#f00,#ff0,#0f0,#0ff,#00f,#f0f,#f00);}
+.bbp-hue-rail input[type=range]{width:100%;height:12px;margin:0;padding:0;background:transparent;border:none;-webkit-appearance:none;appearance:none;cursor:pointer;}
+.bbp-hue-rail input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:16px;height:16px;border-radius:50%;background:#fff;border:2px solid rgba(0,0,0,.25);box-shadow:0 1px 4px rgba(0,0,0,.3);}
+.bbp-sl{flex:1;height:4px;-webkit-appearance:none;appearance:none;border-radius:2px;background:var(--border);cursor:pointer;}
+.bbp-sl::-webkit-slider-thumb{-webkit-appearance:none;width:14px;height:14px;border-radius:50%;background:var(--accent,#1b5fe4);border:none;box-shadow:0 1px 3px rgba(0,0,0,.2);}
+.bbp-tabs{display:flex;gap:2px;background:var(--border);border-radius:8px;padding:2px;margin-bottom:12px;}
+.bbp-tab{flex:1;padding:5px 4px;border:none;background:none;font-size:.72rem;border-radius:6px;cursor:pointer;transition:background .1s;color:var(--muted);}
+.bbp-tab.active{background:var(--card,#fff);font-weight:600;color:var(--text);box-shadow:0 1px 3px rgba(0,0,0,.1);}
+.bbp-phone{width:152px;margin:0 auto;background:#16213e;border-radius:26px;padding:8px 5px;box-shadow:0 12px 32px rgba(0,0,0,.35);}
+.bbp-phone-screen{border-radius:18px;overflow:hidden;background:#f8fafc;}
+.bbp-phone-notch{height:16px;background:#16213e;display:flex;align-items:center;justify-content:center;}
+.bbp-phone-notch-pill{width:40px;height:6px;background:#0d1526;border-radius:3px;}
+.bbp-phone-bar{height:52px;display:flex;align-items:center;padding:0 12px;gap:8px;}
+.bbp-phone-content{padding:10px 10px 14px;}
+.bbp-android-bar{height:56px;display:flex;align-items:center;padding:0 14px;}
+.bbp-contrast{font-size:.78rem;padding:7px 12px;border-radius:7px;background:var(--bg-offset,#f8fafc);border:1px solid var(--border);min-height:34px;display:flex;align-items:center;}
+.bbp-saved-list{display:flex;flex-direction:column;gap:6px;margin-top:8px;}
+.bbp-saved-item{display:flex;align-items:center;gap:8px;background:var(--card,#fff);border:1px solid var(--border);border-radius:8px;padding:7px 10px;font-size:.82rem;}
+.bbp-saved-swatches{display:flex;gap:3px;flex-shrink:0;}
+.bbp-saved-sw{width:14px;height:14px;border-radius:3px;border:1px solid rgba(0,0,0,.1);}
+.bbp-extracted-banner{background:linear-gradient(90deg,#fffbeb,#fef3c7);border:1px solid #fbbf24;border-radius:10px;padding:14px 18px;margin-bottom:20px;display:flex;align-items:center;gap:14px;flex-wrap:wrap;}
+</style>"""
+
+_BRANDING_JS = """<script>
+(function(){
+'use strict';
+var _s={};
+function h2r(h){return[parseInt(h.slice(1,3),16)/255,parseInt(h.slice(3,5),16)/255,parseInt(h.slice(5,7),16)/255];}
+function r2h(r,g,b){return'#'+[r,g,b].map(function(x){return Math.round(Math.max(0,Math.min(255,x*255))).toString(16).padStart(2,'0');}).join('');}
+function rgb2hsl(r,g,b){var mx=Math.max(r,g,b),mn=Math.min(r,g,b),h,s,l=(mx+mn)/2;if(mx===mn){h=s=0;}else{var d=mx-mn;s=l>.5?d/(2-mx-mn):d/(mx+mn);switch(mx){case r:h=((g-b)/d+(g<b?6:0))/6;break;case g:h=((b-r)/d+2)/6;break;default:h=((r-g)/d+4)/6;}}return[Math.round(h*360),Math.round(s*100),Math.round(l*100)];}
+function hsl2h(h,s,l){s/=100;l/=100;var a=s*Math.min(l,1-l);function f(n){var k=(n+h/30)%12,c=l-a*Math.max(Math.min(k-3,9-k,1),-1);return Math.round(255*c).toString(16).padStart(2,'0');}return'#'+f(0)+f(8)+f(4);}
+function vhex(h){return/^#[0-9a-fA-F]{6}$/.test(h);}
+function _sw(id){return document.getElementById('bbs-'+id);}
+function _hi(id){return document.getElementById('s-'+id.replace(/_/g,'-'));}
+function _applyHex(id,hex){var sw=_sw(id),hi=_hi(id);if(sw)sw.style.background=hex;if(hi&&hi.value!==hex)hi.value=hex;}
+function _syncSl(id,hex){if(!vhex(hex))return;var rgb=h2r(hex),hsl=rgb2hsl(rgb[0],rgb[1],rgb[2]);_s[id]={h:hsl[0],s:hsl[1],l:hsl[2]};var hs=document.getElementById('bbhue-'+id),ss=document.getElementById('bbsat-'+id),ls=document.getElementById('bblit-'+id);if(hs)hs.value=hsl[0];if(ss)ss.value=hsl[1];if(ls)ls.value=hsl[2];}
+function _calc(id){var p=_s[id]||{h:220,s:70,l:50};var hex=hsl2h(p.h,p.s,p.l);_applyHex(id,hex);_syncPrev();return hex;}
+window.bbToggle=function(id){var pn=document.getElementById('bbpanel-'+id);if(!pn)return;var was=pn.style.display==='none';document.querySelectorAll('.bbp-panel').forEach(function(p){p.style.display='none';});pn.style.display=was?'':'none';if(was){var hi=_hi(id);if(hi&&vhex(hi.value))_syncSl(id,hi.value);}};
+window.bbSetHex=function(id,hex){_applyHex(id,hex);_syncSl(id,hex);_syncPrev();};
+window.bbHexIn=function(id){var hi=_hi(id);if(!hi)return;var hex=hi.value.trim();if(!vhex(hex))return;_sw(id)&&(_sw(id).style.background=hex);_syncSl(id,hex);_syncPrev();};
+window.bbHueIn=function(id,v){var p=_s[id]||{h:220,s:70,l:50};p.h=+v;_s[id]=p;_calc(id);};
+window.bbSatIn=function(id,v){var p=_s[id]||{h:220,s:70,l:50};p.s=+v;_s[id]=p;_calc(id);};
+window.bbLitIn=function(id,v){var p=_s[id]||{h:220,s:70,l:50};p.l=+v;_s[id]=p;_calc(id);};
+function _gh(id){var hi=_hi(id);return(hi&&vhex(hi.value))?hi.value:null;}
+function _syncPrev(){
+  var ac=_gh('accent'),as=_gh('accent_strong'),ss=_gh('sidebar_start'),se=_gh('sidebar_end');
+  var sb=document.getElementById('bp-sidebar-preview');
+  if(sb)sb.style.background='linear-gradient(180deg,'+(ss||'#092054')+' 0%,'+(se||'#071536')+' 100%)';
+  var gl=document.getElementById('bp-preview-glow');
+  if(gl&&ac)gl.style.background='radial-gradient(circle at top left,'+ac+'28,transparent 60%)';
+  var btn=document.getElementById('bp-preview-btn');if(btn&&ac)btn.style.background=ac;
+  var mb=document.getElementById('bp-mob-bar');if(mb)mb.style.background='linear-gradient(135deg,'+(ss||'#092054')+','+(se||'#071536')+')';
+  var ma=document.getElementById('bp-mob-alert');if(ma&&ac)ma.style.background=ac;
+  var mb2=document.getElementById('bp-mob-badge');if(mb2&&as)mb2.style.background=as;
+  _chkContrast(ac);
+}
+function _lum(hex){if(!vhex(hex))return .5;var rgb=h2r(hex);return rgb.map(function(c,i){c=c<=.03928?c/12.92:Math.pow((c+.055)/1.055,2.4);return c*[.2126,.7152,.0722][i];}).reduce(function(a,b){return a+b;},0);}
+function _chkContrast(ac){var el=document.getElementById('bbp-contrast');if(!el||!ac||!vhex(ac)){return;}var r=(_lum(ac)+.05)/(_lum('#ffffff')+.05);if(r<1)r=1/r;if(r>=4.5){el.innerHTML='<span style="color:#16a34a;">✓ Contrast '+r.toFixed(1)+':1 — WCAG AA pass</span>';}else if(r>=3){el.innerHTML='<span style="color:#d97706;">⚠ Contrast '+r.toFixed(1)+':1 — large text only</span>';}else{el.innerHTML='<span style="color:#dc2626;">✗ Contrast '+r.toFixed(1)+':1 — too low (WCAG AA fail)</span>';}}
+window.bbTab=function(m){['web','ios','android'].forEach(function(t){var el=document.getElementById('bppv-'+t),btn=document.getElementById('bptab-'+t);if(el)el.style.display=t===m?'':'none';if(btn)btn.classList.toggle('active',t===m);});};
+window.bbLoadPreset=function(){var sel=document.getElementById('bbp-sel');if(!sel||!sel.value)return;try{var p=JSON.parse(sel.value);if(p.accent)bbSetHex('accent',p.accent);if(p.accent_strong)bbSetHex('accent_strong',p.accent_strong);if(p.sidebar_start)bbSetHex('sidebar_start',p.sidebar_start);if(p.sidebar_end)bbSetHex('sidebar_end',p.sidebar_end);}catch(e){}};
+window.bbSavePreset=function(){var n=prompt('Name for this preset:','My Theme');if(!n||!n.trim())return;document.getElementById('bbp-pname').value=n.trim();document.getElementById('bbp-save-form').submit();};
+window.bbDelPreset=function(pfx,pid,name){if(!confirm('Delete preset "'+name+'"?'))return;fetch(pfx+'/admin/themes/'+pid,{method:'DELETE'}).then(function(r){if(r.ok){var el=document.getElementById('bbpsaved-'+pid);if(el)el.remove();}});};
+window.bbApplyDistrict=function(pfx){if(!confirm('Apply this branding to ALL schools in the district?\n\nEach school\'s individual branding will be overwritten.'))return;fetch(pfx+'/admin/themes/apply-district',{method:'POST'}).then(function(r){return r.json();}).then(function(d){if(d&&d.ok){var el=document.getElementById('bbp-district-msg');if(el){el.textContent='Applied to '+d.updated+' school(s).';el.style.display='';}alert('Theme applied to '+d.updated+' school(s).');}});};
+window.bbApplyExtracted=function(){var el=document.getElementById('bbp-ext-data');if(!el)return;try{var d=JSON.parse(el.dataset.colors);if(d.accent)bbSetHex('accent',d.accent);if(d.accent_strong)bbSetHex('accent_strong',d.accent_strong);if(d.sidebar_start)bbSetHex('sidebar_start',d.sidebar_start);if(d.sidebar_end)bbSetHex('sidebar_end',d.sidebar_end);var bn=document.getElementById('bbp-ext-banner');if(bn)bn.style.display='none';}catch(e){}};
+window.bbDismissExtracted=function(){var bn=document.getElementById('bbp-ext-banner');if(bn)bn.style.display='none';};
+document.addEventListener('DOMContentLoaded',function(){
+  ['accent','accent_strong','sidebar_start','sidebar_end'].forEach(function(id){
+    var hi=_hi(id);if(hi&&vhex(hi.value))_syncSl(id,hi.value);
+    if(hi)hi.addEventListener('input',function(){bbHexIn(id);});
+  });
+  _syncPrev();bbTab('web');
+  document.addEventListener('click',function(e){if(!e.target.closest('.bbp-field'))document.querySelectorAll('.bbp-panel').forEach(function(p){p.style.display='none';});});
+});
+})();
+</script>"""
+
+
+_BRANDING_PALETTE = [
+    "#1E3A8A","#2563EB","#0891B2","#0D9488","#16A34A","#CA8A04",
+    "#DC2626","#9F1239","#7C3AED","#475569","#111827","#F9FAFB",
+]
+
+_GLOBAL_PRESETS = [
+    {"id":"_g1","name":"BlueBird Classic","accent":"#1b5fe4","accent_strong":"#2f84ff","sidebar_start":"#092054","sidebar_end":"#071536"},
+    {"id":"_g2","name":"Forest","accent":"#15803d","accent_strong":"#22c55e","sidebar_start":"#064e3b","sidebar_end":"#022c22"},
+    {"id":"_g3","name":"Crimson","accent":"#9f1239","accent_strong":"#e11d48","sidebar_start":"#4c0519","sidebar_end":"#2d0312"},
+    {"id":"_g4","name":"Slate","accent":"#475569","accent_strong":"#64748b","sidebar_start":"#1e293b","sidebar_end":"#0f172a"},
+    {"id":"_g5","name":"Amber","accent":"#b45309","accent_strong":"#f59e0b","sidebar_start":"#451a03","sidebar_end":"#27150a"},
+    {"id":"_g6","name":"Violet","accent":"#5b21b6","accent_strong":"#8b5cf6","sidebar_start":"#2e1065","sidebar_end":"#1a0845"},
+]
+
+
+def _bbp_field(field_id: str, label: str, val: str, default: str) -> str:
+    html_id = "s-" + field_id.replace("_", "-")
+    safe_val = escape(val or default)
+    palette_html = "".join(
+        f'<div class="bbp-pal-sw" style="background:{c};" title="{c}" '
+        f'onclick="bbSetHex(\'{field_id}\',\'{c}\')"></div>'
+        for c in _BRANDING_PALETTE
+    )
+    return (
+        f'<div class="bbp-field" id="bbwrap-{field_id}">'
+        f'<span class="bbp-label">{label}</span>'
+        f'<div class="bbp-row">'
+        f'<div class="bbp-swatch-big" id="bbs-{field_id}" style="background:{safe_val};" onclick="bbToggle(\'{field_id}\')"></div>'
+        f'<input id="{html_id}" name="{field_id}" type="text" value="{safe_val}" placeholder="{escape(default)}" maxlength="7" class="bbp-hex" />'
+        f'<button type="button" class="bbp-chevron" onclick="bbToggle(\'{field_id}\')">▾</button>'
+        f'</div>'
+        f'<div class="bbp-panel" id="bbpanel-{field_id}" style="display:none;">'
+        f'<div class="bbp-palette">{palette_html}</div>'
+        f'<div class="bbp-sliders">'
+        f'<div class="bbp-slider-row"><span>H</span>'
+        f'<div class="bbp-hue-rail"><input type="range" min="0" max="360" value="220" id="bbhue-{field_id}" oninput="bbHueIn(\'{field_id}\',this.value)"/></div></div>'
+        f'<div class="bbp-slider-row"><span>S</span>'
+        f'<input type="range" min="0" max="100" value="70" id="bbsat-{field_id}" class="bbp-sl" oninput="bbSatIn(\'{field_id}\',this.value)"/></div>'
+        f'<div class="bbp-slider-row"><span>L</span>'
+        f'<input type="range" min="5" max="95" value="50" id="bblit-{field_id}" class="bbp-sl" oninput="bbLitIn(\'{field_id}\',this.value)"/></div>'
+        f'</div>'
+        f'</div>'
+        f'</div>'
+    )
+
+
+def _bbp_saved_opt(p: Mapping[str, object]) -> str:
+    import json as _json
+    pdata = escape(_json.dumps({"accent": str(p.get("accent", "")), "accent_strong": str(p.get("accent_strong", "")), "sidebar_start": str(p.get("sidebar_start", "")), "sidebar_end": str(p.get("sidebar_end", ""))}, separators=(",", ":")))
+    return f'<option value="{pdata}" id="bbopt-{p["id"]}">{escape(str(p.get("name", "")))}</option>'
+
+
+def _bbp_saved_list(prefix: str, presets: Sequence[Mapping[str, object]]) -> str:
+    user_presets = [p for p in presets if not p.get("is_global")]
+    if not user_presets:
+        return ""
+    items = "".join(
+        f'<div class="bbp-saved-item" id="bbpsaved-{p["id"]}">'
+        f'<div class="bbp-saved-swatches">'
+        f'<div class="bbp-saved-sw" style="background:{escape(str(p.get("accent","") or "#1b5fe4"))};" title="Accent"></div>'
+        f'<div class="bbp-saved-sw" style="background:{escape(str(p.get("sidebar_start","") or "#092054"))};" title="Sidebar"></div>'
+        f'</div>'
+        f'<span style="flex:1;font-size:.82rem;">{escape(str(p.get("name", "")))}</span>'
+        f'<button type="button" class="button button-secondary" style="font-size:.72rem;padding:3px 10px;" '
+        f'onclick="bbSetHex(\'accent\',\'{escape(str(p.get("accent","") or ""))}\');bbSetHex(\'accent_strong\',\'{escape(str(p.get("accent_strong","") or ""))}\');bbSetHex(\'sidebar_start\',\'{escape(str(p.get("sidebar_start","") or ""))}\');bbSetHex(\'sidebar_end\',\'{escape(str(p.get("sidebar_end","") or ""))}\')">Load</button>'
+        f'<button type="button" class="button button-danger-outline" style="font-size:.72rem;padding:3px 8px;" '
+        f'onclick="bbDelPreset(\'{escape(prefix)}\',{int(p["id"])},{escape(repr(str(p.get("name","")))) })">×</button>'
+        f'</div>'
+        for p in user_presets
+    )
+    return f'<div class="bbp-saved-list" style="margin-bottom:20px;">{items}</div>'
+
+
+def _bbp_extracted_banner(prefix: str, extracted: Optional[dict]) -> str:
+    if not extracted:
+        return ""
+    import json as _json
+    colors_json = escape(_json.dumps(extracted, separators=(",", ":")))
+    ac = escape(str(extracted.get("accent", "") or ""))
+    ss = escape(str(extracted.get("sidebar_start", "") or ""))
+    return (
+        f'<div class="bbp-extracted-banner" id="bbp-ext-banner">'
+        f'<div id="bbp-ext-data" data-colors="{colors_json}" style="display:none;"></div>'
+        f'<div style="display:flex;gap:8px;flex-shrink:0;">'
+        f'<div style="width:28px;height:28px;border-radius:6px;background:{ac};border:2px solid rgba(0,0,0,.1);"></div>'
+        f'<div style="width:28px;height:28px;border-radius:6px;background:{ss};border:2px solid rgba(0,0,0,.1);"></div>'
+        f'</div>'
+        f'<div style="flex:1;">'
+        f'<p style="margin:0 0 2px;font-weight:700;font-size:.85rem;">🎨 Colors generated from your logo</p>'
+        f'<p style="margin:0;font-size:.8rem;color:var(--muted);">Apply these extracted colors to the form below — you can still adjust them before saving.</p>'
+        f'</div>'
+        f'<div style="display:flex;gap:8px;flex-shrink:0;">'
+        f'<button type="button" class="button button-primary" onclick="bbApplyExtracted()" style="font-size:.8rem;">Apply colors</button>'
+        f'<button type="button" class="button button-secondary" onclick="bbDismissExtracted()" style="font-size:.8rem;">Dismiss</button>'
+        f'</div>'
+        f'</div>'
+    )
+
+
 def _render_settings_panels(
     prefix: str,
     school_name: str,
@@ -2102,6 +2936,10 @@ def _render_settings_panels(
     school_logo_url: Optional[str],
     theme: Optional[Mapping[str, str]],
     _section_style,
+    theme_presets: list = [],
+    extracted_theme_colors: Optional[dict] = None,
+    admin_role: str = "",
+    has_district: bool = False,
 ) -> str:
     # ── School Info ──────────────────────────────────────────────────────────
     logo_preview = (
@@ -2205,102 +3043,134 @@ def _render_settings_panels(
         </section>
 
         <section class="panel command-section" id="theme-settings"{hidden}>
-          <div class="panel-header">
+          {_BRANDING_CSS}
+          <div class="panel-header" style="margin-bottom:20px;">
             <div>
               <p class="eyebrow">School Settings</p>
-              <h2>Theme &amp; colors</h2>
-              <p class="card-copy">Customize your school's brand colors. The preview updates live as you pick. Leave fields blank to use the BlueBird Alerts defaults.</p>
+              <h2>Branding &amp; Theme</h2>
+              <p class="card-copy">Customize brand colors, save presets, and preview changes live across web and mobile before saving.</p>
             </div>
           </div>
-          <div style="display:grid;grid-template-columns:minmax(0,1fr) 220px;gap:32px;align-items:start;">
-            <form method="post" action="{prefix}/admin/settings/colors">
-              <div class="stack">
-                <div class="field">
-                  <label for="s-accent">Primary / accent color</label>
-                  <div style="display:flex;gap:10px;align-items:center;">
-                    <input id="bp-accent-picker" type="color" name="accent_picker" value="{t_accent or "#1b5fe4"}"
-                           style="width:44px;height:44px;border-radius:10px;border:1px solid var(--border);padding:2px;cursor:pointer;" />
-                    <input id="s-accent" name="accent" type="text" value="{t_accent}" placeholder="#1b5fe4"
-                           style="flex:1;" pattern="#[0-9a-fA-F]{{6}}" maxlength="7" />
-                  </div>
-                </div>
-                <div class="field">
-                  <label for="s-accent-strong">Accent strong (button hover)</label>
-                  <div style="display:flex;gap:10px;align-items:center;">
-                    <input id="bp-accent-strong-picker" type="color" name="accent_strong_picker" value="{t_accent_strong or "#2f84ff"}"
-                           style="width:44px;height:44px;border-radius:10px;border:1px solid var(--border);padding:2px;cursor:pointer;" />
-                    <input id="s-accent-strong" name="accent_strong" type="text" value="{t_accent_strong}" placeholder="#2f84ff"
-                           style="flex:1;" pattern="#[0-9a-fA-F]{{6}}" maxlength="7" />
-                  </div>
-                </div>
-                <div class="field">
-                  <label for="s-sidebar-start">Sidebar gradient start</label>
-                  <div style="display:flex;gap:10px;align-items:center;">
-                    <input id="bp-sidebar-start-picker" type="color" name="sidebar_start_picker" value="{t_sidebar_start or "#092054"}"
-                           style="width:44px;height:44px;border-radius:10px;border:1px solid var(--border);padding:2px;cursor:pointer;" />
-                    <input id="s-sidebar-start" name="sidebar_start" type="text" value="{t_sidebar_start}" placeholder="#092054"
-                           style="flex:1;" pattern="#[0-9a-fA-F]{{6}}" maxlength="7" />
-                  </div>
-                </div>
-                <div class="field">
-                  <label for="s-sidebar-end">Sidebar gradient end</label>
-                  <div style="display:flex;gap:10px;align-items:center;">
-                    <input id="bp-sidebar-end-picker" type="color" name="sidebar_end_picker" value="{t_sidebar_end or "#071536"}"
-                           style="width:44px;height:44px;border-radius:10px;border:1px solid var(--border);padding:2px;cursor:pointer;" />
-                    <input id="s-sidebar-end" name="sidebar_end" type="text" value="{t_sidebar_end}" placeholder="#071536"
-                           style="flex:1;" pattern="#[0-9a-fA-F]{{6}}" maxlength="7" />
-                  </div>
-                </div>
-                <div class="button-row">
-                  <button type="submit" class="button button-primary">Save colors</button>
-                  <button type="reset" class="button button-secondary">Reset</button>
-                </div>
+
+          {_bbp_extracted_banner(prefix, extracted_theme_colors)}
+
+          <!-- Preset toolbar -->
+          <div class="bbp-preset-bar">
+            <select id="bbp-sel" style="flex:1;min-width:140px;max-width:220px;">
+              <option value="">Select a theme preset…</option>
+              <optgroup label="Built-in themes">{"".join(f'<option value=\'{escape(str({"accent":p["accent"],"accent_strong":p["accent_strong"],"sidebar_start":p["sidebar_start"],"sidebar_end":p["sidebar_end"]}).replace(chr(39),"&#39;"))}\'>{escape(p["name"])}</option>' for p in _GLOBAL_PRESETS)}</optgroup>
+              {f'<optgroup label="Saved presets">{"".join(_bbp_saved_opt(p) for p in theme_presets if not p.get("is_global"))}</optgroup>' if theme_presets else ""}
+            </select>
+            <button type="button" class="button button-secondary" onclick="bbLoadPreset()">Load</button>
+            <span style="width:1px;background:var(--border);align-self:stretch;margin:0 4px;"></span>
+            <button type="button" class="button button-secondary" onclick="bbSavePreset()">Save current as preset</button>
+            <form id="bbp-save-form" method="post" action="{prefix}/admin/themes/save" style="display:none;">
+              <input type="hidden" name="preset_name" id="bbp-pname" />
+            </form>
+          </div>
+
+          {_bbp_saved_list(prefix, theme_presets)}
+
+          <!-- Main grid: pickers | preview -->
+          <div style="display:grid;grid-template-columns:minmax(0,1fr) 236px;gap:32px;align-items:start;">
+            <form method="post" action="{prefix}/admin/settings/colors" id="bbp-colors-form">
+              {_bbp_field("accent", "Primary / accent color", t_accent, "#1b5fe4")}
+              {_bbp_field("accent_strong", "Accent strong — button hover", t_accent_strong, "#2f84ff")}
+              {_bbp_field("sidebar_start", "Sidebar gradient start", t_sidebar_start, "#092054")}
+              {_bbp_field("sidebar_end", "Sidebar gradient end", t_sidebar_end, "#071536")}
+              <div class="button-row" style="margin-top:8px;">
+                <button type="submit" class="button button-primary">Save colors</button>
+                <button type="reset" class="button button-secondary">Reset</button>
               </div>
+              <div class="bbp-contrast" id="bbp-contrast" style="margin-top:12px;"></div>
             </form>
 
-            <!-- Live preview card -->
-            <div>
-              <p class="eyebrow" style="margin-bottom:10px;color:var(--muted);">Live preview</p>
-              <div id="bp-sidebar-preview" style="
-                border-radius:16px;overflow:hidden;position:relative;
-                background:linear-gradient(180deg,{t_sidebar_start or "#092054"} 0%,{t_sidebar_end or "#071536"} 100%);
-                padding:16px;box-shadow:0 8px 24px rgba(0,0,0,0.28);">
-                <div class="bp-preview-glow" style="
-                  position:absolute;inset:0;pointer-events:none;
-                  background:radial-gradient(circle at top left,{t_accent or "#1b5fe4"}28,transparent 60%);"></div>
-                <div style="display:flex;gap:10px;align-items:center;margin-bottom:12px;">
-                  <div style="width:36px;height:36px;border-radius:10px;overflow:hidden;
-                              background:rgba(255,255,255,0.12);border:1px solid rgba(255,255,255,0.18);
-                              flex:0 0 auto;display:grid;place-items:center;">
-                    {_preview_logo_img}
+            <!-- Live preview -->
+            <div class="bbp-preview-wrap">
+              <div class="bbp-tabs">
+                <button class="bbp-tab active" id="bptab-web" onclick="bbTab('web')" type="button">Web</button>
+                <button class="bbp-tab" id="bptab-ios" onclick="bbTab('ios')" type="button">iPhone</button>
+                <button class="bbp-tab" id="bptab-android" onclick="bbTab('android')" type="button">Android</button>
+              </div>
+
+              <!-- Web preview -->
+              <div id="bppv-web">
+                <div id="bp-sidebar-preview" style="border-radius:16px;overflow:hidden;position:relative;background:linear-gradient(180deg,{t_sidebar_start or "#092054"} 0%,{t_sidebar_end or "#071536"} 100%);padding:16px;box-shadow:0 8px 24px rgba(0,0,0,.28);">
+                  <div id="bp-preview-glow" style="position:absolute;inset:0;pointer-events:none;background:radial-gradient(circle at top left,{t_accent or "#1b5fe4"}28,transparent 60%);"></div>
+                  <div style="display:flex;gap:10px;align-items:center;margin-bottom:12px;">
+                    <div style="width:34px;height:34px;border-radius:9px;overflow:hidden;background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.18);flex:0 0 auto;display:grid;place-items:center;">
+                      {_preview_logo_img}
+                    </div>
+                    <div>
+                      <p style="margin:0;font-size:.6rem;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:rgba(255,255,255,.5);">BlueBird Alerts</p>
+                      <p style="margin:0;font-size:.8rem;font-weight:700;color:rgba(255,255,255,.92);">Safety Ops</p>
+                    </div>
                   </div>
-                  <div>
-                    <p style="margin:0;font-size:0.62rem;font-weight:700;letter-spacing:0.12em;
-                               text-transform:uppercase;color:rgba(255,255,255,0.5);">BlueBird Alerts</p>
-                    <p style="margin:0;font-size:0.82rem;font-weight:700;color:rgba(255,255,255,0.92);">Safety ops</p>
+                  <div style="display:grid;gap:5px;margin-bottom:12px;">
+                    {"".join(f'<div style="background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.1);border-radius:9px;padding:7px 11px;font-size:.75rem;color:rgba(255,255,255,.88);">{item}</div>' for item in ["Dashboard","Users","Settings"])}
+                  </div>
+                  <div id="bp-preview-btn" style="height:30px;border-radius:7px;display:grid;place-items:center;background:{t_accent or "#1b5fe4"};font-size:.73rem;font-weight:700;color:#fff;">Sample button</div>
+                </div>
+              </div>
+
+              <!-- iOS preview -->
+              <div id="bppv-ios" style="display:none;">
+                <div class="bbp-phone">
+                  <div class="bbp-phone-screen">
+                    <div class="bbp-phone-notch"><div class="bbp-phone-notch-pill"></div></div>
+                    <div class="bbp-phone-bar" id="bp-mob-bar" style="background:linear-gradient(135deg,{t_sidebar_start or "#092054"},{t_sidebar_end or "#071536"});">
+                      <div style="width:28px;height:28px;border-radius:7px;background:rgba(255,255,255,.15);display:grid;place-items:center;">{_preview_logo_img}</div>
+                      <div>
+                        <p style="margin:0;font-size:.52rem;color:rgba(255,255,255,.6);font-weight:600;text-transform:uppercase;letter-spacing:.06em;">BlueBird</p>
+                        <p style="margin:0;font-size:.7rem;color:#fff;font-weight:700;">Safety Alert</p>
+                      </div>
+                    </div>
+                    <div class="bbp-phone-content">
+                      <div style="background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:10px;margin-bottom:8px;box-shadow:0 1px 4px rgba(0,0,0,.06);">
+                        <p style="margin:0 0 4px;font-size:.65rem;font-weight:700;color:#111;">Emergency Alert</p>
+                        <p style="margin:0 0 8px;font-size:.6rem;color:#6b7280;">All clear — no active alerts</p>
+                        <div id="bp-mob-alert" style="height:24px;border-radius:6px;background:{t_accent or "#1b5fe4"};display:grid;place-items:center;font-size:.58rem;font-weight:700;color:#fff;">Acknowledge</div>
+                      </div>
+                      <div style="display:flex;gap:6px;">
+                        <div id="bp-mob-badge" style="flex:1;background:{t_accent_strong or "#2f84ff"};border-radius:8px;height:28px;display:grid;place-items:center;font-size:.58rem;color:#fff;font-weight:600;">Active</div>
+                        <div style="flex:1;background:#f3f4f6;border-radius:8px;height:28px;display:grid;place-items:center;font-size:.58rem;color:#374151;font-weight:600;">History</div>
+                      </div>
+                    </div>
                   </div>
                 </div>
-                <div style="display:grid;gap:6px;">
-                  <div style="background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.09);
-                              border-radius:10px;padding:8px 12px;font-size:0.78rem;
-                              color:rgba(255,255,255,0.88);">Dashboard</div>
-                  <div style="background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.09);
-                              border-radius:10px;padding:8px 12px;font-size:0.78rem;
-                              color:rgba(255,255,255,0.88);">User Management</div>
-                  <div style="background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.09);
-                              border-radius:10px;padding:8px 12px;font-size:0.78rem;
-                              color:rgba(255,255,255,0.88);">Settings</div>
-                </div>
-                <div style="margin-top:12px;">
-                  <div class="bp-preview-dot" style="
-                    height:32px;border-radius:8px;display:grid;place-items:center;
-                    background:{t_accent or "#1b5fe4"};font-size:0.76rem;font-weight:700;color:#fff;">
-                    Sample button
+              </div>
+
+              <!-- Android preview -->
+              <div id="bppv-android" style="display:none;">
+                <div class="bbp-phone">
+                  <div class="bbp-phone-screen">
+                    <div class="bbp-android-bar" id="bp-mob-bar-and" style="background:linear-gradient(135deg,{t_sidebar_start or "#092054"},{t_sidebar_end or "#071536"});">
+                      <div style="width:28px;height:28px;border-radius:50%;background:rgba(255,255,255,.15);display:grid;place-items:center;margin-right:8px;">{_preview_logo_img}</div>
+                      <div>
+                        <p style="margin:0;font-size:.72rem;color:#fff;font-weight:700;letter-spacing:.01em;">BlueBird Alerts</p>
+                        <p style="margin:0;font-size:.58rem;color:rgba(255,255,255,.7);">Safety dashboard</p>
+                      </div>
+                    </div>
+                    <div style="padding:10px;background:#f8fafc;min-height:80px;">
+                      <div style="background:#fff;border-radius:8px;padding:8px 10px;margin-bottom:6px;box-shadow:0 1px 3px rgba(0,0,0,.08);">
+                        <p style="margin:0 0 4px;font-size:.63rem;font-weight:700;color:#111;">Status: All Clear</p>
+                        <div style="height:20px;border-radius:4px;background:{t_accent or "#1b5fe4"};display:grid;place-items:center;font-size:.55rem;font-weight:700;color:#fff;">VIEW ALERTS</div>
+                      </div>
+                    </div>
                   </div>
                 </div>
               </div>
             </div>
           </div>
+
+          {f'''<div style="margin-top:24px;padding-top:20px;border-top:1px solid var(--border);">
+            <p class="eyebrow" style="margin-bottom:8px;">District Branding</p>
+            <p class="card-copy" style="margin-bottom:12px;">Push this school\'s current branding to all schools in the district. Each school\'s individual settings will be overwritten.</p>
+            <button type="button" class="button button-secondary" onclick="bbApplyDistrict('{prefix}')">Apply to all schools in district</button>
+            <span id="bbp-district-msg" style="display:none;margin-left:12px;color:var(--color-ok,#22c55e);font-size:.85rem;"></span>
+          </div>''' if has_district and admin_role in ("district_admin", "super_admin") else ""}
+
+          {_BRANDING_JS}
         </section>
 
         <section class="panel command-section" id="settings-history"{hidden}>
@@ -2363,6 +3233,9 @@ def render_admin_page(
     base_domain: str = "app.bluebirdalerts.com",
     settings_history: Sequence[SettingsChangeRecord] = (),
     school_logo_url: Optional[str] = None,
+    theme_presets: Sequence[Mapping[str, object]] = (),
+    extracted_theme_colors: Optional[Mapping[str, str]] = None,
+    school_district_id: Optional[int] = None,
 ) -> str:
     prefix = escape(school_path_prefix)
     role_counts = Counter(user.role for user in users)
@@ -2898,7 +3771,7 @@ def render_admin_page(
           </div>
         </section>
 
-        {_render_settings_panels(prefix, school_name, school_slug, settings_history, school_logo_url, theme, _section_style)}
+        {_render_settings_panels(prefix, school_name, school_slug, settings_history, school_logo_url, theme, _section_style, theme_presets=list(theme_presets), extracted_theme_colors=dict(extracted_theme_colors) if extracted_theme_colors else None, admin_role=str(getattr(current_user, "role", "") or ""), has_district=school_district_id is not None)}
 
         <section class="panel command-section" id="security"{_section_style("settings")}>
           <div class="panel-header">

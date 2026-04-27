@@ -257,6 +257,17 @@ struct APIClient {
         return try JSONDecoder().decode(QuietPeriodRequestResponse.self, from: data)
     }
 
+    func quietPeriodStatus(userID: Int) async throws -> QuietPeriodRequestResponse {
+        var components = URLComponents(url: baseURL.appendingPathComponent("quiet-periods/status"), resolvingAgainstBaseURL: false)
+        components?.queryItems = [URLQueryItem(name: "user_id", value: String(userID))]
+        guard let url = components?.url else { throw URLError(.badURL) }
+        var request = URLRequest(url: url)
+        withAPIKey(&request)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try requireSuccess(response: response, data: data)
+        return try JSONDecoder().decode(QuietPeriodRequestResponse.self, from: data)
+    }
+
     func cancelQuietRequest(requestID: Int, userID: Int) async throws -> QuietPeriodRequestResponse {
         var components = URLComponents(url: baseURL.appendingPathComponent("quiet-periods/request/\(requestID)"), resolvingAgainstBaseURL: false)
         components?.queryItems = [URLQueryItem(name: "user_id", value: String(userID))]
@@ -654,6 +665,8 @@ struct MobileLoginResponse: Decodable {
     let role: String
     let loginName: String
     let canDeactivateAlarm: Bool
+    let quietModeActive: Bool?
+    let quietPeriodExpiresAt: String?
 
     enum CodingKeys: String, CodingKey {
         case userID = "user_id"
@@ -661,6 +674,8 @@ struct MobileLoginResponse: Decodable {
         case role
         case loginName = "login_name"
         case canDeactivateAlarm = "can_deactivate_alarm"
+        case quietModeActive = "quiet_mode_active"
+        case quietPeriodExpiresAt = "quiet_period_expires_at"
     }
 }
 
@@ -775,6 +790,7 @@ struct QuietPeriodRequestResponse: Decodable {
     let approvedAt: String?
     let approvedByLabel: String?
     let expiresAt: String?
+    let quietModeActive: Bool?
 
     enum CodingKeys: String, CodingKey {
         case requestID = "request_id"
@@ -785,6 +801,7 @@ struct QuietPeriodRequestResponse: Decodable {
         case approvedAt = "approved_at"
         case approvedByLabel = "approved_by_label"
         case expiresAt = "expires_at"
+        case quietModeActive = "quiet_mode_active"
     }
 }
 

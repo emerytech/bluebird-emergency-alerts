@@ -13,7 +13,7 @@ import os
 import socket
 import sys
 import time
-from collections import deque
+from collections import defaultdict, deque
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from html import escape
@@ -424,6 +424,47 @@ def _school_theme(school) -> dict[str, str]:
     }
 
 
+def _extract_logo_colors(image_data: bytes) -> Optional[dict[str, str]]:
+    """Extract dominant theme colors from image bytes using PIL. Returns None if unavailable."""
+    try:
+        import io as _io
+        import colorsys
+        from PIL import Image  # type: ignore[import]
+        img = Image.open(_io.BytesIO(image_data)).convert("RGB")
+        img.thumbnail((80, 80))
+        pixels = list(img.getdata())
+        # Filter to colorful pixels (saturation > 0.15) to avoid grays and whites
+        def _sat(r: int, g: int, b: int) -> float:
+            _, s, _ = colorsys.rgb_to_hsv(r / 255, g / 255, b / 255)
+            return s
+        colored = [(r, g, b) for r, g, b in pixels if _sat(r, g, b) > 0.15]
+        if not colored:
+            return None
+        colored.sort(key=lambda p: _sat(*p), reverse=True)
+        top = colored[: max(1, len(colored) // 5)]
+        ra = sum(p[0] for p in top) // len(top)
+        ga = sum(p[1] for p in top) // len(top)
+        ba = sum(p[2] for p in top) // len(top)
+        h, s, v = colorsys.rgb_to_hsv(ra / 255, ga / 255, ba / 255)
+        # Accent: the dominant saturated color
+        accent = f"#{ra:02x}{ga:02x}{ba:02x}"
+        # Accent strong: slightly brighter
+        r2, g2, b2 = colorsys.hsv_to_rgb(h, max(0.0, s - 0.08), min(1.0, v + 0.18))
+        accent_strong = f"#{int(r2 * 255):02x}{int(g2 * 255):02x}{int(b2 * 255):02x}"
+        # Sidebar start: dark, saturated version
+        r3, g3, b3 = colorsys.hsv_to_rgb(h, min(1.0, s + 0.15), max(0.08, v * 0.32))
+        sidebar_start = f"#{int(r3 * 255):02x}{int(g3 * 255):02x}{int(b3 * 255):02x}"
+        # Sidebar end: even darker
+        r4, g4, b4 = colorsys.hsv_to_rgb(h, min(1.0, s + 0.2), max(0.04, v * 0.18))
+        sidebar_end = f"#{int(r4 * 255):02x}{int(g4 * 255):02x}{int(b4 * 255):02x}"
+        return {
+            "accent": accent, "accent_strong": accent_strong,
+            "sidebar_start": sidebar_start, "sidebar_end": sidebar_end,
+        }
+    except Exception:
+        return None
+
+
 async def _resolve_effective_branding(school, school_registry: "SchoolRegistry") -> dict:
     """
     Cascade: school colors/logo → district colors/logo → empty (defaults apply in CSS).
@@ -575,11 +616,11 @@ async def _quiet_suppressed_user_ids(
 ) -> set[int]:
     if not candidate_user_ids:
         return set()
-    suppressed: set[int] = set()
-    for user_id in sorted({int(item) for item in candidate_user_ids if int(item) > 0}):
-        if await _is_effective_quiet_user(request, user_id=int(user_id)):
-            suppressed.add(int(user_id))
-    return suppressed
+    valid_ids = sorted({int(item) for item in candidate_user_ids if int(item) > 0})
+    results = await asyncio.gather(*[
+        _is_effective_quiet_user(request, user_id=uid) for uid in valid_ids
+    ])
+    return {uid for uid, is_quiet in zip(valid_ids, results) if is_quiet}
 
 
 async def _apply_law_enforcement_quiet_state_for_request(
@@ -1905,8 +1946,12 @@ async def admin_dashboard(
     _ws_home_tenant_slug = str(request.state.school.slug)
 
     _settings_history: list = []
+    _theme_presets: list = []
+    _extracted_theme_colors: Optional[dict[str, str]] = None
     if selected_section == "settings":
         _settings_history = await _settings_store(request).get_history(limit=50)
+        _theme_presets = await _schools(request).list_theme_presets(str(request.state.school.slug))
+        _extracted_theme_colors = request.session.pop("extracted_theme_colors", None)  # type: ignore[assignment]
 
     _admin_role = str(getattr(request.state.admin_user, "role", "")).strip().lower()
     _access_code_records: list = []
@@ -1976,6 +2021,9 @@ async def admin_dashboard(
         base_domain=_base_domain,
         settings_history=_settings_history,
         school_logo_url=_effective_logo_url,
+        theme_presets=_theme_presets,
+        extracted_theme_colors=_extracted_theme_colors,
+        school_district_id=getattr(request.state.school, "district_id", None),
     )
     return HTMLResponse(content=html)
 
@@ -2069,6 +2117,16 @@ async def admin_settings_upload_logo(
         actor_label=actor_label or None,
         metadata={"logo_url": logo_url},
     )
+    # Attempt PIL color extraction; store result in session for the settings page
+    extracted = _extract_logo_colors(data)
+    if extracted is not None:
+        request.session["extracted_theme_colors"] = extracted
+        await _audit_log_svc(request).log_event(
+            tenant_slug=str(school.slug),
+            event_type="theme.generated_from_logo",
+            actor_label=actor_label or None,
+            metadata={"logo_url": logo_url, "extracted": extracted},
+        )
     _set_flash(request, message="Logo uploaded successfully.")
     return RedirectResponse(url=_school_url(request, "/admin?section=settings"), status_code=status.HTTP_303_SEE_OTHER)
 
@@ -2147,6 +2205,112 @@ async def admin_settings_update_colors(
     )
     _set_flash(request, message="Theme colors updated.")
     return RedirectResponse(url=_school_url(request, "/admin?section=settings"), status_code=status.HTTP_303_SEE_OTHER)
+
+
+# ── Theme preset endpoints ─────────────────────────────────────────────────────
+
+@router.get("/admin/themes", include_in_schema=False)
+async def admin_list_themes(request: Request) -> JSONResponse:
+    await _require_dashboard_admin(request)
+    school = request.state.school
+    presets = await _schools(request).list_theme_presets(str(school.slug))
+    return JSONResponse({"presets": presets})
+
+
+@router.post("/admin/themes/save", include_in_schema=False)
+async def admin_save_theme_preset(
+    request: Request,
+    preset_name: str = Form(...),
+) -> RedirectResponse:
+    await _require_dashboard_admin(request)
+    school = request.state.school
+    theme = _school_theme(school)
+    actor_label = str(getattr(request.state.admin_user, "name", "") or "")
+    name = preset_name.strip() or "My Theme"
+    preset = await _schools(request).add_theme_preset(
+        tenant_slug=str(school.slug),
+        name=name,
+        accent=theme.get("accent", "") or "",
+        accent_strong=theme.get("accent_strong", "") or "",
+        sidebar_start=theme.get("sidebar_start", "") or "",
+        sidebar_end=theme.get("sidebar_end", "") or "",
+        created_by=actor_label,
+    )
+    await _audit_log_svc(request).log_event(
+        tenant_slug=str(school.slug),
+        event_type="theme.preset_saved",
+        actor_label=actor_label or None,
+        metadata={"preset_name": name, "preset_id": preset["id"]},
+    )
+    _set_flash(request, message=f"Theme preset '{name}' saved.")
+    return RedirectResponse(url=_school_url(request, "/admin?section=settings"), status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.post("/admin/themes/apply/{preset_id}", include_in_schema=False)
+async def admin_apply_theme_preset(request: Request, preset_id: int) -> JSONResponse:
+    await _require_dashboard_admin(request)
+    school = request.state.school
+    presets = await _schools(request).list_theme_presets(str(school.slug))
+    preset = next((p for p in presets if int(p["id"]) == preset_id), None)
+    if preset is None:
+        raise HTTPException(status_code=404, detail="Preset not found")
+    await _schools(request).update_theme(
+        slug=str(school.slug),
+        accent=preset["accent"] or None,
+        accent_strong=preset["accent_strong"] or None,
+        sidebar_start=preset["sidebar_start"] or None,
+        sidebar_end=preset["sidebar_end"] or None,
+    )
+    actor_label = str(getattr(request.state.admin_user, "name", "") or "")
+    await _audit_log_svc(request).log_event(
+        tenant_slug=str(school.slug),
+        event_type="theme.preset_applied",
+        actor_label=actor_label or None,
+        metadata={"preset_name": preset["name"], "preset_id": preset_id},
+    )
+    return JSONResponse({"ok": True, "preset": preset})
+
+
+@router.delete("/admin/themes/{preset_id}", include_in_schema=False)
+async def admin_delete_theme_preset(request: Request, preset_id: int) -> JSONResponse:
+    await _require_dashboard_admin(request)
+    school = request.state.school
+    deleted = await _schools(request).delete_theme_preset(int(preset_id), str(school.slug))
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Preset not found or not owned by this tenant")
+    return JSONResponse({"ok": True})
+
+
+@router.post("/admin/themes/apply-district", include_in_schema=False)
+async def admin_apply_theme_to_district(request: Request) -> JSONResponse:
+    await _require_dashboard_admin(request)
+    _admin_role = str(getattr(request.state.admin_user, "role", "")).strip().lower()
+    if _admin_role not in {"district_admin", "super_admin"}:
+        raise HTTPException(status_code=403, detail="District admin or super admin role required")
+    school = request.state.school
+    district_id = getattr(school, "district_id", None)
+    if district_id is None:
+        raise HTTPException(status_code=400, detail="This school is not part of a district")
+    theme = _school_theme(school)
+    d_schools = await _schools(request).list_schools_by_district(int(district_id))
+    await asyncio.gather(*[
+        _schools(request).update_theme(
+            slug=str(s.slug),
+            accent=theme.get("accent") or None,
+            accent_strong=theme.get("accent_strong") or None,
+            sidebar_start=theme.get("sidebar_start") or None,
+            sidebar_end=theme.get("sidebar_end") or None,
+        )
+        for s in d_schools
+    ])
+    actor_label = str(getattr(request.state.admin_user, "name", "") or "")
+    await _audit_log_svc(request).log_event(
+        tenant_slug=str(school.slug),
+        event_type="theme.district_applied",
+        actor_label=actor_label or None,
+        metadata={"district_id": int(district_id), "schools_updated": len(d_schools)},
+    )
+    return JSONResponse({"ok": True, "updated": len(d_schools)})
 
 
 @router.post("/admin/settings/undo/{change_id}", include_in_schema=False)
@@ -3020,12 +3184,61 @@ async def super_admin_dashboard(
         )
     hm = _health_monitor(request)
     es = _email_service(request)
-    health_status = await hm.current_status()
-    health_heartbeats = await hm.recent_heartbeats(limit=20)
-    email_log = await es.recent_email_log(limit=50)
     _sa_section = _super_admin_section(section)
+    health_status, health_heartbeats, email_log = await asyncio.gather(
+        hm.current_status(),
+        hm.recent_heartbeats(limit=20),
+        es.recent_email_log(limit=50),
+    )
     _setup_codes = await _access_codes(request).list_setup_codes(limit=200) if _sa_section == "setup-codes" else []
     _sa_schools_by_slug = {s.slug: s for s in await _schools(request).list_schools()} if _sa_section == "setup-codes" else {}
+    # NOC initial data — gathered in parallel, only when the noc section is active
+    # (or always, since it's cheap: one DB read per tenant for alarm state)
+    _noc_tenant_data = await asyncio.gather(*[
+        _fetch_tenant_noc_status(request, s) for s in schools
+    ])
+    started_at = getattr(request.app.state, "started_at", None)
+    _noc_uptime = max(0, int((datetime.now(timezone.utc) - started_at).total_seconds())) if started_at else 0
+    # ── MSP district groupings ─────────────────────────────────────────────────
+    _all_districts = await _schools(request).list_districts()
+    _noc_by_slug: dict[str, dict[str, object]] = {t["slug"]: t for t in _noc_tenant_data}  # type: ignore[index]
+    _billing_by_slug: dict[str, dict[str, object]] = {b["slug"]: b for b in billing_rows}  # type: ignore[index]
+    _district_school_map: dict[int, list[object]] = defaultdict(list)
+    _ungrouped_schools: list[object] = []
+    for _s in schools:
+        if getattr(_s, "district_id", None) is not None:
+            _district_school_map[int(_s.district_id)].append(_s)  # type: ignore[arg-type]
+        else:
+            _ungrouped_schools.append(_s)
+    msp_districts: list[dict[str, object]] = []
+    for _d in _all_districts:
+        _ds = _district_school_map.get(_d.id, [])
+        _ds_nocs = [_noc_by_slug.get(str(getattr(s, "slug", "")), {}) for s in _ds]
+        _d_alarm = sum(1 for n in _ds_nocs if n.get("alarm_active"))
+        _d_ws = sum(int(n.get("ws_connections") or 0) for n in _ds_nocs)
+        _d_last = max((n.get("last_alert_at") or "" for n in _ds_nocs), default="")
+        _d_status = "alarm" if _d_alarm > 0 else ("empty" if not _ds else "healthy")
+        _d_bills = [str(_billing_by_slug.get(str(getattr(s, "slug", "")), {}).get("billing_status", "unknown") or "unknown") for s in _ds]
+        msp_districts.append({
+            "id": _d.id, "name": _d.name, "slug": _d.slug, "is_active": _d.is_active,
+            "is_district": True, "school_count": len(_ds),
+            "schools": [{"slug": str(getattr(s, "slug", "")), "name": str(getattr(s, "name", ""))} for s in _ds],
+            "alarm_count": _d_alarm, "ws_total": _d_ws, "last_activity": _d_last,
+            "status": _d_status, "billing_ok": all(b in {"active", "trial", "free"} for b in _d_bills) if _d_bills else True,
+        })
+    for _s in _ungrouped_schools:
+        _s_noc = _noc_by_slug.get(str(getattr(_s, "slug", "")), {})
+        _s_bill = str(_billing_by_slug.get(str(getattr(_s, "slug", "")), {}).get("billing_status", "unknown") or "unknown")
+        msp_districts.append({
+            "id": None, "name": str(getattr(_s, "name", "")), "slug": str(getattr(_s, "slug", "")),
+            "is_active": bool(getattr(_s, "is_active", True)), "is_district": False, "school_count": 1,
+            "schools": [{"slug": str(getattr(_s, "slug", "")), "name": str(getattr(_s, "name", ""))}],
+            "alarm_count": 1 if _s_noc.get("alarm_active") else 0,
+            "ws_total": int(_s_noc.get("ws_connections") or 0),
+            "last_activity": _s_noc.get("last_alert_at") or "",
+            "status": "alarm" if _s_noc.get("alarm_active") else ("healthy" if bool(getattr(_s, "is_active", True)) else "offline"),
+            "billing_ok": _s_bill in {"active", "trial", "free"},
+        })
     return HTMLResponse(
         render_super_admin_page(
             base_domain=request.app.state.settings.BASE_DOMAIN,  # type: ignore[attr-defined]
@@ -3057,6 +3270,9 @@ async def super_admin_dashboard(
             email_template_keys=EMAIL_TEMPLATE_KEYS,
             setup_codes=_setup_codes,
             schools_by_slug=_sa_schools_by_slug,
+            noc_tenant_data=list(_noc_tenant_data),
+            noc_uptime_seconds=_noc_uptime,
+            msp_districts=msp_districts,
         )
     )
 
@@ -3069,6 +3285,254 @@ async def super_admin_audit_feed(
     _require_super_admin(request)
     items = await _platform_activity_feed(request, limit=limit)
     return {"count": len(items), "items": items}
+
+
+# ── NOC / Operations Dashboard endpoints ──────────────────────────────────────
+
+
+async def _fetch_tenant_noc_status(request: Request, school: object) -> dict[str, object]:
+    """Per-tenant live status for the NOC grid. Two gather batches, never crashes."""
+    tenant = request.app.state.tenant_manager.get(school)  # type: ignore[attr-defined]
+    slug = str(getattr(school, "slug", ""))
+    name = str(getattr(school, "name", slug))
+    try:
+        alarm_state, latest_alert = await asyncio.gather(
+            tenant.alarm_store.get_state(),
+            tenant.alert_log.latest_alert(),
+        )
+        is_active = bool(getattr(alarm_state, "is_active", False))
+        ack_count: int = 0
+        user_count: int = 0
+        if is_active and latest_alert is not None:
+            ack_val, users = await asyncio.gather(
+                tenant.alert_log.acknowledgement_count(latest_alert.id),
+                tenant.user_store.list_users(),
+            )
+            ack_count = int(ack_val)
+            user_count = sum(1 for u in users if getattr(u, "is_active", True))
+        hub = getattr(request.app.state, "alert_hub", None)
+        ws_count = 0
+        if hub is not None:
+            try:
+                ws_count = int(hub.connection_count(slug))
+            except Exception:
+                pass
+        return {
+            "slug": slug,
+            "name": name,
+            "alarm_active": is_active,
+            "alarm_message": str(getattr(alarm_state, "message", "") or "")[:120] if is_active else None,
+            "last_alert_at": str(getattr(latest_alert, "created_at", "") or "") if latest_alert else None,
+            "ws_connections": ws_count,
+            "ack_count": ack_count,
+            "user_count": user_count,
+        }
+    except Exception as exc:
+        logger.warning("NOC tenant status error for %s: %s", slug, exc)
+        return {"slug": slug, "name": name, "alarm_active": False, "alarm_message": None,
+                "last_alert_at": None, "ws_connections": 0, "ack_count": 0, "user_count": 0}
+
+
+@router.get("/super-admin/metrics", include_in_schema=False)
+async def super_admin_metrics(request: Request) -> dict[str, object]:
+    _require_super_admin(request)
+    schools = await _schools(request).list_schools()
+    hm = _health_monitor(request)
+    hs = await hm.current_status()
+    hub = getattr(request.app.state, "alert_hub", None)
+    ws_total = 0
+    if hub is not None:
+        try:
+            ws_total = sum(hub.connection_count(s) for s in hub.connected_slugs())
+        except Exception:
+            pass
+    started_at = getattr(request.app.state, "started_at", None)
+    uptime_seconds = 0
+    if started_at is not None:
+        from datetime import datetime, timezone
+        uptime_seconds = max(0, int((datetime.now(timezone.utc) - started_at).total_seconds()))
+    return {
+        "status": hs.overall,
+        "db": "ok" if hs.db_ok else "error",
+        "ws_connections": ws_total,
+        "active_tenants": len(schools),
+        "uptime_seconds": uptime_seconds,
+        "apns_configured": hs.apns_configured,
+        "fcm_configured": hs.fcm_configured,
+        "response_time_ms": hs.response_time_ms,
+        "last_heartbeat_at": hs.last_heartbeat_at,
+        "uptime_24h": hs.uptime_24h,
+    }
+
+
+@router.get("/super-admin/tenant-health", include_in_schema=False)
+async def super_admin_tenant_health(request: Request) -> dict[str, object]:
+    _require_super_admin(request)
+    schools = await _schools(request).list_schools()
+    results = await asyncio.gather(*[_fetch_tenant_noc_status(request, s) for s in schools])
+    return {"tenants": list(results)}
+
+
+@router.get("/super-admin/system-activity", include_in_schema=False)
+async def super_admin_system_activity(
+    request: Request,
+    limit: int = Query(default=60, ge=1, le=200),
+) -> dict[str, object]:
+    _require_super_admin(request)
+    schools = await _schools(request).list_schools()
+    all_events: list[dict[str, str]] = []
+
+    async def _tenant_events(school: object) -> list[dict[str, str]]:
+        try:
+            tenant = request.app.state.tenant_manager.get(school)  # type: ignore[attr-defined]
+            svc = getattr(tenant, "audit_log_service", None)
+            if svc is None:
+                return []
+            events = await svc.list_recent(limit=30)
+            return [
+                {
+                    "timestamp": str(e.timestamp),
+                    "school": str(getattr(school, "name", "")),
+                    "slug": str(getattr(school, "slug", "")),
+                    "event_type": str(e.event_type),
+                    "actor": str(e.actor_label or ""),
+                    "target": str(e.target_type or ""),
+                }
+                for e in events
+            ]
+        except Exception:
+            return []
+
+    batches = await asyncio.gather(*[_tenant_events(s) for s in schools])
+    for batch in batches:
+        all_events.extend(batch)
+    all_events.sort(key=lambda x: x["timestamp"], reverse=True)
+    return {"events": all_events[:limit]}
+
+
+@router.get("/super-admin/push-stats", include_in_schema=False)
+async def super_admin_push_stats(request: Request) -> dict[str, object]:
+    _require_super_admin(request)
+    schools = await _schools(request).list_schools()
+
+    async def _tenant_push(school: object) -> dict[str, object]:
+        slug = str(getattr(school, "slug", ""))
+        name = str(getattr(school, "name", slug))
+        try:
+            tenant = request.app.state.tenant_manager.get(school)  # type: ignore[attr-defined]
+            latest = await tenant.alert_log.latest_alert()
+            if latest is None:
+                return {"slug": slug, "name": name, "total": 0, "ok": 0, "failed": 0,
+                        "last_error": None, "last_alert_at": None}
+            stats = await tenant.alert_log.delivery_stats(latest.id)
+            return {
+                "slug": slug, "name": name,
+                "total": int(stats.get("total", 0)),
+                "ok": int(stats.get("ok", 0)),
+                "failed": int(stats.get("failed", 0)),
+                "last_error": stats.get("last_error"),
+                "last_alert_at": str(getattr(latest, "created_at", "") or ""),
+            }
+        except Exception:
+            return {"slug": slug, "name": name, "total": 0, "ok": 0, "failed": 0,
+                    "last_error": None, "last_alert_at": None}
+
+    results = await asyncio.gather(*[_tenant_push(s) for s in schools])
+    return {"tenants": list(results)}
+
+
+# ── MSP / Customer Operations endpoints ───────────────────────────────────────
+
+@router.get("/super-admin/msp/district/{slug}", include_in_schema=False)
+async def super_admin_msp_district(request: Request, slug: str) -> dict[str, object]:
+    """Full live detail for one district (or ungrouped school). Super-admin only."""
+    _require_super_admin(request)
+    school_registry = _schools(request)
+    district = await school_registry.get_district_by_slug(slug)
+    if district is not None:
+        d_schools = await school_registry.list_schools_by_district(district.id)
+        entity_name = district.name
+    else:
+        # Treat slug as a school slug (ungrouped school)
+        d_schools = [s for s in await school_registry.list_schools() if s.slug == slug]
+        entity_name = d_schools[0].name if d_schools else slug
+
+    noc_results, push_results = await asyncio.gather(
+        asyncio.gather(*[_fetch_tenant_noc_status(request, s) for s in d_schools]),
+        asyncio.gather(*[_tenant_push_stat(request, s) for s in d_schools]),
+    )
+    notes = await school_registry.list_operator_notes(slug)
+    return {
+        "slug": slug,
+        "name": entity_name,
+        "is_district": district is not None,
+        "schools": [
+            {
+                "slug": str(s.slug), "name": str(s.name), "is_active": bool(s.is_active),
+                "admin_url": f"/{s.slug}/admin",
+            }
+            for s in d_schools
+        ],
+        "noc": list(noc_results),
+        "push": list(push_results),
+        "notes": notes,
+    }
+
+
+async def _tenant_push_stat(request: Request, school: object) -> dict[str, object]:
+    slug = str(getattr(school, "slug", ""))
+    name = str(getattr(school, "name", slug))
+    try:
+        tenant = request.app.state.tenant_manager.get(school)  # type: ignore[attr-defined]
+        latest = await tenant.alert_log.latest_alert()
+        if latest is None:
+            return {"slug": slug, "name": name, "total": 0, "ok": 0, "failed": 0, "last_alert_at": None}
+        stats = await tenant.alert_log.delivery_stats(latest.id)
+        return {
+            "slug": slug, "name": name,
+            "total": int(stats.get("total", 0)), "ok": int(stats.get("ok", 0)),
+            "failed": int(stats.get("failed", 0)),
+            "last_alert_at": str(getattr(latest, "created_at", "") or ""),
+        }
+    except Exception:
+        return {"slug": slug, "name": name, "total": 0, "ok": 0, "failed": 0, "last_alert_at": None}
+
+
+@router.get("/super-admin/msp/notes/{tenant_slug}", include_in_schema=False)
+async def super_admin_msp_list_notes(request: Request, tenant_slug: str) -> dict[str, object]:
+    _require_super_admin(request)
+    notes = await _schools(request).list_operator_notes(tenant_slug)
+    return {"notes": notes}
+
+
+@router.post("/super-admin/msp/notes", include_in_schema=False)
+async def super_admin_msp_add_note(request: Request) -> dict[str, object]:
+    _require_super_admin(request)
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+    tenant_slug = str(body.get("tenant_slug", "")).strip().lower()
+    note_text = str(body.get("note_text", "")).strip()
+    if not tenant_slug or not note_text:
+        raise HTTPException(status_code=400, detail="tenant_slug and note_text are required")
+    if len(note_text) > 2000:
+        raise HTTPException(status_code=400, detail="Note must be under 2000 characters")
+    admin = await _platform_admins(request).get_by_id(_super_admin_id(request) or 0)
+    created_by = admin.login_name if admin else "super_admin"
+    note = await _schools(request).add_operator_note(
+        tenant_slug=tenant_slug, note_text=note_text, created_by=created_by
+    )
+    return {"note": note}
+
+
+@router.delete("/super-admin/msp/notes/{note_id}", include_in_schema=False)
+async def super_admin_msp_delete_note(request: Request, note_id: int) -> dict[str, object]:
+    _require_super_admin(request)
+    deleted = await _schools(request).delete_operator_note(note_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Note not found")
+    return {"deleted": True, "id": note_id}
 
 
 @router.post("/super-admin/schools/create", include_in_schema=False)
