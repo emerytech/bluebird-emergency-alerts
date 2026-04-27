@@ -114,7 +114,7 @@ class BlueBirdFirebaseMessagingService : FirebaseMessagingService() {
                 .setContentIntent(pendingIntent)
                 .build()
             (getSystemService(NOTIFICATION_SERVICE) as NotificationManager)
-                .notify(ALERT_PUSH_NOTIFICATION_ID, notification)
+                .notify(HELP_REQUEST_PUSH_NOTIFICATION_ID, notification)
         } else {
             // Emergency: full alarm behavior.
             val soundUri = Uri.parse("android.resource://$packageName/${R.raw.bluebird_alarm}")

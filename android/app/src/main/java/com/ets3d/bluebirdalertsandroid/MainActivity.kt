@@ -240,6 +240,7 @@ private class AndroidHoldHaptics(context: Context) {
 }
 internal const val NOTIF_CH   = "bluebird_alerts"
 internal const val ALERT_PUSH_NOTIFICATION_ID = 1001
+internal const val HELP_REQUEST_PUSH_NOTIFICATION_ID = 1003
 
 private fun prefs(ctx: Context) = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 private fun isSetupDone(ctx: Context) = prefs(ctx).getBoolean(KEY_SETUP, false)
@@ -1022,6 +1023,10 @@ class MainViewModel : ViewModel() {
                 )
             }
                 .onSuccess { _ ->
+                    if (action == "acknowledge") {
+                        (ctx.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager)
+                            ?.cancel(HELP_REQUEST_PUSH_NOTIFICATION_ID)
+                    }
                     val activeTeamAssists = runCatching { client!!.activeRequestHelp() }.getOrDefault(_state.value.activeTeamAssists)
                     _state.update {
                         it.copy(
