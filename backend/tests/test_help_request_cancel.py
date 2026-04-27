@@ -54,7 +54,7 @@ def _create_help_request(client: TestClient, slug: str, *, user_id: int) -> int:
 
 
 def _cancel(client: TestClient, slug: str, *, team_assist_id: int, user_id: int,
-            reason_text: str = "No longer needed", reason_category: str = "false_alarm"):
+            reason_text: str = "No longer needed", reason_category: str = "accidental"):
     return client.post(
         f"/{slug}/request-help/{team_assist_id}/cancel",
         headers=API_KEY,
@@ -90,7 +90,7 @@ def test_requester_can_cancel_own_request(client: TestClient, login_super_admin)
     assert data["cancelled_by_user_id"] == requester_id
     assert data["cancelled_at"] is not None
     assert data["cancel_reason_text"] == "No longer needed"
-    assert data["cancel_reason_category"] == "false_alarm"
+    assert data["cancel_reason_category"] == "accidental"
 
 
 # ---------------------------------------------------------------------------
@@ -102,7 +102,7 @@ def test_empty_reason_text_rejected(client: TestClient, login_super_admin) -> No
     ta_id = _create_help_request(client, "hc2", user_id=requester_id)
 
     resp = _cancel(client, "hc2", team_assist_id=ta_id, user_id=requester_id,
-                   reason_text="  ", reason_category="false_alarm")
+                   reason_text="  ", reason_category="accidental")
     # Pydantic min_length=1 rejects blank strings
     assert resp.status_code == 422, resp.text
 

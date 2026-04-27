@@ -524,17 +524,30 @@ class TeamAssistActionRequest(BaseModel):
         return normalized
 
 
+CANCEL_REASON_CATEGORIES = {"accidental", "resolved", "test", "duplicate", "other"}
+
+
 class TeamAssistCancelRequest(BaseModel):
     user_id: int
     cancel_reason_text: str = Field(..., max_length=500)
     cancel_reason_category: str = Field(..., max_length=100)
 
-    @field_validator("cancel_reason_text", "cancel_reason_category")
+    @field_validator("cancel_reason_text")
     @classmethod
-    def _require_non_blank(cls, v: str) -> str:
+    def _require_non_blank_text(cls, v: str) -> str:
         if not v.strip():
-            raise ValueError("Field must not be blank")
+            raise ValueError("cancel_reason_text must not be blank")
         return v
+
+    @field_validator("cancel_reason_category")
+    @classmethod
+    def _validate_category(cls, v: str) -> str:
+        normalized = v.strip().lower()
+        if normalized not in CANCEL_REASON_CATEGORIES:
+            raise ValueError(
+                f"cancel_reason_category must be one of: {', '.join(sorted(CANCEL_REASON_CATEGORIES))}"
+            )
+        return normalized
 
 
 # ── District / multi-school schemas ──────────────────────────────────────────

@@ -590,9 +590,9 @@ data class TeamAssistFeedItem(
     val createdAt: String,
     val actedByLabel: String? = null,
     val forwardToLabel: String? = null,
-    val cancelRequesterConfirmed: Boolean = false,
-    val cancelAdminConfirmed: Boolean = false,
-    val cancelAdminLabel: String? = null,
+    val cancelledByUserId: Int? = null,
+    val cancelReasonText: String? = null,
+    val cancelReasonCategory: String? = null,
 )
 
 data class PushDeliveryStats(
@@ -1046,37 +1046,23 @@ class MainViewModel : ViewModel() {
         )
     }
 
-    fun confirmRequestHelpCancel(ctx: Context, teamAssistId: Int) {
-        val actorUserId = getUserId(ctx).toIntOrNull()
-        if (actorUserId == null) {
+    fun cancelTeamAssist(ctx: Context, teamAssistId: Int, reasonText: String, reasonCategory: String) {
+        val userId = getUserId(ctx).toIntOrNull()
+        if (userId == null) {
             _state.update { it.copy(errorMsg = "Sign-in is required.") }
             return
         }
         viewModelScope.launch(Dispatchers.IO) {
             _state.update { it.copy(isBusy = true, errorMsg = null) }
-            runCatching { client!!.confirmRequestHelpCancel(teamAssistId = teamAssistId, actorUserId = actorUserId) }
-                .onSuccess { updated ->
+            runCatching { client!!.cancelTeamAssist(teamAssistId = teamAssistId, userId = userId, reasonText = reasonText, reasonCategory = reasonCategory) }
+                .onSuccess {
                     val activeTeamAssists = runCatching { client!!.activeRequestHelp() }.getOrDefault(_state.value.activeTeamAssists)
-                    _state.update {
-                        it.copy(
-                            isBusy = false,
-                            successMsg = if (updated.status.equals("cancelled", ignoreCase = true)) {
-                                "Request help cancelled after dual confirmation."
-                            } else {
-                                "Cancellation confirmation saved. Waiting for second confirmation."
-                            },
-                            activeTeamAssists = activeTeamAssists,
-                        )
-                    }
+                    _state.update { it.copy(isBusy = false, successMsg = "Help request cancelled.", activeTeamAssists = activeTeamAssists) }
                 }
                 .onFailure { e ->
-                    _state.update { it.copy(isBusy = false, errorMsg = e.message ?: "Failed to confirm request-help cancellation.") }
+                    _state.update { it.copy(isBusy = false, errorMsg = e.message ?: "Failed to cancel help request.") }
                 }
         }
-    }
-
-    fun confirmTeamAssistCancel(ctx: Context, teamAssistId: Int) {
-        confirmRequestHelpCancel(ctx = ctx, teamAssistId = teamAssistId)
     }
 
     fun approveQuietPeriodRequest(ctx: Context, requestId: Int) {
@@ -2388,9 +2374,9 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                                 )
                             }
                         },
-                        onTeamAssistCancelConfirm = { teamAssistId ->
+                        onTeamAssistCancel = { teamAssistId, reasonText, reasonCategory ->
                             runProtectedAction(true) {
-                                vm.confirmRequestHelpCancel(ctx = ctx, teamAssistId = teamAssistId)
+                                vm.cancelTeamAssist(ctx = ctx, teamAssistId = teamAssistId, reasonText = reasonText, reasonCategory = reasonCategory)
                             }
                         },
                         modifier = Modifier
@@ -3094,7 +3080,7 @@ private fun ActiveSafetyFeedCard(
     onRefresh: () -> Unit,
     onDeactivateAlarm: () -> Unit,
     onTeamAssistAction: (Int, String, Int?) -> Unit,
-    onTeamAssistCancelConfirm: (Int) -> Unit,
+    onTeamAssistCancel: (Int, String, String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Surface(
@@ -3156,7 +3142,7 @@ private fun ActiveSafetyFeedCard(
                             actionRecipients = actionRecipients,
                             isBusy = isBusy,
                             onTeamAssistAction = onTeamAssistAction,
-                            onTeamAssistCancelConfirm = onTeamAssistCancelConfirm,
+                            onTeamAssistCancel = onTeamAssistCancel,
                         )
                     }
                 }
@@ -3165,6 +3151,7 @@ private fun ActiveSafetyFeedCard(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun TeamAssistRow(
     teamAssist: TeamAssistFeedItem,
@@ -3174,10 +3161,21 @@ private fun TeamAssistRow(
     actionRecipients: List<TeamAssistActionRecipient>,
     isBusy: Boolean,
     onTeamAssistAction: (Int, String, Int?) -> Unit,
-    onTeamAssistCancelConfirm: (Int) -> Unit,
+    onTeamAssistCancel: (Int, String, String) -> Unit,
 ) {
     var showForwardDialog by remember(teamAssist.id) { mutableStateOf(false) }
+    var showCancelDialog by remember(teamAssist.id) { mutableStateOf(false) }
     var forwardQuery by remember(teamAssist.id) { mutableStateOf("") }
+    var cancelReasonText by remember(teamAssist.id) { mutableStateOf("") }
+    var cancelReasonCategory by remember(teamAssist.id) { mutableStateOf("") }
+    var cancelCategoryExpanded by remember(teamAssist.id) { mutableStateOf(false) }
+    val cancelCategories = listOf(
+        "accidental" to "Accidental",
+        "resolved" to "Already Resolved",
+        "test" to "Was a Test",
+        "duplicate" to "Duplicate Request",
+        "other" to "Other",
+    )
     val filteredRecipients = remember(actionRecipients, forwardQuery) {
         actionRecipients.filter {
             it.label.contains(forwardQuery, ignoreCase = true)
@@ -3192,24 +3190,19 @@ private fun TeamAssistRow(
             add(snakeToTitle(teamAssist.status))
         }
         teamAssist.forwardToLabel?.takeIf { it.isNotBlank() }?.let { add("to $it") }
-        if (teamAssist.status.equals("cancel_pending", ignoreCase = true)) {
-            val requesterState = if (teamAssist.cancelRequesterConfirmed) "Requester ✓" else "Requester …"
-            val adminState = if (teamAssist.cancelAdminConfirmed) "Admin ✓" else "Admin …"
-            add("$requesterState, $adminState")
-        }
     }
+    val isTerminal = teamAssist.status.equals("resolved", ignoreCase = true) || teamAssist.status.equals("cancelled", ignoreCase = true)
+    val isRequester = currentUserId != null && currentUserId == teamAssist.createdBy
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         FeedRow(
             title = AppLabels.featureDisplayName(teamAssist.type, featureLabels),
             subtitle = subtitleParts.joinToString(" • "),
             tone = Color(0xFF0F766E),
         )
-        val canRequesterConfirm = currentUserId != null && currentUserId == teamAssist.createdBy && !teamAssist.cancelRequesterConfirmed
-        if (isAdmin || canRequesterConfirm) {
+        if (isAdmin || (isRequester && !isTerminal)) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (isAdmin) {
                     val isOpenOrActive = teamAssist.status.equals("open", ignoreCase = true) || teamAssist.status.equals("active", ignoreCase = true)
-                    val isTerminal = teamAssist.status.equals("resolved", ignoreCase = true) || teamAssist.status.equals("cancelled", ignoreCase = true)
                     if (isOpenOrActive) {
                         AssistActionChip(label = "Acknowledge", enabled = !isBusy) {
                             onTeamAssistAction(teamAssist.id, "acknowledge", null)
@@ -3223,16 +3216,80 @@ private fun TeamAssistRow(
                             showForwardDialog = true
                         }
                     }
-                    AssistActionChip(label = if (teamAssist.cancelAdminConfirmed) "Admin Confirmed" else "Confirm Cancel", enabled = !isBusy && !teamAssist.cancelAdminConfirmed) {
-                        onTeamAssistCancelConfirm(teamAssist.id)
-                    }
-                } else if (canRequesterConfirm) {
-                    AssistActionChip(label = "Confirm Cancel", enabled = !isBusy) {
-                        onTeamAssistCancelConfirm(teamAssist.id)
+                }
+                if (isRequester && !isTerminal) {
+                    AssistActionChip(label = "Cancel Request", enabled = !isBusy) {
+                        cancelReasonText = ""
+                        cancelReasonCategory = ""
+                        showCancelDialog = true
                     }
                 }
             }
         }
+    }
+
+    if (showCancelDialog) {
+        AlertDialog(
+            onDismissRequest = { showCancelDialog = false },
+            title = { Text("Cancel Help Request", color = TextPri, fontWeight = FontWeight.Bold) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    ExposedDropdownMenuBox(
+                        expanded = cancelCategoryExpanded,
+                        onExpandedChange = { cancelCategoryExpanded = it },
+                    ) {
+                        OutlinedTextField(
+                            value = cancelCategories.firstOrNull { it.first == cancelReasonCategory }?.second ?: "",
+                            onValueChange = {},
+                            readOnly = true,
+                            label = { Text("Reason category") },
+                            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = cancelCategoryExpanded) },
+                            modifier = Modifier.fillMaxWidth().menuAnchor(),
+                        )
+                        ExposedDropdownMenu(
+                            expanded = cancelCategoryExpanded,
+                            onDismissRequest = { cancelCategoryExpanded = false },
+                        ) {
+                            cancelCategories.forEach { (value, label) ->
+                                DropdownMenuItem(
+                                    text = { Text(label) },
+                                    onClick = {
+                                        cancelReasonCategory = value
+                                        cancelCategoryExpanded = false
+                                    },
+                                )
+                            }
+                        }
+                    }
+                    OutlinedTextField(
+                        value = cancelReasonText,
+                        onValueChange = { cancelReasonText = it },
+                        label = { Text("Details (required)") },
+                        modifier = Modifier.fillMaxWidth(),
+                        minLines = 2,
+                        maxLines = 4,
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        if (cancelReasonText.isNotBlank() && cancelReasonCategory.isNotBlank()) {
+                            showCancelDialog = false
+                            onTeamAssistCancel(teamAssist.id, cancelReasonText.trim(), cancelReasonCategory)
+                        }
+                    },
+                    enabled = cancelReasonText.isNotBlank() && cancelReasonCategory.isNotBlank(),
+                ) {
+                    Text("Confirm Cancel", color = Color(0xFFDC2626))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showCancelDialog = false }) {
+                    Text("Back", color = TextMuted)
+                }
+            },
+        )
     }
 
     if (showForwardDialog) {
@@ -5644,9 +5701,9 @@ private class BackendClient(baseUrl: String, private val apiKey: String) {
                 createdAt = item.optString("created_at"),
                 actedByLabel = item.optNullableString("acted_by_label"),
                 forwardToLabel = item.optNullableString("forward_to_label"),
-                cancelRequesterConfirmed = item.optBoolean("cancel_requester_confirmed", false),
-                cancelAdminConfirmed = item.optBoolean("cancel_admin_confirmed", false),
-                cancelAdminLabel = item.optNullableString("cancel_admin_label"),
+                cancelledByUserId = if (!item.isNull("cancelled_by_user_id")) item.optInt("cancelled_by_user_id") else null,
+                cancelReasonText = item.optNullableString("cancel_reason_text"),
+                cancelReasonCategory = item.optNullableString("cancel_reason_category"),
             )
         }
     }
@@ -5677,9 +5734,9 @@ private class BackendClient(baseUrl: String, private val apiKey: String) {
                 createdAt = item.optString("created_at"),
                 actedByLabel = item.optNullableString("acted_by_label"),
                 forwardToLabel = item.optNullableString("forward_to_label"),
-                cancelRequesterConfirmed = item.optBoolean("cancel_requester_confirmed", false),
-                cancelAdminConfirmed = item.optBoolean("cancel_admin_confirmed", false),
-                cancelAdminLabel = item.optNullableString("cancel_admin_label"),
+                cancelledByUserId = if (!item.isNull("cancelled_by_user_id")) item.optInt("cancelled_by_user_id") else null,
+                cancelReasonText = item.optNullableString("cancel_reason_text"),
+                cancelReasonCategory = item.optNullableString("cancel_reason_category"),
             )
         }
     }
@@ -5693,10 +5750,13 @@ private class BackendClient(baseUrl: String, private val apiKey: String) {
         )
     }
 
-    fun confirmRequestHelpCancel(teamAssistId: Int, actorUserId: Int): TeamAssistFeedItem {
-        val body = JSONObject().put("user_id", actorUserId)
+    fun cancelTeamAssist(teamAssistId: Int, userId: Int, reasonText: String, reasonCategory: String): TeamAssistFeedItem {
+        val body = JSONObject()
+            .put("user_id", userId)
+            .put("cancel_reason_text", reasonText)
+            .put("cancel_reason_category", reasonCategory)
         val req = Request.Builder()
-            .url("$base/team-assist/$teamAssistId/cancel-confirm")
+            .url("$base/team-assist/$teamAssistId/cancel")
             .withAuth()
             .post(body.toString().toRequestBody(json))
             .build()
@@ -5710,15 +5770,11 @@ private class BackendClient(baseUrl: String, private val apiKey: String) {
                 createdAt = item.optString("created_at"),
                 actedByLabel = item.optNullableString("acted_by_label"),
                 forwardToLabel = item.optNullableString("forward_to_label"),
-                cancelRequesterConfirmed = item.optBoolean("cancel_requester_confirmed", false),
-                cancelAdminConfirmed = item.optBoolean("cancel_admin_confirmed", false),
-                cancelAdminLabel = item.optNullableString("cancel_admin_label"),
+                cancelledByUserId = if (!item.isNull("cancelled_by_user_id")) item.optInt("cancelled_by_user_id") else null,
+                cancelReasonText = item.optNullableString("cancel_reason_text"),
+                cancelReasonCategory = item.optNullableString("cancel_reason_category"),
             )
         }
-    }
-
-    fun confirmTeamAssistCancel(teamAssistId: Int, actorUserId: Int): TeamAssistFeedItem {
-        return confirmRequestHelpCancel(teamAssistId = teamAssistId, actorUserId = actorUserId)
     }
 
     fun activeRequestHelp(): List<TeamAssistFeedItem> {
@@ -5743,9 +5799,9 @@ private class BackendClient(baseUrl: String, private val apiKey: String) {
                                 createdAt = item.optString("created_at"),
                                 actedByLabel = item.optNullableString("acted_by_label"),
                                 forwardToLabel = item.optNullableString("forward_to_label"),
-                                cancelRequesterConfirmed = item.optBoolean("cancel_requester_confirmed", false),
-                                cancelAdminConfirmed = item.optBoolean("cancel_admin_confirmed", false),
-                                cancelAdminLabel = item.optNullableString("cancel_admin_label"),
+                                cancelledByUserId = if (!item.isNull("cancelled_by_user_id")) item.optInt("cancelled_by_user_id") else null,
+                                cancelReasonText = item.optNullableString("cancel_reason_text"),
+                                cancelReasonCategory = item.optNullableString("cancel_reason_category"),
                             ),
                         )
                     }

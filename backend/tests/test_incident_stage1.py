@@ -203,7 +203,7 @@ def test_team_assist_requester_cancel_immediate(client: TestClient, login_super_
     # Single call by requester cancels immediately
     cancel_resp = client.post(
         f"/assist-cancel/team-assist/{team_assist_id}/cancel",
-        json={"user_id": teacher_id, "cancel_reason_text": "Resolved on my own", "cancel_reason_category": "false_alarm"},
+        json={"user_id": teacher_id, "cancel_reason_text": "Resolved on my own", "cancel_reason_category": "accidental"},
         headers={"X-API-Key": "test-api-key"},
     )
     assert cancel_resp.status_code == 200
