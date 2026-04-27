@@ -77,6 +77,15 @@ class IncidentStore:
             )
             self._migrate_incidents_table(conn)
             conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_incidents_status ON incidents(status);"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_incidents_school_id ON incidents(school_id);"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_incidents_created_at ON incidents(created_at);"
+            )
+            conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS team_assists (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,

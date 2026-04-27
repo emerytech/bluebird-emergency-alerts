@@ -475,7 +475,7 @@ def _base_styles(theme: Optional[Mapping[str, str]] = None) -> str:
       white-space: nowrap;
     }
     .data-table tbody tr { transition: background 100ms ease; }
-    .data-table tbody tr:hover { background: rgba(27, 95, 228, 0.04); }
+    .data-table tbody tr:hover { background: rgba(27, 95, 228, 0.08); }
     .table-wrap { overflow-x: auto; border-radius: 12px; }
     .table-search { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; }
     .table-search input {
@@ -2889,7 +2889,7 @@ def render_admin_page(
               </div>
             </div>
             <table class="data-table">
-              <thead><tr><th>ID</th><th>Type</th><th>Time</th><th>Message</th><th>By</th></tr></thead>
+              <thead><tr><th>ID</th><th>Type</th><th>Time (UTC)</th><th>Message</th><th>By</th></tr></thead>
               <tbody>
                 {_render_activity_rows(alerts[:5])}
               </tbody>
@@ -2941,7 +2941,7 @@ def render_admin_page(
             <div class="table-search"><input type="search" id="drill-search" placeholder="Filter reports..." /></div>
             <table class="data-table">
               <thead>
-                <tr><th>ID</th><th>Type</th><th>Date</th><th>Message</th><th style="text-align:right;">Actions</th></tr>
+                <tr><th>ID</th><th>Type</th><th>Date (UTC)</th><th>Message</th><th style="text-align:right;">Actions</th></tr>
               </thead>
               <tbody>
                 {_render_drill_report_rows(alerts, prefix)}
@@ -3232,7 +3232,7 @@ def render_admin_page(
             <div class="table-search"><input type="search" id="audit-search" placeholder="Filter audit events by text..." /></div>
             <table class="data-table">
               <thead>
-                <tr><th>Timestamp</th><th>Event</th><th>Actor</th><th>Target</th><th>Summary</th></tr>
+                <tr><th>Timestamp (UTC)</th><th>Event</th><th>Actor</th><th>Target</th><th>Summary</th></tr>
               </thead>
               <tbody>
                 {_render_audit_event_rows(audit_events)}
@@ -3259,7 +3259,7 @@ def render_admin_page(
           </section>
 
           <section class="panel command-section span-12" id="district-overview"{_section_style("district")}>
-            <div class="panel-header">
+            <div class="panel-header" style="position:sticky;top:0;z-index:20;background:var(--surface);padding-bottom:12px;margin-bottom:4px;">
               <div>
                 <p class="eyebrow">District Overview</p>
                 <h2>All assigned schools</h2>
@@ -3280,7 +3280,7 @@ def render_admin_page(
             </div>
             <table class="data-table" id="district-order-table">
               <thead>
-                <tr><th style="width:28px;"></th><th>School</th><th>Status</th><th>Last Alert</th><th>Ack Rate</th><th>Actions</th></tr>
+                <tr><th style="width:28px;"></th><th>School</th><th>Status</th><th>Last Alert (UTC)</th><th>Ack Rate</th><th>Actions</th></tr>
               </thead>
               <tbody id="district-order-tbody">
                 {_render_district_rows(district_overview_items, school_path_prefix)}

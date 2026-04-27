@@ -50,6 +50,15 @@ class QuietPeriodStore:
                 """
             )
             self._migrate_quiet_periods_table(conn)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_qpr_user_id ON quiet_period_requests(user_id);"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_qpr_status ON quiet_period_requests(status);"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_qpr_user_status ON quiet_period_requests(user_id, status);"
+            )
 
     def _migrate_quiet_periods_table(self, conn: sqlite3.Connection) -> None:
         cols = {str(row[1]) for row in conn.execute("PRAGMA table_info(quiet_period_requests);").fetchall()}

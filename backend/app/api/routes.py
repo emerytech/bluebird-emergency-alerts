@@ -1232,8 +1232,16 @@ async def root(request: Request) -> RedirectResponse:
 
 
 @router.get("/health")
-async def health() -> dict:
-    return {"ok": True}
+async def health(request: Request) -> JSONResponse:
+    checks = await HealthMonitor.run_checks(request.app.state)
+    db_ok = bool(checks["db_ok"])
+    ws_connections = int(checks["ws_connections"])
+    ok = db_ok
+    http_status = status.HTTP_200_OK if ok else status.HTTP_503_SERVICE_UNAVAILABLE
+    return JSONResponse(
+        content={"ok": ok, "db": db_ok, "ws_connections": ws_connections},
+        status_code=http_status,
+    )
 
 
 @router.websocket("/ws/district/alerts")

@@ -3488,7 +3488,6 @@ private fun AuditLogCard(entries: List<AuditLogEntry>, onRefresh: () -> Unit, mo
 }
 
 @Composable
-@Composable
 private fun PendingQuietRequestCard(
     status: QuietPeriodMobileStatus,
     isBusy: Boolean,
