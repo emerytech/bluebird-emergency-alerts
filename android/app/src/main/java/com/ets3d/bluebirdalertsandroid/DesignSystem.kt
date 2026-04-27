@@ -21,6 +21,7 @@ data class DesignTokens(
     val inputBackground: Color,
     val textPrimary: Color,
     val textSecondary: Color,
+    val textTertiary: Color = Color(0xFF6B7FA8),
     val border: Color,
     val success: Color,
     val warning: Color,
@@ -88,6 +89,7 @@ data class DesignTokens(
             card            = Color(0xFF192132),
             textPrimary     = Color(0xFFE8EEFF),
             textSecondary   = Color(0xFF8FA3C8),
+            textTertiary    = Color(0xFF7A92BB),
             border          = Color(0x33FFFFFF),
             cardBorder      = Color(0x1AFFFFFF),
             inputBorder     = Color(0x4DFFFFFF),
@@ -130,6 +132,7 @@ object DSTokenStore {
             inputBackground  = pickColor(root, base.inputBackground,  "colors.input_background",      "color.input_background", "colors.inputBackground", "color.inputBackground"),
             textPrimary      = pickColor(root, base.textPrimary,      "color.mode.text_primary",      "colors.text_primary", "color.text_primary", "colors.textPrimary", "color.textPrimary"),
             textSecondary    = pickColor(root, base.textSecondary,    "color.mode.text_secondary",    "colors.text_secondary", "color.text_secondary", "colors.textSecondary", "color.textSecondary"),
+            textTertiary     = pickColor(root, base.textTertiary,     "color.mode.text_tertiary",     "colors.text_tertiary",  "color.text_tertiary"),
             border           = pickColor(root, base.border,           "color.mode.border",            "color.border.default", "colors.border.default", "colors.border", "color.border"),
             success          = pickColor(root, base.success,          "color.status.success",         "colors.status.success"),
             warning          = pickColor(root, base.warning,          "color.status.warning",         "colors.status.warning"),
@@ -254,6 +257,7 @@ object DSColor {
     val InputBorder:     Color get() = DSTokenStore.tokens().inputBorder
     val TextPrimary:     Color get() = DSTokenStore.tokens().textPrimary
     val TextSecondary:   Color get() = DSTokenStore.tokens().textSecondary
+    val TextTertiary:    Color get() = DSTokenStore.tokens().textTertiary
     val Border:          Color get() = DSTokenStore.tokens().border
     val Success:         Color get() = DSTokenStore.tokens().success
     val Warning:         Color get() = DSTokenStore.tokens().warning

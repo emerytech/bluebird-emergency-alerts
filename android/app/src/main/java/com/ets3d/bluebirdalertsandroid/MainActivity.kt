@@ -269,6 +269,9 @@ private fun getSelectedTenantSlug(ctx: Context) = prefs(ctx).getString(KEY_SELEC
 private fun getSelectedTenantName(ctx: Context) = prefs(ctx).getString(KEY_SELECTED_TENANT_NAME, "") ?: ""
 private fun getUserTitle(ctx: Context) = prefs(ctx).getString(KEY_USER_TITLE, "") ?: ""
 
+private fun snakeToTitle(s: String): String =
+    s.split('_', '-').joinToString(" ") { it.replaceFirstChar { c -> c.uppercase() } }
+
 private fun Context.findActivity(): FragmentActivity? = when (this) {
     is FragmentActivity -> this
     is ContextWrapper -> baseContext.findActivity()
@@ -1576,8 +1579,7 @@ private fun LoginScreen(onDone: () -> Unit) {
                 runCatching { client.login(normalizedUsername, password) }
                     .onSuccess { user ->
                         val schoolName = schoolOptions.firstOrNull { it.slug == selectedSchoolSlug }?.name
-                            ?: selectedSchoolSlug.replace("-", " ")
-                                .replaceFirstChar { it.uppercase() }
+                            ?: snakeToTitle(selectedSchoolSlug)
                         prefs(ctx).edit()
                             .putString(KEY_UID, user.userId.toString())
                             .putString(KEY_NAME, user.name)
@@ -2108,11 +2110,11 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                                         Text(
                                             effectiveSchoolName,
                                             fontWeight = FontWeight.Medium,
-                                            color = TextPri.copy(alpha = 0.65f),
+                                            color = DSColor.TextTertiary,
                                             fontSize = 12.sp,
                                             lineHeight = 14.sp,
                                         )
-                                        Text("▾", color = TextPri.copy(alpha = 0.65f), fontSize = 10.sp)
+                                        Text("▾", color = DSColor.TextTertiary, fontSize = 10.sp)
                                     }
                                 }
                             }
@@ -2159,7 +2161,7 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                             Text(
                                 effectiveSchoolName,
                                 fontWeight = FontWeight.Medium,
-                                color = TextPri.copy(alpha = 0.65f),
+                                color = DSColor.TextTertiary,
                                 fontSize = 12.sp,
                                 lineHeight = 14.sp,
                             )
@@ -2284,7 +2286,7 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                                 Column {
                                     Text("BlueBird Alerts", fontWeight = FontWeight.Bold, fontSize = 20.sp, color = TextPri)
                                     Text(
-                                        if (userName.isNotBlank()) "$userName • ${userRole.replaceFirstChar { it.uppercase() }}" else "School Safety",
+                                        if (userName.isNotBlank()) "$userName • ${snakeToTitle(userRole)}" else "School Safety",
                                         fontSize = 12.sp,
                                         color = TextMuted,
                                     )
@@ -2292,7 +2294,7 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                                         Text(
                                             effectiveSchoolName,
                                             fontSize = 11.sp,
-                                            color = TextMuted.copy(alpha = 0.65f),
+                                            color = DSColor.TextTertiary,
                                         )
                                     }
                                 }
@@ -3093,7 +3095,7 @@ private fun ActiveSafetyFeedCard(
                 } else {
                     incidents.take(8).forEach { incident ->
                         FeedRow(
-                            title = incident.type.uppercase(),
+                            title = snakeToTitle(incident.type),
                             subtitle = "${formatIsoForBanner(incident.createdAt) ?: incident.createdAt} • by #${incident.createdBy}",
                             tone = Color(0xFF1D4ED8),
                         )
@@ -3143,9 +3145,9 @@ private fun TeamAssistRow(
         add("${formatIsoForBanner(teamAssist.createdAt) ?: teamAssist.createdAt} • by #${teamAssist.createdBy}")
         val actorLabel = teamAssist.actedByLabel?.takeIf { it.isNotBlank() }
         if (actorLabel != null) {
-            add("${teamAssist.status.replaceFirstChar { it.uppercase() }} by $actorLabel")
+            add("${snakeToTitle(teamAssist.status)} by $actorLabel")
         } else {
-            add(teamAssist.status.replaceFirstChar { it.uppercase() })
+            add(snakeToTitle(teamAssist.status))
         }
         teamAssist.forwardToLabel?.takeIf { it.isNotBlank() }?.let { add("to $it") }
         if (teamAssist.status.equals("cancel_pending", ignoreCase = true)) {
@@ -3367,7 +3369,7 @@ private fun AdminQuietPeriodRequestsCard(
                     ) {
                         Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                             Text(
-                                text = (item.userName ?: "User #${item.userId}") + " • ${(item.userRole ?: "user").replaceFirstChar { it.uppercase() }}",
+                                text = (item.userName ?: "User #${item.userId}") + " • ${snakeToTitle(item.userRole ?: "user")}",
                                 color = TextPri,
                                 fontWeight = FontWeight.SemiBold,
                                 fontSize = 14.sp,
@@ -3464,7 +3466,7 @@ private fun AuditLogCard(entries: List<AuditLogEntry>, onRefresh: () -> Unit, mo
                 entries.take(20).forEach { entry ->
                     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                         Text(
-                            entry.eventType.replace("_", " ").replaceFirstChar { it.uppercase() },
+                            snakeToTitle(entry.eventType),
                             color = TextPri,
                             fontWeight = FontWeight.SemiBold,
                             fontSize = 13.sp,
@@ -4180,6 +4182,7 @@ private fun QuietPeriodRequestOverlay(
                 minLines = 2,
                 maxLines = 4,
                 accentColor = QuietPurple,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
             )
             if (!errorMsg.isNullOrBlank()) {
                 Text(errorMsg, color = AlarmRed, fontSize = DSTypography.Caption)
@@ -4697,7 +4700,7 @@ private fun SettingsScreen(
                     if (schoolName.isNotBlank()) {
                         SettingsInfoRow("School", schoolName)
                     }
-                    SettingsInfoRow("Role", userRole.replaceFirstChar { it.uppercase() })
+                    SettingsInfoRow("Role", snakeToTitle(userRole))
                     SettingsInfoRow("User ID", userId)
                     SettingsInfoRow("Server", activeServerUrl, muted = true, small = true)
                 }
