@@ -103,8 +103,7 @@ class BlueBirdFirebaseMessagingService : FirebaseMessagingService() {
 
         if (isHelpRequest) {
             ensureHelpRequestNotificationChannel(applicationContext)
-            val helpSoundUri = Uri.parse("android.resource://$packageName/${R.raw.bluebird_alarm_asset}")
-            // NOTE: replace bluebird_alarm_asset with help_request_alert once that audio file is added.
+            val helpSoundUri = Uri.parse("android.resource://$packageName/${R.raw.help_request_alert}")
             val notification = NotificationCompat.Builder(this, HELP_REQUEST_NOTIF_CH)
                 .setSmallIcon(R.mipmap.ic_launcher)
                 .setContentTitle(title)
@@ -152,8 +151,7 @@ class BlueBirdFirebaseMessagingService : FirebaseMessagingService() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         if (manager.getNotificationChannel(HELP_REQUEST_NOTIF_CH) != null) return
-        // NOTE: replace bluebird_alarm_asset with help_request_alert once that audio file is added.
-        val soundUri = Uri.parse("android.resource://${context.packageName}/${R.raw.bluebird_alarm_asset}")
+        val soundUri = Uri.parse("android.resource://${context.packageName}/${R.raw.help_request_alert}")
         val attrs = android.media.AudioAttributes.Builder()
             .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SONIFICATION)
             .setUsage(android.media.AudioAttributes.USAGE_NOTIFICATION)

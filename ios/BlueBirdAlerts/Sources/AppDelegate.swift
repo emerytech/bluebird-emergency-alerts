@@ -66,7 +66,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
             return [.banner, .sound]
         }
 
-        // Help requests: banner + sound (aps.sound contains "help_request_alert.caf").
+        // Help requests: banner + sound (aps.sound = "help_request_alert.caf").
         return [.banner, .sound]
     }
 }
