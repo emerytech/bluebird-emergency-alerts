@@ -1232,8 +1232,12 @@ async def _push_tokens_for_scope(
         if device.user_id is not None and int(device.user_id) > 0
     }
     paused_user_ids = await _quiet_suppressed_user_ids(request, candidate_user_ids=candidate_user_ids)
+    all_users = await _users(request).list_users()
+    active_user_ids = {u.id for u in all_users if u.is_active}
 
     def _allow_user(user_id: Optional[int]) -> bool:
+        if user_id is not None and user_id not in active_user_ids:
+            return False
         if user_id is not None and user_id in paused_user_ids:
             return False
         if target_user_ids is None:
@@ -1247,8 +1251,8 @@ async def _push_tokens_for_scope(
     apns_tokens = list(dict.fromkeys(apns_tokens))
     fcm_tokens = list(dict.fromkeys(fcm_tokens))
     logger.debug(
-        "push_tokens_for_scope tenant=%s apns=%d fcm=%d paused_users=%d",
-        tenant_slug, len(apns_tokens), len(fcm_tokens), len(paused_user_ids),
+        "push_tokens_for_scope tenant=%s apns=%d fcm=%d paused_users=%d active_users=%d",
+        tenant_slug, len(apns_tokens), len(fcm_tokens), len(paused_user_ids), len(active_user_ids),
     )
     return apns_tokens, fcm_tokens
 
@@ -1709,19 +1713,22 @@ async def activate_alarm(
     if not is_training:
         apns_devices = await _registry(request).list_by_provider("apns")
         fcm_devices = await _registry(request).list_by_provider("fcm")
+        all_users_list = await users.list_users()
+        active_user_ids_set = {int(u.id) for u in all_users_list if u.is_active}
         candidate_user_ids = {
             int(device.user_id)
             for device in (*apns_devices, *fcm_devices)
             if device.user_id is not None and int(device.user_id) > 0
         }
-        candidate_user_ids.update(int(user.id) for user in await users.list_users() if int(user.id) > 0)
+        candidate_user_ids.update(int(user.id) for user in all_users_list if int(user.id) > 0)
         paused_user_ids = await _quiet_suppressed_user_ids(request, candidate_user_ids=candidate_user_ids)
         apns_tokens = list(
             dict.fromkeys(
                 [
                     device.token
                     for device in apns_devices
-                    if device.user_id is None or device.user_id not in paused_user_ids
+                    if (device.user_id is None or device.user_id in active_user_ids_set)
+                    and (device.user_id is None or device.user_id not in paused_user_ids)
                 ]
             )
         )
@@ -1730,7 +1737,8 @@ async def activate_alarm(
                 [
                     device.token
                     for device in fcm_devices
-                    if device.user_id is None or device.user_id not in paused_user_ids
+                    if (device.user_id is None or device.user_id in active_user_ids_set)
+                    and (device.user_id is None or device.user_id not in paused_user_ids)
                 ]
             )
         )
@@ -3435,6 +3443,7 @@ async def super_admin_dashboard(
         _d_last = max((n.get("last_alert_at") or "" for n in _ds_nocs), default="")
         _d_status = "alarm" if _d_alarm > 0 else ("empty" if not _ds else "healthy")
         _d_bills = [str(_billing_by_slug.get(str(getattr(s, "slug", "")), {}).get("billing_status", "unknown") or "unknown") for s in _ds]
+        _d_push_failed = sum(int(n.get("push_failed", 0)) for n in _ds_nocs)
         msp_districts.append({
             "id": _d.id, "name": _d.name, "slug": _d.slug, "is_active": _d.is_active,
             "is_district": True, "school_count": len(_ds),
@@ -3442,6 +3451,7 @@ async def super_admin_dashboard(
             "alarm_count": _d_alarm, "ws_total": _d_ws, "last_activity": _d_last,
             "status": _d_status, "billing_ok": all(b in {"active", "trial", "free"} for b in _d_bills) if _d_bills else True,
             "brand_locked": bool(getattr(_d, "brand_lock_enabled", False)),
+            "push_failed_total": _d_push_failed,
         })
     for _s in _ungrouped_schools:
         _s_noc = _noc_by_slug.get(str(getattr(_s, "slug", "")), {})
@@ -3455,6 +3465,7 @@ async def super_admin_dashboard(
             "last_activity": _s_noc.get("last_alert_at") or "",
             "status": "alarm" if _s_noc.get("alarm_active") else ("healthy" if bool(getattr(_s, "is_active", True)) else "offline"),
             "billing_ok": _s_bill in {"active", "trial", "free"},
+            "push_failed_total": int(_s_noc.get("push_failed", 0)),
         })
     # ── Platform Control stats ────────────────────────────────────────────────
     _branded_schools = sum(1 for s in schools if any([s.accent, s.accent_strong, s.sidebar_start, s.logo_path]))
@@ -3535,6 +3546,7 @@ async def _fetch_tenant_noc_status(request: Request, school: object) -> dict[str
         is_active = bool(getattr(alarm_state, "is_active", False))
         ack_count: int = 0
         user_count: int = 0
+        push_failed: int = 0
         if is_active and latest_alert is not None:
             ack_val, users = await asyncio.gather(
                 tenant.alert_log.acknowledgement_count(latest_alert.id),
@@ -3542,6 +3554,9 @@ async def _fetch_tenant_noc_status(request: Request, school: object) -> dict[str
             )
             ack_count = int(ack_val)
             user_count = sum(1 for u in users if getattr(u, "is_active", True))
+        if latest_alert is not None:
+            _ps = await tenant.alert_log.delivery_stats(latest_alert.id)
+            push_failed = int(_ps.get("failed", 0))
         hub = getattr(request.app.state, "alert_hub", None)
         ws_count = 0
         if hub is not None:
@@ -3558,11 +3573,12 @@ async def _fetch_tenant_noc_status(request: Request, school: object) -> dict[str
             "ws_connections": ws_count,
             "ack_count": ack_count,
             "user_count": user_count,
+            "push_failed": push_failed,
         }
     except Exception as exc:
         logger.warning("NOC tenant status error for %s: %s", slug, exc)
         return {"slug": slug, "name": name, "alarm_active": False, "alarm_message": None,
-                "last_alert_at": None, "ws_connections": 0, "ack_count": 0, "user_count": 0}
+                "last_alert_at": None, "ws_connections": 0, "ack_count": 0, "user_count": 0, "push_failed": 0}
 
 
 @router.get("/super-admin/metrics", include_in_schema=False)
@@ -3689,11 +3705,42 @@ async def super_admin_msp_district(request: Request, slug: str) -> dict[str, obj
         d_schools = [s for s in await school_registry.list_schools() if s.slug == slug]
         entity_name = d_schools[0].name if d_schools else slug
 
-    noc_results, push_results = await asyncio.gather(
+    async def _school_ops_counts(school: object) -> dict[str, object]:
+        _slug = str(getattr(school, "slug", ""))
+        try:
+            _tc = request.app.state.tenant_manager.get(school)  # type: ignore[attr-defined]
+            _inc, _qp, _aud = await asyncio.gather(
+                _tc.incident_store.list_active_incidents(limit=50),
+                _tc.quiet_period_store.list_recent(limit=50),
+                _tc.audit_log_service.list_recent(limit=5),
+            )
+            return {
+                "slug": _slug,
+                "incident_count": len(_inc),
+                "pending_quiet": sum(1 for q in _qp if getattr(q, "status", "") == "pending"),
+                "recent_audit": [
+                    {
+                        "created_at": str(getattr(e, "timestamp", "") or ""),
+                        "event_type": str(getattr(e, "event_type", "")),
+                        "actor": str(getattr(e, "actor_label", "") or "system"),
+                    }
+                    for e in _aud[:5]
+                ],
+            }
+        except Exception:
+            return {"slug": _slug, "incident_count": 0, "pending_quiet": 0, "recent_audit": []}
+
+    noc_results, push_results, ops_results = await asyncio.gather(
         asyncio.gather(*[_fetch_tenant_noc_status(request, s) for s in d_schools]),
         asyncio.gather(*[_tenant_push_stat(request, s) for s in d_schools]),
+        asyncio.gather(*[_school_ops_counts(s) for s in d_schools]),
     )
     notes = await school_registry.list_operator_notes(slug)
+    _all_audit = sorted(
+        [ev for o in ops_results for ev in o.get("recent_audit", [])],
+        key=lambda e: str(e.get("created_at", "")),
+        reverse=True,
+    )[:10]
     return {
         "slug": slug,
         "name": entity_name,
@@ -3708,6 +3755,9 @@ async def super_admin_msp_district(request: Request, slug: str) -> dict[str, obj
         "noc": list(noc_results),
         "push": list(push_results),
         "notes": notes,
+        "incident_count": sum(int(o.get("incident_count", 0)) for o in ops_results),
+        "pending_quiet": sum(int(o.get("pending_quiet", 0)) for o in ops_results),
+        "recent_audit": _all_audit,
     }
 
 
@@ -4604,6 +4654,7 @@ async def admin_update_user(
     if clear_login is None and bool(login_name.strip()) != bool(password.strip()) and bool(password.strip()):
         _set_flash(request, error="To change credentials, provide both username and password.")
         return RedirectResponse(url="/admin?section=user-management#users", status_code=status.HTTP_303_SEE_OTHER)
+    being_deactivated = existing_user.is_active and (is_active is None)
     try:
         await _users(request).update_user(
             user_id=user_id,
@@ -4619,6 +4670,8 @@ async def admin_update_user(
     except Exception as exc:
         _set_flash(request, error=f"Could not update user #{user_id}: {exc}")
         return RedirectResponse(url="/admin?section=user-management#users", status_code=status.HTTP_303_SEE_OTHER)
+    if being_deactivated:
+        await _registry(request).mark_invalid_by_user(user_id)
     _fire_audit(
         request,
         "user_updated",

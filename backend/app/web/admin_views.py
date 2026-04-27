@@ -1584,10 +1584,12 @@ def render_super_admin_page(
         billing_ok = bool(d.get("billing_ok", True))
         type_tag = "District" if is_district else "School"
         border_color = _MSP_STATUS_COLORS.get(status, "#94a3b8")
+        push_failed = int(d.get("push_failed_total") or 0)
         alarm_badge = f'<span style="color:#ef4444;font-size:0.75rem;font-weight:600;">⚠ {alarm_count} alarm</span>' if alarm_count > 0 else ""
-        billing_badge = "" if billing_ok else '<span style="color:#f59e0b;font-size:0.75rem;font-weight:600;margin-left:8px;">Billing</span>'
+        push_fail_badge = f'<span class="msp-push-fail" data-count="{push_failed}" style="color:#f97316;font-size:0.75rem;font-weight:600;margin-left:6px;">✗ {push_failed} push</span>' if push_failed > 0 else f'<span class="msp-push-fail" data-count="0" style="display:none;"></span>'
+        billing_badge = "" if billing_ok else '<span style="color:#f59e0b;font-size:0.75rem;font-weight:600;margin-left:6px;">Billing</span>'
         return (
-            f'<div class="msp-card" data-slug="{slug}" data-status="{escape(status)}" data-name="{name}" '
+            f'<div class="msp-card" data-slug="{slug}" data-status="{escape(status)}" data-name="{name}" data-push-failed="{push_failed}" '
             f'style="border-left:4px solid {border_color};">'
             f'<div class="msp-card-header">'
             f'<div>'
@@ -1601,7 +1603,7 @@ def render_super_admin_page(
             f'<span>WS: {ws}</span>'
             f'<span style="color:var(--text-muted);font-size:0.75rem;">{escape(last_fmt)}</span>'
             f'</div>'
-            f'<div class="msp-card-badges">{alarm_badge}{billing_badge}</div>'
+            f'<div class="msp-card-badges">{alarm_badge}{push_fail_badge}{billing_badge}</div>'
             f'<div class="msp-card-actions">'
             f'<button class="button button-secondary" style="font-size:0.78rem;padding:4px 12px;" '
             f'onclick="mspOpenDetail(\'{slug}\')" type="button">Details</button>'
@@ -1612,24 +1614,81 @@ def render_super_admin_page(
     _msp_cards_html = "".join(_msp_customer_card(d) for d in msp_districts) or \
         '<p class="mini-copy" style="padding:24px 0;">No districts or schools configured yet.</p>'
 
+    def _msp_severity_level(d: Mapping[str, object]) -> int:
+        if str(d.get("status", "")) == "alarm":
+            return 0
+        if int(d.get("push_failed_total") or 0) > 0:
+            return 1
+        if not bool(d.get("billing_ok", True)):
+            return 2
+        return 99
+
+    _msp_priority_items = [d for d in msp_districts if _msp_severity_level(d) < 99]
+    _msp_priority_items = sorted(_msp_priority_items, key=lambda d: (_msp_severity_level(d), str(d.get("name", ""))))
+
     _msp_global_alerts_html = ""
-    if _msp_has_alarm:
-        _msp_rows = "".join(
-            f'<tr>'
-            f'<td><span class="status-pill danger" style="font-size:0.7rem;">Alarm</span></td>'
-            f'<td><strong>{escape(str(d.get("name", "")))}</strong></td>'
-            f'<td>{int(d.get("alarm_count") or 0)} active</td>'
-            f'<td><button class="button button-secondary" style="font-size:0.75rem;padding:3px 10px;" '
-            f'onclick="mspOpenDetail(\'{escape(str(d.get("slug", "")))}\')" type="button">View</button></td>'
-            f'</tr>'
-            for d in sorted(msp_districts, key=lambda x: (0 if x.get("status") == "alarm" else 1, str(x.get("name", ""))))
-            if d.get("status") == "alarm"
+    if _msp_priority_items:
+        def _priority_row(d: Mapping[str, object]) -> str:
+            level = _msp_severity_level(d)
+            _slug = escape(str(d.get("slug", "")))
+            _name = escape(str(d.get("name", "")))
+            if level == 0:
+                sev_html = '<span class="status-pill danger" style="font-size:0.7rem;white-space:nowrap;">🔴 Alarm</span>'
+                detail = f'{int(d.get("alarm_count") or 0)} school{"s" if int(d.get("alarm_count") or 0) != 1 else ""} in alarm'
+            elif level == 1:
+                sev_html = '<span class="status-pill warn" style="font-size:0.7rem;white-space:nowrap;">⚠ Push Failures</span>'
+                detail = f'{int(d.get("push_failed_total") or 0)} failed deliveries on last alert'
+            else:
+                sev_html = '<span class="status-pill warn" style="font-size:0.7rem;white-space:nowrap;">Billing</span>'
+                detail = 'Billing issue — verify subscription'
+            return (
+                f'<tr>'
+                f'<td style="padding:6px 8px;">{sev_html}</td>'
+                f'<td style="padding:6px 8px;font-weight:600;">{_name}</td>'
+                f'<td style="padding:6px 8px;font-size:0.8rem;color:var(--muted);">{escape(detail)}</td>'
+                f'<td style="padding:6px 8px;">'
+                f'<button class="button button-secondary" style="font-size:0.73rem;padding:3px 10px;" '
+                f'onclick="mspOpenDetail(\'{_slug}\')" type="button">View</button>'
+                f'</td>'
+                f'</tr>'
+            )
+        _priority_rows_html = "".join(_priority_row(d) for d in _msp_priority_items)
+        _has_alarm_str = "🔴 ALARM: " + ", ".join(str(d.get("name","")) for d in _msp_alarm_districts) if _msp_has_alarm else ""
+        _alarm_strip_html = (
+            f'<div class="flash error" id="msp-alarm-strip" style="margin-bottom:8px;">{escape(_has_alarm_str)}</div>'
+            if _msp_has_alarm else
+            '<div id="msp-alarm-strip" style="display:none;"></div>'
         )
         _msp_global_alerts_html = (
-            f'<div class="flash error" style="margin-bottom:16px;" id="msp-alarm-strip">'
-            f'🔴 ACTIVE ALARMS: {escape(", ".join(str(d.get("name","")) for d in _msp_alarm_districts))}'
+            _alarm_strip_html +
+            f'<div style="background:rgba(239,68,68,0.04);border:1px solid rgba(239,68,68,0.18);'
+            f'border-radius:10px;overflow:hidden;margin-bottom:16px;" id="msp-priority-table">'
+            f'<div style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;'
+            f'border-bottom:1px solid rgba(239,68,68,0.15);background:rgba(239,68,68,0.06);">'
+            f'<span style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:#b91c1c;">Alert Queue</span>'
+            f'<span style="font-size:0.7rem;color:var(--muted);">{len(_msp_priority_items)} issue{"s" if len(_msp_priority_items) != 1 else ""}</span>'
+            f'</div>'
+            f'<table style="width:100%;border-collapse:collapse;"><tbody>{_priority_rows_html}</tbody></table>'
             f'</div>'
         )
+    else:
+        _msp_global_alerts_html = '<div id="msp-alarm-strip" style="display:none;"></div>'
+
+    _pctrl_styles = """
+          .pctrl-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:18px;margin-bottom:28px;}
+          .pctrl-card{background:var(--card,#fff);border:1px solid var(--border);border-radius:14px;padding:22px 20px;position:relative;overflow:hidden;}
+          .pctrl-card-hdr{font-size:.72rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin-bottom:12px;}
+          .pctrl-kpi{font-size:2.4rem;font-weight:800;line-height:1;margin:0 0 4px;}
+          .pctrl-sub{font-size:.78rem;color:var(--muted);}
+          .pctrl-pill{display:inline-block;padding:2px 8px;border-radius:99px;font-size:.72rem;font-weight:700;background:var(--border);}
+          .pctrl-pill.ok{background:#dcfce7;color:#15803d;}
+          .pctrl-pill.warn{background:#fef9c3;color:#854d0e;}
+          .pctrl-pill.danger{background:#fee2e2;color:#b91c1c;}
+          .pctrl-district-table{width:100%;border-collapse:collapse;font-size:.85rem;}
+          .pctrl-district-table th{text-align:left;padding:8px 10px;color:var(--muted);font-weight:600;border-bottom:1px solid var(--border);}
+          .pctrl-district-table td{padding:8px 10px;border-bottom:1px solid var(--border);}
+          .pctrl-lock-btn{padding:4px 12px;border-radius:6px;border:1px solid var(--border);font-size:.75rem;cursor:pointer;background:var(--bg-offset,#f8fafc);}
+          """
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -1682,21 +1741,7 @@ def render_super_admin_page(
       </aside>
       <section class="content-stack workspace">
         <section class="panel command-section" id="platform-control"{_section_style("platform-control")}>
-          <style>
-          .pctrl-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:18px;margin-bottom:28px;}
-          .pctrl-card{background:var(--card,#fff);border:1px solid var(--border);border-radius:14px;padding:22px 20px;position:relative;overflow:hidden;}
-          .pctrl-card-hdr{font-size:.72rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin-bottom:12px;}
-          .pctrl-kpi{font-size:2.4rem;font-weight:800;line-height:1;margin:0 0 4px;}
-          .pctrl-sub{font-size:.78rem;color:var(--muted);}
-          .pctrl-pill{display:inline-block;padding:2px 8px;border-radius:99px;font-size:.72rem;font-weight:700;background:var(--border);}
-          .pctrl-pill.ok{background:#dcfce7;color:#15803d;}
-          .pctrl-pill.warn{background:#fef9c3;color:#854d0e;}
-          .pctrl-pill.danger{background:#fee2e2;color:#b91c1c;}
-          .pctrl-district-table{width:100%;border-collapse:collapse;font-size:.85rem;}
-          .pctrl-district-table th{text-align:left;padding:8px 10px;color:var(--muted);font-weight:600;border-bottom:1px solid var(--border);}
-          .pctrl-district-table td{padding:8px 10px;border-bottom:1px solid var(--border);}
-          .pctrl-lock-btn{padding:4px 12px;border-radius:6px;border:1px solid var(--border);font-size:.75rem;cursor:pointer;background:var(--bg-offset,#f8fafc);}
-          </style>
+          <style>{_pctrl_styles}</style>
           <div class="panel-header hero-band">
             <div>
               <p class="eyebrow">Super Admin</p>
@@ -1853,12 +1898,19 @@ def render_super_admin_page(
                 var pillCls = alarm ? 'danger' : 'ok';
                 var pillLabel = alarm ? 'Alarm' : 'Normal';
                 var failed = push.failed || 0;
+                var pushOk = push.ok || 0;
+                var pushTotal = push.total || 0;
                 return '<li class="msp-school-row">'
-                  + '<div><strong>' + s.name + '</strong><span style="font-size:0.72rem;color:var(--muted);margin-left:6px;">/' + s.slug + '</span></div>'
-                  + '<div style="display:flex;align-items:center;gap:8px;">'
+                  + '<div>'
+                  + '<strong>' + _esc(s.name) + '</strong>'
+                  + '<span style="font-size:0.72rem;color:var(--muted);margin-left:6px;">/' + _esc(s.slug) + '</span>'
+                  + (pushTotal > 0 ? '<div style="font-size:0.72rem;color:var(--muted);margin-top:2px;">Push: ' + pushOk + '/' + pushTotal + ' ok' + (failed > 0 ? ' <span style="color:#ef4444;">' + failed + ' failed</span>' : '') + '</div>' : '')
+                  + '</div>'
+                  + '<div style="display:flex;align-items:center;gap:6px;">'
                   + '<span class="status-pill ' + pillCls + '" style="font-size:0.68rem;padding:2px 8px;">' + pillLabel + '</span>'
-                  + (failed > 0 ? '<span style="color:#ef4444;font-size:0.75rem;">' + failed + ' failed</span>' : '')
-                  + '<a class="button button-secondary" href="/super-admin/schools/' + s.slug + '/enter" style="font-size:0.75rem;padding:3px 10px;text-decoration:none;" onclick="this.closest(\'form\') || this.insertAdjacentHTML(\'afterend\',\'<form method=post action=\\\'/super-admin/schools/' + s.slug + '/enter\\\'><input type=hidden name=_go value=1></form>\') ; this.nextElementSibling.submit(); return false;">Open Admin</a>'
+                  + '<form method="post" action="/super-admin/schools/' + _esc(s.slug) + '/enter" style="margin:0;">'
+                  + '<button class="button button-secondary" type="submit" style="font-size:0.72rem;padding:2px 10px;">Open</button>'
+                  + '</form>'
                   + '</div>'
                   + '</li>';
               }}).join('') || '<li style="color:var(--muted);font-size:0.83rem;padding:6px 0;">No schools.</li>';
@@ -1879,27 +1931,70 @@ def render_super_admin_page(
                   + '</div>';
               }}).join('') : '<p style="color:var(--muted);font-size:0.82rem;margin:0;">No active alarms.</p>';
 
+              var incCount = d.incident_count || 0;
+              var qpCount = d.pending_quiet || 0;
+              var statsBar = '<div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:14px;padding:10px 14px;'
+                + 'background:var(--card);border:1px solid var(--border);border-radius:8px;">'
+                + '<span style="font-size:0.78rem;"><strong>' + incCount + '</strong> active incident' + (incCount !== 1 ? 's' : '') + '</span>'
+                + '<span style="color:var(--border);">|</span>'
+                + '<span style="font-size:0.78rem;' + (qpCount > 0 ? 'color:#f59e0b;font-weight:600;' : '') + '">'
+                + '<strong>' + qpCount + '</strong> pending quiet request' + (qpCount !== 1 ? 's' : '') + '</span>'
+                + '<span style="color:var(--border);">|</span>'
+                + '<span style="font-size:0.78rem;">' + (d.schools || []).length + ' school' + ((d.schools||[]).length !== 1 ? 's' : '') + '</span>'
+                + '</div>';
+
+              var auditRows = (d.recent_audit || []).map(function(e) {{
+                return '<tr style="border-bottom:1px solid var(--border);">'
+                  + '<td style="padding:5px 8px;font-size:0.72rem;color:var(--muted);white-space:nowrap;">' + _esc((e.created_at||'').substring(0,16).replace('T',' ')) + '</td>'
+                  + '<td style="padding:5px 8px;font-size:0.75rem;">' + _esc(e.event_type||'') + '</td>'
+                  + '<td style="padding:5px 8px;font-size:0.75rem;color:var(--muted);">' + _esc(e.actor||'system') + '</td>'
+                  + '</tr>';
+              }}).join('');
+              var auditHtml = auditRows
+                ? '<table style="width:100%;border-collapse:collapse;">'
+                  + '<thead><tr><th style="text-align:left;padding:5px 8px;font-size:0.7rem;color:var(--muted);border-bottom:1px solid var(--border);">Time</th>'
+                  + '<th style="text-align:left;padding:5px 8px;font-size:0.7rem;color:var(--muted);border-bottom:1px solid var(--border);">Event</th>'
+                  + '<th style="text-align:left;padding:5px 8px;font-size:0.7rem;color:var(--muted);border-bottom:1px solid var(--border);">By</th></tr></thead>'
+                  + '<tbody>' + auditRows + '</tbody></table>'
+                : '<p style="color:var(--muted);font-size:0.82rem;margin:0;">No recent activity.</p>';
+
+              var safeActionsHtml = '<div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:4px;">'
+                + (d.schools && d.schools[0]
+                  ? '<form method="post" action="/super-admin/schools/' + _esc(d.schools[0].slug) + '/enter" style="margin:0;">'
+                    + '<button class="button button-primary" type="submit" style="font-size:0.78rem;padding:5px 14px;">Open Console</button>'
+                    + '</form>'
+                  : '')
+                + '<a class="button button-secondary" href="/super-admin?section=email-tool" style="font-size:0.78rem;padding:5px 14px;text-decoration:none;">Send Email</a>'
+                + '<a class="button button-secondary" href="/super-admin?section=health" style="font-size:0.78rem;padding:5px 14px;text-decoration:none;">Health Check</a>'
+                + '</div>';
+
               return '<div class="msp-detail-drawer">'
-                + '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">'
+                + '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">'
                 + '<h2 style="margin:0;font-size:1.1rem;">' + _esc(d.name) + '</h2>'
                 + '<button class="button button-secondary" style="font-size:0.75rem;" onclick="mspOpenDetail(\'' + _esc(d.slug) + '\')" type="button">Close</button>'
                 + '</div>'
+                + statsBar
                 + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;">'
                 + '<div>'
                   + '<h4>Schools / Buildings</h4>'
                   + '<ul class="msp-school-list">' + schoolsHtml + '</ul>'
-                  + '<h4>Active Alarms</h4>' + alarmHtml
+                  + '<h4 style="margin-top:14px;">Active Alarms</h4>' + alarmHtml
                 + '</div>'
                 + '<div>'
                   + '<h4>Operator Notes</h4>'
                   + '<div class="msp-note-list" id="msp-notes-' + _esc(d.slug) + '">' + notesHtml + '</div>'
-                  + '<form class="msp-note-form" data-slug="' + _esc(d.slug) + '" style="display:flex;gap:8px;align-items:flex-end;">'
+                  + '<form class="msp-note-form" data-slug="' + _esc(d.slug) + '" style="display:flex;gap:8px;align-items:flex-end;margin-bottom:14px;">'
                   + '<div class="field" style="flex:1;margin:0;">'
                   + '<textarea name="note_text" rows="2" placeholder="Add internal note…" style="width:100%;resize:vertical;"></textarea>'
                   + '</div>'
                   + '<button class="button button-primary" type="submit" style="font-size:0.8rem;padding:6px 14px;align-self:flex-end;">Add</button>'
                   + '</form>'
+                  + '<h4>Recent Audit Activity</h4>' + auditHtml
                 + '</div>'
+                + '</div>'
+                + '<div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border);">'
+                + '<h4 style="margin-bottom:8px;">Safe Actions</h4>'
+                + safeActionsHtml
                 + '</div>'
                 + '</div>';
             }}
@@ -1952,15 +2047,19 @@ def render_super_admin_page(
                 var bySlug = {{}};
                 d.tenants.forEach(function(t) {{ bySlug[t.slug] = t; }});
                 var alarmNames = [];
+                var hasIssue = false;
                 var cards = document.querySelectorAll('#msp-customer-grid .msp-card');
                 cards.forEach(function(card) {{
                   var slug = card.dataset.slug;
                   var t = bySlug[slug];
                   if (!t) return;
                   var alarm = !!t.alarm_active;
+                  var pushFailed = parseInt(t.push_failed || 0, 10);
                   if (alarm) alarmNames.push(card.dataset.name || slug);
+                  if (alarm || pushFailed > 0) hasIssue = true;
                   var newStatus = alarm ? 'alarm' : 'healthy';
                   card.dataset.status = newStatus;
+                  card.dataset.pushFailed = pushFailed;
                   card.style.borderLeftColor = alarm ? '#ef4444' : '#22c55e';
                   var pill = card.querySelector('.status-pill');
                   if (pill) {{
@@ -1979,13 +2078,23 @@ def render_super_admin_page(
                     }} else if (!alarm && existing) {{
                       existing.remove();
                     }}
+                    var pfBadge = badges.querySelector('.msp-push-fail');
+                    if (pfBadge) {{
+                      if (pushFailed > 0) {{
+                        pfBadge.dataset.count = pushFailed;
+                        pfBadge.textContent = '✗ ' + pushFailed + ' push';
+                        pfBadge.style.display = '';
+                      }} else {{
+                        pfBadge.style.display = 'none';
+                      }}
+                    }}
                   }}
                 }});
                 var strip = document.getElementById('msp-alarm-strip');
                 if (strip) {{
                   if (alarmNames.length) {{
                     strip.style.display = '';
-                    strip.textContent = '🔴 ACTIVE ALARMS: ' + alarmNames.join(', ');
+                    strip.textContent = '🔴 ALARM: ' + alarmNames.join(', ');
                   }} else {{
                     strip.style.display = 'none';
                   }}
