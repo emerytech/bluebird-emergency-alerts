@@ -20,6 +20,7 @@ import java.util.concurrent.TimeUnit
 
 private const val SILENT_NOTIF_CH = "bluebird_info"
 private const val SILENT_NOTIF_ID = 1002
+private const val HELP_REQUEST_NOTIF_CH = "bluebird_help_request"
 
 class BlueBirdFirebaseMessagingService : FirebaseMessagingService() {
     override fun onCreate() {
@@ -43,9 +44,12 @@ class BlueBirdFirebaseMessagingService : FirebaseMessagingService() {
             ?: message.data["message"]
             ?: "Emergency alert received."
 
-        // Detect whether this device belongs to the user who triggered the alarm.
+        val alertType = message.data["type"] ?: ""
+        val isHelpRequest = alertType == "help_request"
+
+        // Detect whether this device belongs to the user who triggered the alert.
         val triggeredByUid = message.data["triggered_by_user_id"]?.toIntOrNull()
-        val silentForSender = message.data["silent_for_sender"] == "1"
+        val silentForSender = message.data["silent_for_sender"] == "true"
         val storedUid = applicationContext
             .getSharedPreferences("bluebird_prefs", Context.MODE_PRIVATE)
             .getString("user_id", "")?.toIntOrNull()
@@ -76,9 +80,7 @@ class BlueBirdFirebaseMessagingService : FirebaseMessagingService() {
             return
         }
 
-        // Non-sender: full alarm behavior.
-        val soundUri = Uri.parse("android.resource://$packageName/${R.raw.bluebird_alarm}")
-
+        // Non-sender: show notification with type-appropriate sound.
         val launchIntent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
             putExtra(EXTRA_OPEN_ALARM, true)
@@ -92,28 +94,74 @@ class BlueBirdFirebaseMessagingService : FirebaseMessagingService() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
 
-        wakeScreenForAlert()
+        if (isHelpRequest) {
+            ensureHelpRequestNotificationChannel(applicationContext)
+            val helpSoundUri = Uri.parse("android.resource://$packageName/${R.raw.bluebird_alarm_asset}")
+            // NOTE: replace bluebird_alarm_asset with help_request_alert once that audio file is added.
+            val notification = NotificationCompat.Builder(this, HELP_REQUEST_NOTIF_CH)
+                .setSmallIcon(R.mipmap.ic_launcher)
+                .setContentTitle(title)
+                .setContentText(body)
+                .setStyle(NotificationCompat.BigTextStyle().bigText(body))
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+                .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+                .setShowWhen(true)
+                .setWhen(System.currentTimeMillis())
+                .setSound(helpSoundUri)
+                .setVibrate(longArrayOf(0L, 400L, 200L, 400L))
+                .setAutoCancel(true)
+                .setContentIntent(pendingIntent)
+                .build()
+            (getSystemService(NOTIFICATION_SERVICE) as NotificationManager)
+                .notify(ALERT_PUSH_NOTIFICATION_ID, notification)
+        } else {
+            // Emergency: full alarm behavior.
+            val soundUri = Uri.parse("android.resource://$packageName/${R.raw.bluebird_alarm}")
+            wakeScreenForAlert()
+            val notification = NotificationCompat.Builder(this, NOTIF_CH)
+                .setSmallIcon(R.mipmap.ic_launcher)
+                .setContentTitle(title)
+                .setContentText(body)
+                .setStyle(NotificationCompat.BigTextStyle().bigText(body))
+                .setPriority(NotificationCompat.PRIORITY_MAX)
+                .setCategory(NotificationCompat.CATEGORY_ALARM)
+                .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+                .setShowWhen(true)
+                .setWhen(System.currentTimeMillis())
+                .setSound(soundUri)
+                .setVibrate(longArrayOf(0L, 900L, 350L, 900L, 350L, 1200L))
+                .setAutoCancel(false)
+                .setOngoing(true)
+                .setContentIntent(pendingIntent)
+                .setFullScreenIntent(pendingIntent, true)
+                .build()
+            (getSystemService(NOTIFICATION_SERVICE) as NotificationManager)
+                .notify(ALERT_PUSH_NOTIFICATION_ID, notification)
+        }
+    }
 
-        val notification = NotificationCompat.Builder(this, NOTIF_CH)
-            .setSmallIcon(R.mipmap.ic_launcher)
-            .setContentTitle(title)
-            .setContentText(body)
-            .setStyle(NotificationCompat.BigTextStyle().bigText(body))
-            .setPriority(NotificationCompat.PRIORITY_MAX)
-            .setCategory(NotificationCompat.CATEGORY_ALARM)
-            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-            .setShowWhen(true)
-            .setWhen(System.currentTimeMillis())
-            .setSound(soundUri)
-            .setVibrate(longArrayOf(0L, 900L, 350L, 900L, 350L, 1200L))
-            .setAutoCancel(false)
-            .setOngoing(true)
-            .setContentIntent(pendingIntent)
-            .setFullScreenIntent(pendingIntent, true)
+    private fun ensureHelpRequestNotificationChannel(context: Context) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        if (manager.getNotificationChannel(HELP_REQUEST_NOTIF_CH) != null) return
+        // NOTE: replace bluebird_alarm_asset with help_request_alert once that audio file is added.
+        val soundUri = Uri.parse("android.resource://${context.packageName}/${R.raw.bluebird_alarm_asset}")
+        val attrs = android.media.AudioAttributes.Builder()
+            .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SONIFICATION)
+            .setUsage(android.media.AudioAttributes.USAGE_NOTIFICATION)
             .build()
-
-        (getSystemService(NOTIFICATION_SERVICE) as NotificationManager)
-            .notify(ALERT_PUSH_NOTIFICATION_ID, notification)
+        val channel = NotificationChannel(
+            HELP_REQUEST_NOTIF_CH,
+            "BlueBird Help Requests",
+            NotificationManager.IMPORTANCE_HIGH,
+        ).apply {
+            description = "Help request alerts from staff"
+            enableVibration(true)
+            vibrationPattern = longArrayOf(0L, 400L, 200L, 400L)
+            setSound(soundUri, attrs)
+        }
+        manager.createNotificationChannel(channel)
     }
 
     private fun ensureSilentNotificationChannel(context: Context) {

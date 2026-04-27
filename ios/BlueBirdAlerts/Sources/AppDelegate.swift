@@ -38,11 +38,35 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         )
     }
 
-    // Present alerts even when the app is open.
+    // Present alerts even when the app is open, with type-appropriate audio.
     func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         willPresent notification: UNNotification
     ) async -> UNNotificationPresentationOptions {
+        let userInfo = notification.request.content.userInfo
+        let alertType = userInfo["type"] as? String ?? ""
+
+        // Sender silence: suppress sound if this device belongs to the requester.
+        // NOTE: iOS app does not persist user_id today — sender silence for background
+        // pushes requires per-token APNs dispatch (future work).
+        let silentForSender = (userInfo["silent_for_sender"] as? String) == "true"
+        let triggeredByUid = (userInfo["triggered_by_user_id"] as? String).flatMap { Int($0) }
+        let storedUid = UserDefaults.standard.string(forKey: "bluebird_user_id").flatMap { Int($0) }
+        let isSender = silentForSender
+            && triggeredByUid != nil
+            && storedUid != nil
+            && triggeredByUid == storedUid
+
+        if isSender {
+            return [.banner]
+        }
+
+        // Emergency alerts: full audio (unchanged).
+        if alertType == "emergency" || alertType.isEmpty {
+            return [.banner, .sound]
+        }
+
+        // Help requests: banner + sound (aps.sound contains "help_request_alert.caf").
         return [.banner, .sound]
     }
 }

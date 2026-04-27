@@ -201,10 +201,12 @@ class APNsClient:
             "apns-priority": "10",
         }
 
+        alert_type = (extra_data or {}).get("type", "")
+        sound = "help_request_alert.caf" if alert_type == "help_request" else "bluebird_alarm.caf"
         payload: dict = {
             "aps": {
                 "alert": {"title": "BlueBird Alert", "body": message},
-                "sound": "bluebird_alarm.caf",
+                "sound": sound,
                 "badge": 1,
                 "interruption-level": "time-sensitive",
             }
