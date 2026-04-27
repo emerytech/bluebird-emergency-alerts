@@ -17,6 +17,7 @@ class RegisteredDevice:
     device_name: str | None = None
     user_id: int | None = None
     first_user_id: int | None = None
+    last_seen_at: str | None = None
 
 
 class DeviceRegistry:
@@ -62,6 +63,10 @@ class DeviceRegistry:
                 conn.execute("ALTER TABLE registered_devices ADD COLUMN user_id INTEGER NULL;")
             if "first_user_id" not in cols:
                 conn.execute("ALTER TABLE registered_devices ADD COLUMN first_user_id INTEGER NULL;")
+            if "last_seen_at" not in cols:
+                conn.execute(
+                    "ALTER TABLE registered_devices ADD COLUMN last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP;"
+                )
 
     def _register_sync(
         self,
@@ -85,15 +90,17 @@ class DeviceRegistry:
                 is_new = row is None
                 conn.execute(
                     """
-                    INSERT INTO registered_devices (token, platform, push_provider, device_name, user_id, first_user_id)
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    INSERT INTO registered_devices
+                        (token, platform, push_provider, device_name, user_id, first_user_id, last_seen_at)
+                    VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                     ON CONFLICT(push_provider, token)
                     DO UPDATE SET
                         platform = excluded.platform,
                         push_provider = excluded.push_provider,
                         device_name = excluded.device_name,
                         user_id = excluded.user_id,
-                        first_user_id = COALESCE(registered_devices.first_user_id, excluded.first_user_id);
+                        first_user_id = COALESCE(registered_devices.first_user_id, excluded.first_user_id),
+                        last_seen_at = CURRENT_TIMESTAMP;
                     """,
                     (token, platform, push_provider, device_name, user_id, user_id),
                 )
@@ -126,7 +133,7 @@ class DeviceRegistry:
             with self._connect() as conn:
                 rows = conn.execute(
                     """
-                    SELECT token, platform, push_provider, device_name, user_id, first_user_id
+                    SELECT token, platform, push_provider, device_name, user_id, first_user_id, last_seen_at
                     FROM registered_devices
                     WHERE push_provider = ?
                     ORDER BY created_at ASC, rowid ASC;
@@ -141,6 +148,7 @@ class DeviceRegistry:
                 device_name=str(row[3]) if row[3] is not None else None,
                 user_id=int(row[4]) if row[4] is not None else None,
                 first_user_id=int(row[5]) if row[5] is not None else None,
+                last_seen_at=str(row[6]) if row[6] is not None else None,
             )
             for row in rows
         ]
@@ -153,7 +161,7 @@ class DeviceRegistry:
             with self._connect() as conn:
                 rows = conn.execute(
                     """
-                    SELECT token, platform, push_provider, device_name, user_id, first_user_id
+                    SELECT token, platform, push_provider, device_name, user_id, first_user_id, last_seen_at
                     FROM registered_devices
                     ORDER BY created_at ASC, rowid ASC;
                     """
@@ -166,6 +174,7 @@ class DeviceRegistry:
                 device_name=str(row[3]) if row[3] is not None else None,
                 user_id=int(row[4]) if row[4] is not None else None,
                 first_user_id=int(row[5]) if row[5] is not None else None,
+                last_seen_at=str(row[6]) if row[6] is not None else None,
             )
             for row in rows
         ]
@@ -226,3 +235,15 @@ class DeviceRegistry:
 
     async def delete(self, token: str, push_provider: str) -> bool:
         return await anyio.to_thread.run_sync(self._delete_sync, token, push_provider)
+
+    def _touch_sync(self, token: str, push_provider: str) -> None:
+        with self._lock:
+            with self._connect() as conn:
+                conn.execute(
+                    "UPDATE registered_devices SET last_seen_at = CURRENT_TIMESTAMP WHERE token = ? AND push_provider = ?;",
+                    (token, push_provider),
+                )
+
+    async def touch(self, token: str, push_provider: str) -> None:
+        """Refresh last_seen_at without changing any other fields. Safe to fire as a background task."""
+        await anyio.to_thread.run_sync(self._touch_sync, token, push_provider)
