@@ -502,6 +502,11 @@ class TeamAssistSummary(BaseModel):
     cancel_requester_confirmed: bool = False
     cancel_admin_confirmed: bool = False
     cancel_admin_label: Optional[str] = None
+    # requester-initiated cancel fields
+    cancelled_by_user_id: Optional[int] = None
+    cancelled_at: Optional[str] = None
+    cancel_reason_text: Optional[str] = None
+    cancel_reason_category: Optional[str] = None
 
 
 class TeamAssistListResponse(BaseModel):
@@ -524,6 +529,19 @@ class TeamAssistActionRequest(BaseModel):
 
 class TeamAssistCancelConfirmRequest(BaseModel):
     user_id: int
+
+
+class TeamAssistCancelRequest(BaseModel):
+    user_id: int
+    cancel_reason_text: str = Field(..., max_length=500)
+    cancel_reason_category: str = Field(..., max_length=100)
+
+    @field_validator("cancel_reason_text", "cancel_reason_category")
+    @classmethod
+    def _require_non_blank(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("Field must not be blank")
+        return v
 
 
 # ── District / multi-school schemas ──────────────────────────────────────────

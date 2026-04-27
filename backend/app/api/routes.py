@@ -53,6 +53,7 @@ from app.models.schemas import (
     TeamAssistCreateRequest,
     TeamAssistActionRequest,
     TeamAssistCancelConfirmRequest,
+    TeamAssistCancelRequest,
     TeamAssistListResponse,
     TeamAssistSummary,
     TenantOverviewItem,
@@ -1209,6 +1210,10 @@ def _to_team_assist_summary(item) -> TeamAssistSummary:
         cancel_requester_confirmed=bool(item.cancel_requester_confirmed_at),
         cancel_admin_confirmed=bool(item.cancel_admin_confirmed_at),
         cancel_admin_label=item.cancel_admin_label,
+        cancelled_by_user_id=item.cancelled_by_user_id,
+        cancelled_at=item.cancelled_at,
+        cancel_reason_text=item.cancel_reason_text,
+        cancel_reason_category=item.cancel_reason_category,
     )
 
 
@@ -5298,6 +5303,73 @@ async def team_assist_action(
         "acted_by_label": actor.name,
     })
 
+    return _to_team_assist_summary(updated)
+
+
+@router.post("/team-assist/{team_assist_id}/cancel", response_model=TeamAssistSummary)
+@router.post("/request-help/{team_assist_id}/cancel", response_model=TeamAssistSummary)
+async def cancel_team_assist(
+    team_assist_id: int,
+    body: TeamAssistCancelRequest,
+    request: Request,
+    _: None = Depends(require_api_key),
+) -> TeamAssistSummary:
+    """Requester cancels their own help request immediately with a required reason."""
+    users = _users(request)
+    actor_id = await _require_active_user(users, body.user_id)
+    actor = await users.get_user(actor_id)
+    if actor is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    existing = await _incident_store(request).get_team_assist(team_assist_id)
+    if existing is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Help request not found")
+    if existing.status in {"cancelled", "resolved"}:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Help request is already closed")
+    if actor.id != existing.created_by:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only the original requester can cancel their own help request",
+        )
+
+    updated = await _incident_store(request).cancel_team_assist(
+        team_assist_id=team_assist_id,
+        cancelled_by_user_id=actor.id,
+        cancel_reason_text=body.cancel_reason_text.strip(),
+        cancel_reason_category=body.cancel_reason_category.strip(),
+    )
+    if updated is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Help request could not be cancelled — it may have just been closed by another action",
+        )
+
+    _fire_audit(
+        request,
+        "help_request_cancelled",
+        actor_user_id=actor.id,
+        actor_label=actor.name,
+        target_type="team_assist",
+        target_id=str(team_assist_id),
+        metadata={
+            "request_id": team_assist_id,
+            "created_by": existing.created_by,
+            "cancelled_by": actor.id,
+            "cancel_reason_text": body.cancel_reason_text.strip(),
+            "cancel_reason_category": body.cancel_reason_category.strip(),
+        },
+    )
+    await _incident_store(request).create_notification_log(
+        user_id=actor.id,
+        type_value="help_request_cancelled",
+        payload={
+            "team_assist_id": updated.id,
+            "cancelled_by_user_id": actor.id,
+            "cancelled_by_label": actor.name,
+            "cancel_reason_text": body.cancel_reason_text.strip(),
+            "cancel_reason_category": body.cancel_reason_category.strip(),
+        },
+    )
     return _to_team_assist_summary(updated)
 
 

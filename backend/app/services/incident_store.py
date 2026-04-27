@@ -38,6 +38,11 @@ class TeamAssistRecord:
     cancel_admin_confirmed_at: Optional[str]
     cancel_admin_user_id: Optional[int]
     cancel_admin_label: Optional[str]
+    # requester-initiated cancel fields
+    cancelled_by_user_id: Optional[int] = None
+    cancelled_at: Optional[str] = None
+    cancel_reason_text: Optional[str] = None
+    cancel_reason_category: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -145,6 +150,14 @@ class IncidentStore:
             conn.execute("ALTER TABLE team_assists ADD COLUMN cancel_admin_user_id INTEGER NULL;")
         if "cancel_admin_label" not in cols:
             conn.execute("ALTER TABLE team_assists ADD COLUMN cancel_admin_label TEXT NULL;")
+        if "cancelled_by_user_id" not in cols:
+            conn.execute("ALTER TABLE team_assists ADD COLUMN cancelled_by_user_id INTEGER NULL;")
+        if "cancelled_at" not in cols:
+            conn.execute("ALTER TABLE team_assists ADD COLUMN cancelled_at TEXT NULL;")
+        if "cancel_reason_text" not in cols:
+            conn.execute("ALTER TABLE team_assists ADD COLUMN cancel_reason_text TEXT NULL;")
+        if "cancel_reason_category" not in cols:
+            conn.execute("ALTER TABLE team_assists ADD COLUMN cancel_reason_category TEXT NULL;")
 
     def _create_incident_sync(
         self,
@@ -278,7 +291,11 @@ class IncidentStore:
                     cancel_requester_confirmed_at,
                     cancel_admin_confirmed_at,
                     cancel_admin_user_id,
-                    cancel_admin_label
+                    cancel_admin_label,
+                    cancelled_by_user_id,
+                    cancelled_at,
+                    cancel_reason_text,
+                    cancel_reason_category
                 FROM team_assists
                 WHERE id = ?
                 LIMIT 1;
@@ -301,6 +318,10 @@ class IncidentStore:
             cancel_admin_confirmed_at=str(row[11]) if row[11] is not None else None,
             cancel_admin_user_id=int(row[12]) if row[12] is not None else None,
             cancel_admin_label=str(row[13]) if row[13] is not None else None,
+            cancelled_by_user_id=int(row[14]) if row[14] is not None else None,
+            cancelled_at=str(row[15]) if row[15] is not None else None,
+            cancel_reason_text=str(row[16]) if row[16] is not None else None,
+            cancel_reason_category=str(row[17]) if row[17] is not None else None,
         )
 
     async def create_team_assist(
@@ -338,7 +359,11 @@ class IncidentStore:
                     cancel_requester_confirmed_at,
                     cancel_admin_confirmed_at,
                     cancel_admin_user_id,
-                    cancel_admin_label
+                    cancel_admin_label,
+                    cancelled_by_user_id,
+                    cancelled_at,
+                    cancel_reason_text,
+                    cancel_reason_category
                 FROM team_assists
                 WHERE status NOT IN ('cancelled', 'resolved')
                 ORDER BY id DESC
@@ -362,6 +387,10 @@ class IncidentStore:
                 cancel_admin_confirmed_at=str(row[11]) if row[11] is not None else None,
                 cancel_admin_user_id=int(row[12]) if row[12] is not None else None,
                 cancel_admin_label=str(row[13]) if row[13] is not None else None,
+                cancelled_by_user_id=int(row[14]) if row[14] is not None else None,
+                cancelled_at=str(row[15]) if row[15] is not None else None,
+                cancel_reason_text=str(row[16]) if row[16] is not None else None,
+                cancel_reason_category=str(row[17]) if row[17] is not None else None,
             )
             for row in rows
         ]
@@ -385,6 +414,10 @@ class IncidentStore:
             cancel_admin_confirmed_at=str(row[11]) if row[11] is not None else None,
             cancel_admin_user_id=int(row[12]) if row[12] is not None else None,
             cancel_admin_label=str(row[13]) if row[13] is not None else None,
+            cancelled_by_user_id=int(row[14]) if row[14] is not None else None,
+            cancelled_at=str(row[15]) if row[15] is not None else None,
+            cancel_reason_text=str(row[16]) if row[16] is not None else None,
+            cancel_reason_category=str(row[17]) if row[17] is not None else None,
         )
 
     def _get_team_assist_sync(self, team_assist_id: int) -> Optional[TeamAssistRecord]:
@@ -405,7 +438,11 @@ class IncidentStore:
                     cancel_requester_confirmed_at,
                     cancel_admin_confirmed_at,
                     cancel_admin_user_id,
-                    cancel_admin_label
+                    cancel_admin_label,
+                    cancelled_by_user_id,
+                    cancelled_at,
+                    cancel_reason_text,
+                    cancel_reason_category
                 FROM team_assists
                 WHERE id = ?
                 LIMIT 1;
@@ -468,7 +505,11 @@ class IncidentStore:
                     cancel_requester_confirmed_at,
                     cancel_admin_confirmed_at,
                     cancel_admin_user_id,
-                    cancel_admin_label
+                    cancel_admin_label,
+                    cancelled_by_user_id,
+                    cancelled_at,
+                    cancel_reason_text,
+                    cancel_reason_category
                 FROM team_assists
                 WHERE id = ?
                 LIMIT 1;
@@ -526,7 +567,11 @@ class IncidentStore:
                     cancel_requester_confirmed_at,
                     cancel_admin_confirmed_at,
                     cancel_admin_user_id,
-                    cancel_admin_label
+                    cancel_admin_label,
+                    cancelled_by_user_id,
+                    cancelled_at,
+                    cancel_reason_text,
+                    cancel_reason_category
                 FROM team_assists
                 WHERE id = ?
                 LIMIT 1;
@@ -589,7 +634,11 @@ class IncidentStore:
                     cancel_requester_confirmed_at,
                     cancel_admin_confirmed_at,
                     cancel_admin_user_id,
-                    cancel_admin_label
+                    cancel_admin_label,
+                    cancelled_by_user_id,
+                    cancelled_at,
+                    cancel_reason_text,
+                    cancel_reason_category
                 FROM team_assists
                 WHERE id = ?
                 LIMIT 1;
@@ -614,6 +663,86 @@ class IncidentStore:
                 actor_user_id=int(actor_user_id),
                 actor_role=actor_role,
                 actor_label=actor_label,
+            )
+        )
+
+    def _cancel_team_assist_sync(
+        self,
+        *,
+        team_assist_id: int,
+        cancelled_by_user_id: int,
+        cancel_reason_text: str,
+        cancel_reason_category: str,
+    ) -> Optional[TeamAssistRecord]:
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            cur = conn.execute(
+                """
+                UPDATE team_assists
+                SET
+                    status = 'cancelled',
+                    cancelled_by_user_id = ?,
+                    cancelled_at = ?,
+                    cancel_reason_text = ?,
+                    cancel_reason_category = ?,
+                    acted_by_user_id = ?,
+                    acted_by_label = NULL
+                WHERE id = ? AND status NOT IN ('cancelled', 'resolved');
+                """,
+                (
+                    int(cancelled_by_user_id),
+                    now,
+                    cancel_reason_text,
+                    cancel_reason_category,
+                    int(cancelled_by_user_id),
+                    int(team_assist_id),
+                ),
+            )
+            if cur.rowcount <= 0:
+                return None
+            row = conn.execute(
+                """
+                SELECT
+                    id,
+                    type,
+                    created_by,
+                    assigned_team_ids_json,
+                    status,
+                    created_at,
+                    acted_by_user_id,
+                    acted_by_label,
+                    forward_to_user_id,
+                    forward_to_label,
+                    cancel_requester_confirmed_at,
+                    cancel_admin_confirmed_at,
+                    cancel_admin_user_id,
+                    cancel_admin_label,
+                    cancelled_by_user_id,
+                    cancelled_at,
+                    cancel_reason_text,
+                    cancel_reason_category
+                FROM team_assists
+                WHERE id = ?
+                LIMIT 1;
+                """,
+                (int(team_assist_id),),
+            ).fetchone()
+        return self._team_assist_from_row(row) if row is not None else None
+
+    async def cancel_team_assist(
+        self,
+        *,
+        team_assist_id: int,
+        cancelled_by_user_id: int,
+        cancel_reason_text: str,
+        cancel_reason_category: str,
+    ) -> Optional[TeamAssistRecord]:
+        return await anyio.to_thread.run_sync(
+            lambda: self._cancel_team_assist_sync(
+                team_assist_id=int(team_assist_id),
+                cancelled_by_user_id=int(cancelled_by_user_id),
+                cancel_reason_text=cancel_reason_text,
+                cancel_reason_category=cancel_reason_category,
             )
         )
 
