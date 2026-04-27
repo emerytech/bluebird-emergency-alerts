@@ -52,6 +52,7 @@ class DeviceRegistry:
                     user_id INTEGER NULL,
                     first_user_id INTEGER NULL,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    last_seen_at TEXT NULL,
                     PRIMARY KEY (push_provider, token)
                 );
                 """
@@ -65,7 +66,7 @@ class DeviceRegistry:
                 conn.execute("ALTER TABLE registered_devices ADD COLUMN first_user_id INTEGER NULL;")
             if "last_seen_at" not in cols:
                 conn.execute(
-                    "ALTER TABLE registered_devices ADD COLUMN last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP;"
+                    "ALTER TABLE registered_devices ADD COLUMN last_seen_at TEXT NULL;"
                 )
 
     def _register_sync(
