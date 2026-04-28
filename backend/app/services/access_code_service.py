@@ -37,6 +37,11 @@ class AccessCodeRecord:
     status: str             # active | used | expired | revoked
     is_setup_code: bool     # True = district-admin bootstrap code
     invite_email: Optional[str]
+    # Phase 3: pre-assignment fields
+    assigned_name: Optional[str] = None
+    assigned_email: Optional[str] = None
+    assigned_user_id: Optional[int] = None
+    label: Optional[str] = None  # batch label (e.g. "HS Science Dept")
 
 
 # ── Service ────────────────────────────────────────────────────────────────────
@@ -85,10 +90,23 @@ class AccessCodeService:
                     last_used_at        TEXT    NULL,
                     status              TEXT    NOT NULL DEFAULT 'active',
                     is_setup_code       INTEGER NOT NULL DEFAULT 0,
-                    invite_email        TEXT    NULL
+                    invite_email        TEXT    NULL,
+                    assigned_name       TEXT    NULL,
+                    assigned_email      TEXT    NULL,
+                    assigned_user_id    INTEGER NULL,
+                    label               TEXT    NULL
                 );
                 """
             )
+            cols = {str(r[1]) for r in conn.execute("PRAGMA table_info(access_codes);").fetchall()}
+            for col, defn in [
+                ("assigned_name",    "ALTER TABLE access_codes ADD COLUMN assigned_name TEXT NULL;"),
+                ("assigned_email",   "ALTER TABLE access_codes ADD COLUMN assigned_email TEXT NULL;"),
+                ("assigned_user_id", "ALTER TABLE access_codes ADD COLUMN assigned_user_id INTEGER NULL;"),
+                ("label",            "ALTER TABLE access_codes ADD COLUMN label TEXT NULL;"),
+            ]:
+                if col not in cols:
+                    conn.execute(defn)
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_ac_code ON access_codes(code);"
             )
@@ -126,6 +144,10 @@ class AccessCodeService:
             status=status,
             is_setup_code=bool(int(row[12])),
             invite_email=str(row[13]) if row[13] else None,
+            assigned_name=str(row[14]) if len(row) > 14 and row[14] else None,
+            assigned_email=str(row[15]) if len(row) > 15 and row[15] else None,
+            assigned_user_id=int(row[16]) if len(row) > 16 and row[16] is not None else None,
+            label=str(row[17]) if len(row) > 17 and row[17] else None,
         )
 
     # ── Generate ───────────────────────────────────────────────────────────────
@@ -139,6 +161,9 @@ class AccessCodeService:
         expires_at: datetime,
         max_uses: int,
         is_setup_code: bool,
+        assigned_name: Optional[str] = None,
+        assigned_email: Optional[str] = None,
+        label: Optional[str] = None,
     ) -> AccessCodeRecord:
         now_iso = datetime.now(timezone.utc).isoformat()
         expires_iso = expires_at.isoformat()
@@ -150,13 +175,15 @@ class AccessCodeService:
                         """
                         INSERT INTO access_codes
                             (code, tenant_slug, role, title, created_by_user_id,
-                             created_at, expires_at, max_uses, is_setup_code)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+                             created_at, expires_at, max_uses, is_setup_code,
+                             assigned_name, assigned_email, label)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
                         """,
                         (
                             code, tenant_slug, role, title, created_by_user_id,
                             now_iso, expires_iso, max_uses,
                             1 if is_setup_code else 0,
+                            assigned_name, assigned_email, label,
                         ),
                     )
                     row_id = conn.execute("SELECT last_insert_rowid();").fetchone()[0]
@@ -175,6 +202,10 @@ class AccessCodeService:
                     status="active",
                     is_setup_code=is_setup_code,
                     invite_email=None,
+                    assigned_name=assigned_name,
+                    assigned_email=assigned_email,
+                    assigned_user_id=None,
+                    label=label,
                 )
             except sqlite3.IntegrityError:
                 continue  # code collision — retry
@@ -190,12 +221,105 @@ class AccessCodeService:
         expires_hours: int = 48,
         max_uses: int = 1,
         is_setup_code: bool = False,
+        assigned_name: Optional[str] = None,
+        assigned_email: Optional[str] = None,
+        label: Optional[str] = None,
     ) -> AccessCodeRecord:
         expires_at = datetime.now(timezone.utc) + timedelta(hours=expires_hours)
         return await anyio.to_thread.run_sync(
             lambda: self._generate_sync(
                 tenant_slug, role, title, created_by_user_id,
                 expires_at, max_uses, is_setup_code,
+                assigned_name, assigned_email, label,
+            )
+        )
+
+    def _generate_bulk_sync(
+        self,
+        tenant_slug: str,
+        role: str,
+        title: Optional[str],
+        created_by_user_id: int,
+        expires_at: datetime,
+        max_uses: int,
+        label: Optional[str],
+        assignments: List[tuple],  # list of (assigned_name, assigned_email) or empty
+        quantity: int,
+    ) -> List[AccessCodeRecord]:
+        """Batch insert. Each row gets a unique code. Assignments are matched by position."""
+        now_iso = datetime.now(timezone.utc).isoformat()
+        expires_iso = expires_at.isoformat()
+        records: List[AccessCodeRecord] = []
+        with self._connect() as conn:
+            for i in range(quantity):
+                assigned_name = assignments[i][0] if i < len(assignments) else None
+                assigned_email = assignments[i][1] if i < len(assignments) else None
+                for _ in range(20):
+                    code = _gen_raw()
+                    try:
+                        conn.execute(
+                            """
+                            INSERT INTO access_codes
+                                (code, tenant_slug, role, title, created_by_user_id,
+                                 created_at, expires_at, max_uses, is_setup_code,
+                                 assigned_name, assigned_email, label)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?);
+                            """,
+                            (
+                                code, tenant_slug, role, title, created_by_user_id,
+                                now_iso, expires_iso, max_uses,
+                                assigned_name, assigned_email, label,
+                            ),
+                        )
+                        row_id = conn.execute("SELECT last_insert_rowid();").fetchone()[0]
+                        records.append(AccessCodeRecord(
+                            id=int(row_id),
+                            code=code,
+                            tenant_slug=tenant_slug,
+                            role=role,
+                            title=title,
+                            created_by_user_id=created_by_user_id,
+                            created_at=now_iso,
+                            expires_at=expires_iso,
+                            max_uses=max_uses,
+                            use_count=0,
+                            last_used_at=None,
+                            status="active",
+                            is_setup_code=False,
+                            invite_email=None,
+                            assigned_name=assigned_name,
+                            assigned_email=assigned_email,
+                            assigned_user_id=None,
+                            label=label,
+                        ))
+                        break
+                    except sqlite3.IntegrityError:
+                        continue
+                else:
+                    raise RuntimeError(f"Could not generate unique code for slot {i}")
+        return records
+
+    async def generate_codes_bulk(
+        self,
+        *,
+        tenant_slug: str,
+        role: str,
+        quantity: int,
+        title: Optional[str] = None,
+        created_by_user_id: int = 0,
+        expires_hours: int = 48,
+        max_uses: int = 1,
+        label: Optional[str] = None,
+        assignments: Optional[List[tuple]] = None,
+    ) -> List[AccessCodeRecord]:
+        """Generate multiple codes in a single DB transaction."""
+        expires_at = datetime.now(timezone.utc) + timedelta(hours=expires_hours)
+        qty = max(1, min(100, quantity))
+        assigns = list(assignments or [])
+        return await anyio.to_thread.run_sync(
+            lambda: self._generate_bulk_sync(
+                tenant_slug, role, title, created_by_user_id,
+                expires_at, max_uses, label, assigns, qty,
             )
         )
 
@@ -210,7 +334,7 @@ class AccessCodeService:
                 """
                 SELECT id, code, tenant_slug, role, title, created_by_user_id, created_at,
                        expires_at, max_uses, use_count, last_used_at, status, is_setup_code,
-                       invite_email
+                       invite_email, assigned_name, assigned_email, assigned_user_id, label
                 FROM access_codes
                 WHERE code = ?
                   AND tenant_slug = ?
@@ -309,7 +433,7 @@ class AccessCodeService:
                 """
                 SELECT id, code, tenant_slug, role, title, created_by_user_id, created_at,
                        expires_at, max_uses, use_count, last_used_at, status, is_setup_code,
-                       invite_email
+                       invite_email, assigned_name, assigned_email, assigned_user_id, label
                 FROM access_codes
                 WHERE tenant_slug = ? AND is_setup_code = ?
                 ORDER BY id DESC LIMIT ?;
@@ -332,7 +456,7 @@ class AccessCodeService:
                 """
                 SELECT id, code, tenant_slug, role, title, created_by_user_id, created_at,
                        expires_at, max_uses, use_count, last_used_at, status, is_setup_code,
-                       invite_email
+                       invite_email, assigned_name, assigned_email, assigned_user_id, label
                 FROM access_codes
                 WHERE is_setup_code = 1
                 ORDER BY id DESC LIMIT ?;

@@ -13,6 +13,7 @@ import os
 import socket
 import sys
 import time
+import zipfile
 from collections import defaultdict, deque
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -113,6 +114,7 @@ from app.services.alert_log import AlertLog
 from app.services.audit_log_service import AuditLogService, AuditEventRecord
 from app.services.drill_report_service import DrillReportService
 from app.services.drill_report_pdf import generate_pdf
+from app.services.onboarding_pdf import generate_packet_pdf, generate_bulk_packets_pdf
 from app.services.device_registry import DeviceRegistry
 from app.services.fcm import FCMClient
 from app.services.incident_store import IncidentStore
@@ -6914,6 +6916,177 @@ async def admin_list_access_codes(request: Request, limit: int = Query(default=2
     return AccessCodeListResponse(codes=codes)
 
 
+@router.post("/admin/access-codes/bulk-generate", include_in_schema=False)
+async def admin_bulk_generate_access_codes(request: Request) -> JSONResponse:
+    users = await _require_dashboard_admin(request)
+    user_id = _session_user_id(request) or 0
+    user = await users.get_user(user_id)
+    if user is None or not can_generate_codes(user.role):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions.")
+    body = await request.json()
+    quantity = max(1, min(100, int(body.get("quantity", 1))))
+    role = str(body.get("role", "teacher")).strip()
+    if role not in CODEGEN_ALLOWED_ROLES:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid role: {role}")
+    title = str(body.get("title", "")).strip() or None
+    expires_hours = max(1, min(720, int(body.get("expires_hours", 48))))
+    label = str(body.get("label", "")).strip() or None
+    assignments = []
+    for a in body.get("assignments", []):
+        name = str(a.get("name", "")).strip() or None
+        email = str(a.get("email", "")).strip() or None
+        assignments.append((name, email))
+    tenant_slug = str(getattr(request.state, "school_slug", "")).strip()
+    records = await _access_codes(request).generate_codes_bulk(
+        tenant_slug=tenant_slug,
+        role=role,
+        quantity=quantity,
+        title=title,
+        created_by_user_id=user_id,
+        expires_hours=expires_hours,
+        label=label,
+        assignments=assignments or None,
+    )
+    _fire_audit(request, "access_codes_bulk_generated", actor_user_id=user_id,
+                actor_label=user.name, target_type="access_code",
+                metadata={"quantity": len(records), "role": role, "label": label})
+    return JSONResponse({
+        "created": len(records),
+        "codes": [
+            {
+                "id": r.id,
+                "code": r.code,
+                "role": r.role,
+                "assigned_name": r.assigned_name,
+                "assigned_email": r.assigned_email,
+                "expires_at": r.expires_at,
+            }
+            for r in records
+        ],
+    })
+
+
+@router.get("/admin/access-codes/bulk-packets.pdf", include_in_schema=False)
+async def admin_bulk_packets_pdf(request: Request, ids: str = Query(default="")) -> StreamingResponse:
+    await _require_dashboard_admin(request)
+    effective_role = str(getattr(getattr(request.state, "admin_user", None), "role", "")).strip()
+    if not can_generate_codes(effective_role):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions.")
+    code_ids = {int(x.strip()) for x in ids.split(",") if x.strip().isdigit()}
+    if not code_ids:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No valid ids provided.")
+    tenant_slug = str(getattr(request.state, "school_slug", "")).strip()
+    school = request.state.school
+    school_name = str(getattr(school, "name", tenant_slug))
+    records = await _access_codes(request).list_codes(tenant_slug, limit=500)
+    selected = [r for r in records if r.id in code_ids]
+    if not selected:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No matching codes found.")
+    packets = []
+    for rec in selected:
+        payload_json = AccessCodeService.qr_payload(rec.code, rec.tenant_slug)
+        qr_bytes = await anyio.to_thread.run_sync(lambda p=payload_json: _qr_png_bytes(p, box_size=14, border=4))
+        packets.append((
+            rec.code,
+            role_display_label(rec.role),
+            qr_bytes,
+            rec.expires_at,
+            rec.label,
+            rec.assigned_name,
+            rec.assigned_email,
+        ))
+    pdf_bytes = await anyio.to_thread.run_sync(
+        lambda: generate_bulk_packets_pdf(packets, school_name)
+    )
+    fname = f"bluebird-onboarding-packets-{tenant_slug}.pdf"
+    return StreamingResponse(
+        iter([pdf_bytes]),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
+
+
+@router.get("/admin/access-codes/bulk.zip", include_in_schema=False)
+async def admin_bulk_zip(request: Request, ids: str = Query(default="")) -> StreamingResponse:
+    await _require_dashboard_admin(request)
+    effective_role = str(getattr(getattr(request.state, "admin_user", None), "role", "")).strip()
+    if not can_generate_codes(effective_role):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions.")
+    code_ids = {int(x.strip()) for x in ids.split(",") if x.strip().isdigit()}
+    if not code_ids:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No valid ids provided.")
+    tenant_slug = str(getattr(request.state, "school_slug", "")).strip()
+    records = await _access_codes(request).list_codes(tenant_slug, limit=500)
+    selected = [r for r in records if r.id in code_ids]
+    if not selected:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No matching codes found.")
+
+    def _build_zip() -> bytes:
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for rec in selected:
+                payload_json = AccessCodeService.qr_payload(rec.code, rec.tenant_slug)
+                png = _qr_png_bytes(payload_json, box_size=14, border=4)
+                zf.writestr(f"bluebird-qr-{rec.code}.png", png)
+        return buf.getvalue()
+
+    zip_bytes = await anyio.to_thread.run_sync(_build_zip)
+    fname = f"bluebird-qr-codes-{tenant_slug}.zip"
+    return StreamingResponse(
+        iter([zip_bytes]),
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
+
+
+@router.post("/admin/access-codes/import-csv", include_in_schema=False)
+async def admin_import_codes_csv(
+    request: Request,
+    file: UploadFile = File(...),
+    role: str = Form(default="teacher"),
+    expires_hours: int = Form(default=48),
+    label: str = Form(default=""),
+) -> JSONResponse:
+    users = await _require_dashboard_admin(request)
+    user_id = _session_user_id(request) or 0
+    user = await users.get_user(user_id)
+    if user is None or not can_generate_codes(user.role):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions.")
+    if role not in CODEGEN_ALLOWED_ROLES:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid role: {role}")
+    content = await file.read()
+    try:
+        text = content.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        text = content.decode("latin-1")
+    reader = csv.DictReader(io.StringIO(text))
+    assignments = []
+    errors: list = []
+    for i, row in enumerate(reader, start=2):
+        name = str(row.get("name", row.get("Name", ""))).strip() or None
+        email = str(row.get("email", row.get("Email", ""))).strip() or None
+        if not name and not email:
+            errors.append(f"Row {i}: empty name and email — skipped")
+            continue
+        assignments.append((name, email))
+    if not assignments:
+        return JSONResponse({"created": 0, "skipped": 0, "errors": errors})
+    tenant_slug = str(getattr(request.state, "school_slug", "")).strip()
+    records = await _access_codes(request).generate_codes_bulk(
+        tenant_slug=tenant_slug,
+        role=role,
+        quantity=len(assignments),
+        created_by_user_id=user_id,
+        expires_hours=max(1, min(720, expires_hours)),
+        label=label.strip() or None,
+        assignments=assignments,
+    )
+    _fire_audit(request, "access_codes_csv_imported", actor_user_id=user_id,
+                actor_label=user.name, target_type="access_code",
+                metadata={"created": len(records), "role": role, "label": label})
+    return JSONResponse({"created": len(records), "skipped": len(errors), "errors": errors})
+
+
 @router.get("/admin/access-codes/{code_id}/qr")
 async def admin_get_access_code_qr(request: Request, code_id: int) -> JSONResponse:
     """Return the QR payload for a specific access code (JSON — front end renders the image)."""
@@ -7136,6 +7309,42 @@ async def admin_get_access_code_print(request: Request, code_id: int) -> HTMLRes
   }});
 </script>
 </html>""")
+
+
+@router.get("/admin/access-codes/{code_id}/packet.pdf", include_in_schema=False)
+async def admin_get_access_code_packet_pdf(request: Request, code_id: int) -> StreamingResponse:
+    """Return a PDF onboarding packet for a single access code."""
+    await _require_dashboard_admin(request)
+    effective_role = str(getattr(getattr(request.state, "admin_user", None), "role", "")).strip()
+    if not can_generate_codes(effective_role):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions.")
+    tenant_slug = str(getattr(request.state, "school_slug", "")).strip()
+    school = request.state.school
+    school_name = str(getattr(school, "name", tenant_slug))
+    records = await _access_codes(request).list_codes(tenant_slug, limit=500)
+    rec = next((r for r in records if r.id == code_id), None)
+    if rec is None or rec.status != "active":
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Code not found or not active.")
+    payload_json = AccessCodeService.qr_payload(rec.code, rec.tenant_slug)
+    qr_bytes = await anyio.to_thread.run_sync(lambda: _qr_png_bytes(payload_json, box_size=14, border=4))
+    pdf_bytes = await anyio.to_thread.run_sync(
+        lambda: generate_packet_pdf(
+            school_name=school_name,
+            code_text=rec.code,
+            role_label=role_display_label(rec.role),
+            qr_png_bytes=qr_bytes,
+            expires_at=rec.expires_at,
+            label=rec.label,
+            assigned_name=rec.assigned_name,
+            assigned_email=rec.assigned_email,
+        )
+    )
+    fname = f"bluebird-onboarding-{rec.code}.pdf"
+    return StreamingResponse(
+        iter([pdf_bytes]),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
 
 
 @router.post("/admin/access-codes/{code_id}/revoke", include_in_schema=False)

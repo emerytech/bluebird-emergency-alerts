@@ -4240,6 +4240,16 @@ def render_admin_page(
         _qr_url = f"{prefix}/admin/access-codes/{_rid}/qr.png"
         _print_url = f"{prefix}/admin/access-codes/{_rid}/print"
         _download_url = f"{prefix}/admin/access-codes/{_rid}/qr.png"
+        _pdf_url = f"{prefix}/admin/access-codes/{_rid}/packet.pdf"
+        _assigned_name = str(getattr(r, "assigned_name", "") or "")
+        _assigned_email = str(getattr(r, "assigned_email", "") or "")
+        _label = str(getattr(r, "label", "") or "")
+        _assigned_cell = (
+            f'<span style="font-size:0.82rem;">{escape(_assigned_name)}'
+            + (f'<br/><span style="color:var(--muted);font-size:0.75rem;">{escape(_assigned_email)}</span>' if _assigned_email else "")
+            + "</span>"
+            if (_assigned_name or _assigned_email) else "—"
+        )
         _qr_img = (
             f'<img src="{_qr_url}" alt="QR {escape(_code)}" width="80" height="80"'
             f' style="display:block;image-rendering:pixelated;border:1px solid #ddd;border-radius:4px;" />'
@@ -4251,6 +4261,8 @@ def render_admin_page(
             f' class="button button-secondary" style="font-size:0.75rem;padding:4px 10px;text-decoration:none;">Download QR</a>'
             f'<a href="{_print_url}" target="_blank"'
             f' class="button button-secondary" style="font-size:0.75rem;padding:4px 10px;text-decoration:none;">Print Sheet</a>'
+            f'<a href="{_pdf_url}" download="bluebird-onboarding-{escape(_code)}.pdf"'
+            f' class="button button-secondary" style="font-size:0.75rem;padding:4px 10px;text-decoration:none;">PDF Packet</a>'
         ) if _is_active else ""
         return (
             "<tr>"
@@ -4258,6 +4270,8 @@ def render_admin_page(
             f"<td><code style='font-size:1rem;letter-spacing:.05em;'>{escape(_code)}</code></td>"
             f"<td>{escape(str(getattr(r, 'role', '')))}</td>"
             f"<td>{escape(str(getattr(r, 'title', '') or '—'))}</td>"
+            f"<td>{_assigned_cell}</td>"
+            f"<td style='font-size:0.82rem;'>{escape(_label) if _label else '—'}</td>"
             f"<td><span class=\"status-pill {_ac_status_class.get(_status, 'warn')}\">{escape(_status)}</span></td>"
             f"<td>{escape(str(getattr(r, 'expires_at', ''))[:16])}</td>"
             f"<td>{int(getattr(r, 'use_count', 0))}/{int(getattr(r, 'max_uses', 1))}</td>"
@@ -4271,7 +4285,7 @@ def render_admin_page(
             "</tr>"
         )
 
-    _access_code_rows = "".join(_ac_row(r) for r in access_code_records) or '<tr><td colspan="8" class="empty-state">No access codes generated yet.</td></tr>'
+    _access_code_rows = "".join(_ac_row(r) for r in access_code_records) or '<tr><td colspan="10" class="empty-state">No access codes generated yet.</td></tr>'
 
     _client_type_label = {"mobile": "Mobile", "web": "Web"}
     _client_type_class = {"mobile": "rb-law_enforcement", "web": "rb-admin"}
@@ -4411,13 +4425,20 @@ def render_admin_page(
           </div>
         """
     if _show_access_codes:
+        _ac_section_style = "" if section in {"user-management", "access-codes"} and _show_access_codes else " style='display:none;'"
+        _bulk_generate_url = f"{prefix}/admin/access-codes/bulk-generate"
+        _import_csv_url = f"{prefix}/admin/access-codes/import-csv"
         _access_codes_panel_html = f"""
-          <section class="panel command-section span-12" id="access-codes"{"" if section in {"user-management", "access-codes"} and _show_access_codes else " style='display:none;'"}>
+          <section class="panel command-section span-12" id="access-codes"{_ac_section_style}>
             <div class="panel-header">
               <div>
                 <p class="eyebrow">Access Codes</p>
                 <h2>Invite codes for onboarding</h2>
                 <p class="card-copy">Generate a code so a new user can self-register via the mobile app. Codes are single-use by default and expire after 48 hours.</p>
+              </div>
+              <div class="button-row" style="margin-top:0;">
+                <button class="button button-secondary" onclick="document.getElementById('ac-bulk-modal').style.display='flex'">Bulk Generate</button>
+                <button class="button button-secondary" onclick="document.getElementById('ac-csv-modal').style.display='flex'">Import CSV</button>
               </div>
             </div>
             <form method="post" action="{prefix}/admin/access-codes/generate" class="stack" style="max-width:560px;margin-bottom:28px;">
@@ -4451,11 +4472,154 @@ def render_admin_page(
             </form>
             <div class="table-wrapper">
               <table class="data-table">
-                <thead><tr><th>QR</th><th>Code</th><th>Role</th><th>Title</th><th>Status</th><th>Expires</th><th>Uses</th><th>Actions</th></tr></thead>
+                <thead><tr><th>QR</th><th>Code</th><th>Role</th><th>Title</th><th>Assigned To</th><th>Label</th><th>Status</th><th>Expires</th><th>Uses</th><th>Actions</th></tr></thead>
                 <tbody>{_access_code_rows}</tbody>
               </table>
             </div>
-          </section>"""
+          </section>
+
+          <!-- Bulk Generate Modal -->
+          <div id="ac-bulk-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:1100;align-items:center;justify-content:center;">
+            <div style="background:#fff;border-radius:12px;padding:28px 32px;max-width:480px;width:100%;max-height:90vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,.25);">
+              <h3 style="margin-bottom:16px;">Bulk Generate Codes</h3>
+              <div class="field" style="margin-bottom:12px;">
+                <label>Quantity (1–100)</label>
+                <input id="bg-qty" type="number" min="1" max="100" value="10" style="width:100%;" />
+              </div>
+              <div class="field" style="margin-bottom:12px;">
+                <label>Role</label>
+                <select id="bg-role" style="width:100%;">
+                  <option value="teacher">Teacher / Standard</option>
+                  <option value="staff">Staff</option>
+                  <option value="building_admin">Building Admin</option>
+                  <option value="law_enforcement">Law Enforcement</option>
+                </select>
+              </div>
+              <div class="field" style="margin-bottom:12px;">
+                <label>Job title (optional)</label>
+                <input id="bg-title" placeholder="e.g. Science Teacher" style="width:100%;" />
+              </div>
+              <div class="field" style="margin-bottom:12px;">
+                <label>Expires (hours)</label>
+                <input id="bg-expires" type="number" min="1" max="720" value="48" style="width:100%;" />
+              </div>
+              <div class="field" style="margin-bottom:20px;">
+                <label>Batch label (optional)</label>
+                <input id="bg-label" placeholder="e.g. HS Science Dept" style="width:100%;" />
+              </div>
+              <div id="bg-result" style="display:none;margin-bottom:16px;padding:12px;border-radius:8px;background:#f0fdf4;border:1px solid #bbf7d0;font-size:0.9rem;"></div>
+              <div id="bg-dl-links" style="display:none;margin-bottom:16px;"></div>
+              <div class="button-row">
+                <button class="button button-primary" onclick="acDoBulkGenerate()">Generate</button>
+                <button class="button button-secondary" onclick="document.getElementById('ac-bulk-modal').style.display='none'">Cancel</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Import CSV Modal -->
+          <div id="ac-csv-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:1100;align-items:center;justify-content:center;">
+            <div style="background:#fff;border-radius:12px;padding:28px 32px;max-width:460px;width:100%;box-shadow:0 20px 60px rgba(0,0,0,.25);">
+              <h3 style="margin-bottom:8px;">Import CSV</h3>
+              <p style="font-size:0.85rem;color:var(--muted);margin-bottom:16px;">Upload a CSV with columns <strong>name</strong> and <strong>email</strong>. One code will be pre-assigned per row.</p>
+              <form id="ac-csv-form" style="display:flex;flex-direction:column;gap:12px;">
+                <div class="field">
+                  <label>CSV file</label>
+                  <input id="csv-file" type="file" accept=".csv,text/csv" required style="width:100%;" />
+                </div>
+                <div class="field">
+                  <label>Role</label>
+                  <select id="csv-role" style="width:100%;">
+                    <option value="teacher">Teacher / Standard</option>
+                    <option value="staff">Staff</option>
+                    <option value="building_admin">Building Admin</option>
+                    <option value="law_enforcement">Law Enforcement</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label>Expires (hours)</label>
+                  <input id="csv-expires" type="number" min="1" max="720" value="48" style="width:100%;" />
+                </div>
+                <div class="field">
+                  <label>Batch label (optional)</label>
+                  <input id="csv-label" placeholder="e.g. Fall Onboarding" style="width:100%;" />
+                </div>
+                <div id="csv-result" style="display:none;padding:10px;border-radius:8px;font-size:0.85rem;"></div>
+                <div class="button-row">
+                  <button type="button" class="button button-primary" onclick="acDoImportCsv()">Import</button>
+                  <button type="button" class="button button-secondary" onclick="document.getElementById('ac-csv-modal').style.display='none'">Cancel</button>
+                </div>
+              </form>
+            </div>
+          </div>
+
+          <script>
+          (function() {{
+            var _bgUrl = {json.dumps(_bulk_generate_url)};
+            var _csvUrl = {json.dumps(_import_csv_url)};
+
+            window.acDoBulkGenerate = function() {{
+              var qty = parseInt(document.getElementById('bg-qty').value) || 1;
+              var role = document.getElementById('bg-role').value;
+              var title = document.getElementById('bg-title').value.trim() || null;
+              var expires = parseInt(document.getElementById('bg-expires').value) || 48;
+              var label = document.getElementById('bg-label').value.trim() || null;
+              fetch(_bgUrl, {{
+                method: 'POST',
+                headers: {{'Content-Type': 'application/json'}},
+                body: JSON.stringify({{quantity: qty, role: role, title: title, expires_hours: expires, label: label}})
+              }})
+              .then(function(r) {{ return r.json(); }})
+              .then(function(d) {{
+                var res = document.getElementById('bg-result');
+                res.style.display = 'block';
+                res.textContent = 'Generated ' + d.created + ' codes.';
+                var ids = (d.codes || []).map(function(c) {{ return c.id; }}).join(',');
+                if (ids) {{
+                  var dl = document.getElementById('bg-dl-links');
+                  dl.style.display = 'block';
+                  dl.innerHTML =
+                    '<a href="{prefix}/admin/access-codes/bulk-packets.pdf?ids=' + ids + '" download class="button button-secondary" style="margin-right:8px;font-size:0.85rem;text-decoration:none;">Download PDF Packets</a>' +
+                    '<a href="{prefix}/admin/access-codes/bulk.zip?ids=' + ids + '" download class="button button-secondary" style="font-size:0.85rem;text-decoration:none;">Download QR ZIP</a>';
+                }}
+                setTimeout(function() {{ window.location.reload(); }}, 3000);
+              }})
+              .catch(function(e) {{
+                var res = document.getElementById('bg-result');
+                res.style.display = 'block';
+                res.style.background = '#fef2f2';
+                res.style.borderColor = '#fca5a5';
+                res.textContent = 'Error: ' + e.message;
+              }});
+            }};
+
+            window.acDoImportCsv = function() {{
+              var fileInput = document.getElementById('csv-file');
+              if (!fileInput.files.length) {{ alert('Please select a CSV file.'); return; }}
+              var fd = new FormData();
+              fd.append('file', fileInput.files[0]);
+              fd.append('role', document.getElementById('csv-role').value);
+              fd.append('expires_hours', document.getElementById('csv-expires').value);
+              fd.append('label', document.getElementById('csv-label').value);
+              fetch(_csvUrl, {{method: 'POST', body: fd}})
+              .then(function(r) {{ return r.json(); }})
+              .then(function(d) {{
+                var res = document.getElementById('csv-result');
+                res.style.display = 'block';
+                res.style.background = '#f0fdf4';
+                res.style.border = '1px solid #bbf7d0';
+                res.textContent = 'Created ' + d.created + ' codes' + (d.skipped ? ', skipped ' + d.skipped + ' rows.' : '.');
+                setTimeout(function() {{ window.location.reload(); }}, 2500);
+              }})
+              .catch(function(e) {{
+                var res = document.getElementById('csv-result');
+                res.style.display = 'block';
+                res.style.background = '#fef2f2';
+                res.style.border = '1px solid #fca5a5';
+                res.textContent = 'Error: ' + e.message;
+              }});
+            }};
+          }})();
+          </script>"""
     else:
         _access_codes_panel_html = ""
 
