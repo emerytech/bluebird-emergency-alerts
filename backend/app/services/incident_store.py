@@ -20,6 +20,7 @@ class IncidentRecord:
     created_at: str
     target_scope: str
     metadata: dict[str, Any]
+    is_simulation: bool = False
 
 
 @dataclass(frozen=True)
@@ -131,6 +132,8 @@ class IncidentStore:
         if "metadata_json" not in cols:
             conn.execute("ALTER TABLE incidents ADD COLUMN metadata_json TEXT NULL;")
             conn.execute("UPDATE incidents SET metadata_json = '{}' WHERE metadata_json IS NULL OR trim(metadata_json) = '';")
+        if "is_simulation" not in cols:
+            conn.execute("ALTER TABLE incidents ADD COLUMN is_simulation INTEGER NOT NULL DEFAULT 0;")
 
     def _migrate_team_assists_table(self, conn: sqlite3.Connection) -> None:
         cols = {str(row[1]) for row in conn.execute("PRAGMA table_info(team_assists);").fetchall()}
@@ -168,20 +171,21 @@ class IncidentStore:
         school_id: str,
         target_scope: str,
         metadata: dict[str, Any],
+        is_simulation: bool = False,
     ) -> IncidentRecord:
         created_at = datetime.now(timezone.utc).isoformat()
         metadata_json = json.dumps(metadata or {}, separators=(",", ":"), sort_keys=True)
         with self._connect() as conn:
             cur = conn.execute(
                 """
-                INSERT INTO incidents (type, status, created_by, school_id, created_at, target_scope, metadata_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?);
+                INSERT INTO incidents (type, status, created_by, school_id, created_at, target_scope, metadata_json, is_simulation)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?);
                 """,
-                (type_value, status, int(created_by), school_id, created_at, target_scope, metadata_json),
+                (type_value, status, int(created_by), school_id, created_at, target_scope, metadata_json, 1 if is_simulation else 0),
             )
             row = conn.execute(
                 """
-                SELECT id, type, status, created_by, school_id, created_at, target_scope, metadata_json
+                SELECT id, type, status, created_by, school_id, created_at, target_scope, metadata_json, is_simulation
                 FROM incidents
                 WHERE id = ?
                 LIMIT 1;
@@ -198,6 +202,7 @@ class IncidentStore:
             created_at=str(row[5]),
             target_scope=str(row[6]),
             metadata=json.loads(str(row[7]) or "{}"),
+            is_simulation=bool(int(row[8])) if row[8] is not None else False,
         )
 
     async def create_incident(
@@ -209,6 +214,7 @@ class IncidentStore:
         school_id: str,
         target_scope: str,
         metadata: dict[str, Any],
+        is_simulation: bool = False,
     ) -> IncidentRecord:
         return await anyio.to_thread.run_sync(
             lambda: self._create_incident_sync(
@@ -218,14 +224,23 @@ class IncidentStore:
                 school_id=school_id,
                 target_scope=target_scope,
                 metadata=metadata,
+                is_simulation=is_simulation,
             )
         )
+
+    def _delete_simulation_incidents_sync(self) -> int:
+        with self._connect() as conn:
+            cur = conn.execute("DELETE FROM incidents WHERE is_simulation = 1;")
+            return int(cur.rowcount or 0)
+
+    async def delete_simulation_incidents(self) -> int:
+        return await anyio.to_thread.run_sync(self._delete_simulation_incidents_sync)
 
     def _list_active_incidents_sync(self, limit: int) -> List[IncidentRecord]:
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT id, type, status, created_by, school_id, created_at, target_scope, metadata_json
+                SELECT id, type, status, created_by, school_id, created_at, target_scope, metadata_json, is_simulation
                 FROM incidents
                 WHERE status = 'active'
                 ORDER BY id DESC
@@ -250,6 +265,7 @@ class IncidentStore:
                     created_at=str(row[5]),
                     target_scope=str(row[6] or "ALL"),
                     metadata=metadata if isinstance(metadata, dict) else {},
+                    is_simulation=bool(int(row[8])) if len(row) > 8 and row[8] is not None else False,
                 )
             )
         return incidents

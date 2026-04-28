@@ -41,6 +41,8 @@ class DistrictRecord:
     sidebar_end: Optional[str] = None
     logo_path: Optional[str] = None
     brand_lock_enabled: bool = False
+    is_test: bool = False
+    source_district_id: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -58,6 +60,10 @@ class SchoolRecord:
     district_id: Optional[int] = None
     logo_path: Optional[str] = None
     sort_order: int = 0
+    is_test: bool = False
+    source_tenant_slug: Optional[str] = None
+    simulation_mode_enabled: bool = False
+    suppress_alarm_audio: bool = False
 
     @property
     def subdomain(self) -> str:
@@ -65,17 +71,26 @@ class SchoolRecord:
 
 
 # SQL fragment shared by every districts SELECT to keep column ordering consistent.
+# Indices: 0=id, 1=created_at, 2=name, 3=slug, 4=organization_id, 5=is_active,
+#          6=accent, 7=accent_strong, 8=sidebar_start, 9=sidebar_end, 10=logo_path,
+#          11=brand_lock_enabled, 12=is_test, 13=source_district_id
 _DISTRICT_COLS = """
     id, created_at, name, slug, organization_id, is_active,
-    accent, accent_strong, sidebar_start, sidebar_end, logo_path, brand_lock_enabled
+    accent, accent_strong, sidebar_start, sidebar_end, logo_path, brand_lock_enabled,
+    is_test, source_district_id
 """
 
 # SQL fragment shared by every schools SELECT to keep column ordering consistent.
+# Indices: 0=id, 1=created_at, 2=slug, 3=name, 4=is_active,
+#          5=accent, 6=accent_strong, 7=sidebar_start, 8=sidebar_end,
+#          9=setup_pin_salt, 10=setup_pin_hash, 11=district_id, 12=logo_path, 13=sort_order,
+#          14=is_test, 15=source_tenant_slug, 16=simulation_mode_enabled, 17=suppress_alarm_audio
 _SCHOOL_COLS = """
     id, created_at, slug, name, is_active,
     accent, accent_strong, sidebar_start, sidebar_end,
     setup_pin_salt, setup_pin_hash,
-    district_id, logo_path, sort_order
+    district_id, logo_path, sort_order,
+    is_test, source_tenant_slug, simulation_mode_enabled, suppress_alarm_audio
 """
 
 
@@ -224,6 +239,8 @@ class SchoolRegistry:
             ("sidebar_end",         "ALTER TABLE districts ADD COLUMN sidebar_end TEXT NULL;"),
             ("logo_path",           "ALTER TABLE districts ADD COLUMN logo_path TEXT NULL;"),
             ("brand_lock_enabled",  "ALTER TABLE districts ADD COLUMN brand_lock_enabled INTEGER NOT NULL DEFAULT 0;"),
+            ("is_test",             "ALTER TABLE districts ADD COLUMN is_test INTEGER NOT NULL DEFAULT 0;"),
+            ("source_district_id",  "ALTER TABLE districts ADD COLUMN source_district_id INTEGER NULL;"),
         ]:
             if col not in cols:
                 conn.execute(ddl)
@@ -231,16 +248,20 @@ class SchoolRegistry:
     def _migrate_schools_table(self, conn: sqlite3.Connection) -> None:
         cols = {str(row[1]) for row in conn.execute("PRAGMA table_info(schools);").fetchall()}
         for col, ddl in [
-            ("accent",        "ALTER TABLE schools ADD COLUMN accent TEXT NULL;"),
-            ("accent_strong", "ALTER TABLE schools ADD COLUMN accent_strong TEXT NULL;"),
-            ("sidebar_start", "ALTER TABLE schools ADD COLUMN sidebar_start TEXT NULL;"),
-            ("sidebar_end",   "ALTER TABLE schools ADD COLUMN sidebar_end TEXT NULL;"),
-            ("setup_pin_salt","ALTER TABLE schools ADD COLUMN setup_pin_salt TEXT NULL;"),
-            ("setup_pin_hash","ALTER TABLE schools ADD COLUMN setup_pin_hash TEXT NULL;"),
+            ("accent",                  "ALTER TABLE schools ADD COLUMN accent TEXT NULL;"),
+            ("accent_strong",           "ALTER TABLE schools ADD COLUMN accent_strong TEXT NULL;"),
+            ("sidebar_start",           "ALTER TABLE schools ADD COLUMN sidebar_start TEXT NULL;"),
+            ("sidebar_end",             "ALTER TABLE schools ADD COLUMN sidebar_end TEXT NULL;"),
+            ("setup_pin_salt",          "ALTER TABLE schools ADD COLUMN setup_pin_salt TEXT NULL;"),
+            ("setup_pin_hash",          "ALTER TABLE schools ADD COLUMN setup_pin_hash TEXT NULL;"),
             # Safe: existing rows get NULL — they continue to work without a district.
-            ("district_id",   "ALTER TABLE schools ADD COLUMN district_id INTEGER NULL REFERENCES districts(id);"),
-            ("logo_path",     "ALTER TABLE schools ADD COLUMN logo_path TEXT NULL;"),
-            ("sort_order",    "ALTER TABLE schools ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0;"),
+            ("district_id",             "ALTER TABLE schools ADD COLUMN district_id INTEGER NULL REFERENCES districts(id);"),
+            ("logo_path",               "ALTER TABLE schools ADD COLUMN logo_path TEXT NULL;"),
+            ("sort_order",              "ALTER TABLE schools ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0;"),
+            ("is_test",                 "ALTER TABLE schools ADD COLUMN is_test INTEGER NOT NULL DEFAULT 0;"),
+            ("source_tenant_slug",      "ALTER TABLE schools ADD COLUMN source_tenant_slug TEXT NULL;"),
+            ("simulation_mode_enabled", "ALTER TABLE schools ADD COLUMN simulation_mode_enabled INTEGER NOT NULL DEFAULT 0;"),
+            ("suppress_alarm_audio",    "ALTER TABLE schools ADD COLUMN suppress_alarm_audio INTEGER NOT NULL DEFAULT 0;"),
         ]:
             if col not in cols:
                 conn.execute(ddl)
@@ -252,7 +273,8 @@ class SchoolRegistry:
         # Column order matches _SCHOOL_COLS:
         # 0=id, 1=created_at, 2=slug, 3=name, 4=is_active,
         # 5=accent, 6=accent_strong, 7=sidebar_start, 8=sidebar_end,
-        # 9=setup_pin_salt, 10=setup_pin_hash, 11=district_id, 12=logo_path, 13=sort_order
+        # 9=setup_pin_salt, 10=setup_pin_hash, 11=district_id, 12=logo_path, 13=sort_order,
+        # 14=is_test, 15=source_tenant_slug, 16=simulation_mode_enabled, 17=suppress_alarm_audio
         return SchoolRecord(
             id=int(row[0]),
             created_at=str(row[1]),
@@ -267,6 +289,10 @@ class SchoolRegistry:
             district_id=int(row[11]) if len(row) > 11 and row[11] is not None else None,
             logo_path=str(row[12]) if len(row) > 12 and row[12] is not None else None,
             sort_order=int(row[13]) if len(row) > 13 and row[13] is not None else 0,
+            is_test=bool(int(row[14])) if len(row) > 14 and row[14] is not None else False,
+            source_tenant_slug=str(row[15]) if len(row) > 15 and row[15] is not None else None,
+            simulation_mode_enabled=bool(int(row[16])) if len(row) > 16 and row[16] is not None else False,
+            suppress_alarm_audio=bool(int(row[17])) if len(row) > 17 and row[17] is not None else False,
         )
 
     # Kept for backward compatibility — external callers use this name.
@@ -286,7 +312,8 @@ class SchoolRegistry:
     @staticmethod
     def _district_from_row(row: sqlite3.Row | tuple) -> DistrictRecord:
         # 0=id, 1=created_at, 2=name, 3=slug, 4=organization_id, 5=is_active,
-        # 6=accent, 7=accent_strong, 8=sidebar_start, 9=sidebar_end, 10=logo_path, 11=brand_lock_enabled
+        # 6=accent, 7=accent_strong, 8=sidebar_start, 9=sidebar_end, 10=logo_path,
+        # 11=brand_lock_enabled, 12=is_test, 13=source_district_id
         return DistrictRecord(
             id=int(row[0]),
             created_at=str(row[1]),
@@ -300,6 +327,8 @@ class SchoolRegistry:
             sidebar_end=str(row[9]) if len(row) > 9 and row[9] is not None else None,
             logo_path=str(row[10]) if len(row) > 10 and row[10] is not None else None,
             brand_lock_enabled=bool(int(row[11])) if len(row) > 11 and row[11] is not None else False,
+            is_test=bool(int(row[12])) if len(row) > 12 and row[12] is not None else False,
+            source_district_id=int(row[13]) if len(row) > 13 and row[13] is not None else None,
         )
 
     # ── Schools ───────────────────────────────────────────────────────────────
@@ -418,54 +447,6 @@ class SchoolRegistry:
         normalized_pin = setup_pin.strip() if setup_pin else None
         return await anyio.to_thread.run_sync(self._set_setup_pin_sync, slug, normalized_pin or None)
 
-    def _update_theme_sync(
-        self,
-        slug: str,
-        accent: Optional[str],
-        accent_strong: Optional[str],
-        sidebar_start: Optional[str],
-        sidebar_end: Optional[str],
-    ) -> Optional[SchoolRecord]:
-        normalized_slug = slug.strip().lower()
-        with self._connect() as conn:
-            conn.execute(
-                """
-                UPDATE schools
-                SET accent = ?, accent_strong = ?, sidebar_start = ?, sidebar_end = ?
-                WHERE slug = ?;
-                """,
-                (
-                    accent.strip() if accent else None,
-                    accent_strong.strip() if accent_strong else None,
-                    sidebar_start.strip() if sidebar_start else None,
-                    sidebar_end.strip() if sidebar_end else None,
-                    normalized_slug,
-                ),
-            )
-            row = conn.execute(
-                f"SELECT {_SCHOOL_COLS} FROM schools WHERE slug = ? LIMIT 1;",
-                (normalized_slug,),
-            ).fetchone()
-        return self._school_from_row(row) if row is not None else None
-
-    async def update_theme(
-        self,
-        *,
-        slug: str,
-        accent: Optional[str],
-        accent_strong: Optional[str],
-        sidebar_start: Optional[str],
-        sidebar_end: Optional[str],
-    ) -> Optional[SchoolRecord]:
-        return await anyio.to_thread.run_sync(
-            self._update_theme_sync,
-            slug,
-            accent,
-            accent_strong,
-            sidebar_start,
-            sidebar_end,
-        )
-
     def _update_name_sync(self, slug: str, name: str) -> Optional[SchoolRecord]:
         normalized_slug = slug.strip().lower()
         with self._connect() as conn:
@@ -481,22 +462,6 @@ class SchoolRegistry:
 
     async def update_name(self, *, slug: str, name: str) -> Optional[SchoolRecord]:
         return await anyio.to_thread.run_sync(self._update_name_sync, slug, name)
-
-    def _update_logo_path_sync(self, slug: str, logo_path: Optional[str]) -> Optional[SchoolRecord]:
-        normalized_slug = slug.strip().lower()
-        with self._connect() as conn:
-            conn.execute(
-                "UPDATE schools SET logo_path = ? WHERE slug = ?;",
-                (logo_path, normalized_slug),
-            )
-            row = conn.execute(
-                f"SELECT {_SCHOOL_COLS} FROM schools WHERE slug = ? LIMIT 1;",
-                (normalized_slug,),
-            ).fetchone()
-        return self._school_from_row(row) if row is not None else None
-
-    async def update_logo_path(self, *, slug: str, logo_path: Optional[str]) -> Optional[SchoolRecord]:
-        return await anyio.to_thread.run_sync(self._update_logo_path_sync, slug, logo_path)
 
     def _assign_to_district_sync(self, school_slug: str, district_id: Optional[int]) -> Optional[SchoolRecord]:
         """Set or clear the district_id on a school. Slug never changes."""
@@ -677,130 +642,6 @@ class SchoolRegistry:
     async def list_districts(self, *, organization_id: Optional[int] = None) -> List[DistrictRecord]:
         return await anyio.to_thread.run_sync(self._list_districts_sync, organization_id)
 
-    def _update_district_theme_sync(
-        self,
-        district_id: int,
-        accent: Optional[str],
-        accent_strong: Optional[str],
-        sidebar_start: Optional[str],
-        sidebar_end: Optional[str],
-    ) -> Optional[DistrictRecord]:
-        with self._connect() as conn:
-            conn.execute(
-                """
-                UPDATE districts
-                SET accent = ?, accent_strong = ?, sidebar_start = ?, sidebar_end = ?
-                WHERE id = ?;
-                """,
-                (
-                    accent.strip() if accent else None,
-                    accent_strong.strip() if accent_strong else None,
-                    sidebar_start.strip() if sidebar_start else None,
-                    sidebar_end.strip() if sidebar_end else None,
-                    int(district_id),
-                ),
-            )
-            row = conn.execute(
-                f"SELECT {_DISTRICT_COLS} FROM districts WHERE id = ? LIMIT 1;",
-                (int(district_id),),
-            ).fetchone()
-        return self._district_from_row(row) if row is not None else None
-
-    async def update_district_theme(
-        self,
-        *,
-        district_id: int,
-        accent: Optional[str],
-        accent_strong: Optional[str],
-        sidebar_start: Optional[str],
-        sidebar_end: Optional[str],
-    ) -> Optional[DistrictRecord]:
-        return await anyio.to_thread.run_sync(
-            self._update_district_theme_sync,
-            int(district_id), accent, accent_strong, sidebar_start, sidebar_end,
-        )
-
-    def _update_district_logo_path_sync(self, district_id: int, logo_path: Optional[str]) -> Optional[DistrictRecord]:
-        with self._connect() as conn:
-            conn.execute(
-                "UPDATE districts SET logo_path = ? WHERE id = ?;",
-                (logo_path, int(district_id)),
-            )
-            row = conn.execute(
-                f"SELECT {_DISTRICT_COLS} FROM districts WHERE id = ? LIMIT 1;",
-                (int(district_id),),
-            ).fetchone()
-        return self._district_from_row(row) if row is not None else None
-
-    async def update_district_logo_path(self, *, district_id: int, logo_path: Optional[str]) -> Optional[DistrictRecord]:
-        return await anyio.to_thread.run_sync(self._update_district_logo_path_sync, int(district_id), logo_path)
-
-    # ── Theme presets ─────────────────────────────────────────────────────────
-
-    def _add_theme_preset_sync(
-        self, tenant_slug: str, name: str,
-        accent: str, accent_strong: str, sidebar_start: str, sidebar_end: str,
-        created_by: str,
-    ) -> dict:
-        now = datetime.now(timezone.utc).isoformat()
-        with self._connect() as conn:
-            cur = conn.execute(
-                """INSERT INTO tenant_theme_presets
-                   (created_at, tenant_slug, name, accent, accent_strong, sidebar_start, sidebar_end, created_by)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?);""",
-                (now, tenant_slug.strip().lower(), name.strip(),
-                 (accent or "").strip(), (accent_strong or "").strip(),
-                 (sidebar_start or "").strip(), (sidebar_end or "").strip(),
-                 created_by.strip()),
-            )
-            pid = cur.lastrowid
-        return {"id": pid, "created_at": now, "tenant_slug": tenant_slug,
-                "name": name, "accent": accent, "accent_strong": accent_strong,
-                "sidebar_start": sidebar_start, "sidebar_end": sidebar_end,
-                "created_by": created_by, "is_global": False}
-
-    async def add_theme_preset(
-        self, *, tenant_slug: str, name: str,
-        accent: str, accent_strong: str, sidebar_start: str, sidebar_end: str,
-        created_by: str,
-    ) -> dict:
-        return await anyio.to_thread.run_sync(
-            self._add_theme_preset_sync,
-            tenant_slug, name, accent, accent_strong, sidebar_start, sidebar_end, created_by,
-        )
-
-    def _list_theme_presets_sync(self, tenant_slug: str) -> list:
-        with self._connect() as conn:
-            rows = conn.execute(
-                """SELECT id, created_at, tenant_slug, name, accent, accent_strong,
-                          sidebar_start, sidebar_end, created_by
-                   FROM tenant_theme_presets
-                   WHERE tenant_slug = ? OR tenant_slug IS NULL
-                   ORDER BY (tenant_slug IS NULL) DESC, name ASC;""",
-                (tenant_slug.strip().lower(),),
-            ).fetchall()
-        return [
-            {"id": r[0], "created_at": r[1], "tenant_slug": r[2], "name": r[3],
-             "accent": r[4] or "", "accent_strong": r[5] or "",
-             "sidebar_start": r[6] or "", "sidebar_end": r[7] or "",
-             "created_by": r[8] or "", "is_global": r[2] is None}
-            for r in rows
-        ]
-
-    async def list_theme_presets(self, tenant_slug: str) -> list:
-        return await anyio.to_thread.run_sync(self._list_theme_presets_sync, tenant_slug)
-
-    def _delete_theme_preset_sync(self, preset_id: int, tenant_slug: str) -> bool:
-        with self._connect() as conn:
-            cur = conn.execute(
-                "DELETE FROM tenant_theme_presets WHERE id = ? AND tenant_slug = ?;",
-                (int(preset_id), tenant_slug.strip().lower()),
-            )
-        return (cur.rowcount or 0) > 0
-
-    async def delete_theme_preset(self, preset_id: int, tenant_slug: str) -> bool:
-        return await anyio.to_thread.run_sync(self._delete_theme_preset_sync, int(preset_id), tenant_slug)
-
     # ── Operator notes ────────────────────────────────────────────────────────
     # Super-admin-only internal notes per district or school. Never exposed to tenants.
 
@@ -835,104 +676,6 @@ class SchoolRegistry:
 
     async def delete_operator_note(self, note_id: int) -> bool:
         return await anyio.to_thread.run_sync(self._delete_note_sync, int(note_id))
-
-    # ── Brand lock ────────────────────────────────────────────────────────────
-
-    def _set_brand_lock_sync(self, district_id: int, enabled: bool) -> Optional[DistrictRecord]:
-        with self._connect() as conn:
-            conn.execute(
-                "UPDATE districts SET brand_lock_enabled = ? WHERE id = ?;",
-                (1 if enabled else 0, int(district_id)),
-            )
-            row = conn.execute(
-                f"SELECT {_DISTRICT_COLS} FROM districts WHERE id = ? LIMIT 1;",
-                (int(district_id),),
-            ).fetchone()
-        return self._district_from_row(row) if row is not None else None
-
-    async def set_district_brand_lock(self, *, district_id: int, enabled: bool) -> Optional[DistrictRecord]:
-        return await anyio.to_thread.run_sync(self._set_brand_lock_sync, int(district_id), enabled)
-
-    # ── Theme version history ──────────────────────────────────────────────────
-
-    def _save_theme_version_sync(
-        self,
-        scope_type: str, scope_slug: str,
-        accent: str, accent_strong: str, sidebar_start: str, sidebar_end: str,
-        created_by: str, notes: Optional[str],
-    ) -> dict:
-        now = datetime.now(timezone.utc).isoformat()
-        with self._connect() as conn:
-            row = conn.execute(
-                "SELECT COALESCE(MAX(version_num), 0) FROM theme_versions WHERE scope_slug = ? AND scope_type = ?;",
-                (scope_slug.strip().lower(), scope_type),
-            ).fetchone()
-            next_ver = int(row[0]) + 1 if row else 1
-            cur = conn.execute(
-                """INSERT INTO theme_versions
-                   (created_at, scope_type, scope_slug, version_num, accent, accent_strong,
-                    sidebar_start, sidebar_end, created_by, notes)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);""",
-                (now, scope_type, scope_slug.strip().lower(), next_ver,
-                 (accent or "").strip(), (accent_strong or "").strip(),
-                 (sidebar_start or "").strip(), (sidebar_end or "").strip(),
-                 (created_by or "").strip(), notes),
-            )
-        return {"id": cur.lastrowid, "created_at": now, "scope_type": scope_type,
-                "scope_slug": scope_slug, "version_num": next_ver,
-                "accent": accent, "accent_strong": accent_strong,
-                "sidebar_start": sidebar_start, "sidebar_end": sidebar_end,
-                "created_by": created_by, "notes": notes}
-
-    async def save_theme_version(
-        self, *, scope_type: str, scope_slug: str,
-        accent: str, accent_strong: str, sidebar_start: str, sidebar_end: str,
-        created_by: str, notes: Optional[str] = None,
-    ) -> dict:
-        return await anyio.to_thread.run_sync(
-            self._save_theme_version_sync,
-            scope_type, scope_slug, accent, accent_strong, sidebar_start, sidebar_end,
-            created_by, notes,
-        )
-
-    def _list_theme_versions_sync(self, scope_type: str, scope_slug: str, limit: int) -> list:
-        with self._connect() as conn:
-            rows = conn.execute(
-                """SELECT id, created_at, scope_type, scope_slug, version_num,
-                          accent, accent_strong, sidebar_start, sidebar_end, created_by, notes
-                   FROM theme_versions
-                   WHERE scope_slug = ? AND scope_type = ?
-                   ORDER BY version_num DESC LIMIT ?;""",
-                (scope_slug.strip().lower(), scope_type, int(limit)),
-            ).fetchall()
-        return [
-            {"id": r[0], "created_at": r[1], "scope_type": r[2], "scope_slug": r[3],
-             "version_num": r[4], "accent": r[5] or "", "accent_strong": r[6] or "",
-             "sidebar_start": r[7] or "", "sidebar_end": r[8] or "",
-             "created_by": r[9] or "", "notes": r[10]}
-            for r in rows
-        ]
-
-    async def list_theme_versions(self, *, scope_type: str, scope_slug: str, limit: int = 20) -> list:
-        return await anyio.to_thread.run_sync(self._list_theme_versions_sync, scope_type, scope_slug, int(limit))
-
-    def _get_theme_version_sync(self, version_id: int) -> Optional[dict]:
-        with self._connect() as conn:
-            row = conn.execute(
-                """SELECT id, created_at, scope_type, scope_slug, version_num,
-                          accent, accent_strong, sidebar_start, sidebar_end, created_by, notes
-                   FROM theme_versions WHERE id = ? LIMIT 1;""",
-                (int(version_id),),
-            ).fetchone()
-        if row is None:
-            return None
-        return {"id": row[0], "created_at": row[1], "scope_type": row[2], "scope_slug": row[3],
-                "version_num": row[4], "accent": row[5] or "", "accent_strong": row[6] or "",
-                "sidebar_start": row[7] or "", "sidebar_end": row[8] or "",
-                "created_by": row[9] or "", "notes": row[10]}
-
-    async def get_theme_version(self, version_id: int) -> Optional[dict]:
-        return await anyio.to_thread.run_sync(self._get_theme_version_sync, int(version_id))
 
     # ── Slug aliases ─────────────────────────────────────────────────────────
     # Maps old slugs to canonical ones so old API clients keep working.
@@ -978,3 +721,188 @@ class SchoolRegistry:
 
     async def list_aliases(self) -> List[SlugAliasRecord]:
         return await anyio.to_thread.run_sync(self._list_aliases_sync)
+
+    # ── Simulation / sandbox ──────────────────────────────────────────────────
+
+    def _set_simulation_mode_sync(self, slug: str, enabled: bool) -> Optional[SchoolRecord]:
+        normalized_slug = slug.strip().lower()
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE schools SET simulation_mode_enabled = ? WHERE slug = ?;",
+                (1 if enabled else 0, normalized_slug),
+            )
+            row = conn.execute(
+                f"SELECT {_SCHOOL_COLS} FROM schools WHERE slug = ? LIMIT 1;",
+                (normalized_slug,),
+            ).fetchone()
+        return self._school_from_row(row) if row is not None else None
+
+    async def set_simulation_mode(self, *, slug: str, enabled: bool) -> Optional[SchoolRecord]:
+        return await anyio.to_thread.run_sync(self._set_simulation_mode_sync, slug, enabled)
+
+    def _set_audio_suppression_sync(self, slug: str, enabled: bool) -> Optional[SchoolRecord]:
+        normalized_slug = slug.strip().lower()
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE schools SET suppress_alarm_audio = ? WHERE slug = ?;",
+                (1 if enabled else 0, normalized_slug),
+            )
+            row = conn.execute(
+                f"SELECT {_SCHOOL_COLS} FROM schools WHERE slug = ? LIMIT 1;",
+                (normalized_slug,),
+            ).fetchone()
+        return self._school_from_row(row) if row is not None else None
+
+    async def set_audio_suppression(self, *, slug: str, enabled: bool) -> Optional[SchoolRecord]:
+        return await anyio.to_thread.run_sync(self._set_audio_suppression_sync, slug, enabled)
+
+    def _list_test_districts_sync(self) -> List[DistrictRecord]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"SELECT {_DISTRICT_COLS} FROM districts WHERE is_test = 1 ORDER BY name ASC;"
+            ).fetchall()
+        return [self._district_from_row(row) for row in rows]
+
+    async def list_test_districts(self) -> List[DistrictRecord]:
+        return await anyio.to_thread.run_sync(self._list_test_districts_sync)
+
+    def _list_test_schools_sync(self) -> List[SchoolRecord]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"SELECT {_SCHOOL_COLS} FROM schools WHERE is_test = 1 ORDER BY name ASC;"
+            ).fetchall()
+        return [self._school_from_row(row) for row in rows]
+
+    async def list_test_schools(self) -> List[SchoolRecord]:
+        return await anyio.to_thread.run_sync(self._list_test_schools_sync)
+
+    def _create_test_district_sync(
+        self,
+        name: str,
+        slug: str,
+        organization_id: int,
+        source_district_id: Optional[int],
+    ) -> DistrictRecord:
+        normalized_slug = slug.strip().lower()
+        with self._connect() as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO districts (
+                    created_at, name, slug, organization_id, is_active,
+                    is_test, source_district_id
+                )
+                VALUES (?, ?, ?, ?, 1, 1, ?);
+                """,
+                (
+                    datetime.now(timezone.utc).isoformat(),
+                    name.strip(),
+                    normalized_slug,
+                    int(organization_id),
+                    int(source_district_id) if source_district_id is not None else None,
+                ),
+            )
+            row = conn.execute(
+                f"SELECT {_DISTRICT_COLS} FROM districts WHERE id = ? LIMIT 1;",
+                (int(cur.lastrowid),),
+            ).fetchone()
+        assert row is not None
+        return self._district_from_row(row)
+
+    async def create_test_district(
+        self,
+        *,
+        name: str,
+        slug: str,
+        organization_id: int,
+        source_district_id: Optional[int] = None,
+    ) -> DistrictRecord:
+        return await anyio.to_thread.run_sync(
+            self._create_test_district_sync, name, slug, int(organization_id), source_district_id
+        )
+
+    def _create_test_school_sync(
+        self,
+        name: str,
+        slug: str,
+        district_id: Optional[int],
+        source_tenant_slug: Optional[str],
+        accent: Optional[str],
+        accent_strong: Optional[str],
+        sidebar_start: Optional[str],
+        sidebar_end: Optional[str],
+        logo_path: Optional[str],
+    ) -> SchoolRecord:
+        normalized_slug = slug.strip().lower()
+        with self._connect() as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO schools (
+                    created_at, slug, name, is_active,
+                    accent, accent_strong, sidebar_start, sidebar_end,
+                    setup_pin_salt, setup_pin_hash, district_id, logo_path,
+                    is_test, source_tenant_slug, simulation_mode_enabled, suppress_alarm_audio
+                )
+                VALUES (?, ?, ?, 1, ?, ?, ?, ?, NULL, NULL, ?, ?, 1, ?, 0, 0);
+                """,
+                (
+                    datetime.now(timezone.utc).isoformat(),
+                    normalized_slug,
+                    name.strip(),
+                    accent,
+                    accent_strong,
+                    sidebar_start,
+                    sidebar_end,
+                    int(district_id) if district_id is not None else None,
+                    logo_path,
+                    source_tenant_slug,
+                ),
+            )
+            row = conn.execute(
+                f"SELECT {_SCHOOL_COLS} FROM schools WHERE id = ? LIMIT 1;",
+                (int(cur.lastrowid),),
+            ).fetchone()
+        assert row is not None
+        return self._school_from_row(row)
+
+    async def create_test_school(
+        self,
+        *,
+        name: str,
+        slug: str,
+        district_id: Optional[int] = None,
+        source_tenant_slug: Optional[str] = None,
+        accent: Optional[str] = None,
+        accent_strong: Optional[str] = None,
+        sidebar_start: Optional[str] = None,
+        sidebar_end: Optional[str] = None,
+        logo_path: Optional[str] = None,
+    ) -> SchoolRecord:
+        return await anyio.to_thread.run_sync(
+            self._create_test_school_sync,
+            name, slug, district_id, source_tenant_slug,
+            accent, accent_strong, sidebar_start, sidebar_end, logo_path,
+        )
+
+    def _delete_school_record_sync(self, school_id: int) -> bool:
+        with self._connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM schools WHERE id = ? AND is_test = 1;",
+                (int(school_id),),
+            )
+        return (cur.rowcount or 0) > 0
+
+    async def delete_school_record(self, school_id: int) -> bool:
+        """Delete a test school by id. Hard-blocked on production schools (is_test must be 1)."""
+        return await anyio.to_thread.run_sync(self._delete_school_record_sync, int(school_id))
+
+    def _delete_district_record_sync(self, district_id: int) -> bool:
+        with self._connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM districts WHERE id = ? AND is_test = 1;",
+                (int(district_id),),
+            )
+        return (cur.rowcount or 0) > 0
+
+    async def delete_district_record(self, district_id: int) -> bool:
+        """Delete a test district by id. Hard-blocked on production districts (is_test must be 1)."""
+        return await anyio.to_thread.run_sync(self._delete_district_record_sync, int(district_id))

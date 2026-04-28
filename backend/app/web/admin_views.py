@@ -35,7 +35,10 @@ def _favicon_tags(logo_url: Optional[str] = None) -> str:
 def _brand_mark(logo_url: Optional[str] = None) -> str:
     img_src = logo_url if logo_url else LOGO_PATH
     alt = "School logo" if logo_url else "BlueBird Alerts logo"
-    return f'<div class="brand-mark"><img src="{img_src}" alt="{alt}" /></div>'
+    return (
+        f'<div class="brand-mark"><img src="{img_src}" alt="{alt}"'
+        f' onerror="this.onerror=null;this.src=\'{LOGO_PATH}\';" /></div>'
+    )
 
 
 @lru_cache(maxsize=1)
@@ -78,7 +81,7 @@ def _token_lookup(path: str) -> Optional[str]:
     return None
 
 
-def _theme_vars(theme: Optional[Mapping[str, str]] = None) -> str:
+def _theme_vars() -> str:
     resolved = {
         "background_light": _token_lookup("colors.background.light") or _token_lookup("color.background.light") or "#eef5ff",
         "background_dark": _token_lookup("colors.background.dark") or _token_lookup("color.background.dark") or "#dce9ff",
@@ -97,11 +100,6 @@ def _theme_vars(theme: Optional[Mapping[str, str]] = None) -> str:
         "status_quiet": _token_lookup("colors.status.quiet") or _token_lookup("color.status.quiet") or "#8e3beb",
         "status_danger": _token_lookup("colors.button.danger") or _token_lookup("color.button.danger") or _token_lookup("colors.danger") or _token_lookup("color.danger") or "#dc2626",
     }
-    if theme:
-        for key in ("accent", "accent_strong", "sidebar_start", "sidebar_end"):
-            value = str(theme.get(key, "") or "").strip()
-            if value:
-                resolved[key] = value
     return f"""
     :root {{
       --color-background-light: {resolved["background_light"]};
@@ -151,9 +149,27 @@ def _theme_vars(theme: Optional[Mapping[str, str]] = None) -> str:
     """
 
 
-def _base_styles(theme: Optional[Mapping[str, str]] = None) -> str:
-    return _theme_vars(theme) + """
+def _base_styles() -> str:
+    return _theme_vars() + """
     * { box-sizing: border-box; }
+    html[data-theme="dark"] {
+      --color-background-light: #0d1829;
+      --color-background-dark: #0a1020;
+      --color-card: #131f35;
+      --color-input-background: #1a2540;
+      --color-text-primary: #e8f0fe;
+      --color-text-secondary: #8baad4;
+      --color-border: rgba(99, 140, 210, 0.15);
+      --bg: var(--color-background-light);
+      --bg-deep: var(--color-background-dark);
+      --panel: rgba(19, 31, 53, 0.92);
+      --panel-strong: rgba(19, 31, 53, 0.99);
+      --border: var(--color-border);
+      --text: var(--color-text-primary);
+      --muted: var(--color-text-secondary);
+      --card: var(--color-card);
+      --surface: rgba(19, 31, 53, 0.99);
+    }
     html, body { margin: 0; min-height: 100%; color: var(--text); font-family: var(--body); }
     body {
       min-height: 100vh;
@@ -164,6 +180,15 @@ def _base_styles(theme: Optional[Mapping[str, str]] = None) -> str:
         linear-gradient(180deg, var(--bg) 0%, var(--bg-deep) 100%);
     }
     a { color: var(--accent); text-decoration: none; }
+    .theme-toggle-btn {
+      display: flex; align-items: center; gap: 6px;
+      background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.14);
+      color: var(--nav-text); border-radius: 8px;
+      padding: 6px 12px; font-size: 0.78rem; font-weight: 600;
+      cursor: pointer; width: 100%; margin-top: 8px;
+      transition: background 0.15s;
+    }
+    .theme-toggle-btn:hover { background: rgba(255,255,255,0.15); }
     .page-shell { max-width: 1480px; margin: 0 auto; padding: 24px; }
     .login-shell {
       min-height: 100vh;
@@ -375,7 +400,8 @@ def _base_styles(theme: Optional[Mapping[str, str]] = None) -> str:
       display: block;
       width: 100%;
       height: 100%;
-      object-fit: cover;
+      object-fit: contain;
+      padding: 6px;
     }
     .brand-text h1, .brand-text h2, .brand-text h3, .brand-text p,
     .signal-card h1, .signal-card h2, .signal-card h3, .signal-card p, .signal-card span,
@@ -1007,7 +1033,6 @@ def render_login_page(
     school_slug: str = "nen",
     school_path_prefix: str = "/nen",
     setup_pin_required: bool = False,
-    theme: Optional[Mapping[str, str]] = None,
 ) -> str:
     heading = "Create the first BlueBird admin" if setup_mode else "Sign in to BlueBird Admin"
     button = "Create admin account" if setup_mode else "Sign in"
@@ -1045,7 +1070,7 @@ def render_login_page(
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>BlueBird Admin Login</title>
   {_favicon_tags()}
-  <style>{_base_styles(theme)}</style>
+  <style>{_base_styles()}</style>
 </head>
 <body>
   <main class="login-shell">
@@ -1148,6 +1173,7 @@ def render_super_admin_login_page(*, message: Optional[str] = None, error: Optio
       </form>
     </section>
   </main>
+  <script>(function(){{var t=localStorage.getItem('bb_theme')||(window.matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');if(t==='dark')document.documentElement.setAttribute('data-theme','dark');}})();</script>
 </body>
 </html>"""
 
@@ -1163,7 +1189,6 @@ def render_totp_page(
     user_label: str,
     message: Optional[str] = None,
     error: Optional[str] = None,
-    theme: Optional[Mapping[str, str]] = None,
     allow_trust_device: bool = False,
 ) -> str:
     trust_device_html = ""
@@ -1181,7 +1206,7 @@ def render_totp_page(
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>{escape(title)}</title>
   {_favicon_tags()}
-  <style>{_base_styles(theme)}</style>
+  <style>{_base_styles()}</style>
 </head>
 <body>
   <main class="login-shell">
@@ -1216,30 +1241,79 @@ def render_totp_page(
       </form>
     </section>
   </main>
+  <script>(function(){{var t=localStorage.getItem('bb_theme')||(window.matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');if(t==='dark')document.documentElement.setAttribute('data-theme','dark');}})();</script>
 </body>
 </html>"""
 
 
-def _pctrl_district_lock_rows(districts: "Sequence[Mapping[str, object]]") -> str:
-    district_only = [d for d in districts if d.get("is_district")]
-    if not district_only:
-        return "<tr><td colspan='5' style='color:var(--muted);padding:12px;'>No districts provisioned yet.</td></tr>"
+def _sandbox_district_options(prod_districts: Sequence[object]) -> str:
     parts = []
-    for d in district_only:
-        did = d.get("id") or 0
-        locked = bool(d.get("brand_locked"))
-        pill_cls = "warn" if locked else "ok"
-        pill_label = "Locked" if locked else "Open"
-        btn_label = "Disable Lock" if locked else "Enable Lock"
-        js_arg = "false" if locked else "true"
+    for d in prod_districts:
+        did = escape(str(getattr(d, "id", "")))
+        name = escape(str(getattr(d, "name", "")))
+        slug = escape(str(getattr(d, "slug", "")))
+        parts.append(f'<option value="{did}">{name} ({slug})</option>')
+    return "".join(parts)
+
+
+def _sandbox_school_row(s: Mapping[str, object]) -> str:
+    slug = escape(str(s.get("slug", "")))
+    name = escape(str(s.get("name", "")))
+    sim_on = bool(s.get("simulation_mode_enabled"))
+    audio_on = bool(s.get("suppress_alarm_audio"))
+    sim_class = "success" if sim_on else "neutral"
+    sim_label = "SIM ON" if sim_on else "SIM OFF"
+    audio_class = "warning" if audio_on else "neutral"
+    audio_label = "AUDIO MUTED" if audio_on else "AUDIO ON"
+    confirm_msg = "Reset simulation data for " + str(s.get("slug", "")) + "?"
+    return (
+        '<div style="border-top:1px solid #e5e7eb;padding:10px 0;display:flex;align-items:center;gap:12px;flex-wrap:wrap;">'
+        f'<code style="flex:1;min-width:120px;">{slug}</code>'
+        f'<span style="flex:2;">{name}</span>'
+        f'<span class="status-pill {sim_class}">{sim_label}</span>'
+        f'<span class="status-pill {audio_class}">{audio_label}</span>'
+        f'<form method="post" action="/super-admin/test-tenants/{slug}/toggle-simulation">'
+        '<button class="button button-secondary" type="submit">Toggle Sim</button>'
+        '</form>'
+        f'<form method="post" action="/super-admin/test-tenants/{slug}/toggle-audio-suppression">'
+        '<button class="button button-secondary" type="submit">Toggle Audio</button>'
+        '</form>'
+        f'<form method="post" action="/super-admin/test-tenants/{slug}/simulate-alert">'
+        '<input type="hidden" name="alert_type" value="lockdown" />'
+        '<button class="button button-warning-outline" type="submit">Simulate Alert</button>'
+        '</form>'
+        f'<form method="post" action="/super-admin/test-tenants/{slug}/reset"'
+        f' onsubmit="return confirm({repr(confirm_msg)});">'
+        '<button class="button button-secondary" type="submit">Reset</button>'
+        '</form>'
+        '</div>'
+    )
+
+
+def _sandbox_district_cards(sandbox_data: Sequence[Mapping[str, object]]) -> str:
+    if not sandbox_data:
+        return '<p class="card-copy">No test environments created yet.</p>'
+    parts = []
+    for td in sandbox_data:
+        did = escape(str(td.get("district_id", "")))
+        dname = escape(str(td.get("district_name", "")))
+        dslug = escape(str(td.get("district_slug", "")))
+        schools_html = "".join(
+            _sandbox_school_row(s)  # type: ignore[arg-type]
+            for s in td.get("schools", [])
+        )
+        confirm_msg = "Permanently delete test district and all its schools?"
         parts.append(
-            "<tr>"
-            f"<td><strong>{escape(str(d.get('name', '?')))}</strong></td>"
-            f"<td><code>{escape(str(d.get('slug', '?')))}</code></td>"
-            f"<td>{int(d.get('school_count', 0))}</td>"
-            f'<td><span class="pctrl-pill {pill_cls}">{pill_label}</span></td>'
-            f'<td><button class="pctrl-lock-btn" onclick="pctrlToggleLock({did},{js_arg})">{btn_label}</button></td>'
-            "</tr>"
+            '<div class="signal-card" style="margin-bottom:20px;">'
+            '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">'
+            f'<div><strong>{dname}</strong><code style="margin-left:8px;">{dslug}</code></div>'
+            f'<form method="post" action="/super-admin/test-districts/{did}/delete"'
+            f' onsubmit="return confirm({repr(confirm_msg)});">'
+            '<button class="button button-danger-outline" type="submit">Delete Sandbox</button>'
+            '</form>'
+            '</div>'
+            f'{schools_html}'
+            '</div>'
         )
     return "".join(parts)
 
@@ -1273,6 +1347,8 @@ def render_super_admin_page(
     noc_uptime_seconds: int = 0,
     msp_districts: Sequence[Mapping[str, object]] = (),
     platform_stats: Optional[Mapping[str, object]] = None,
+    sandbox_data: Sequence[Mapping[str, object]] = (),
+    prod_districts: Sequence[object] = (),
 ) -> str:
     rows = "".join(
         (
@@ -1353,7 +1429,7 @@ def render_super_admin_page(
         for c in setup_codes
     ) or '<tr><td colspan="7" class="empty-state">No setup codes generated yet.</td></tr>'
 
-    section = active_section if active_section in {"schools", "billing", "platform-audit", "create-school", "security", "configuration", "server-tools", "health", "email-tool", "setup-codes", "noc", "msp", "platform-control"} else "schools"
+    section = active_section if active_section in {"schools", "billing", "platform-audit", "create-school", "security", "configuration", "server-tools", "health", "email-tool", "setup-codes", "noc", "msp", "platform-control", "sandbox"} else "schools"
 
     def _section_style(name: str) -> str:
         return "" if section == name else ' style="display:none;"'
@@ -1698,10 +1774,6 @@ def render_super_admin_page(
           .pctrl-pill.ok{background:#dcfce7;color:#15803d;}
           .pctrl-pill.warn{background:#fef9c3;color:#854d0e;}
           .pctrl-pill.danger{background:#fee2e2;color:#b91c1c;}
-          .pctrl-district-table{width:100%;border-collapse:collapse;font-size:.85rem;}
-          .pctrl-district-table th{text-align:left;padding:8px 10px;color:var(--muted);font-weight:600;border-bottom:1px solid var(--border);}
-          .pctrl-district-table td{padding:8px 10px;border-bottom:1px solid var(--border);}
-          .pctrl-lock-btn{padding:4px 12px;border-radius:6px;border:1px solid var(--border);font-size:.75rem;cursor:pointer;background:var(--bg-offset,#f8fafc);}
           """
 
     return f"""<!DOCTYPE html>
@@ -1742,6 +1814,7 @@ def render_super_admin_page(
             {_nav_item("setup-codes", "Setup Codes")}
             {_nav_item("security", "Security")}
             {_nav_item("server-tools", "Server Tools")}
+            {_nav_item("sandbox", "Sandbox")}
             <a class="nav-item" href="/super-admin/change-password">Change password</a>
           </nav>
           </div>
@@ -1761,22 +1834,11 @@ def render_super_admin_page(
             <div>
               <p class="eyebrow">Super Admin</p>
               <h1>Platform Control</h1>
-              <p class="hero-copy">SaaS-level visibility across all tenants — branding health, district brand lock, system status, and coverage metrics.</p>
+              <p class="hero-copy">SaaS-level visibility across all tenants — system status and coverage metrics.</p>
             </div>
           </div>
 
-          <p class="eyebrow" style="margin-bottom:12px;">Branding Health</p>
           <div class="pctrl-grid">
-            <div class="pctrl-card">
-              <p class="pctrl-card-hdr">Branding Coverage</p>
-              <p class="pctrl-kpi">{int((platform_stats or {}).get("branding_coverage_pct", 0))}%</p>
-              <p class="pctrl-sub">{int((platform_stats or {}).get("branded_schools", 0))} of {int((platform_stats or {}).get("total_schools", 0))} schools have custom branding</p>
-            </div>
-            <div class="pctrl-card">
-              <p class="pctrl-card-hdr">Brand-Locked Districts</p>
-              <p class="pctrl-kpi">{int((platform_stats or {}).get("locked_districts", 0))}</p>
-              <p class="pctrl-sub">of {int((platform_stats or {}).get("total_districts", 0))} districts have brand lock enabled</p>
-            </div>
             <div class="pctrl-card">
               <p class="pctrl-card-hdr">Active Schools</p>
               <p class="pctrl-kpi">{int((platform_stats or {}).get("active_schools", 0))}</p>
@@ -1787,17 +1849,6 @@ def render_super_admin_page(
               <p class="pctrl-kpi">{int((platform_stats or {}).get("ws_connections", 0))}</p>
               <p class="pctrl-sub">{int((platform_stats or {}).get("alarm_schools", 0))} school{'s' if int((platform_stats or {}).get("alarm_schools", 0)) != 1 else ''} with active alarm</p>
             </div>
-          </div>
-
-          <p class="eyebrow" style="margin-bottom:12px;margin-top:4px;">District Brand Lock</p>
-          <p class="card-copy" style="margin-bottom:14px;">When brand lock is enabled for a district, school admins cannot override branding — district colors become authoritative.</p>
-          <div style="overflow-x:auto;margin-bottom:28px;">
-            <table class="pctrl-district-table">
-              <thead><tr><th>District</th><th>Slug</th><th>Schools</th><th>Brand Lock</th><th>Action</th></tr></thead>
-              <tbody>
-              {_pctrl_district_lock_rows(msp_districts)}
-              </tbody>
-            </table>
           </div>
 
           <p class="eyebrow" style="margin-bottom:12px;margin-top:4px;">System Health</p>
@@ -1814,17 +1865,6 @@ def render_super_admin_page(
             </div>
           </div>
 
-          <script>
-          function pctrlToggleLock(districtId,enable){{
-            var action=enable?'Enable':'Disable';
-            if(!confirm(action+' brand lock for this district? '+(enable?'School admins will not be able to override branding.':'School admins will be able to set their own branding.')))return;
-            var endpoint='/super-admin/districts/'+districtId+'/brand-lock/'+(enable?'enable':'disable');
-            fetch(endpoint,{{method:'POST',headers:{{'X-Requested-With':'XMLHttpRequest'}}}})
-              .then(function(r){{return r.json();}})
-              .then(function(d){{if(d.ok){{location.reload();}}else{{alert('Failed to update brand lock');}};}})
-              .catch(function(){{alert('Network error');}});
-          }}
-          </script>
         </section>
 
         <section class="panel command-section" id="msp"{_section_style("msp")}>
@@ -2764,6 +2804,50 @@ def render_super_admin_page(
           </p>
         </section>
 
+        <section class="panel command-section" id="sandbox"{_section_style("sandbox")}>
+          <div class="panel-header">
+            <div>
+              <p class="eyebrow">Sandbox</p>
+              <h2>Test &amp; Demo Environments</h2>
+              <p class="card-copy">Clone a production district into an isolated test environment. Simulation mode suppresses all real push/SMS/APNs delivery. No production data is ever touched.</p>
+            </div>
+          </div>
+
+          <div class="flash warning" style="margin-bottom:20px;">
+            <strong>Safety:</strong> Test environments are hard-isolated from production. Push, SMS, and APNs are blocked when simulation mode is on.
+          </div>
+
+          <h3 style="margin-bottom:12px;">Clone production district into sandbox</h3>
+          <form method="post" class="stack" style="max-width:560px;margin-bottom:32px;">
+            <div class="form-grid">
+              <div class="field">
+                <label>Source district</label>
+                <select name="district_id" id="sandbox-district-select" required>
+                  <option value="">— select —</option>
+                  {_sandbox_district_options(prod_districts)}
+                </select>
+              </div>
+              <div class="field">
+                <label>Test district slug</label>
+                <input name="test_slug" placeholder="test-north-high" required />
+              </div>
+              <div class="field">
+                <label>Test district name (optional)</label>
+                <input name="test_name" placeholder="[TEST] North High" />
+              </div>
+            </div>
+            <div class="button-row">
+              <button class="button button-primary" type="submit" id="sandbox-clone-btn"
+                onclick="var sel=document.getElementById('sandbox-district-select');if(!sel.value){{return false;}}this.form.action='/super-admin/districts/'+sel.value+'/clone-test';">
+                Clone to Sandbox
+              </button>
+            </div>
+          </form>
+
+          <h3 style="margin-bottom:12px;">Sandbox environments</h3>
+          {_sandbox_district_cards(sandbox_data)}
+        </section>
+
         <section class="panel command-section" id="setup-codes"{_section_style("setup-codes")}>
           <div class="panel-header">
             <div>
@@ -2800,6 +2884,7 @@ def render_super_admin_page(
       </section>
     </div>
   </main>
+  <script>(function(){{var t=localStorage.getItem('bb_theme')||(window.matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');if(t==='dark')document.documentElement.setAttribute('data-theme','dark');}})();</script>
 </body>
 </html>"""
 
@@ -3351,7 +3436,6 @@ def render_change_password_page(
     eyebrow: str = "BlueBird Alerts",
     heading: str = "Password change required",
     helper: str = "Your account was set up with a temporary password. Please choose a new password before continuing.",
-    theme: Optional[Mapping[str, str]] = None,
 ) -> str:
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -3360,7 +3444,7 @@ def render_change_password_page(
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>{escape(title)}</title>
   {_favicon_tags()}
-  <style>{_base_styles(theme)}</style>
+  <style>{_base_styles()}</style>
 </head>
 <body>
   <main class="login-shell">
@@ -3396,250 +3480,11 @@ def render_change_password_page(
       </form>
     </section>
   </main>
+  <script>(function(){{var t=localStorage.getItem('bb_theme')||(window.matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');if(t==='dark')document.documentElement.setAttribute('data-theme','dark');}})();</script>
 </body>
 </html>"""
 
 
-_BRANDING_CSS = """<style>
-.bbp-preset-bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:14px 18px;background:var(--bg-offset,#f8fafc);border:1px solid var(--border);border-radius:10px;margin-bottom:20px;}
-.bbp-preset-bar select{flex:1;min-width:160px;max-width:240px;}
-.bbp-field{margin-bottom:18px;}
-.bbp-label{font-size:.82rem;font-weight:600;display:block;margin-bottom:6px;}
-.bbp-row{display:flex;gap:8px;align-items:center;}
-.bbp-swatch-big{width:40px;height:40px;border-radius:8px;flex-shrink:0;cursor:pointer;border:2px solid rgba(0,0,0,.12);box-shadow:0 2px 6px rgba(0,0,0,.15);transition:transform .1s;}
-.bbp-swatch-big:hover{transform:scale(1.08);}
-.bbp-hex{flex:1;font-family:monospace;font-size:.88rem;letter-spacing:.04em;}
-.bbp-chevron{padding:4px 10px;background:none;border:1px solid var(--border);border-radius:6px;cursor:pointer;color:var(--muted);line-height:1;}
-.bbp-panel{margin-top:8px;background:var(--card,#fff);border:1px solid var(--border);border-radius:10px;padding:12px 14px;box-shadow:0 6px 24px rgba(0,0,0,.1);position:relative;z-index:20;}
-.bbp-palette{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;}
-.bbp-pal-sw{width:22px;height:22px;border-radius:5px;cursor:pointer;border:2px solid transparent;transition:transform .1s,border-color .1s;}
-.bbp-pal-sw:hover{transform:scale(1.2);border-color:rgba(0,0,0,.3);}
-.bbp-sliders{display:flex;flex-direction:column;gap:9px;}
-.bbp-slider-row{display:flex;align-items:center;gap:10px;font-size:.72rem;color:var(--muted);}
-.bbp-slider-row>span{width:14px;font-weight:700;flex-shrink:0;}
-.bbp-hue-rail{flex:1;height:12px;border-radius:6px;background:linear-gradient(to right,#f00,#ff0,#0f0,#0ff,#00f,#f0f,#f00);}
-.bbp-hue-rail input[type=range]{width:100%;height:12px;margin:0;padding:0;background:transparent;border:none;-webkit-appearance:none;appearance:none;cursor:pointer;}
-.bbp-hue-rail input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:16px;height:16px;border-radius:50%;background:#fff;border:2px solid rgba(0,0,0,.25);box-shadow:0 1px 4px rgba(0,0,0,.3);}
-.bbp-sl{flex:1;height:4px;-webkit-appearance:none;appearance:none;border-radius:2px;background:var(--border);cursor:pointer;}
-.bbp-sl::-webkit-slider-thumb{-webkit-appearance:none;width:14px;height:14px;border-radius:50%;background:var(--accent,#1b5fe4);border:none;box-shadow:0 1px 3px rgba(0,0,0,.2);}
-.bbp-tabs{display:flex;gap:2px;background:var(--border);border-radius:8px;padding:2px;margin-bottom:12px;}
-.bbp-tab{flex:1;padding:5px 4px;border:none;background:none;font-size:.72rem;border-radius:6px;cursor:pointer;transition:background .1s;color:var(--muted);}
-.bbp-tab.active{background:var(--card,#fff);font-weight:600;color:var(--text);box-shadow:0 1px 3px rgba(0,0,0,.1);}
-.bbp-phone{width:152px;margin:0 auto;background:#16213e;border-radius:26px;padding:8px 5px;box-shadow:0 12px 32px rgba(0,0,0,.35);}
-.bbp-phone-screen{border-radius:18px;overflow:hidden;background:#f8fafc;}
-.bbp-phone-notch{height:16px;background:#16213e;display:flex;align-items:center;justify-content:center;}
-.bbp-phone-notch-pill{width:40px;height:6px;background:#0d1526;border-radius:3px;}
-.bbp-phone-bar{height:52px;display:flex;align-items:center;padding:0 12px;gap:8px;}
-.bbp-phone-content{padding:10px 10px 14px;}
-.bbp-android-bar{height:56px;display:flex;align-items:center;padding:0 14px;}
-.bbp-contrast{font-size:.78rem;padding:7px 12px;border-radius:7px;background:var(--bg-offset,#f8fafc);border:1px solid var(--border);min-height:34px;display:flex;align-items:center;}
-.bbp-saved-list{display:flex;flex-direction:column;gap:6px;margin-top:8px;}
-.bbp-saved-item{display:flex;align-items:center;gap:8px;background:var(--card,#fff);border:1px solid var(--border);border-radius:8px;padding:7px 10px;font-size:.82rem;}
-.bbp-saved-swatches{display:flex;gap:3px;flex-shrink:0;}
-.bbp-saved-sw{width:14px;height:14px;border-radius:3px;border:1px solid rgba(0,0,0,.1);}
-.bbp-extracted-banner{background:linear-gradient(90deg,#fffbeb,#fef3c7);border:1px solid #fbbf24;border-radius:10px;padding:14px 18px;margin-bottom:20px;display:flex;align-items:center;gap:14px;flex-wrap:wrap;}
-</style>"""
-
-_BRANDING_JS = """<script>
-(function(){
-'use strict';
-var _s={};
-function h2r(h){return[parseInt(h.slice(1,3),16)/255,parseInt(h.slice(3,5),16)/255,parseInt(h.slice(5,7),16)/255];}
-function r2h(r,g,b){return'#'+[r,g,b].map(function(x){return Math.round(Math.max(0,Math.min(255,x*255))).toString(16).padStart(2,'0');}).join('');}
-function rgb2hsl(r,g,b){var mx=Math.max(r,g,b),mn=Math.min(r,g,b),h,s,l=(mx+mn)/2;if(mx===mn){h=s=0;}else{var d=mx-mn;s=l>.5?d/(2-mx-mn):d/(mx+mn);switch(mx){case r:h=((g-b)/d+(g<b?6:0))/6;break;case g:h=((b-r)/d+2)/6;break;default:h=((r-g)/d+4)/6;}}return[Math.round(h*360),Math.round(s*100),Math.round(l*100)];}
-function hsl2h(h,s,l){s/=100;l/=100;var a=s*Math.min(l,1-l);function f(n){var k=(n+h/30)%12,c=l-a*Math.max(Math.min(k-3,9-k,1),-1);return Math.round(255*c).toString(16).padStart(2,'0');}return'#'+f(0)+f(8)+f(4);}
-function vhex(h){return/^#[0-9a-fA-F]{6}$/.test(h);}
-function _sw(id){return document.getElementById('bbs-'+id);}
-function _hi(id){return document.getElementById('s-'+id.replace(/_/g,'-'));}
-function _applyHex(id,hex){var sw=_sw(id),hi=_hi(id);if(sw)sw.style.background=hex;if(hi&&hi.value!==hex)hi.value=hex;}
-function _syncSl(id,hex){if(!vhex(hex))return;var rgb=h2r(hex),hsl=rgb2hsl(rgb[0],rgb[1],rgb[2]);_s[id]={h:hsl[0],s:hsl[1],l:hsl[2]};var hs=document.getElementById('bbhue-'+id),ss=document.getElementById('bbsat-'+id),ls=document.getElementById('bblit-'+id);if(hs)hs.value=hsl[0];if(ss)ss.value=hsl[1];if(ls)ls.value=hsl[2];}
-function _calc(id){var p=_s[id]||{h:220,s:70,l:50};var hex=hsl2h(p.h,p.s,p.l);_applyHex(id,hex);_syncPrev();return hex;}
-window.bbToggle=function(id){var pn=document.getElementById('bbpanel-'+id);if(!pn)return;var was=pn.style.display==='none';document.querySelectorAll('.bbp-panel').forEach(function(p){p.style.display='none';});pn.style.display=was?'':'none';if(was){var hi=_hi(id);if(hi&&vhex(hi.value))_syncSl(id,hi.value);}};
-window.bbSetHex=function(id,hex){_applyHex(id,hex);_syncSl(id,hex);_syncPrev();};
-window.bbHexIn=function(id){var hi=_hi(id);if(!hi)return;var hex=hi.value.trim();if(!vhex(hex))return;_sw(id)&&(_sw(id).style.background=hex);_syncSl(id,hex);_syncPrev();};
-window.bbHueIn=function(id,v){var p=_s[id]||{h:220,s:70,l:50};p.h=+v;_s[id]=p;_calc(id);};
-window.bbSatIn=function(id,v){var p=_s[id]||{h:220,s:70,l:50};p.s=+v;_s[id]=p;_calc(id);};
-window.bbLitIn=function(id,v){var p=_s[id]||{h:220,s:70,l:50};p.l=+v;_s[id]=p;_calc(id);};
-function _gh(id){var hi=_hi(id);return(hi&&vhex(hi.value))?hi.value:null;}
-function _syncPrev(){
-  var ac=_gh('accent'),as=_gh('accent_strong'),ss=_gh('sidebar_start'),se=_gh('sidebar_end');
-  var sb=document.getElementById('bp-sidebar-preview');
-  if(sb)sb.style.background='linear-gradient(180deg,'+(ss||'#092054')+' 0%,'+(se||'#071536')+' 100%)';
-  var gl=document.getElementById('bp-preview-glow');
-  if(gl&&ac)gl.style.background='radial-gradient(circle at top left,'+ac+'28,transparent 60%)';
-  var btn=document.getElementById('bp-preview-btn');if(btn&&ac)btn.style.background=ac;
-  var mb=document.getElementById('bp-mob-bar');if(mb)mb.style.background='linear-gradient(135deg,'+(ss||'#092054')+','+(se||'#071536')+')';
-  var ma=document.getElementById('bp-mob-alert');if(ma&&ac)ma.style.background=ac;
-  var mb2=document.getElementById('bp-mob-badge');if(mb2&&as)mb2.style.background=as;
-  _chkContrast(ac);
-}
-function _lum(hex){if(!vhex(hex))return .5;var rgb=h2r(hex);return rgb.map(function(c,i){c=c<=.03928?c/12.92:Math.pow((c+.055)/1.055,2.4);return c*[.2126,.7152,.0722][i];}).reduce(function(a,b){return a+b;},0);}
-function _chkContrast(ac){var el=document.getElementById('bbp-contrast');if(!el||!ac||!vhex(ac)){return;}var r=(_lum(ac)+.05)/(_lum('#ffffff')+.05);if(r<1)r=1/r;if(r>=4.5){el.innerHTML='<span style="color:#16a34a;">✓ Contrast '+r.toFixed(1)+':1 — WCAG AA pass</span>';}else if(r>=3){el.innerHTML='<span style="color:#d97706;">⚠ Contrast '+r.toFixed(1)+':1 — large text only</span>';}else{el.innerHTML='<span style="color:#dc2626;">✗ Contrast '+r.toFixed(1)+':1 — too low (WCAG AA fail)</span>';}}
-window.bbTab=function(m){['web','ios','android'].forEach(function(t){var el=document.getElementById('bppv-'+t),btn=document.getElementById('bptab-'+t);if(el)el.style.display=t===m?'':'none';if(btn)btn.classList.toggle('active',t===m);});};
-window.bbLoadPreset=function(){var sel=document.getElementById('bbp-sel');if(!sel||!sel.value)return;try{var p=JSON.parse(sel.value);if(p.accent)bbSetHex('accent',p.accent);if(p.accent_strong)bbSetHex('accent_strong',p.accent_strong);if(p.sidebar_start)bbSetHex('sidebar_start',p.sidebar_start);if(p.sidebar_end)bbSetHex('sidebar_end',p.sidebar_end);}catch(e){}};
-window.bbSavePreset=function(){var n=prompt('Name for this preset:','My Theme');if(!n||!n.trim())return;document.getElementById('bbp-pname').value=n.trim();document.getElementById('bbp-save-form').submit();};
-window.bbDelPreset=function(pfx,pid,name){if(!confirm('Delete preset "'+name+'"?'))return;fetch(pfx+'/admin/themes/'+pid,{method:'DELETE'}).then(function(r){if(r.ok){var el=document.getElementById('bbpsaved-'+pid);if(el)el.remove();}});};
-window.bbApplyDistrict=function(pfx){if(!confirm('Apply this branding to ALL schools in the district?\n\nEach school\'s individual branding will be overwritten.'))return;fetch(pfx+'/admin/themes/apply-district',{method:'POST'}).then(function(r){return r.json();}).then(function(d){if(d&&d.ok){var el=document.getElementById('bbp-district-msg');if(el){el.textContent='Applied to '+d.updated+' school(s).';el.style.display='';}alert('Theme applied to '+d.updated+' school(s).');}});};
-window.bbApplyExtracted=function(){var el=document.getElementById('bbp-ext-data');if(!el)return;try{var d=JSON.parse(el.dataset.colors);if(d.accent)bbSetHex('accent',d.accent);if(d.accent_strong)bbSetHex('accent_strong',d.accent_strong);if(d.sidebar_start)bbSetHex('sidebar_start',d.sidebar_start);if(d.sidebar_end)bbSetHex('sidebar_end',d.sidebar_end);var bn=document.getElementById('bbp-ext-banner');if(bn)bn.style.display='none';}catch(e){}};
-window.bbDismissExtracted=function(){var bn=document.getElementById('bbp-ext-banner');if(bn)bn.style.display='none';};
-document.addEventListener('DOMContentLoaded',function(){
-  ['accent','accent_strong','sidebar_start','sidebar_end'].forEach(function(id){
-    var hi=_hi(id);if(hi&&vhex(hi.value))_syncSl(id,hi.value);
-    if(hi)hi.addEventListener('input',function(){bbHexIn(id);});
-  });
-  _syncPrev();bbTab('web');
-  document.addEventListener('click',function(e){if(!e.target.closest('.bbp-field'))document.querySelectorAll('.bbp-panel').forEach(function(p){p.style.display='none';});});
-});
-})();
-</script>"""
-
-
-_BRANDING_PALETTE = [
-    "#1E3A8A","#2563EB","#0891B2","#0D9488","#16A34A","#CA8A04",
-    "#DC2626","#9F1239","#7C3AED","#475569","#111827","#F9FAFB",
-]
-
-_GLOBAL_PRESETS = [
-    {"id":"_g1","name":"BlueBird Classic","accent":"#1b5fe4","accent_strong":"#2f84ff","sidebar_start":"#092054","sidebar_end":"#071536"},
-    {"id":"_g2","name":"Forest","accent":"#15803d","accent_strong":"#22c55e","sidebar_start":"#064e3b","sidebar_end":"#022c22"},
-    {"id":"_g3","name":"Crimson","accent":"#9f1239","accent_strong":"#e11d48","sidebar_start":"#4c0519","sidebar_end":"#2d0312"},
-    {"id":"_g4","name":"Slate","accent":"#475569","accent_strong":"#64748b","sidebar_start":"#1e293b","sidebar_end":"#0f172a"},
-    {"id":"_g5","name":"Amber","accent":"#b45309","accent_strong":"#f59e0b","sidebar_start":"#451a03","sidebar_end":"#27150a"},
-    {"id":"_g6","name":"Violet","accent":"#5b21b6","accent_strong":"#8b5cf6","sidebar_start":"#2e1065","sidebar_end":"#1a0845"},
-]
-
-
-def _bbp_field(field_id: str, label: str, val: str, default: str) -> str:
-    html_id = "s-" + field_id.replace("_", "-")
-    safe_val = escape(val or default)
-    palette_html = "".join(
-        f'<div class="bbp-pal-sw" style="background:{c};" title="{c}" '
-        f'onclick="bbSetHex(\'{field_id}\',\'{c}\')"></div>'
-        for c in _BRANDING_PALETTE
-    )
-    return (
-        f'<div class="bbp-field" id="bbwrap-{field_id}">'
-        f'<span class="bbp-label">{label}</span>'
-        f'<div class="bbp-row">'
-        f'<div class="bbp-swatch-big" id="bbs-{field_id}" style="background:{safe_val};" onclick="bbToggle(\'{field_id}\')"></div>'
-        f'<input id="{html_id}" name="{field_id}" type="text" value="{safe_val}" placeholder="{escape(default)}" maxlength="7" class="bbp-hex" />'
-        f'<button type="button" class="bbp-chevron" onclick="bbToggle(\'{field_id}\')">▾</button>'
-        f'</div>'
-        f'<div class="bbp-panel" id="bbpanel-{field_id}" style="display:none;">'
-        f'<div class="bbp-palette">{palette_html}</div>'
-        f'<div class="bbp-sliders">'
-        f'<div class="bbp-slider-row"><span>H</span>'
-        f'<div class="bbp-hue-rail"><input type="range" min="0" max="360" value="220" id="bbhue-{field_id}" oninput="bbHueIn(\'{field_id}\',this.value)"/></div></div>'
-        f'<div class="bbp-slider-row"><span>S</span>'
-        f'<input type="range" min="0" max="100" value="70" id="bbsat-{field_id}" class="bbp-sl" oninput="bbSatIn(\'{field_id}\',this.value)"/></div>'
-        f'<div class="bbp-slider-row"><span>L</span>'
-        f'<input type="range" min="5" max="95" value="50" id="bblit-{field_id}" class="bbp-sl" oninput="bbLitIn(\'{field_id}\',this.value)"/></div>'
-        f'</div>'
-        f'</div>'
-        f'</div>'
-    )
-
-
-def _bbp_saved_opt(p: Mapping[str, object]) -> str:
-    import json as _json
-    pdata = escape(_json.dumps({"accent": str(p.get("accent", "")), "accent_strong": str(p.get("accent_strong", "")), "sidebar_start": str(p.get("sidebar_start", "")), "sidebar_end": str(p.get("sidebar_end", ""))}, separators=(",", ":")))
-    return f'<option value="{pdata}" id="bbopt-{p["id"]}">{escape(str(p.get("name", "")))}</option>'
-
-
-def _bbp_saved_list(prefix: str, presets: Sequence[Mapping[str, object]]) -> str:
-    user_presets = [p for p in presets if not p.get("is_global")]
-    if not user_presets:
-        return ""
-    items = "".join(
-        f'<div class="bbp-saved-item" id="bbpsaved-{p["id"]}">'
-        f'<div class="bbp-saved-swatches">'
-        f'<div class="bbp-saved-sw" style="background:{escape(str(p.get("accent","") or "#1b5fe4"))};" title="Accent"></div>'
-        f'<div class="bbp-saved-sw" style="background:{escape(str(p.get("sidebar_start","") or "#092054"))};" title="Sidebar"></div>'
-        f'</div>'
-        f'<span style="flex:1;font-size:.82rem;">{escape(str(p.get("name", "")))}</span>'
-        f'<button type="button" class="button button-secondary" style="font-size:.72rem;padding:3px 10px;" '
-        f'onclick="bbSetHex(\'accent\',\'{escape(str(p.get("accent","") or ""))}\');bbSetHex(\'accent_strong\',\'{escape(str(p.get("accent_strong","") or ""))}\');bbSetHex(\'sidebar_start\',\'{escape(str(p.get("sidebar_start","") or ""))}\');bbSetHex(\'sidebar_end\',\'{escape(str(p.get("sidebar_end","") or ""))}\')">Load</button>'
-        f'<button type="button" class="button button-danger-outline" style="font-size:.72rem;padding:3px 8px;" '
-        f'onclick="bbDelPreset(\'{escape(prefix)}\',{int(p["id"])},{escape(repr(str(p.get("name","")))) })">×</button>'
-        f'</div>'
-        for p in user_presets
-    )
-    return f'<div class="bbp-saved-list" style="margin-bottom:20px;">{items}</div>'
-
-
-def _bbp_extracted_banner(prefix: str, extracted: Optional[dict]) -> str:
-    if not extracted:
-        return ""
-    import json as _json
-    colors_json = escape(_json.dumps(extracted, separators=(",", ":")))
-    ac = escape(str(extracted.get("accent", "") or ""))
-    ss = escape(str(extracted.get("sidebar_start", "") or ""))
-    return (
-        f'<div class="bbp-extracted-banner" id="bbp-ext-banner">'
-        f'<div id="bbp-ext-data" data-colors="{colors_json}" style="display:none;"></div>'
-        f'<div style="display:flex;gap:8px;flex-shrink:0;">'
-        f'<div style="width:28px;height:28px;border-radius:6px;background:{ac};border:2px solid rgba(0,0,0,.1);"></div>'
-        f'<div style="width:28px;height:28px;border-radius:6px;background:{ss};border:2px solid rgba(0,0,0,.1);"></div>'
-        f'</div>'
-        f'<div style="flex:1;">'
-        f'<p style="margin:0 0 2px;font-weight:700;font-size:.85rem;">🎨 Colors generated from your logo</p>'
-        f'<p style="margin:0;font-size:.8rem;color:var(--muted);">Apply these extracted colors to the form below — you can still adjust them before saving.</p>'
-        f'</div>'
-        f'<div style="display:flex;gap:8px;flex-shrink:0;">'
-        f'<button type="button" class="button button-primary" onclick="bbApplyExtracted()" style="font-size:.8rem;">Apply colors</button>'
-        f'<button type="button" class="button button-secondary" onclick="bbDismissExtracted()" style="font-size:.8rem;">Dismiss</button>'
-        f'</div>'
-        f'</div>'
-    )
-
-
-def _bbp_version_history_html(prefix: str, theme_versions: list) -> str:
-    """Render the theme version history section for the branding settings panel."""
-    if not theme_versions:
-        inner = '<p style="color:var(--muted);font-size:.85rem;">No saved versions yet. Versions are created automatically when you save colors.</p>'
-    else:
-        rows = []
-        for v in theme_versions:
-            ts = str(v.get("created_at", "") or "")[:16].replace("T", " ")
-            ver_num = v.get("version_num", "")
-            created_by = escape(str(v.get("created_by", "") or "—"))
-            notes_html = ""
-            if v.get("notes"):
-                notes_html = '<em style="font-size:.75rem;color:var(--muted);">' + escape(str(v["notes"])) + "</em>"
-            swatches = "".join(
-                '<span title="' + k + '" style="display:inline-block;width:14px;height:14px;'
-                'border-radius:3px;border:1px solid rgba(0,0,0,.15);background:'
-                + escape(str(v.get(k, "") or "#cccccc"))
-                + ';"></span>'
-                for k in ["accent", "accent_strong", "sidebar_start", "sidebar_end"]
-            )
-            vid = int(v.get("id", 0))
-            btn = (
-                '<button type="button" class="button button-secondary"'
-                ' style="min-height:28px;padding:0 10px;font-size:.78rem;"'
-                ' onclick="bbRollback(' + repr(prefix) + ',' + str(vid) + ',' + repr(str(ver_num)) + ')">Restore</button>'
-            )
-            rows.append(
-                '<div style="display:flex;align-items:center;gap:10px;background:var(--bg-offset,#f8fafc);'
-                'border:1px solid var(--border);border-radius:8px;padding:9px 12px;font-size:.82rem;">'
-                '<span style="color:var(--muted);min-width:100px;">' + escape(ts) + "</span>"
-                '<span style="font-weight:600;color:var(--muted);min-width:32px;">v' + str(ver_num) + "</span>"
-                '<span style="display:flex;gap:4px;flex-shrink:0;">' + swatches + "</span>"
-                '<span style="flex:1;color:var(--muted);">' + created_by + "</span>"
-                + notes_html
-                + btn
-                + "</div>"
-            )
-        inner = "".join(rows)
-    return (
-        '<div style="margin-top:24px;padding-top:20px;border-top:1px solid var(--border);">'
-        '<p class="eyebrow" style="margin-bottom:8px;">Theme Version History</p>'
-        '<p class="card-copy" style="margin-bottom:12px;">Each color save creates an immutable snapshot. '
-        "Roll back to any previous version — rollback creates a new entry in history.</p>"
-        '<div style="display:flex;flex-direction:column;gap:8px;" id="bbp-version-list">'
-        + inner
-        + "</div></div>"
-    )
 
 
 def _render_settings_panels(
@@ -3647,22 +3492,8 @@ def _render_settings_panels(
     school_name: str,
     school_slug: str,
     settings_history: Sequence[SettingsChangeRecord],
-    school_logo_url: Optional[str],
-    theme: Optional[Mapping[str, str]],
     _section_style,
-    theme_presets: list = [],
-    extracted_theme_colors: Optional[dict] = None,
-    admin_role: str = "",
-    has_district: bool = False,
-    brand_locked: bool = False,
-    theme_versions: list = [],
 ) -> str:
-    # ── School Info ──────────────────────────────────────────────────────────
-    logo_preview = (
-        f'<img src="{escape(school_logo_url)}" alt="Current logo" '
-        f'style="max-height:60px;max-width:180px;border-radius:8px;border:1px solid var(--border);margin-bottom:12px;display:block;" />'
-    ) if school_logo_url else ""
-
     # ── Change History ───────────────────────────────────────────────────────
     if settings_history:
         history_rows = ""
@@ -3701,68 +3532,14 @@ def _render_settings_panels(
     else:
         history_html = '<p class="card-copy">No settings changes recorded yet.</p>'
 
-    # ── Current theme values for color form placeholders ─────────────────────
-    t_accent         = escape(str((theme or {}).get("accent", "") or ""))
-    t_accent_strong  = escape(str((theme or {}).get("accent_strong", "") or ""))
-    t_sidebar_start  = escape(str((theme or {}).get("sidebar_start", "") or ""))
-    t_sidebar_end    = escape(str((theme or {}).get("sidebar_end", "") or ""))
-
-    _preview_logo_img = (
-        '<img src="' + escape(school_logo_url) + '" style="width:100%;height:100%;object-fit:cover;" />'
-        if school_logo_url
-        else '<div style="width:20px;height:20px;border-radius:50%;background:rgba(255,255,255,0.3);"></div>'
-    )
-    _remove_logo_btn = (
-        '<a href="' + prefix + '/admin/settings/logo/remove"'
-        ' class="button button-secondary"'
-        " onclick=\"return confirm('Remove the current logo?');\">Remove logo</a>"
-        if school_logo_url else ""
-    )
     hidden = _section_style("settings")
-
-    _brand_lock_banner = (
-        '<div style="background:linear-gradient(90deg,#fef2f2,#fee2e2);border:1px solid #fca5a5;border-radius:10px;'
-        'padding:14px 18px;margin-bottom:20px;display:flex;align-items:center;gap:14px;">'
-        '<span style="font-size:1.4rem;">\U0001f512</span>'
-        "<div>"
-        '<p style="margin:0;font-weight:700;color:#b91c1c;font-size:.95rem;">Brand Lock Active</p>'
-        "<p style=\"margin:4px 0 0;font-size:.82rem;color:#7f1d1d;\">This district's branding is locked by a super admin. "
-        "Colors are controlled at the district level and cannot be changed here.</p>"
-        "</div></div>"
-    ) if brand_locked else ""
-
-    _district_branding_push = ""
-    if has_district and admin_role in ("district_admin", "super_admin"):
-        _confirm_msg = "Apply this school's colors to ALL schools in the district? This will overwrite their individual branding."
-        _district_branding_push = (
-            '<div style="margin-top:24px;padding-top:20px;border-top:1px solid var(--border);">'
-            '<p class="eyebrow" style="margin-bottom:8px;">District Branding</p>'
-            "<p class=\"card-copy\" style=\"margin-bottom:12px;\">Push this school's current branding to all schools in the district. "
-            "Each school's individual settings will be overwritten.</p>"
-            f'<button type="button" class="button button-secondary"'
-            f" onclick=\"if(confirm('{_confirm_msg.replace(chr(39), chr(39))}')){{bbApplyDistrict('{prefix}')}}\">"
-            "Apply to all schools in district</button>"
-            '<span id="bbp-district-msg" style="display:none;margin-left:12px;color:var(--color-ok,#22c55e);font-size:.85rem;"></span>'
-            "</div>"
-        )
-
-    _builtin_preset_opts = "".join(
-        '<option value="'
-        + escape(
-            str({"accent": p["accent"], "accent_strong": p["accent_strong"], "sidebar_start": p["sidebar_start"], "sidebar_end": p["sidebar_end"]}).replace("'", "&#39;")
-        )
-        + '">'
-        + escape(str(p.get("name", "")))
-        + "</option>"
-        for p in _GLOBAL_PRESETS
-    )
     return f"""
         <section class="panel command-section" id="school-info"{hidden}>
           <div class="panel-header">
             <div>
               <p class="eyebrow">School Settings</p>
               <h2>School information</h2>
-              <p class="card-copy">Update your school's display name and logo. The school ID (slug) is permanent and cannot be changed here.</p>
+              <p class="card-copy">Update your school's display name. The school ID (slug) is permanent and cannot be changed here.</p>
             </div>
           </div>
           <div class="stack" style="max-width:520px;">
@@ -3776,162 +3553,7 @@ def _render_settings_panels(
               </div>
               <button type="submit" class="button button-primary">Save name</button>
             </form>
-
-            <hr style="border:none;border-top:1px solid var(--border);margin:20px 0;" />
-
-            <form method="post" action="{prefix}/admin/settings/logo" enctype="multipart/form-data">
-              <p class="eyebrow" style="margin-bottom:8px;">School logo</p>
-              {logo_preview}
-              <div class="field" style="margin-bottom:12px;">
-                <label for="settings-logo">Upload logo (PNG, JPG, SVG — max 2 MB)</label>
-                <input id="settings-logo" name="logo" type="file" accept="image/png,image/jpeg,image/svg+xml,image/webp"
-                       style="padding:10px 0;background:none;border:none;" />
-              </div>
-              <div class="button-row">
-                <button type="submit" class="button button-primary">Upload logo</button>
-                {_remove_logo_btn}
-              </div>
-            </form>
           </div>
-        </section>
-
-        <section class="panel command-section" id="theme-settings"{hidden}>
-          {_BRANDING_CSS}
-          <div class="panel-header" style="margin-bottom:20px;">
-            <div>
-              <p class="eyebrow">School Settings</p>
-              <h2>Branding &amp; Theme</h2>
-              <p class="card-copy">Customize brand colors, save presets, and preview changes live across web and mobile before saving.</p>
-            </div>
-          </div>
-
-          {_brand_lock_banner}
-
-          {_bbp_extracted_banner(prefix, extracted_theme_colors)}
-
-          <!-- Preset toolbar -->
-          <div class="bbp-preset-bar">
-            <select id="bbp-sel" style="flex:1;min-width:140px;max-width:220px;">
-              <option value="">Select a theme preset…</option>
-              <optgroup label="Built-in themes">{_builtin_preset_opts}</optgroup>
-              {f'<optgroup label="Saved presets">{"".join(_bbp_saved_opt(p) for p in theme_presets if not p.get("is_global"))}</optgroup>' if theme_presets else ""}
-            </select>
-            <button type="button" class="button button-secondary" onclick="bbLoadPreset()">Load</button>
-            <span style="width:1px;background:var(--border);align-self:stretch;margin:0 4px;"></span>
-            <button type="button" class="button button-secondary" onclick="bbSavePreset()">Save current as preset</button>
-            <form id="bbp-save-form" method="post" action="{prefix}/admin/themes/save" style="display:none;">
-              <input type="hidden" name="preset_name" id="bbp-pname" />
-            </form>
-          </div>
-
-          {_bbp_saved_list(prefix, theme_presets)}
-
-          <!-- Main grid: pickers | preview -->
-          <div style="display:grid;grid-template-columns:minmax(0,1fr) 236px;gap:32px;align-items:start;">
-            <form method="post" action="{prefix}/admin/settings/colors" id="bbp-colors-form" {'style="pointer-events:none;opacity:.5;" aria-disabled="true"' if brand_locked and admin_role != "super_admin" else ""}>
-              {_bbp_field("accent", "Primary / accent color", t_accent, "#1b5fe4")}
-              {_bbp_field("accent_strong", "Accent strong — button hover", t_accent_strong, "#2f84ff")}
-              {_bbp_field("sidebar_start", "Sidebar gradient start", t_sidebar_start, "#092054")}
-              {_bbp_field("sidebar_end", "Sidebar gradient end", t_sidebar_end, "#071536")}
-              <div class="button-row" style="margin-top:8px;">
-                <button type="submit" class="button button-primary">Save colors</button>
-                <button type="reset" class="button button-secondary">Reset</button>
-              </div>
-              <div class="bbp-contrast" id="bbp-contrast" style="margin-top:12px;"></div>
-            </form>
-
-            <!-- Live preview -->
-            <div class="bbp-preview-wrap">
-              <div class="bbp-tabs">
-                <button class="bbp-tab active" id="bptab-web" onclick="bbTab('web')" type="button">Web</button>
-                <button class="bbp-tab" id="bptab-ios" onclick="bbTab('ios')" type="button">iPhone</button>
-                <button class="bbp-tab" id="bptab-android" onclick="bbTab('android')" type="button">Android</button>
-              </div>
-
-              <!-- Web preview -->
-              <div id="bppv-web">
-                <div id="bp-sidebar-preview" style="border-radius:16px;overflow:hidden;position:relative;background:linear-gradient(180deg,{t_sidebar_start or "#092054"} 0%,{t_sidebar_end or "#071536"} 100%);padding:16px;box-shadow:0 8px 24px rgba(0,0,0,.28);">
-                  <div id="bp-preview-glow" style="position:absolute;inset:0;pointer-events:none;background:radial-gradient(circle at top left,{t_accent or "#1b5fe4"}28,transparent 60%);"></div>
-                  <div style="display:flex;gap:10px;align-items:center;margin-bottom:12px;">
-                    <div style="width:34px;height:34px;border-radius:9px;overflow:hidden;background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.18);flex:0 0 auto;display:grid;place-items:center;">
-                      {_preview_logo_img}
-                    </div>
-                    <div>
-                      <p style="margin:0;font-size:.6rem;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:rgba(255,255,255,.5);">BlueBird Alerts</p>
-                      <p style="margin:0;font-size:.8rem;font-weight:700;color:rgba(255,255,255,.92);">Safety Ops</p>
-                    </div>
-                  </div>
-                  <div style="display:grid;gap:5px;margin-bottom:12px;">
-                    {"".join(f'<div style="background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.1);border-radius:9px;padding:7px 11px;font-size:.75rem;color:rgba(255,255,255,.88);">{item}</div>' for item in ["Dashboard","Users","Settings"])}
-                  </div>
-                  <div id="bp-preview-btn" style="height:30px;border-radius:7px;display:grid;place-items:center;background:{t_accent or "#1b5fe4"};font-size:.73rem;font-weight:700;color:#fff;">Sample button</div>
-                </div>
-              </div>
-
-              <!-- iOS preview -->
-              <div id="bppv-ios" style="display:none;">
-                <div class="bbp-phone">
-                  <div class="bbp-phone-screen">
-                    <div class="bbp-phone-notch"><div class="bbp-phone-notch-pill"></div></div>
-                    <div class="bbp-phone-bar" id="bp-mob-bar" style="background:linear-gradient(135deg,{t_sidebar_start or "#092054"},{t_sidebar_end or "#071536"});">
-                      <div style="width:28px;height:28px;border-radius:7px;background:rgba(255,255,255,.15);display:grid;place-items:center;">{_preview_logo_img}</div>
-                      <div>
-                        <p style="margin:0;font-size:.52rem;color:rgba(255,255,255,.6);font-weight:600;text-transform:uppercase;letter-spacing:.06em;">BlueBird</p>
-                        <p style="margin:0;font-size:.7rem;color:#fff;font-weight:700;">Safety Alert</p>
-                      </div>
-                    </div>
-                    <div class="bbp-phone-content">
-                      <div style="background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:10px;margin-bottom:8px;box-shadow:0 1px 4px rgba(0,0,0,.06);">
-                        <p style="margin:0 0 4px;font-size:.65rem;font-weight:700;color:#111;">Emergency Alert</p>
-                        <p style="margin:0 0 8px;font-size:.6rem;color:#6b7280;">All clear — no active alerts</p>
-                        <div id="bp-mob-alert" style="height:24px;border-radius:6px;background:{t_accent or "#1b5fe4"};display:grid;place-items:center;font-size:.58rem;font-weight:700;color:#fff;">Acknowledge</div>
-                      </div>
-                      <div style="display:flex;gap:6px;">
-                        <div id="bp-mob-badge" style="flex:1;background:{t_accent_strong or "#2f84ff"};border-radius:8px;height:28px;display:grid;place-items:center;font-size:.58rem;color:#fff;font-weight:600;">Active</div>
-                        <div style="flex:1;background:#f3f4f6;border-radius:8px;height:28px;display:grid;place-items:center;font-size:.58rem;color:#374151;font-weight:600;">History</div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <!-- Android preview -->
-              <div id="bppv-android" style="display:none;">
-                <div class="bbp-phone">
-                  <div class="bbp-phone-screen">
-                    <div class="bbp-android-bar" id="bp-mob-bar-and" style="background:linear-gradient(135deg,{t_sidebar_start or "#092054"},{t_sidebar_end or "#071536"});">
-                      <div style="width:28px;height:28px;border-radius:50%;background:rgba(255,255,255,.15);display:grid;place-items:center;margin-right:8px;">{_preview_logo_img}</div>
-                      <div>
-                        <p style="margin:0;font-size:.72rem;color:#fff;font-weight:700;letter-spacing:.01em;">BlueBird Alerts</p>
-                        <p style="margin:0;font-size:.58rem;color:rgba(255,255,255,.7);">Safety dashboard</p>
-                      </div>
-                    </div>
-                    <div style="padding:10px;background:#f8fafc;min-height:80px;">
-                      <div style="background:#fff;border-radius:8px;padding:8px 10px;margin-bottom:6px;box-shadow:0 1px 3px rgba(0,0,0,.08);">
-                        <p style="margin:0 0 4px;font-size:.63rem;font-weight:700;color:#111;">Status: All Clear</p>
-                        <div style="height:20px;border-radius:4px;background:{t_accent or "#1b5fe4"};display:grid;place-items:center;font-size:.55rem;font-weight:700;color:#fff;">VIEW ALERTS</div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {_district_branding_push}
-
-          {_bbp_version_history_html(prefix, theme_versions)}
-
-          {_BRANDING_JS}
-          <script>
-          function bbRollback(prefix,versionId,versionNum){{
-            if(!confirm('Restore theme to v'+versionNum+'? This will apply those colors and create a new history entry.'))return;
-            fetch(prefix+'/admin/themes/history/'+versionId+'/rollback',{{method:'POST',headers:{{'X-Requested-With':'XMLHttpRequest'}}}})
-              .then(function(r){{return r.json();}})
-              .then(function(d){{if(d.ok){{location.reload();}}else{{alert('Rollback failed');}};}})
-              .catch(function(){{alert('Network error');}});
-          }}
-          </script>
         </section>
 
         <section class="panel command-section" id="settings-history"{hidden}>
@@ -3954,7 +3576,6 @@ def render_admin_page(
     selected_tenant_slug: str,
     selected_tenant_name: str,
     tenant_options: Sequence[Mapping[str, str]],
-    theme: Optional[Mapping[str, str]],
     current_user: UserRecord,
     users: Sequence[UserRecord],
     user_tenant_assignments: Mapping[int, Sequence[str]],
@@ -3993,12 +3614,7 @@ def render_admin_page(
     access_code_records: Sequence[object] = (),
     base_domain: str = "app.bluebirdalerts.com",
     settings_history: Sequence[SettingsChangeRecord] = (),
-    school_logo_url: Optional[str] = None,
-    theme_presets: Sequence[Mapping[str, object]] = (),
-    extracted_theme_colors: Optional[Mapping[str, str]] = None,
     school_district_id: Optional[int] = None,
-    brand_locked: bool = False,
-    theme_versions: Sequence[Mapping[str, object]] = (),
     active_sessions: Sequence[object] = (),
     sessions_users_by_id: Mapping[int, object] = {},
 ) -> str:
@@ -4273,9 +3889,9 @@ def render_admin_page(
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>BlueBird Admin</title>
-  {_favicon_tags(school_logo_url)}
+  {_favicon_tags()}
   {refresh_meta}
-  <style>{_base_styles(theme)}</style>
+  <style>{_base_styles()}</style>
   <script>
   document.addEventListener('DOMContentLoaded', function() {{
     // Training mode warning — show a red banner when training is unchecked
@@ -4711,7 +4327,7 @@ def render_admin_page(
     <div class="app-shell">
       <aside class="sidebar nav-panel">
         <section class="brand-block">
-          {_brand_mark(school_logo_url)}
+          {_brand_mark()}
           <div class="stack brand-text">
             <p class="eyebrow">BlueBird Alerts</p>
             <h2>Safety operations</h2>
@@ -4739,6 +4355,7 @@ def render_admin_page(
           <div class="shell-actions">
             <p class="signal-copy">Manage people, alerts, readiness, and response from one school operations console.</p>
             {super_admin_shell_action_html}
+            <button class="theme-toggle-btn" onclick="bbToggleTheme()" id="bb-theme-btn" type="button">&#9790; Dark mode</button>
             <form method="post" action="{prefix}/admin/logout">
             <button class="button button-secondary" type="submit">Log out</button>
           </form>
@@ -4784,7 +4401,7 @@ def render_admin_page(
           </div>
         </section>
 
-        {_render_settings_panels(prefix, school_name, school_slug, settings_history, school_logo_url, theme, _section_style, theme_presets=list(theme_presets), extracted_theme_colors=dict(extracted_theme_colors) if extracted_theme_colors else None, admin_role=str(getattr(current_user, "role", "") or ""), has_district=school_district_id is not None, brand_locked=brand_locked, theme_versions=list(theme_versions))}
+        {_render_settings_panels(prefix, school_name, school_slug, settings_history, _section_style)}
 
         <section class="panel command-section" id="security"{_section_style("settings")}>
           <div class="panel-header">
@@ -5439,5 +5056,28 @@ def render_admin_page(
       </section>
     </div>
   </main>
+  <script>
+  (function() {{
+    var THEME_KEY = 'bb_theme';
+    var html = document.documentElement;
+    function applyTheme(dark) {{
+      if (dark) {{ html.setAttribute('data-theme', 'dark'); }}
+      else {{ html.removeAttribute('data-theme'); }}
+      var btn = document.getElementById('bb-theme-btn');
+      if (btn) {{ btn.textContent = dark ? '☀ Light mode' : '☾ Dark mode'; }}
+    }}
+    function bbToggleTheme() {{
+      var dark = html.getAttribute('data-theme') === 'dark';
+      localStorage.setItem(THEME_KEY, dark ? 'light' : 'dark');
+      applyTheme(!dark);
+    }}
+    window.bbToggleTheme = bbToggleTheme;
+    var saved = localStorage.getItem(THEME_KEY);
+    if (!saved) {{
+      saved = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    }}
+    applyTheme(saved === 'dark');
+  }})();
+  </script>
 </body>
 </html>"""

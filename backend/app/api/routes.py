@@ -374,7 +374,7 @@ def _admin_section(value: Optional[str]) -> str:
 
 def _super_admin_section(value: Optional[str]) -> str:
     normalized = str(value or "").strip().lower()
-    if normalized in {"schools", "billing", "platform-audit", "create-school", "security", "configuration", "server-tools", "health", "email-tool", "setup-codes", "noc", "msp", "platform-control"}:
+    if normalized in {"schools", "billing", "platform-audit", "create-school", "security", "configuration", "server-tools", "health", "email-tool", "setup-codes", "noc", "msp", "platform-control", "sandbox"}:
         return normalized
     return "schools"
 
@@ -429,93 +429,6 @@ def _get_selected_tenant_slug(request: Request) -> Optional[str]:
 
 def _set_selected_tenant_slug(request: Request, slug: str) -> None:
     request.session[_selected_tenant_slug_session_key(request)] = slug.strip().lower()
-
-
-def _school_theme(school) -> dict[str, str]:
-    return {
-        "accent": getattr(school, "accent", None) or "",
-        "accent_strong": getattr(school, "accent_strong", None) or "",
-        "sidebar_start": getattr(school, "sidebar_start", None) or "",
-        "sidebar_end": getattr(school, "sidebar_end", None) or "",
-    }
-
-
-def _extract_logo_colors(image_data: bytes) -> Optional[dict[str, str]]:
-    """Extract dominant theme colors from image bytes using PIL. Returns None if unavailable."""
-    try:
-        import io as _io
-        import colorsys
-        from PIL import Image  # type: ignore[import]
-        img = Image.open(_io.BytesIO(image_data)).convert("RGB")
-        img.thumbnail((80, 80))
-        pixels = list(img.getdata())
-        # Filter to colorful pixels (saturation > 0.15) to avoid grays and whites
-        def _sat(r: int, g: int, b: int) -> float:
-            _, s, _ = colorsys.rgb_to_hsv(r / 255, g / 255, b / 255)
-            return s
-        colored = [(r, g, b) for r, g, b in pixels if _sat(r, g, b) > 0.15]
-        if not colored:
-            return None
-        colored.sort(key=lambda p: _sat(*p), reverse=True)
-        top = colored[: max(1, len(colored) // 5)]
-        ra = sum(p[0] for p in top) // len(top)
-        ga = sum(p[1] for p in top) // len(top)
-        ba = sum(p[2] for p in top) // len(top)
-        h, s, v = colorsys.rgb_to_hsv(ra / 255, ga / 255, ba / 255)
-        # Accent: the dominant saturated color
-        accent = f"#{ra:02x}{ga:02x}{ba:02x}"
-        # Accent strong: slightly brighter
-        r2, g2, b2 = colorsys.hsv_to_rgb(h, max(0.0, s - 0.08), min(1.0, v + 0.18))
-        accent_strong = f"#{int(r2 * 255):02x}{int(g2 * 255):02x}{int(b2 * 255):02x}"
-        # Sidebar start: dark, saturated version
-        r3, g3, b3 = colorsys.hsv_to_rgb(h, min(1.0, s + 0.15), max(0.08, v * 0.32))
-        sidebar_start = f"#{int(r3 * 255):02x}{int(g3 * 255):02x}{int(b3 * 255):02x}"
-        # Sidebar end: even darker
-        r4, g4, b4 = colorsys.hsv_to_rgb(h, min(1.0, s + 0.2), max(0.04, v * 0.18))
-        sidebar_end = f"#{int(r4 * 255):02x}{int(g4 * 255):02x}{int(b4 * 255):02x}"
-        return {
-            "accent": accent, "accent_strong": accent_strong,
-            "sidebar_start": sidebar_start, "sidebar_end": sidebar_end,
-        }
-    except Exception:
-        return None
-
-
-async def _resolve_effective_branding(school, school_registry: "SchoolRegistry") -> dict:
-    """
-    Cascade: school colors/logo → district colors/logo → empty (defaults apply in CSS).
-    When brand_lock_enabled on the district, school-level colors are suppressed and district
-    branding is authoritative. Returns dict with keys: accent, accent_strong, sidebar_start,
-    sidebar_end, logo_url, brand_locked (bool).
-    """
-    school_theme = _school_theme(school)
-    school_logo = getattr(school, "logo_path", None) or None
-
-    district_id = getattr(school, "district_id", None)
-    if district_id is not None:
-        district = await school_registry.get_district(int(district_id))
-        if district is not None:
-            district_theme = {
-                "accent":        getattr(district, "accent", None) or "",
-                "accent_strong": getattr(district, "accent_strong", None) or "",
-                "sidebar_start": getattr(district, "sidebar_start", None) or "",
-                "sidebar_end":   getattr(district, "sidebar_end", None) or "",
-            }
-            district_logo = getattr(district, "logo_path", None) or None
-            brand_locked = bool(getattr(district, "brand_lock_enabled", False))
-            if brand_locked:
-                # District branding is authoritative — school colors are suppressed.
-                return {**district_theme, "logo_url": school_logo or district_logo, "brand_locked": True}
-            if any(v for v in school_theme.values()):
-                return {**school_theme, "logo_url": school_logo, "brand_locked": False}
-            if any(v for v in district_theme.values()) or district_logo:
-                return {**district_theme, "logo_url": school_logo or district_logo, "brand_locked": False}
-
-    # If the school has any color set, it wins completely.
-    if any(v for v in school_theme.values()):
-        return {**school_theme, "logo_url": school_logo, "brand_locked": False}
-
-    return {**school_theme, "logo_url": school_logo, "brand_locked": False}
 
 
 def _tenant(req: Request):
@@ -1268,6 +1181,21 @@ async def _push_tokens_for_scope(
     return apns_tokens, fcm_tokens
 
 
+def _is_simulation_mode(request: Request) -> bool:
+    """True ONLY when the current tenant is an is_test=True school with simulation_mode_enabled.
+
+    Defense in depth: both flags must be set. simulation_mode_enabled alone is
+    NOT sufficient — if somehow set on a production school (is_test=False), this
+    returns False and real push continues normally.
+    """
+    school = getattr(request.state, "school", None)
+    if school is None:
+        return False
+    if not getattr(school, "is_test", False):
+        return False
+    return bool(getattr(school, "simulation_mode_enabled", False))
+
+
 async def _send_basic_push(
     request: Request,
     *,
@@ -1550,63 +1478,47 @@ async def list_schools(request: Request) -> SchoolsCatalogResponse:
     )
 
 
+_DEFAULT_BRANDING = {
+    "accent": "#1b5fe4",
+    "accent_strong": "#2f84ff",
+    "sidebar_start": "#092054",
+    "sidebar_end": "#071536",
+}
+
+
 @router.get("/{slug}/branding", include_in_schema=False)
 async def get_school_branding(slug: str, request: Request) -> JSONResponse:
-    """
-    Public endpoint — no auth required. Returns effective branding tokens for a school
-    (cascading district → school → defaults). Mobile apps call this on login to apply
-    DSBranding.apply(primary, accent) and display the school logo.
-    """
+    """Public endpoint — returns fixed BlueBird defaults. Kept for mobile client compatibility."""
     from app.services.tenant_manager import TenantManager
     tenant_manager: TenantManager = request.app.state.tenant_manager  # type: ignore[attr-defined]
     school = tenant_manager.school_for_slug(slug)
     if school is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="School not found")
-
-    branding = await _resolve_effective_branding(school, _schools(request))
-    base_url = str(getattr(request.app.state.settings, "BASE_URL", "") or "").rstrip("/")
-    logo_url = branding.get("logo_url")
-    if logo_url and not logo_url.startswith("http") and base_url:
-        logo_url = base_url + logo_url
-
     return JSONResponse({
         "slug": school.slug,
         "name": school.name,
-        "accent": branding.get("accent") or "#1b5fe4",
-        "accent_strong": branding.get("accent_strong") or "#2f84ff",
-        "sidebar_start": branding.get("sidebar_start") or "#092054",
-        "sidebar_end": branding.get("sidebar_end") or "#071536",
-        "logo_url": logo_url,
-        "has_custom_branding": bool(
-            branding.get("accent") or branding.get("logo_url")
-        ),
+        **_DEFAULT_BRANDING,
+        "logo_url": None,
+        "has_custom_branding": False,
     })
 
 
 @router.get("/{slug}/theme", include_in_schema=False)
 async def get_school_theme(slug: str, request: Request) -> JSONResponse:
-    """Public endpoint — identical to /{slug}/branding but named for mobile WS context."""
+    """Public endpoint — returns fixed BlueBird defaults. Kept for mobile client compatibility."""
     from app.services.tenant_manager import TenantManager
     tenant_manager: TenantManager = request.app.state.tenant_manager  # type: ignore[attr-defined]
     school = tenant_manager.school_for_slug(slug)
     if school is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="School not found")
-    branding = await _resolve_effective_branding(school, _schools(request))
-    base_url = str(getattr(request.app.state.settings, "BASE_URL", "") or "").rstrip("/")
-    logo_url = branding.get("logo_url")
-    if logo_url and not logo_url.startswith("http") and base_url:
-        logo_url = base_url + logo_url
     return JSONResponse({
         "type": "theme_updated",
         "slug": school.slug,
         "name": school.name,
-        "accent": branding.get("accent") or "#1b5fe4",
-        "accent_strong": branding.get("accent_strong") or "#2f84ff",
-        "sidebar_start": branding.get("sidebar_start") or "#092054",
-        "sidebar_end": branding.get("sidebar_end") or "#071536",
-        "logo_url": logo_url,
-        "brand_locked": bool(branding.get("brand_locked", False)),
-        "has_custom_branding": bool(branding.get("accent") or branding.get("logo_url")),
+        **_DEFAULT_BRANDING,
+        "logo_url": None,
+        "brand_locked": False,
+        "has_custom_branding": False,
     })
 
 
@@ -1860,7 +1772,8 @@ async def activate_alarm(
             triggered_by_user_id=triggered_by_user_id,
             silent_for_sender=True,
         )
-        background_tasks.add_task(_broadcaster(request).broadcast_panic, alert_id=alert_id, message=body.message, plan=plan)
+        if not _is_simulation_mode(request):
+            background_tasks.add_task(_broadcaster(request).broadcast_panic, alert_id=alert_id, message=body.message, plan=plan)
 
     logger.warning(
         "ALARM ACTIVATED tenant=%s alert_id=%s by_user=%s training=%s label=%r apns=%s fcm=%s sms_targets=%s skipped_users=%s message=%r",
@@ -2124,26 +2037,14 @@ async def admin_dashboard(
     _ws_home_tenant_slug = str(request.state.school.slug)
 
     _settings_history: list = []
-    _theme_presets: list = []
-    _theme_versions: list = []
-    _extracted_theme_colors: Optional[dict[str, str]] = None
     if selected_section == "settings":
-        _settings_history, _theme_presets, _theme_versions = await asyncio.gather(
-            _settings_store(request).get_history(limit=50),
-            _schools(request).list_theme_presets(str(request.state.school.slug)),
-            _schools(request).list_theme_versions(scope_type="school", scope_slug=str(request.state.school.slug), limit=15),
-        )
-        _extracted_theme_colors = request.session.pop("extracted_theme_colors", None)  # type: ignore[assignment]
+        _settings_history = await _settings_store(request).get_history(limit=50)
 
     _admin_role = str(getattr(request.state.admin_user, "role", "")).strip().lower()
     _access_code_records: list = []
     if can_generate_codes(_admin_role) and selected_section == "access-codes":
         _access_code_records = await _access_codes(request).list_codes(str(request.state.school.slug), limit=200)
     _base_domain = str(getattr(request.app.state.settings, "BASE_DOMAIN", "") or "app.bluebirdalerts.com").strip()
-    _effective_branding = await _resolve_effective_branding(request.state.school, _schools(request))
-    _effective_theme = {k: v for k, v in _effective_branding.items() if k not in ("logo_url", "brand_locked")}
-    _effective_logo_url = _effective_branding.get("logo_url") or None
-    _brand_locked = bool(_effective_branding.get("brand_locked", False))
 
     html = render_admin_page(
         school_name=request.state.school.name,
@@ -2152,7 +2053,6 @@ async def admin_dashboard(
         selected_tenant_slug=str(getattr(effective_school, "slug", request.state.school.slug)),
         selected_tenant_name=str(getattr(effective_school, "name", request.state.school.name)),
         tenant_options=[{"id": str(item.id), "slug": str(item.slug), "name": str(item.name)} for item in available_schools],
-        theme=_effective_theme,
         current_user=request.state.admin_user,  # type: ignore[attr-defined]
         alerts=alerts,
         devices=devices,
@@ -2203,12 +2103,7 @@ async def admin_dashboard(
         access_code_records=_access_code_records,
         base_domain=_base_domain,
         settings_history=_settings_history,
-        school_logo_url=_effective_logo_url,
-        theme_presets=_theme_presets,
-        extracted_theme_colors=_extracted_theme_colors,
         school_district_id=getattr(request.state.school, "district_id", None),
-        brand_locked=_brand_locked,
-        theme_versions=_theme_versions,
         active_sessions=_active_sessions,
         sessions_users_by_id=_sessions_users_by_id,
     )
@@ -2253,372 +2148,109 @@ async def admin_settings_update_name(
     return RedirectResponse(url=_school_url(request, "/admin?section=settings"), status_code=status.HTTP_303_SEE_OTHER)
 
 
-_LOGO_MAX_BYTES = 2 * 1024 * 1024  # 2 MB
-_LOGO_ALLOWED_TYPES = {"image/png", "image/jpeg", "image/svg+xml", "image/webp"}
-_LOGO_EXTENSIONS = {"image/png": ".png", "image/jpeg": ".jpg", "image/svg+xml": ".svg", "image/webp": ".webp"}
+# ── Super-admin JSON info endpoints (used by tests and sandbox UI) ─────────────
 
-
-@router.post("/admin/settings/logo", include_in_schema=False)
-async def admin_settings_upload_logo(
-    request: Request,
-    logo: UploadFile = File(...),
-) -> RedirectResponse:
-    await _require_dashboard_admin(request)
-
-    content_type = str(logo.content_type or "").lower().split(";")[0].strip()
-    if content_type not in _LOGO_ALLOWED_TYPES:
-        _set_flash(request, error="Unsupported file type. Use PNG, JPG, SVG, or WebP.")
-        return RedirectResponse(url=_school_url(request, "/admin?section=settings"), status_code=status.HTTP_303_SEE_OTHER)
-
-    data = await logo.read(_LOGO_MAX_BYTES + 1)
-    if len(data) > _LOGO_MAX_BYTES:
-        _set_flash(request, error="Logo file exceeds the 2 MB size limit.")
-        return RedirectResponse(url=_school_url(request, "/admin?section=settings"), status_code=status.HTTP_303_SEE_OTHER)
-
-    school = request.state.school
-    ext = _LOGO_EXTENSIONS.get(content_type, ".png")
-    logos_dir = os.path.join(os.path.dirname(__file__), "..", "static", "logos")
-    os.makedirs(logos_dir, exist_ok=True)
-    logo_filename = f"{school.slug}{ext}"
-    logo_file_path = os.path.join(logos_dir, logo_filename)
-    with open(logo_file_path, "wb") as f:
-        f.write(data)
-
-    logo_url = f"/static/logos/{logo_filename}"
-    old_logo = getattr(school, "logo_path", None)
-    updated = await _schools(request).update_logo_path(slug=str(school.slug), logo_path=logo_url)
-    if updated is None:
-        _set_flash(request, error="School not found.")
-        return RedirectResponse(url=_school_url(request, "/admin?section=settings"), status_code=status.HTTP_303_SEE_OTHER)
-
-    actor_label = str(getattr(request.state.admin_user, "name", "") or "")
-    await _settings_store(request).record_change(
-        field="logo",
-        old_value={"logo_path": old_logo or ""},
-        new_value={"logo_path": logo_url},
-        changed_by_label=actor_label or None,
-    )
-    await _audit_log_svc(request).log_event(
-        tenant_slug=str(school.slug),
-        event_type="settings.logo_uploaded",
-        actor_label=actor_label or None,
-        metadata={"logo_url": logo_url},
-    )
-    # Attempt PIL color extraction; store result in session for the settings page
-    extracted = _extract_logo_colors(data)
-    if extracted is not None:
-        request.session["extracted_theme_colors"] = extracted
-        await _audit_log_svc(request).log_event(
-            tenant_slug=str(school.slug),
-            event_type="theme.generated_from_logo",
-            actor_label=actor_label or None,
-            metadata={"logo_url": logo_url, "extracted": extracted},
-        )
-    _set_flash(request, message="Logo uploaded successfully.")
-    return RedirectResponse(url=_school_url(request, "/admin?section=settings"), status_code=status.HTTP_303_SEE_OTHER)
-
-
-@router.get("/admin/settings/logo/remove", include_in_schema=False)
-async def admin_settings_remove_logo(request: Request) -> RedirectResponse:
-    await _require_dashboard_admin(request)
-    school = request.state.school
-    old_logo = getattr(school, "logo_path", None)
-    await _schools(request).update_logo_path(slug=str(school.slug), logo_path=None)
-
-    actor_label = str(getattr(request.state.admin_user, "name", "") or "")
-    await _settings_store(request).record_change(
-        field="logo",
-        old_value={"logo_path": old_logo or ""},
-        new_value={"logo_path": ""},
-        changed_by_label=actor_label or None,
-    )
-    await _audit_log_svc(request).log_event(
-        tenant_slug=str(school.slug),
-        event_type="settings.logo_removed",
-        actor_label=actor_label or None,
-        metadata={"old_logo_path": old_logo or ""},
-    )
-    _set_flash(request, message="Logo removed.")
-    return RedirectResponse(url=_school_url(request, "/admin?section=settings"), status_code=status.HTTP_303_SEE_OTHER)
-
-
-@router.post("/admin/settings/colors", include_in_schema=False)
-async def admin_settings_update_colors(
-    request: Request,
-    accent: str = Form(default=""),
-    accent_strong: str = Form(default=""),
-    sidebar_start: str = Form(default=""),
-    sidebar_end: str = Form(default=""),
-) -> RedirectResponse:
-    await _require_dashboard_admin(request)
-
-    school = request.state.school
-    _admin_role = str(getattr(request.state.admin_user, "role", "")).strip().lower()
-
-    # Enforce brand lock — non-super-admins cannot override district branding when locked.
-    district_id = getattr(school, "district_id", None)
-    if district_id is not None and _admin_role != "super_admin":
-        _district = await _schools(request).get_district(int(district_id))
-        if _district is not None and getattr(_district, "brand_lock_enabled", False):
-            _set_flash(request, error="Brand lock is enabled for this district. Contact your super admin to change branding.")
-            return RedirectResponse(url=_school_url(request, "/admin?section=settings"), status_code=status.HTTP_303_SEE_OTHER)
-
-    old_theme = _school_theme(school)
-
-    new_accent = accent.strip() or None
-    new_accent_strong = accent_strong.strip() or None
-    new_sidebar_start = sidebar_start.strip() or None
-    new_sidebar_end = sidebar_end.strip() or None
-
-    updated = await _schools(request).update_theme(
-        slug=str(school.slug),
-        accent=new_accent,
-        accent_strong=new_accent_strong,
-        sidebar_start=new_sidebar_start,
-        sidebar_end=new_sidebar_end,
-    )
-    if updated is None:
-        _set_flash(request, error="School not found.")
-        return RedirectResponse(url=_school_url(request, "/admin?section=settings"), status_code=status.HTTP_303_SEE_OTHER)
-
-    actor_label = str(getattr(request.state.admin_user, "name", "") or "")
-    await _settings_store(request).record_change(
-        field="colors",
-        old_value=old_theme,
-        new_value={
-            "accent": new_accent or "",
-            "accent_strong": new_accent_strong or "",
-            "sidebar_start": new_sidebar_start or "",
-            "sidebar_end": new_sidebar_end or "",
-        },
-        changed_by_label=actor_label or None,
-    )
-    await _audit_log_svc(request).log_event(
-        tenant_slug=str(school.slug),
-        event_type="settings.colors_updated",
-        actor_label=actor_label or None,
-        metadata={"accent": new_accent, "accent_strong": new_accent_strong,
-                  "sidebar_start": new_sidebar_start, "sidebar_end": new_sidebar_end},
-    )
-    # Save immutable theme version snapshot.
-    await _schools(request).save_theme_version(
-        scope_type="school", scope_slug=str(school.slug),
-        accent=new_accent or "", accent_strong=new_accent_strong or "",
-        sidebar_start=new_sidebar_start or "", sidebar_end=new_sidebar_end or "",
-        created_by=actor_label,
-    )
-    # Live-push theme to connected mobile clients.
-    _hub = getattr(request.app.state, "alert_hub", None)
-    if _hub is not None:
-        await _hub.publish(str(school.slug), {
-            "event": "theme_updated",
-            "type": "theme_updated",
-            "tenant_slug": str(school.slug),
-            "accent": new_accent or "#1b5fe4",
-            "accent_strong": new_accent_strong or "#2f84ff",
-            "sidebar_start": new_sidebar_start or "#092054",
-            "sidebar_end": new_sidebar_end or "#071536",
-        })
-    _set_flash(request, message="Theme colors updated.")
-    return RedirectResponse(url=_school_url(request, "/admin?section=settings"), status_code=status.HTTP_303_SEE_OTHER)
-
-
-# ── Theme preset endpoints ─────────────────────────────────────────────────────
-
-@router.get("/admin/themes", include_in_schema=False)
-async def admin_list_themes(request: Request) -> JSONResponse:
-    await _require_dashboard_admin(request)
-    school = request.state.school
-    presets = await _schools(request).list_theme_presets(str(school.slug))
-    return JSONResponse({"presets": presets})
-
-
-@router.post("/admin/themes/save", include_in_schema=False)
-async def admin_save_theme_preset(
-    request: Request,
-    preset_name: str = Form(...),
-) -> RedirectResponse:
-    await _require_dashboard_admin(request)
-    school = request.state.school
-    theme = _school_theme(school)
-    actor_label = str(getattr(request.state.admin_user, "name", "") or "")
-    name = preset_name.strip() or "My Theme"
-    preset = await _schools(request).add_theme_preset(
-        tenant_slug=str(school.slug),
-        name=name,
-        accent=theme.get("accent", "") or "",
-        accent_strong=theme.get("accent_strong", "") or "",
-        sidebar_start=theme.get("sidebar_start", "") or "",
-        sidebar_end=theme.get("sidebar_end", "") or "",
-        created_by=actor_label,
-    )
-    await _audit_log_svc(request).log_event(
-        tenant_slug=str(school.slug),
-        event_type="theme.preset_saved",
-        actor_label=actor_label or None,
-        metadata={"preset_name": name, "preset_id": preset["id"]},
-    )
-    _set_flash(request, message=f"Theme preset '{name}' saved.")
-    return RedirectResponse(url=_school_url(request, "/admin?section=settings"), status_code=status.HTTP_303_SEE_OTHER)
-
-
-@router.post("/admin/themes/apply/{preset_id}", include_in_schema=False)
-async def admin_apply_theme_preset(request: Request, preset_id: int) -> JSONResponse:
-    await _require_dashboard_admin(request)
-    school = request.state.school
-    presets = await _schools(request).list_theme_presets(str(school.slug))
-    preset = next((p for p in presets if int(p["id"]) == preset_id), None)
-    if preset is None:
-        raise HTTPException(status_code=404, detail="Preset not found")
-    await _schools(request).update_theme(
-        slug=str(school.slug),
-        accent=preset["accent"] or None,
-        accent_strong=preset["accent_strong"] or None,
-        sidebar_start=preset["sidebar_start"] or None,
-        sidebar_end=preset["sidebar_end"] or None,
-    )
-    actor_label = str(getattr(request.state.admin_user, "name", "") or "")
-    await _audit_log_svc(request).log_event(
-        tenant_slug=str(school.slug),
-        event_type="theme.preset_applied",
-        actor_label=actor_label or None,
-        metadata={"preset_name": preset["name"], "preset_id": preset_id},
-    )
-    return JSONResponse({"ok": True, "preset": preset})
-
-
-@router.delete("/admin/themes/{preset_id}", include_in_schema=False)
-async def admin_delete_theme_preset(request: Request, preset_id: int) -> JSONResponse:
-    await _require_dashboard_admin(request)
-    school = request.state.school
-    deleted = await _schools(request).delete_theme_preset(int(preset_id), str(school.slug))
-    if not deleted:
-        raise HTTPException(status_code=404, detail="Preset not found or not owned by this tenant")
-    return JSONResponse({"ok": True})
-
-
-@router.post("/admin/themes/apply-district", include_in_schema=False)
-async def admin_apply_theme_to_district(request: Request) -> JSONResponse:
-    await _require_dashboard_admin(request)
-    _admin_role = str(getattr(request.state.admin_user, "role", "")).strip().lower()
-    if _admin_role not in {"district_admin", "super_admin"}:
-        raise HTTPException(status_code=403, detail="District admin or super admin role required")
-    school = request.state.school
-    district_id = getattr(school, "district_id", None)
-    if district_id is None:
-        raise HTTPException(status_code=400, detail="This school is not part of a district")
-    theme = _school_theme(school)
-    d_schools = await _schools(request).list_schools_by_district(int(district_id))
-    await asyncio.gather(*[
-        _schools(request).update_theme(
-            slug=str(s.slug),
-            accent=theme.get("accent") or None,
-            accent_strong=theme.get("accent_strong") or None,
-            sidebar_start=theme.get("sidebar_start") or None,
-            sidebar_end=theme.get("sidebar_end") or None,
-        )
-        for s in d_schools
-    ])
-    actor_label = str(getattr(request.state.admin_user, "name", "") or "")
-    await _audit_log_svc(request).log_event(
-        tenant_slug=str(school.slug),
-        event_type="theme.district_applied",
-        actor_label=actor_label or None,
-        metadata={"district_id": int(district_id), "schools_updated": len(d_schools)},
-    )
-    return JSONResponse({"ok": True, "updated": len(d_schools)})
-
-
-# ── Theme version history endpoints ───────────────────────────────────────────
-
-@router.get("/admin/themes/history", include_in_schema=False)
-async def admin_list_theme_history(request: Request) -> JSONResponse:
-    await _require_dashboard_admin(request)
-    school = request.state.school
-    versions = await _schools(request).list_theme_versions(
-        scope_type="school", scope_slug=str(school.slug), limit=20
-    )
-    return JSONResponse({"versions": versions})
-
-
-@router.post("/admin/themes/history/{version_id}/rollback", include_in_schema=False)
-async def admin_rollback_theme_version(request: Request, version_id: int) -> JSONResponse:
-    await _require_dashboard_admin(request)
-    school = request.state.school
-    ver = await _schools(request).get_theme_version(int(version_id))
-    if ver is None or ver.get("scope_slug") != str(school.slug):
-        raise HTTPException(status_code=404, detail="Version not found")
-
-    # Apply the rolled-back colors.
-    await _schools(request).update_theme(
-        slug=str(school.slug),
-        accent=ver["accent"] or None,
-        accent_strong=ver["accent_strong"] or None,
-        sidebar_start=ver["sidebar_start"] or None,
-        sidebar_end=ver["sidebar_end"] or None,
-    )
-    actor_label = str(getattr(request.state.admin_user, "name", "") or "")
-    # Rollback creates a new version entry (immutable history).
-    await _schools(request).save_theme_version(
-        scope_type="school", scope_slug=str(school.slug),
-        accent=ver["accent"] or "", accent_strong=ver["accent_strong"] or "",
-        sidebar_start=ver["sidebar_start"] or "", sidebar_end=ver["sidebar_end"] or "",
-        created_by=actor_label,
-        notes=f"Rolled back from v{ver['version_num']}",
-    )
-    await _audit_log_svc(request).log_event(
-        tenant_slug=str(school.slug),
-        event_type="theme.version_rolled_back",
-        actor_label=actor_label or None,
-        metadata={"from_version": ver["version_num"], "version_id": version_id},
-    )
-    # Live-push rolled-back theme to connected clients.
-    _hub = getattr(request.app.state, "alert_hub", None)
-    if _hub is not None:
-        await _hub.publish(str(school.slug), {
-            "event": "theme_updated",
-            "type": "theme_updated",
-            "tenant_slug": str(school.slug),
-            "accent": ver["accent"] or "#1b5fe4",
-            "accent_strong": ver["accent_strong"] or "#2f84ff",
-            "sidebar_start": ver["sidebar_start"] or "#092054",
-            "sidebar_end": ver["sidebar_end"] or "#071536",
-        })
-    return JSONResponse({"ok": True, "version": ver})
-
-
-# ── Brand lock endpoints (super_admin only) ────────────────────────────────────
-
-@router.post("/super-admin/districts/{district_id}/brand-lock/enable", include_in_schema=False)
-async def super_admin_enable_brand_lock(request: Request, district_id: int) -> JSONResponse:
+@router.get("/super-admin/organizations", include_in_schema=False)
+async def super_admin_list_organizations(request: Request) -> JSONResponse:
     _require_super_admin(request)
-    district = await _schools(request).set_district_brand_lock(district_id=int(district_id), enabled=True)
+    orgs = await _schools(request).list_organizations()
+    return JSONResponse({
+        "organizations": [
+            {"id": o.id, "name": o.name, "slug": o.slug, "is_active": o.is_active}
+            for o in orgs
+        ]
+    })
+
+
+@router.post("/super-admin/districts/create", include_in_schema=False)
+async def super_admin_create_district(
+    request: Request,
+    name: str = Form(...),
+    slug: str = Form(...),
+    organization_id: int = Form(...),
+) -> JSONResponse:
+    _require_super_admin(request)
+    district = await _schools(request).create_district(
+        name=name.strip(), slug=slug.strip().lower(), organization_id=int(organization_id)
+    )
+    return JSONResponse({"ok": True, "id": district.id, "slug": district.slug, "name": district.name})
+
+
+@router.get("/super-admin/districts/{slug}/info", include_in_schema=False)
+async def super_admin_district_info(request: Request, slug: str) -> JSONResponse:
+    _require_super_admin(request)
+    district = await _schools(request).get_district_by_slug(slug.strip().lower())
     if district is None:
         raise HTTPException(status_code=404, detail="District not found")
-    actor_label = str(getattr(request.state, "super_admin_login_name", "") or "super_admin")
-    await _audit_log_svc(request).log_event(
-        tenant_slug=str(district.slug),
-        event_type="brand_lock_enabled",
-        actor_label=actor_label or None,
-        metadata={"district_id": district_id, "district_name": district.name},
-    )
-    return JSONResponse({"ok": True, "district": district.slug, "brand_lock_enabled": True})
+    return JSONResponse({
+        "id": district.id,
+        "name": district.name,
+        "slug": district.slug,
+        "organization_id": district.organization_id,
+        "is_active": district.is_active,
+        "is_test": district.is_test,
+        "source_district_id": district.source_district_id,
+        "brand_lock_enabled": district.brand_lock_enabled,
+    })
 
 
-@router.post("/super-admin/districts/{district_id}/brand-lock/disable", include_in_schema=False)
-async def super_admin_disable_brand_lock(request: Request, district_id: int) -> JSONResponse:
+@router.get("/super-admin/districts/{slug}/schools", include_in_schema=False)
+async def super_admin_district_schools(request: Request, slug: str) -> JSONResponse:
     _require_super_admin(request)
-    district = await _schools(request).set_district_brand_lock(district_id=int(district_id), enabled=False)
+    district = await _schools(request).get_district_by_slug(slug.strip().lower())
     if district is None:
         raise HTTPException(status_code=404, detail="District not found")
-    actor_label = str(getattr(request.state, "super_admin_login_name", "") or "super_admin")
-    await _audit_log_svc(request).log_event(
-        tenant_slug=str(district.slug),
-        event_type="brand_lock_disabled",
-        actor_label=actor_label or None,
-        metadata={"district_id": district_id, "district_name": district.name},
+    schools = await _schools(request).list_schools_by_district(district.id)
+    return JSONResponse({
+        "schools": [
+            {
+                "id": s.id,
+                "slug": s.slug,
+                "name": s.name,
+                "is_active": s.is_active,
+                "is_test": s.is_test,
+                "source_tenant_slug": s.source_tenant_slug,
+                "simulation_mode_enabled": s.simulation_mode_enabled,
+                "suppress_alarm_audio": s.suppress_alarm_audio,
+            }
+            for s in schools
+        ]
+    })
+
+
+@router.get("/super-admin/schools/{slug}/info", include_in_schema=False)
+async def super_admin_school_info(request: Request, slug: str) -> JSONResponse:
+    _require_super_admin(request)
+    school = await _schools(request).get_by_slug(slug.strip().lower())
+    if school is None:
+        raise HTTPException(status_code=404, detail="School not found")
+    return JSONResponse({
+        "id": school.id,
+        "slug": school.slug,
+        "name": school.name,
+        "is_active": school.is_active,
+        "is_test": school.is_test,
+        "source_tenant_slug": school.source_tenant_slug,
+        "simulation_mode_enabled": school.simulation_mode_enabled,
+        "suppress_alarm_audio": school.suppress_alarm_audio,
+        "district_id": school.district_id,
+    })
+
+
+@router.post("/super-admin/schools/{slug}/assign-district", include_in_schema=False)
+async def super_admin_assign_school_to_district(
+    request: Request,
+    slug: str,
+    district_id: Optional[int] = Form(default=None),
+) -> JSONResponse:
+    _require_super_admin(request)
+    school = await _schools(request).assign_to_district(
+        school_slug=slug.strip().lower(),
+        district_id=int(district_id) if district_id is not None else None,
     )
-    return JSONResponse({"ok": True, "district": district.slug, "brand_lock_enabled": False})
+    if school is None:
+        raise HTTPException(status_code=404, detail="School not found")
+    return JSONResponse({"ok": True, "slug": school.slug, "district_id": school.district_id})
 
 
 @router.post("/admin/settings/undo/{change_id}", include_in_schema=False)
@@ -2641,17 +2273,6 @@ async def admin_settings_undo(
         restored_name = str(rec.old_value.get("name", "") or "")
         if restored_name:
             await _schools(request).update_name(slug=str(school.slug), name=restored_name)
-    elif rec.field == "colors":
-        await _schools(request).update_theme(
-            slug=str(school.slug),
-            accent=str(rec.old_value.get("accent", "") or "") or None,
-            accent_strong=str(rec.old_value.get("accent_strong", "") or "") or None,
-            sidebar_start=str(rec.old_value.get("sidebar_start", "") or "") or None,
-            sidebar_end=str(rec.old_value.get("sidebar_end", "") or "") or None,
-        )
-    elif rec.field == "logo":
-        restored_logo = str(rec.old_value.get("logo_path", "") or "") or None
-        await _schools(request).update_logo_path(slug=str(school.slug), logo_path=restored_logo)
 
     await store.mark_undone(change_id)
     await _audit_log_svc(request).log_event(
@@ -2801,7 +2422,6 @@ async def admin_login_page(request: Request) -> HTMLResponse:
             school_slug=request.state.school.slug,
             school_path_prefix=_school_prefix(request),
             setup_pin_required=bool(getattr(request.state.school, "setup_pin_required", False)),
-            theme=_school_theme(request.state.school),
         )
     )
 
@@ -2918,7 +2538,6 @@ async def admin_totp_page(request: Request) -> HTMLResponse:
             user_label=user.login_name or user.name,
             message=flash_message,
             error=flash_error,
-            theme=_school_theme(request.state.school),
             allow_trust_device=True,
         )
     )
@@ -3597,6 +3216,33 @@ async def super_admin_dashboard(
         "alarm_schools": sum(1 for t in _noc_tenant_data if t.get("alarm_active")),
         "ws_connections": sum(int(t.get("ws_connections") or 0) for t in _noc_tenant_data),
     }
+    # ── Sandbox district data ──────────────────────────────────────────────────
+    _test_districts = await _schools(request).list_test_districts()
+    _test_schools_all = await _schools(request).list_test_schools()
+    _test_schools_by_district: dict[int, list[object]] = defaultdict(list)
+    for _ts in _test_schools_all:
+        if getattr(_ts, "district_id", None) is not None:
+            _test_schools_by_district[int(_ts.district_id)].append(_ts)
+    _sandbox_data: list[dict[str, object]] = []
+    for _td in _test_districts:
+        _td_schools = _test_schools_by_district.get(_td.id, [])
+        _sandbox_data.append({
+            "district_id": _td.id,
+            "district_name": _td.name,
+            "district_slug": _td.slug,
+            "source_district_id": _td.source_district_id,
+            "schools": [
+                {
+                    "slug": str(getattr(s, "slug", "")),
+                    "name": str(getattr(s, "name", "")),
+                    "simulation_mode_enabled": bool(getattr(s, "simulation_mode_enabled", False)),
+                    "suppress_alarm_audio": bool(getattr(s, "suppress_alarm_audio", False)),
+                    "source_tenant_slug": str(getattr(s, "source_tenant_slug", "") or ""),
+                }
+                for s in _td_schools
+            ],
+        })
+    _prod_districts = [d for d in _all_districts if not getattr(d, "is_test", False)]
     return HTMLResponse(
         render_super_admin_page(
             base_domain=request.app.state.settings.BASE_DOMAIN,  # type: ignore[attr-defined]
@@ -3634,6 +3280,8 @@ async def super_admin_dashboard(
             noc_uptime_seconds=_noc_uptime,
             msp_districts=msp_districts,
             platform_stats=_platform_stats,
+            sandbox_data=_sandbox_data,
+            prod_districts=_prod_districts,
         )
     )
 
@@ -4018,33 +3666,6 @@ async def super_admin_clear_setup_pin(
         _set_flash(request, error="School not found.")
         return RedirectResponse(url=_super_admin_url("schools"), status_code=status.HTTP_303_SEE_OTHER)
     _set_flash(request, message=f"Cleared the setup PIN for {school.name}.")
-    return RedirectResponse(url=_super_admin_url("schools"), status_code=status.HTTP_303_SEE_OTHER)
-
-
-@router.post("/super-admin/schools/{slug}/theme", include_in_schema=False)
-async def super_admin_update_school_theme(
-    request: Request,
-    slug: str,
-    accent: str = Form(default=""),
-    accent_strong: str = Form(default=""),
-    sidebar_start: str = Form(default=""),
-    sidebar_end: str = Form(default=""),
-) -> RedirectResponse:
-    _require_super_admin(request)
-    from app.services.tenant_manager import normalize_school_slug
-
-    normalized_slug = normalize_school_slug(slug)
-    school = await _schools(request).update_theme(
-        slug=normalized_slug,
-        accent=accent.strip() or None,
-        accent_strong=accent_strong.strip() or None,
-        sidebar_start=sidebar_start.strip() or None,
-        sidebar_end=sidebar_end.strip() or None,
-    )
-    if school is None:
-        _set_flash(request, error="School not found.")
-        return RedirectResponse(url=_super_admin_url("schools"), status_code=status.HTTP_303_SEE_OTHER)
-    _set_flash(request, message=f"Updated the theme for {school.name}.")
     return RedirectResponse(url=_super_admin_url("schools"), status_code=status.HTTP_303_SEE_OTHER)
 
 
@@ -4467,7 +4088,6 @@ async def change_password_page(request: Request) -> HTMLResponse:
             message=flash_message,
             error=flash_error,
             action=_school_url(request, "/admin/change-password"),
-            theme=_school_theme(request.state.school),
         )
     )
 
@@ -5187,6 +4807,7 @@ async def create_incident(
         body.user_id,
         permissions={PERM_TRIGGER_OWN_TENANT_ALERTS, PERM_MANAGE_ASSIGNED_TENANT_INCIDENTS},
     )
+    is_sim = _is_simulation_mode(request)
     incident = await _incident_store(request).create_incident(
         type_value=body.type,
         status="active",
@@ -5194,22 +4815,24 @@ async def create_incident(
         school_id=str(request.state.school.slug),
         target_scope=body.target_scope.strip().upper() or "ALL",
         metadata=body.metadata or {},
+        is_simulation=is_sim,
     )
     await _incident_store(request).create_notification_log(
         user_id=creator_id,
         type_value="incident_created",
         payload={"incident_id": incident.id, "type": incident.type, "target_scope": incident.target_scope},
     )
-    background_tasks.add_task(
-        _send_basic_push,
-        request,
-        message=f"Incident active: {incident.type}",
-        extra_data={
-            "type": "emergency",
-            "triggered_by_user_id": str(creator_id),
-            "silent_for_sender": "true",
-        },
-    )
+    if not is_sim:
+        background_tasks.add_task(
+            _send_basic_push,
+            request,
+            message=f"Incident active: {incident.type}",
+            extra_data={
+                "type": "emergency",
+                "triggered_by_user_id": str(creator_id),
+                "silent_for_sender": "true",
+            },
+        )
     return IncidentSummary(
         id=incident.id,
         type=incident.type,
@@ -5282,17 +4905,18 @@ async def create_team_assist(
             "target_user_ids": target_user_ids,
         },
     )
-    background_tasks.add_task(
-        _send_help_request_push,
-        request,
-        creator_id=creator_id,
-        responder_user_ids=set(target_user_ids),
-        message=f"{get_feature_label('request_help')}: {get_feature_label(team_assist.type)}",
-        extra_data={
-            "type": "help_request",
-            "triggered_by_user_id": str(creator_id),
-        },
-    )
+    if not _is_simulation_mode(request):
+        background_tasks.add_task(
+            _send_help_request_push,
+            request,
+            creator_id=creator_id,
+            responder_user_ids=set(target_user_ids),
+            message=f"{get_feature_label('request_help')}: {get_feature_label(team_assist.type)}",
+            extra_data={
+                "type": "help_request",
+                "triggered_by_user_id": str(creator_id),
+            },
+        )
     return _to_team_assist_summary(team_assist)
 
 
@@ -6958,3 +6582,209 @@ async def super_admin_revoke_setup_code(request: Request, code_id: int) -> Redir
     else:
         _set_flash(request, error="Could not revoke code.")
     return RedirectResponse(url=_super_admin_url("setup-codes"), status_code=status.HTTP_303_SEE_OTHER)
+
+
+# ── Sandbox / test environment endpoints ──────────────────────────────────────
+# All guarded by _require_super_admin.  Production districts/schools are
+# protected at the DB layer (is_test=1 WHERE clause), but we also guard at the
+# route layer for defense in depth.
+
+@router.post("/super-admin/districts/{district_id}/clone-test", include_in_schema=False)
+async def super_admin_clone_test_district(
+    district_id: int,
+    request: Request,
+    test_slug: str = Form(...),
+    test_name: str = Form(...),
+) -> RedirectResponse:
+    """Clone a production district into a test/sandbox district."""
+    _require_super_admin(request)
+    school_registry = _schools(request)
+    source = await school_registry.get_district(district_id)
+    if source is None:
+        _set_flash(request, error="Source district not found.")
+        return RedirectResponse(url=_super_admin_url("sandbox"), status_code=status.HTTP_303_SEE_OTHER)
+    if source.is_test:
+        _set_flash(request, error="Cannot clone a test district from another test district.")
+        return RedirectResponse(url=_super_admin_url("sandbox"), status_code=status.HTTP_303_SEE_OTHER)
+
+    slug = test_slug.strip().lower()
+    name = test_name.strip() or f"[TEST] {source.name}"
+    existing = await school_registry.get_district_by_slug(slug)
+    if existing is not None:
+        _set_flash(request, error=f"Slug '{slug}' already taken.")
+        return RedirectResponse(url=_super_admin_url("sandbox"), status_code=status.HTTP_303_SEE_OTHER)
+
+    test_district = await school_registry.create_test_district(
+        name=name,
+        slug=slug,
+        organization_id=source.organization_id,
+        source_district_id=district_id,
+    )
+
+    # Clone each school in the source district into test schools.
+    source_schools = await school_registry.list_schools_by_district(district_id)
+    for i, src_school in enumerate(source_schools):
+        school_slug = f"{slug}-{src_school.slug}"
+        existing_school = await school_registry.get_by_slug(school_slug)
+        if existing_school is None:
+            test_school = await school_registry.create_test_school(
+                name=f"[TEST] {src_school.name}",
+                slug=school_slug,
+                district_id=test_district.id,
+                source_tenant_slug=src_school.slug,
+                accent=src_school.accent,
+                accent_strong=src_school.accent_strong,
+                sidebar_start=src_school.sidebar_start,
+                sidebar_end=src_school.sidebar_end,
+                logo_path=src_school.logo_path,
+            )
+            # Eagerly init the test tenant DB (empty — no users/data carried over).
+            from app.services.tenant_manager import TenantManager
+            tm: TenantManager = request.app.state.tenant_manager  # type: ignore[attr-defined]
+            tm.get(test_school)
+
+    logger.warning(
+        "SANDBOX district_cloned actor=%s source_district_id=%s test_slug=%s schools=%s",
+        request.session.get("super_admin_username", "super_admin"), district_id, slug, len(source_schools),
+    )
+    _set_flash(request, message=f"Test district '{name}' created with {len(source_schools)} school(s).")
+    return RedirectResponse(url=_super_admin_url("sandbox"), status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.post("/super-admin/test-tenants/{slug}/toggle-simulation", include_in_schema=False)
+async def super_admin_toggle_simulation_mode(slug: str, request: Request) -> RedirectResponse:
+    """Enable or disable simulation mode for a test school."""
+    _require_super_admin(request)
+    school_registry = _schools(request)
+    school = await school_registry.get_by_slug(slug)
+    if school is None:
+        _set_flash(request, error="School not found.")
+        return RedirectResponse(url=_super_admin_url("sandbox"), status_code=status.HTTP_303_SEE_OTHER)
+    if not school.is_test:
+        _set_flash(request, error="Cannot enable simulation mode on a production school.")
+        return RedirectResponse(url=_super_admin_url("sandbox"), status_code=status.HTTP_303_SEE_OTHER)
+
+    new_state = not school.simulation_mode_enabled
+    await school_registry.set_simulation_mode(slug=slug, enabled=new_state)
+    label = "enabled" if new_state else "disabled"
+    logger.warning(
+        "SANDBOX simulation_mode_toggled actor=%s slug=%s enabled=%s",
+        request.session.get("super_admin_username", "super_admin"), slug, new_state,
+    )
+    _set_flash(request, message=f"Simulation mode {label} for '{slug}'.")
+    return RedirectResponse(url=_super_admin_url("sandbox"), status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.post("/super-admin/test-tenants/{slug}/toggle-audio-suppression", include_in_schema=False)
+async def super_admin_toggle_audio_suppression(slug: str, request: Request) -> RedirectResponse:
+    """Enable or disable alarm audio suppression for a test school."""
+    _require_super_admin(request)
+    school_registry = _schools(request)
+    school = await school_registry.get_by_slug(slug)
+    if school is None:
+        _set_flash(request, error="School not found.")
+        return RedirectResponse(url=_super_admin_url("sandbox"), status_code=status.HTTP_303_SEE_OTHER)
+    if not school.is_test:
+        _set_flash(request, error="Cannot modify audio suppression on a production school.")
+        return RedirectResponse(url=_super_admin_url("sandbox"), status_code=status.HTTP_303_SEE_OTHER)
+
+    new_state = not school.suppress_alarm_audio
+    await school_registry.set_audio_suppression(slug=slug, enabled=new_state)
+    label = "enabled" if new_state else "disabled"
+    logger.warning(
+        "SANDBOX audio_suppression_toggled actor=%s slug=%s enabled=%s",
+        request.session.get("super_admin_username", "super_admin"), slug, new_state,
+    )
+    _set_flash(request, message=f"Audio suppression {label} for '{slug}'.")
+    return RedirectResponse(url=_super_admin_url("sandbox"), status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.post("/super-admin/test-tenants/{slug}/simulate-alert", include_in_schema=False)
+async def super_admin_simulate_alert(slug: str, request: Request, alert_type: str = Form(default="lockdown")) -> RedirectResponse:
+    """Trigger a simulated incident in a test school (no real push sent)."""
+    _require_super_admin(request)
+    school_registry = _schools(request)
+    school = await school_registry.get_by_slug(slug)
+    if school is None:
+        _set_flash(request, error="School not found.")
+        return RedirectResponse(url=_super_admin_url("sandbox"), status_code=status.HTTP_303_SEE_OTHER)
+    if not school.is_test:
+        _set_flash(request, error="Cannot trigger simulated alert on a production school.")
+        return RedirectResponse(url=_super_admin_url("sandbox"), status_code=status.HTTP_303_SEE_OTHER)
+
+    from app.services.tenant_manager import TenantManager
+    tm: TenantManager = request.app.state.tenant_manager  # type: ignore[attr-defined]
+    tenant_ctx = tm.get(school)
+    incident = await tenant_ctx.incident_store.create_incident(
+        type_value=alert_type.strip() or "lockdown",
+        status="active",
+        created_by=0,
+        school_id=slug,
+        target_scope="ALL",
+        metadata={"simulated": True},
+        is_simulation=True,
+    )
+    logger.warning(
+        "SANDBOX alert_simulated actor=%s slug=%s alert_type=%s incident_id=%s",
+        request.session.get("super_admin_username", "super_admin"), slug, alert_type, incident.id,
+    )
+    _set_flash(request, message=f"Simulated {alert_type} incident created in '{slug}'.")
+    return RedirectResponse(url=_super_admin_url("sandbox"), status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.post("/super-admin/test-tenants/{slug}/reset", include_in_schema=False)
+async def super_admin_reset_test_tenant(slug: str, request: Request) -> RedirectResponse:
+    """Delete all simulation incidents in a test school (reset to clean state)."""
+    _require_super_admin(request)
+    school_registry = _schools(request)
+    school = await school_registry.get_by_slug(slug)
+    if school is None:
+        _set_flash(request, error="School not found.")
+        return RedirectResponse(url=_super_admin_url("sandbox"), status_code=status.HTTP_303_SEE_OTHER)
+    if not school.is_test:
+        _set_flash(request, error="Cannot reset a production school.")
+        return RedirectResponse(url=_super_admin_url("sandbox"), status_code=status.HTTP_303_SEE_OTHER)
+
+    from app.services.tenant_manager import TenantManager
+    tm: TenantManager = request.app.state.tenant_manager  # type: ignore[attr-defined]
+    tenant_ctx = tm.get(school)
+    deleted = await tenant_ctx.incident_store.delete_simulation_incidents()
+    logger.warning(
+        "SANDBOX tenant_reset actor=%s slug=%s incidents_deleted=%s",
+        request.session.get("super_admin_username", "super_admin"), slug, deleted,
+    )
+    _set_flash(request, message=f"Reset '{slug}': {deleted} simulation incident(s) deleted.")
+    return RedirectResponse(url=_super_admin_url("sandbox"), status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.post("/super-admin/test-districts/{district_id}/delete", include_in_schema=False)
+async def super_admin_delete_test_district(district_id: int, request: Request) -> RedirectResponse:
+    """Hard-delete a test district and all its test schools. Blocked on production districts."""
+    _require_super_admin(request)
+    school_registry = _schools(request)
+    district = await school_registry.get_district(district_id)
+    if district is None:
+        _set_flash(request, error="District not found.")
+        return RedirectResponse(url=_super_admin_url("sandbox"), status_code=status.HTTP_303_SEE_OTHER)
+    if not district.is_test:
+        _set_flash(request, error="SAFETY: cannot delete a production district via sandbox endpoint.")
+        return RedirectResponse(url=_super_admin_url("sandbox"), status_code=status.HTTP_303_SEE_OTHER)
+
+    test_schools = await school_registry.list_schools_by_district(district_id)
+    deleted_schools = 0
+    for school in test_schools:
+        if school.is_test:
+            ok = await school_registry.delete_school_record(school.id)
+            if ok:
+                deleted_schools += 1
+
+    ok = await school_registry.delete_district_record(district_id)
+    logger.warning(
+        "SANDBOX district_deleted actor=%s district_id=%s district_name=%s schools_deleted=%s",
+        request.session.get("super_admin_username", "super_admin"), district_id, district.name, deleted_schools,
+    )
+    if ok:
+        _set_flash(request, message=f"Deleted test district '{district.name}' and {deleted_schools} school(s).")
+    else:
+        _set_flash(request, error="District delete failed (may already be removed).")
+    return RedirectResponse(url=_super_admin_url("sandbox"), status_code=status.HTTP_303_SEE_OTHER)

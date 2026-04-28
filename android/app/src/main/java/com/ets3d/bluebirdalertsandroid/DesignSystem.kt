@@ -227,27 +227,9 @@ object DSTokenStore {
     }
 }
 
-// MARK: - District branding override
-
-object DSBranding {
-    var overridePrimary: Color? = null
-    var overrideAccent: Color? = null
-
-    /** Apply district-level color overrides. Pass hex strings (e.g. "#1B5FE4"). */
-    fun apply(primary: String? = null, accent: String? = null) {
-        overridePrimary = primary?.let { DSTokenStore.parseHexColor(it) }
-        overrideAccent  = accent?.let  { DSTokenStore.parseHexColor(it) }
-    }
-
-    fun reset() {
-        overridePrimary = null
-        overrideAccent  = null
-    }
-}
-
 object DSColor {
-    val Primary:         Color get() = DSBranding.overridePrimary ?: DSTokenStore.tokens().primary
-    val Accent:          Color get() = DSBranding.overrideAccent  ?: Primary
+    val Primary:         Color get() = DSTokenStore.tokens().primary
+    val Accent:          Color get() = Primary
     val Danger:          Color get() = DSTokenStore.tokens().danger
     val Background:      Color get() = DSTokenStore.tokens().background
     val BackgroundDeep:  Color get() = DSTokenStore.tokens().backgroundDeep
