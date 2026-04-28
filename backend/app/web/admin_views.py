@@ -4039,6 +4039,7 @@ def render_admin_page(
     alarm_status_label = "TRAINING ACTIVE" if alarm_state.is_active and alarm_state.is_training else ("ALARM ACTIVE" if alarm_state.is_active else "Alarm clear")
     security_feedback = f"{_render_flash(flash_message, 'success')}{_render_flash(flash_error, 'error')}"
     section = active_section if active_section in {"dashboard", "user-management", "access-codes", "quiet-periods", "audit-logs", "settings", "drill-reports", "district", "devices"} else "dashboard"
+    _um_badge_count = len(quiet_periods_active)
     quiet_period_total = len(quiet_periods_active) + len(quiet_periods_history)
     refresh_meta = '<meta http-equiv="refresh" content="30">' if section in {"dashboard", "district"} else ""
     show_district_nav = str(getattr(current_user, "role", "")).strip().lower() in {"district_admin", "super_admin"}
@@ -4248,7 +4249,7 @@ def render_admin_page(
         """
     if _show_access_codes:
         _access_codes_panel_html = f"""
-          <section class="panel command-section span-12" id="access-codes"{_section_style("access-codes")}>
+          <section class="panel command-section span-12" id="access-codes"{"" if section in {"user-management", "access-codes"} and _show_access_codes else " style='display:none;'"}>
             <div class="panel-header">
               <div>
                 <p class="eyebrow">Access Codes</p>
@@ -4558,8 +4559,8 @@ def render_admin_page(
       var el = function(id){{return document.getElementById(id);}};
       if (el('up-name')) el('up-name').textContent = userData.name || '';
       if (el('up-role-badge')) el('up-role-badge').innerHTML = roleBadgeHtml(role);
-      var statusCls = userData.is_active ? 'ok' : 'danger';
-      var statusTxt = userData.is_active ? 'Active' : 'Inactive';
+      var statusCls = userData.is_archived ? 'offline' : (userData.is_active ? 'ok' : 'danger');
+      var statusTxt = userData.is_archived ? 'Archived' : (userData.is_active ? 'Active' : 'Inactive');
       if (el('up-status-pill')) el('up-status-pill').innerHTML = '<span class="status-pill ' + statusCls + '" style="font-size:.76rem;min-height:0;padding:3px 10px;">' + statusTxt + '</span>';
       var metaParts = [];
       if (userData.title) metaParts.push(userData.title);
@@ -4578,9 +4579,11 @@ def render_admin_page(
       // actions
       if (el('up-actions')) {{
         var isSelf = userData.is_self;
-        var editBtn = '<button class="button button-primary" style="min-height:36px;font-size:0.82rem;" onclick="umToggleEdit(' + userData.id + ');umClosePanel();">Edit User</button>';
-        var selfNote = isSelf ? '<p class="mini-copy" style="color:#b45309;">You cannot modify your own account role.</p>' : '';
-        el('up-actions').innerHTML = editBtn + selfNote;
+        var isArch = !!userData.is_archived;
+        var editBtn = isArch ? '' : '<button class="button button-primary" style="min-height:36px;font-size:0.82rem;" onclick="umToggleEdit(' + userData.id + ');umClosePanel();">Edit User</button>';
+        var selfNote = (!isArch && isSelf) ? '<p class="mini-copy" style="color:#b45309;">You cannot modify your own account role.</p>' : '';
+        var archNote = isArch ? '<p class="mini-copy" style="color:var(--danger);">This user is archived. Use the edit card to permanently delete them.</p>' : '';
+        el('up-actions').innerHTML = editBtn + selfNote + archNote;
       }}
       // mark active row
       document.querySelectorAll('.um-row').forEach(function(r){{r.classList.remove('um-row-active');}});
@@ -4688,50 +4691,6 @@ def render_admin_page(
     }});
   }})();
   </script>
-  <script>
-  /* ── Live branding preview ──────────────────────────────────────────────── */
-  (function() {{
-    var root = document.documentElement;
-    var CSS_VAR_MAP = {{
-      'bp-accent':        '--color-primary',
-      'bp-accent-strong': '--color-primary-strong',
-      'bp-sidebar-start': '--color-sidebar-start',
-      'bp-sidebar-end':   '--color-sidebar-end',
-    }};
-    function applyVar(cssVar, value) {{
-      if (/^#[0-9a-fA-F]{{6}}$/.test(value)) {{
-        root.style.setProperty(cssVar, value);
-        updateSidebarPreview();
-      }}
-    }}
-    function wireInput(textId, pickerId, cssVar) {{
-      var text = document.getElementById(textId);
-      var picker = document.getElementById(pickerId);
-      if (!text || !picker) return;
-      text.addEventListener('input', function() {{ applyVar(cssVar, text.value.trim()); picker.value = text.value.trim(); }});
-      picker.addEventListener('input', function() {{ text.value = picker.value; applyVar(cssVar, picker.value); }});
-    }}
-    function updateSidebarPreview() {{
-      var preview = document.getElementById('bp-sidebar-preview');
-      if (!preview) return;
-      var start = getComputedStyle(root).getPropertyValue('--color-sidebar-start').trim() || '#092054';
-      var end   = getComputedStyle(root).getPropertyValue('--color-sidebar-end').trim()   || '#071536';
-      var accent = getComputedStyle(root).getPropertyValue('--color-primary').trim()       || '#1b5fe4';
-      preview.style.background = 'linear-gradient(180deg, ' + start + ' 0%, ' + end + ' 100%)';
-      var dot = preview.querySelector('.bp-preview-dot');
-      if (dot) dot.style.background = accent;
-      var glow = preview.querySelector('.bp-preview-glow');
-      if (glow) glow.style.background = 'radial-gradient(circle at top left, ' + accent + '28, transparent 60%)';
-    }}
-    document.addEventListener('DOMContentLoaded', function() {{
-      wireInput('s-accent',        'bp-accent-picker',        '--color-primary');
-      wireInput('s-accent-strong', 'bp-accent-strong-picker', '--color-primary-strong');
-      wireInput('s-sidebar-start', 'bp-sidebar-start-picker', '--color-sidebar-start');
-      wireInput('s-sidebar-end',   'bp-sidebar-end-picker',   '--color-sidebar-end');
-      updateSidebarPreview();
-    }});
-  }})();
-  </script>
 </head>
 <body>
   <div class="app-shell">
@@ -4748,9 +4707,7 @@ def render_admin_page(
           <p class="nav-label">Command Deck</p>
           <nav class="nav-list">
             {_nav_item("dashboard", "Dashboard")}
-            {_nav_item("user-management", "User Management")}
-            {_nav_item("access-codes", "Access Codes") if _show_access_codes else ""}
-            {_nav_item("quiet-periods", "Quiet Period Requests", str(len(quiet_periods_active)) if quiet_periods_active else None)}
+            {_nav_item("user-management", "User Management", str(_um_badge_count) if _um_badge_count else None)}
             {_nav_item("drill-reports", "Drill Reports")}
             {_nav_item("audit-logs", "Audit Logs")}
             {_nav_item("settings", "Settings")}
@@ -5170,7 +5127,7 @@ def render_admin_page(
             </table>
           </section>
 
-          <section class="panel command-section span-12" id="quiet-periods"{_section_style("quiet-periods")}>
+          <section class="panel command-section span-12" id="quiet-periods"{"" if section in {"user-management", "quiet-periods"} else " style='display:none;'"}>
             <div class="panel-header">
               <div>
                 <p class="eyebrow">Quiet Periods</p>
