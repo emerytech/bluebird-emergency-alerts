@@ -360,6 +360,20 @@ class QuietPeriodAdminListResponse(BaseModel):
     requests: List[QuietPeriodAdminItem]
 
 
+class DistrictQuietPeriodItem(QuietPeriodAdminItem):
+    tenant_slug: str
+    tenant_name: str
+
+
+class DistrictQuietPeriodsResponse(BaseModel):
+    requests: List[DistrictQuietPeriodItem]
+
+
+class DistrictQuietActionRequest(BaseModel):
+    admin_user_id: int
+    tenant_slug: str = Field(..., min_length=1, max_length=80)
+
+
 class AdminBroadcastRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=240)
 

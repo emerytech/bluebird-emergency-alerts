@@ -477,6 +477,18 @@ data class AdminQuietPeriodRequest(
     val expiresAt: String? = null,
 )
 
+data class DistrictQuietPeriodItem(
+    val requestId: Int,
+    val userId: Int,
+    val userName: String?,
+    val userRole: String?,
+    val reason: String?,
+    val status: String,
+    val requestedAt: String,
+    val tenantSlug: String,
+    val tenantName: String,
+)
+
 private data class SafetyAction(
     val key: String,
     val title: String,
@@ -637,6 +649,7 @@ data class UiState(
     val selectedTenantName: String = "",
     val userTitle: String = "",
     val districtTenants: List<TenantOverviewItem> = emptyList(),
+    val districtQuietRequests: List<DistrictQuietPeriodItem> = emptyList(),
 )
 
 // ── ViewModel ──────────────────────────────────────────────────────────────────
@@ -652,9 +665,13 @@ class MainViewModel : ViewModel() {
         .writeTimeout(15, TimeUnit.SECONDS)
         .build()
     private var alarmWs: okhttp3.WebSocket? = null
+    private var districtWs: okhttp3.WebSocket? = null
+    private var districtWsJob: Job? = null
+    private val districtWsGeneration = AtomicInteger(0)
     private var wsJob: Job? = null
     private val wsGeneration = AtomicInteger(0)
     private var cachedUserId: Int? = null
+    private var cachedHomeSlug: String = ""
     private val processedEventIds = LinkedHashSet<String>(200)
 
     private fun isDuplicateEvent(eventId: String): Boolean {
@@ -673,6 +690,7 @@ class MainViewModel : ViewModel() {
         val serverUrl = getServerUrl(ctx)
         val savedSlug = getSelectedTenantSlug(ctx)
         val savedName = getSelectedTenantName(ctx)
+        cachedHomeSlug = extractSchoolSlug(serverUrl)
         currentBaseUrl = if (savedSlug.isNotBlank()) buildSelectedTenantUrl(serverUrl, savedSlug) else serverUrl
         client = BackendClient(currentBaseUrl, BuildConfig.BACKEND_API_KEY)
         if (savedSlug.isNotBlank()) {
@@ -683,6 +701,11 @@ class MainViewModel : ViewModel() {
         startPolling(ctx)
         loadMeData(ctx)
         startAlarmWebSocket(ctx)
+        val role = getUserRole(ctx)
+        val isDistrict = role.equals("district_admin", ignoreCase = true) ||
+            role.equals("super_admin", ignoreCase = true) ||
+            role.equals("platform_super_admin", ignoreCase = true)
+        if (isDistrict) startDistrictWebSocket(ctx)
     }
 
     fun refreshFeatureLabels() {
@@ -1216,6 +1239,97 @@ class MainViewModel : ViewModel() {
                 .onSuccess { tenants -> _state.update { it.copy(districtTenants = tenants) } }
                 .onFailure { e -> _state.update { it.copy(errorMsg = e.message ?: "Failed to load district overview.") } }
         }
+    }
+
+    fun loadDistrictQuietPeriods(ctx: Context) {
+        val userId = getUserId(ctx).toIntOrNull() ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { client!!.listDistrictQuietPeriods(userId) }
+                .onSuccess { requests -> _state.update { it.copy(districtQuietRequests = requests) } }
+        }
+    }
+
+    fun approveDistrictQuietRequest(ctx: Context, requestId: Int, tenantSlug: String) {
+        val adminId = getUserId(ctx).toIntOrNull() ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            _state.update { it.copy(isBusy = true) }
+            runCatching { client!!.approveDistrictQuietPeriod(requestId, adminId, tenantSlug) }
+                .onSuccess {
+                    val updated = _state.value.districtQuietRequests.filterNot { it.requestId == requestId }
+                    _state.update { it.copy(districtQuietRequests = updated, isBusy = false, successMsg = "Quiet period approved.") }
+                }
+                .onFailure { e -> _state.update { it.copy(isBusy = false, errorMsg = e.message ?: "Approve failed.") } }
+        }
+    }
+
+    fun denyDistrictQuietRequest(ctx: Context, requestId: Int, tenantSlug: String) {
+        val adminId = getUserId(ctx).toIntOrNull() ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            _state.update { it.copy(isBusy = true) }
+            runCatching { client!!.denyDistrictQuietPeriod(requestId, adminId, tenantSlug) }
+                .onSuccess {
+                    val updated = _state.value.districtQuietRequests.filterNot { it.requestId == requestId }
+                    _state.update { it.copy(districtQuietRequests = updated, isBusy = false, successMsg = "Quiet period request denied.") }
+                }
+                .onFailure { e -> _state.update { it.copy(isBusy = false, errorMsg = e.message ?: "Deny failed.") } }
+        }
+    }
+
+    private fun startDistrictWebSocket(ctx: Context) {
+        districtWsJob?.cancel()
+        districtWs?.close(1000, "restart")
+        districtWs = null
+        val userId = getUserId(ctx).toIntOrNull() ?: return
+        val homeSlug = cachedHomeSlug.ifBlank { extractSchoolSlug(getServerUrl(ctx)) }
+        if (homeSlug.isBlank() || userId <= 0) return
+        val myGen = districtWsGeneration.incrementAndGet()
+        val serverUrl = getServerUrl(ctx)
+        districtWsJob = viewModelScope.launch(Dispatchers.IO) {
+            var backoffMs = 3_000L
+            while (isActive && districtWsGeneration.get() == myGen) {
+                val wsUrl = buildDistrictWsUrl(serverUrl, userId, homeSlug)
+                if (wsUrl.isBlank()) break
+                Log.d("DistrictWS", "WS connecting: $wsUrl gen=$myGen")
+                val closed = CompletableDeferred<Unit>()
+                districtWs = wsHttpClient.newWebSocket(
+                    okhttp3.Request.Builder()
+                        .url(wsUrl)
+                        .header("X-API-Key", BuildConfig.BACKEND_API_KEY)
+                        .build(),
+                    object : okhttp3.WebSocketListener() {
+                        override fun onOpen(ws: okhttp3.WebSocket, response: okhttp3.Response) {
+                            Log.d("DistrictWS", "WS open gen=$myGen")
+                            backoffMs = 3_000L
+                        }
+                        override fun onMessage(ws: okhttp3.WebSocket, text: String) {
+                            handleWsMessage(text)
+                        }
+                        override fun onFailure(ws: okhttp3.WebSocket, t: Throwable, response: okhttp3.Response?) {
+                            Log.w("DistrictWS", "WS failure: ${t.message} gen=$myGen")
+                            districtWs = null
+                            closed.complete(Unit)
+                        }
+                        override fun onClosed(ws: okhttp3.WebSocket, code: Int, reason: String) {
+                            districtWs = null
+                            closed.complete(Unit)
+                        }
+                    },
+                )
+                closed.await()
+                if (!isActive || districtWsGeneration.get() != myGen) break
+                delay(backoffMs)
+                backoffMs = minOf(backoffMs * 2, 30_000L)
+            }
+        }
+    }
+
+    private fun buildDistrictWsUrl(serverUrl: String, userId: Int, homeSlug: String): String {
+        return runCatching {
+            val uri = java.net.URI(serverUrl)
+            val scheme = if (uri.scheme == "https") "wss" else "ws"
+            val port = if (uri.port > 0) ":${uri.port}" else ""
+            "$scheme://${uri.host}$port/ws/district/alerts?user_id=$userId&home_tenant=$homeSlug"
+        }.getOrDefault("")
     }
 
     private fun startAlarmWebSocket(ctx: Context) {
@@ -1970,7 +2084,8 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
     val canDeactivate = remember { canDeactivateAlarm(ctx) }
     val isAdmin = remember(userRole) {
         userRole.equals("admin", ignoreCase = true) ||
-        userRole.equals("building_admin", ignoreCase = true)
+        userRole.equals("building_admin", ignoreCase = true) ||
+        userRole.equals("district_admin", ignoreCase = true)
     }
     val isDistrictSession = remember(userRole) {
         userRole.equals("district_admin", ignoreCase = true) ||
@@ -2224,7 +2339,10 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                     if (isDistrictSession && !showSettingsScreen) {
                         TextButton(onClick = {
                             showDistrictView = !showDistrictView
-                            if (showDistrictView) vm.loadDistrictOverview(ctx)
+                            if (showDistrictView) {
+                                vm.loadDistrictOverview(ctx)
+                                vm.loadDistrictQuietPeriods(ctx)
+                            }
                         }) {
                             Text(
                                 if (showDistrictView) "School" else "District",
@@ -2296,8 +2414,14 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
             } else if (showDistrictView) {
                 DistrictOverviewScreen(
                     tenants = state.districtTenants,
+                    quietRequests = state.districtQuietRequests,
                     isBusy = state.isBusy,
-                    onRefresh = { vm.loadDistrictOverview(ctx) },
+                    onRefresh = {
+                        vm.loadDistrictOverview(ctx)
+                        vm.loadDistrictQuietPeriods(ctx)
+                    },
+                    onApproveQuiet = { requestId, tenantSlug -> vm.approveDistrictQuietRequest(ctx, requestId, tenantSlug) },
+                    onDenyQuiet = { requestId, tenantSlug -> vm.denyDistrictQuietRequest(ctx, requestId, tenantSlug) },
                     modifier = Modifier.fillMaxSize(),
                 )
             } else {
@@ -3942,10 +4066,62 @@ private fun EmergencyAlarmTakeover(
 @Composable
 private fun DistrictOverviewScreen(
     tenants: List<TenantOverviewItem>,
+    quietRequests: List<DistrictQuietPeriodItem>,
     isBusy: Boolean,
     onRefresh: () -> Unit,
+    onApproveQuiet: (requestId: Int, tenantSlug: String) -> Unit,
+    onDenyQuiet: (requestId: Int, tenantSlug: String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    var pendingApprovalId by remember { mutableStateOf<Int?>(null) }
+    var pendingApprovalSlug by remember { mutableStateOf("") }
+    var pendingApprovalIsApprove by remember { mutableStateOf(true) }
+
+    if (pendingApprovalId != null) {
+        AlertDialog(
+            onDismissRequest = { pendingApprovalId = null },
+            containerColor = DSColor.Card,
+            title = {
+                Text(
+                    if (pendingApprovalIsApprove) "Approve Quiet Period?" else "Deny Quiet Period?",
+                    color = DSColor.TextPrimary,
+                    fontWeight = FontWeight.Bold,
+                )
+            },
+            text = {
+                Text(
+                    if (pendingApprovalIsApprove)
+                        "This will grant the user a quiet period and notify them."
+                    else
+                        "The user will be notified their request was denied.",
+                    color = DSColor.TextSecondary,
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val id = pendingApprovalId ?: return@Button
+                        val slug = pendingApprovalSlug
+                        if (pendingApprovalIsApprove) onApproveQuiet(id, slug)
+                        else onDenyQuiet(id, slug)
+                        pendingApprovalId = null
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (pendingApprovalIsApprove) DSColor.Success else DSColor.Danger,
+                    ),
+                    enabled = !isBusy,
+                ) {
+                    Text(if (pendingApprovalIsApprove) "Approve" else "Deny", fontWeight = FontWeight.SemiBold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingApprovalId = null }) {
+                    Text("Cancel", color = DSColor.TextSecondary)
+                }
+            },
+        )
+    }
+
     Column(
         modifier = modifier
             .verticalScroll(rememberScrollState())
@@ -3962,6 +4138,103 @@ private fun DistrictOverviewScreen(
                 Text(if (isBusy) "Loading…" else "Refresh", color = BluePrimary)
             }
         }
+
+        if (quietRequests.isNotEmpty()) {
+            Surface(
+                color = SurfaceMain,
+                shape = RoundedCornerShape(20.dp),
+                shadowElevation = 4.dp,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            "Pending Quiet Requests",
+                            color = DSColor.TextPrimary,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 16.sp,
+                        )
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = DSColor.QuietAccent.copy(alpha = 0.15f),
+                        ) {
+                            Text(
+                                "${quietRequests.size}",
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                                color = DSColor.QuietAccent,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp,
+                            )
+                        }
+                    }
+                    quietRequests.forEach { req ->
+                        HorizontalDivider(color = DSColor.Border)
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        req.userName ?: "Unknown User",
+                                        color = DSColor.TextPrimary,
+                                        fontWeight = FontWeight.SemiBold,
+                                        fontSize = 14.sp,
+                                    )
+                                    Text(
+                                        req.tenantName,
+                                        color = DSColor.TextSecondary,
+                                        fontSize = 12.sp,
+                                    )
+                                    if (!req.reason.isNullOrBlank()) {
+                                        Text(
+                                            "\"${req.reason}\"",
+                                            color = DSColor.TextTertiary,
+                                            fontSize = 12.sp,
+                                        )
+                                    }
+                                }
+                                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    OutlinedButton(
+                                        onClick = {
+                                            pendingApprovalId = req.requestId
+                                            pendingApprovalSlug = req.tenantSlug
+                                            pendingApprovalIsApprove = false
+                                        },
+                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                        border = BorderStroke(1.dp, DSColor.Danger.copy(alpha = 0.6f)),
+                                        colors = ButtonDefaults.outlinedButtonColors(contentColor = DSColor.Danger),
+                                        enabled = !isBusy,
+                                    ) {
+                                        Text("Deny", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                                    }
+                                    Button(
+                                        onClick = {
+                                            pendingApprovalId = req.requestId
+                                            pendingApprovalSlug = req.tenantSlug
+                                            pendingApprovalIsApprove = true
+                                        },
+                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                        colors = ButtonDefaults.buttonColors(containerColor = DSColor.QuietAccent),
+                                        enabled = !isBusy,
+                                    ) {
+                                        Text("Approve", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         if (tenants.isEmpty()) {
             Surface(
                 color = SurfaceMain,
@@ -5987,6 +6260,56 @@ private class BackendClient(baseUrl: String, private val apiKey: String) {
                 }
             }
         }
+    }
+
+    fun listDistrictQuietPeriods(userId: Int): List<DistrictQuietPeriodItem> {
+        val req = Request.Builder()
+            .url("$base/district/quiet-periods?user_id=$userId")
+            .withAuth()
+            .get()
+            .build()
+        http.newCall(req).execute().use { res ->
+            val body = JSONObject(requireSuccess(res))
+            val items = body.optJSONArray("requests")
+            return buildList {
+                if (items != null) {
+                    for (i in 0 until items.length()) {
+                        val item = items.optJSONObject(i) ?: continue
+                        add(DistrictQuietPeriodItem(
+                            requestId = item.optInt("request_id"),
+                            userId = item.optInt("user_id"),
+                            userName = item.optNullableString("user_name"),
+                            userRole = item.optNullableString("user_role"),
+                            reason = item.optNullableString("reason"),
+                            status = item.optString("status"),
+                            requestedAt = item.optString("requested_at"),
+                            tenantSlug = item.optString("tenant_slug"),
+                            tenantName = item.optString("tenant_name"),
+                        ))
+                    }
+                }
+            }
+        }
+    }
+
+    fun approveDistrictQuietPeriod(requestId: Int, adminUserId: Int, tenantSlug: String) {
+        val body = JSONObject().put("admin_user_id", adminUserId).put("tenant_slug", tenantSlug)
+        val req = Request.Builder()
+            .url("$base/district/quiet-periods/$requestId/approve")
+            .withAuth()
+            .post(body.toString().toRequestBody(json))
+            .build()
+        http.newCall(req).execute().use { requireSuccess(it) }
+    }
+
+    fun denyDistrictQuietPeriod(requestId: Int, adminUserId: Int, tenantSlug: String) {
+        val body = JSONObject().put("admin_user_id", adminUserId).put("tenant_slug", tenantSlug)
+        val req = Request.Builder()
+            .url("$base/district/quiet-periods/$requestId/deny")
+            .withAuth()
+            .post(body.toString().toRequestBody(json))
+            .build()
+        http.newCall(req).execute().use { requireSuccess(it) }
     }
 
     private fun requireSuccess(res: okhttp3.Response): String {

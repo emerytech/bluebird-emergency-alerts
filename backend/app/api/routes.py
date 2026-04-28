@@ -44,6 +44,9 @@ from app.models.schemas import (
     AlertsResponse,
     AlertSummary,
     DistrictOverviewResponse,
+    DistrictQuietPeriodItem,
+    DistrictQuietPeriodsResponse,
+    DistrictQuietActionRequest,
     IncidentCreateRequest,
     IncidentListResponse,
     IncidentSummary,
@@ -5409,6 +5412,167 @@ async def district_overview(
         key=lambda i: i.tenant_name.lower(),
     )
     return DistrictOverviewResponse(tenant_count=len(items), tenants=items)
+
+
+async def _district_accessible_schools(request: Request, user) -> list:
+    """Return list of schools accessible to a district/super admin."""
+    current_school = request.state.school
+    all_schools = await _schools(request).list_schools()
+    user_role = str(getattr(user, "role", "")).strip().lower()
+    if user_role == "super_admin":
+        return [s for s in all_schools if s.is_active]
+    school_by_id: dict[int, object] = {int(s.id): s for s in all_schools}
+    accessible: dict[str, object] = {str(current_school.slug): current_school}
+    assignments = await _user_tenants(request).list_assignments(
+        user_id=int(user.id),
+        home_tenant_id=int(current_school.id),
+    )
+    for assignment in assignments:
+        school = school_by_id.get(int(assignment.tenant_id))
+        if school is not None and getattr(school, "is_active", True):
+            slug = str(getattr(school, "slug", ""))
+            if slug:
+                accessible[slug] = school
+    return list(accessible.values())
+
+
+async def _district_verify_school_access(request: Request, user, tenant_slug: str) -> object:
+    """Return the School object if user has access; raise 403/404 otherwise."""
+    school = request.app.state.tenant_manager.school_for_slug(tenant_slug)
+    if school is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="School not found")
+    user_role = str(getattr(user, "role", "")).strip().lower()
+    if user_role == "super_admin":
+        return school
+    current_school = request.state.school
+    if str(school.slug) == str(current_school.slug):
+        return school
+    assignments = await _user_tenants(request).list_assignments(
+        user_id=int(user.id),
+        home_tenant_id=int(current_school.id),
+    )
+    assigned_ids = {int(a.tenant_id) for a in assignments}
+    if int(school.id) not in assigned_ids:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not assigned to this school")
+    return school
+
+
+@router.get("/district/quiet-periods", response_model=DistrictQuietPeriodsResponse)
+async def district_quiet_periods(
+    request: Request,
+    user_id: int = Query(..., ge=1),
+    _: None = Depends(require_api_key),
+) -> DistrictQuietPeriodsResponse:
+    user = await _users(request).get_user(user_id)
+    if user is None or not user.is_active:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Active user not found")
+    if not can_any(user.role, {PERM_MANAGE_ASSIGNED_TENANTS, PERM_FULL_ACCESS}):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
+    accessible_schools = await _district_accessible_schools(request, user)
+    items: list[DistrictQuietPeriodItem] = []
+    for school in accessible_schools:
+        tenant = request.app.state.tenant_manager.get(school)
+        if tenant is None:
+            continue
+        records = await tenant.quiet_period_store.list_recent(limit=100)
+        pending = [r for r in records if r.status == "pending"]
+        all_users = await tenant.user_store.list_users()
+        users_by_id = {int(u.id): u for u in all_users}
+        for r in pending:
+            u = users_by_id.get(int(r.user_id))
+            items.append(DistrictQuietPeriodItem(
+                request_id=r.id,
+                user_id=r.user_id,
+                user_name=u.name if u is not None else None,
+                user_role=u.role if u is not None else None,
+                reason=r.reason,
+                status=r.status,
+                requested_at=r.requested_at,
+                approved_at=r.approved_at,
+                approved_by_user_id=r.approved_by_user_id,
+                approved_by_label=r.approved_by_label,
+                expires_at=r.expires_at,
+                tenant_slug=str(school.slug),
+                tenant_name=str(school.name),
+            ))
+    items.sort(key=lambda x: x.requested_at, reverse=True)
+    return DistrictQuietPeriodsResponse(requests=items)
+
+
+@router.post("/district/quiet-periods/{request_id}/approve", response_model=QuietPeriodSummary)
+async def district_approve_quiet_period(
+    request_id: int,
+    body: DistrictQuietActionRequest,
+    request: Request,
+    _: None = Depends(require_api_key),
+) -> QuietPeriodSummary:
+    admin = await _users(request).get_user(body.admin_user_id)
+    if admin is None or not admin.is_active:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin not found or inactive")
+    if not can_any(admin.role, {PERM_APPROVE_ASSIGNED_TENANT_QUIET_REQUESTS, PERM_FULL_ACCESS}):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
+    school = await _district_verify_school_access(request, admin, body.tenant_slug)
+    tenant = request.app.state.tenant_manager.get(school)
+    pending = await tenant.quiet_period_store.get_request(request_id=request_id)
+    if pending is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Request not found")
+    if int(pending.user_id) == int(body.admin_user_id):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cannot approve your own quiet period request")
+    record = await tenant.quiet_period_store.approve_request(
+        request_id=request_id,
+        admin_user_id=int(body.admin_user_id),
+        admin_label=admin.name,
+    )
+    if record is None or record.status != "approved":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Quiet period request is not pending")
+    _fire_audit(
+        request,
+        "quiet_period_approved",
+        actor_user_id=int(body.admin_user_id),
+        actor_label=admin.name,
+        target_type="quiet_period_request",
+        target_id=str(record.id),
+        metadata={"requester_user_id": int(record.user_id), "tenant_slug": body.tenant_slug},
+    )
+    return _to_quiet_period_summary(record)
+
+
+@router.post("/district/quiet-periods/{request_id}/deny", response_model=QuietPeriodSummary)
+async def district_deny_quiet_period(
+    request_id: int,
+    body: DistrictQuietActionRequest,
+    request: Request,
+    _: None = Depends(require_api_key),
+) -> QuietPeriodSummary:
+    admin = await _users(request).get_user(body.admin_user_id)
+    if admin is None or not admin.is_active:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin not found or inactive")
+    if not can_any(admin.role, {PERM_APPROVE_ASSIGNED_TENANT_QUIET_REQUESTS, PERM_FULL_ACCESS}):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
+    school = await _district_verify_school_access(request, admin, body.tenant_slug)
+    tenant = request.app.state.tenant_manager.get(school)
+    pending = await tenant.quiet_period_store.get_request(request_id=request_id)
+    if pending is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Request not found")
+    if int(pending.user_id) == int(body.admin_user_id):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cannot deny your own quiet period request")
+    record = await tenant.quiet_period_store.deny_request(
+        request_id=request_id,
+        admin_user_id=int(body.admin_user_id),
+        admin_label=admin.name,
+    )
+    if record is None or record.status != "denied":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Quiet period request is not pending")
+    _fire_audit(
+        request,
+        "quiet_period_denied",
+        actor_user_id=int(body.admin_user_id),
+        actor_label=admin.name,
+        target_type="quiet_period_request",
+        target_id=str(record.id),
+        metadata={"requester_user_id": int(record.user_id), "tenant_slug": body.tenant_slug},
+    )
+    return _to_quiet_period_summary(record)
 
 
 @router.post("/register-device", response_model=RegisterDeviceResponse)
