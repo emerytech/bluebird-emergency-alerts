@@ -105,6 +105,7 @@ from app.models.schemas import (
     HelpRequestCancellationCategoryBreakdown,
 )
 from app.services.access_code_service import AccessCodeService
+from app.services.demo_live_engine import DemoLiveEngine
 from app.services.alert_broadcaster import BroadcastPlan, AlertBroadcaster
 from app.services.alarm_store import AlarmStateRecord, AlarmStore
 from app.services.apns import APNsClient
@@ -294,6 +295,9 @@ def _broadcaster(req: Request) -> AlertBroadcaster:
 
 def _schools(req: Request) -> SchoolRegistry:
     return req.app.state.school_registry  # type: ignore[attr-defined]
+
+def _demo_engine(req: Request) -> DemoLiveEngine:
+    return req.app.state.demo_live_engine  # type: ignore[attr-defined]
 
 
 def _user_tenants(req: Request) -> UserTenantStore:
@@ -2124,6 +2128,7 @@ async def admin_dashboard(
         school_district_id=getattr(request.state.school, "district_id", None),
         active_sessions=_active_sessions,
         sessions_users_by_id=_sessions_users_by_id,
+        is_demo_mode=bool(getattr(request.state.school, "is_test", False)),
     )
     return HTMLResponse(content=html)
 
@@ -3314,6 +3319,7 @@ async def super_admin_dashboard(
                     "simulation_mode_enabled": bool(getattr(s, "simulation_mode_enabled", False)),
                     "suppress_alarm_audio": bool(getattr(s, "suppress_alarm_audio", False)),
                     "source_tenant_slug": str(getattr(s, "source_tenant_slug", "") or ""),
+                    "live_demo_active": request.app.state.demo_live_engine.is_active(str(getattr(s, "slug", ""))),
                 }
                 for s in _td_schools
             ],
@@ -7842,6 +7848,112 @@ async def super_admin_simulate_alert(slug: str, request: Request, alert_type: st
     )
     _set_flash(request, message=f"Simulated {alert_type} incident created in '{slug}'.")
     return RedirectResponse(url=_super_admin_url("sandbox"), status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.post("/super-admin/sandbox/{slug}/live-demo/enable", include_in_schema=False)
+async def super_admin_live_demo_enable(slug: str, request: Request) -> RedirectResponse:
+    _require_super_admin(request)
+    school = await _schools(request).get_by_slug(slug)
+    if school is None or not school.is_test:
+        _set_flash(request, error="School not found or not a sandbox tenant.")
+        return RedirectResponse(url=_super_admin_url("sandbox"), status_code=status.HTTP_303_SEE_OTHER)
+    await _demo_engine(request).enable(slug)
+    _set_flash(request, message=f"Live demo enabled for '{slug}'.")
+    return RedirectResponse(url=_super_admin_url("sandbox"), status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.post("/super-admin/sandbox/{slug}/live-demo/disable", include_in_schema=False)
+async def super_admin_live_demo_disable(slug: str, request: Request) -> RedirectResponse:
+    _require_super_admin(request)
+    school = await _schools(request).get_by_slug(slug)
+    if school is None or not school.is_test:
+        _set_flash(request, error="School not found or not a sandbox tenant.")
+        return RedirectResponse(url=_super_admin_url("sandbox"), status_code=status.HTTP_303_SEE_OTHER)
+    await _demo_engine(request).disable(slug)
+    _set_flash(request, message=f"Live demo disabled for '{slug}'.")
+    return RedirectResponse(url=_super_admin_url("sandbox"), status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.get("/admin/analytics/demo", include_in_schema=False)
+async def admin_demo_analytics(
+    request: Request,
+    days: int = Query(default=30, ge=1, le=365),
+) -> JSONResponse:
+    """Demo analytics — aggregates real data + synthesizes if sparse."""
+    await _require_dashboard_admin(request)
+    import random as _rand
+    import hashlib as _hash
+
+    slug = str(getattr(request.state, "school_slug", "demo")).strip()
+    seed = int(_hash.md5(slug.encode()).hexdigest()[:8], 16)
+    rng = _rand.Random(seed)
+
+    # Real incident data
+    inc_types_real: dict = await _incident_store(request).incident_type_counts()
+    total_real_inc = sum(inc_types_real.values())
+
+    # Real alert data
+    alerts_real = await _alert_log(request).list_recent(limit=500)
+    total_real_alerts = len(alerts_real)
+
+    # Synthesize if sparse (<5 each)
+    if total_real_inc < 5:
+        inc_types = {
+            "panic": rng.randint(8, 24),
+            "medical": rng.randint(4, 12),
+            "assist": rng.randint(3, 10),
+            "drill": rng.randint(2, 6),
+        }
+    else:
+        inc_types = inc_types_real
+
+    total_inc = sum(inc_types.values())
+    active_inc = rng.randint(0, 2)
+    resolved_inc = total_inc - active_inc
+
+    if total_real_alerts < 5:
+        alerts_by_day = [
+            {"day": f"Day {i+1}", "count": rng.randint(0, 6)}
+            for i in range(min(days, 14))
+        ]
+    else:
+        from collections import defaultdict
+        day_counts: dict = defaultdict(int)
+        for a in alerts_real:
+            day = str(a.created_at)[:10]
+            day_counts[day] += 1
+        alerts_by_day = [{"day": d, "count": c} for d, c in sorted(day_counts.items())[-14:]]
+
+    avg_response_s = rng.randint(12, 45)
+    drill_compliance = rng.randint(72, 98)
+
+    return JSONResponse({
+        "days": days,
+        "alerts_by_day": alerts_by_day,
+        "incident_types": inc_types,
+        "avg_response_seconds": avg_response_s,
+        "drill_compliance_pct": drill_compliance,
+        "active_incidents": active_inc,
+        "resolved_incidents": resolved_inc,
+        "total_incidents": total_inc,
+    })
+
+
+@router.get("/demo/push-feed", include_in_schema=False)
+async def demo_push_feed(request: Request, limit: int = Query(default=20, ge=1, le=50)) -> JSONResponse:
+    """Simulated push event feed for mobile demo mode. Only serves is_test tenants."""
+    school = getattr(request.state, "school", None)
+    if school is None or not getattr(school, "is_test", False):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not a demo tenant.")
+    slug = str(getattr(request.state, "school_slug", "")).strip()
+    engine: DemoLiveEngine = request.app.state.demo_live_engine  # type: ignore[attr-defined]
+    events = engine.push_feed(slug, limit=int(limit))
+    return JSONResponse({
+        "demo_mode": True,
+        "slug": slug,
+        "event_count": len(events),
+        "events": list(reversed(events)),
+    })
 
 
 @router.post("/super-admin/test-tenants/{slug}/reset", include_in_schema=False)

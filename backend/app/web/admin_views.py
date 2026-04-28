@@ -1463,17 +1463,32 @@ def _sandbox_school_row(s: Mapping[str, object]) -> str:
     name = escape(str(s.get("name", "")))
     sim_on = bool(s.get("simulation_mode_enabled"))
     audio_on = bool(s.get("suppress_alarm_audio"))
+    live_demo_on = bool(s.get("live_demo_active"))
     sim_class = "success" if sim_on else "neutral"
     sim_label = "SIM ON" if sim_on else "SIM OFF"
     audio_class = "warning" if audio_on else "neutral"
     audio_label = "AUDIO MUTED" if audio_on else "AUDIO ON"
+    demo_class = "success" if live_demo_on else "neutral"
+    demo_label = "🟢 LIVE DEMO" if live_demo_on else "DEMO OFF"
     confirm_msg = "Reset simulation data for " + str(s.get("slug", "")) + "?"
+    _demo_enable_action = f"/super-admin/sandbox/{slug}/live-demo/enable"
+    _demo_disable_action = f"/super-admin/sandbox/{slug}/live-demo/disable"
+    _demo_btn = (
+        f'<form method="post" action="{_demo_disable_action}">'
+        '<button class="button button-warning-outline" type="submit">Disable Live Demo</button>'
+        '</form>'
+        if live_demo_on else
+        f'<form method="post" action="{_demo_enable_action}">'
+        '<button class="button button-secondary" type="submit">Enable Live Demo</button>'
+        '</form>'
+    )
     return (
         '<div style="border-top:1px solid #e5e7eb;padding:10px 0;display:flex;align-items:center;gap:12px;flex-wrap:wrap;">'
         f'<code style="flex:1;min-width:120px;">{slug}</code>'
         f'<span style="flex:2;">{name}</span>'
         f'<span class="status-pill {sim_class}">{sim_label}</span>'
         f'<span class="status-pill {audio_class}">{audio_label}</span>'
+        f'<span class="status-pill {demo_class}">{demo_label}</span>'
         f'<form method="post" action="/super-admin/test-tenants/{slug}/toggle-simulation">'
         '<button class="button button-secondary" type="submit">Toggle Sim</button>'
         '</form>'
@@ -1484,6 +1499,7 @@ def _sandbox_school_row(s: Mapping[str, object]) -> str:
         '<input type="hidden" name="alert_type" value="lockdown" />'
         '<button class="button button-warning-outline" type="submit">Simulate Alert</button>'
         '</form>'
+        + _demo_btn +
         f'<form method="post" action="/super-admin/test-tenants/{slug}/reset"'
         f' onsubmit="return confirm({repr(confirm_msg)});">'
         '<button class="button button-secondary" type="submit">Reset</button>'
@@ -4166,6 +4182,7 @@ def render_admin_page(
     active_sessions: Sequence[object] = (),
     sessions_users_by_id: Mapping[int, object] = {},
     active_tab: str = "",
+    is_demo_mode: bool = False,
 ) -> str:
     prefix = escape(school_path_prefix)
     role_counts = Counter(user.role for user in users)
@@ -4181,7 +4198,19 @@ def render_admin_page(
     alarm_status_class = "danger" if alarm_state.is_active and not alarm_state.is_training else ("warn" if alarm_state.is_active else "ok")
     alarm_status_label = "TRAINING ACTIVE" if alarm_state.is_active and alarm_state.is_training else ("ALARM ACTIVE" if alarm_state.is_active else "Alarm clear")
     security_feedback = f"{_render_flash(flash_message, 'success')}{_render_flash(flash_error, 'error')}"
-    section = active_section if active_section in {"dashboard", "user-management", "access-codes", "quiet-periods", "audit-logs", "settings", "drill-reports", "district", "devices", "analytics", "district-reports"} else "dashboard"
+    section = active_section if active_section in {"dashboard", "user-management", "access-codes", "quiet-periods", "audit-logs", "settings", "drill-reports", "district", "devices", "analytics", "district-reports", "demo-analytics"} else "dashboard"
+    _demo_banner_html = (
+        '<div style="background:#fef3c7;border-bottom:2px solid #d97706;padding:8px 20px;'
+        'font-size:0.85rem;color:#92400e;display:flex;align-items:center;gap:10px;position:sticky;top:0;z-index:200;">'
+        '<span>⚠</span>'
+        '<strong>Demo Environment</strong> — No real alerts are sent. All activity is simulated.'
+        f'<button onclick="startBluebirdTour()" style="margin-left:auto;background:#d97706;color:#fff;border:none;border-radius:6px;padding:4px 12px;font-size:0.8rem;cursor:pointer;">▶ Start Guided Tour</button>'
+        '</div>'
+    ) if is_demo_mode else ""
+    _demo_badge_html = (
+        '<span style="background:#fef3c7;color:#92400e;font-size:0.7rem;font-weight:700;padding:2px 8px;'
+        'border-radius:4px;border:1px solid #d97706;vertical-align:middle;margin-left:6px;">DEMO</span>'
+    ) if is_demo_mode else ""
     _um_badge_count = len(quiet_periods_active)
     quiet_period_total = len(quiet_periods_active) + len(quiet_periods_history)
     refresh_meta = '<meta http-equiv="refresh" content="30">' if section in {"dashboard", "district"} else ""
@@ -4846,6 +4875,234 @@ def render_admin_page(
         )
     else:
         _archived_tab_html = '<p class="mini-copy" style="color:var(--muted);padding:24px 0;">No archived users.</p>'
+
+    # Phase 12: pre-compute demo mode script block (avoids nested f-string/triple-quote limitation)
+    _demo_analytics_url = prefix + "/admin/analytics/demo"
+    _demo_slug_js = escape(school_slug)
+    _tour_done_key = "bluebird_tour_done_" + escape(school_slug)
+    if is_demo_mode:
+        _demo_mode_script_html = (
+            '\n  <script>\n'
+            '  /* ── Phase 12: Demo Analytics + Guided Tour ────────────────────────────────── */\n'
+            '  (function() {{\n'
+            '\n'
+            '    // ── Demo Analytics ────────────────────────────────────────────────────\n'
+            f"    var _demoAnalyticsUrl = '{_demo_analytics_url}';\n"
+            f"    var _demoSlug = '{_demo_slug_js}';\n"
+            '\n'
+            '    window.loadDemoAnalytics = function(days) {{\n'
+            '      days = days || 30;\n'
+            '      var body = document.getElementById(\'demo-analytics-body\');\n'
+            '      var chart = document.getElementById(\'demo-chart-area\');\n'
+            '      if (body) body.innerHTML = \'<div class="signal-card" style="text-align:center;"><p class="mini-copy">Loading…</p></div>\';\n'
+            '      if (chart) chart.innerHTML = \'\';\n'
+            '      fetch(_demoAnalyticsUrl + \'?days=\' + days, {{credentials: \'same-origin\'}})\n'
+            '        .then(function(r) {{ return r.json(); }})\n'
+            '        .then(function(d) {{\n'
+            '          if (!body) return;\n'
+            '          var total = d.total_incidents || 0;\n'
+            '          var resp = d.avg_response_seconds;\n'
+            '          var respLabel = resp === null || resp === undefined ? \'—\'\n'
+            '            : (resp < 60 ? Math.round(resp) + \'s\' : Math.round(resp / 60) + \'m \' + (Math.round(resp) % 60) + \'s\');\n'
+            '          var drill = d.drill_compliance_pct !== null && d.drill_compliance_pct !== undefined\n'
+            '            ? Math.round(d.drill_compliance_pct) + \'%\' : \'—\';\n'
+            '          var active = d.active_incidents || 0;\n'
+            '          var resolved = d.resolved_incidents || 0;\n'
+            '          var cards = [\n'
+            '            {{ label: \'Total Incidents\', value: total, color: \'#1e40af\' }},\n'
+            '            {{ label: \'Avg Response Time\', value: respLabel, color: \'#065f46\' }},\n'
+            '            {{ label: \'Drill Compliance\', value: drill, color: \'#7c3aed\' }},\n'
+            '            {{ label: \'Active\', value: active, color: \'#b45309\' }},\n'
+            '            {{ label: \'Resolved\', value: resolved, color: \'#15803d\' }},\n'
+            '          ];\n'
+            '          body.innerHTML = cards.map(function(c) {{\n'
+            '            return \'<div class="signal-card" style="text-align:center;padding:18px 12px;">\'\n'
+            '              + \'<div style="font-size:1.9rem;font-weight:800;color:\' + c.color + \';"> \' + c.value + \'</div>\'\n'
+            '              + \'<div style="font-size:0.78rem;color:var(--muted);margin-top:4px;">\' + c.label + \'</div>\'\n'
+            '              + \'</div>\';\n'
+            '          }}).join(\'\');\n'
+            '\n'
+            '          // Inline SVG bar chart for alerts_by_day\n'
+            '          var bars = d.alerts_by_day || [];\n'
+            '          if (chart && bars.length > 0) {{\n'
+            '            var maxVal = Math.max.apply(null, bars.map(function(b) {{ return b.count || 0; }})) || 1;\n'
+            '            var bw = Math.max(6, Math.min(32, Math.floor(600 / bars.length) - 4));\n'
+            '            var chartW = bars.length * (bw + 4) + 40;\n'
+            '            var chartH = 100;\n'
+            '            var svgBars = bars.map(function(b, i) {{\n'
+            '              var h = Math.max(2, Math.round(((b.count || 0) / maxVal) * 72));\n'
+            '              var x = 36 + i * (bw + 4);\n'
+            '              var y = chartH - 22 - h;\n'
+            '              var lbl = (b.date || \'\').slice(5);\n'
+            '              return \'<rect x="\' + x + \'" y="\' + y + \'" width="\' + bw + \'" height="\' + h\n'
+            '                + \'" rx="2" fill="#3b82f6" fill-opacity="0.7"/>\'\n'
+            '                + (bars.length <= 31\n'
+            '                  ? \'<text x="\' + (x + bw/2) + \'" y="\' + (chartH - 6) + \'" text-anchor="middle" font-size="8" fill="var(--muted)">\' + lbl + \'</text>\'\n'
+            '                  : \'\');\n'
+            '            }}).join(\'\');\n'
+            '            var yLabels = \'<text x="34" y="22" text-anchor="end" font-size="9" fill="var(--muted)">\' + maxVal + \'</text>\'\n'
+            '              + \'<text x="34" y="\' + (chartH - 22) + \'" text-anchor="end" font-size="9" fill="var(--muted)">0</text>\';\n'
+            '            chart.innerHTML = \'<div style="margin-bottom:8px;font-size:0.78rem;font-weight:600;color:var(--muted);">Alerts by Day (last \' + days + \'d)</div>\'\n'
+            '              + \'<svg width="100%" viewBox="0 0 \' + chartW + \' \' + chartH + \'" style="display:block;max-width:700px;" xmlns="http://www.w3.org/2000/svg">\'\n'
+            '              + yLabels + svgBars + \'</svg>\';\n'
+            '          }}\n'
+            '        }})\n'
+            '        .catch(function(e) {{\n'
+            '          if (body) body.innerHTML = \'<div style="color:var(--danger);padding:16px;font-size:0.85rem;">Could not load demo analytics: \' + e.message + \'</div>\';\n'
+            '        }});\n'
+            '    }};\n'
+            '\n'
+            '    // Auto-load when demo-analytics nav item is clicked\n'
+            '    document.addEventListener(\'DOMContentLoaded\', function() {{\n'
+            '      var navItem = document.querySelector(\'[data-section="demo-analytics"]\');\n'
+            '      if (navItem) {{\n'
+            '        navItem.addEventListener(\'click\', function() {{\n'
+            '          setTimeout(function() {{ window.loadDemoAnalytics(30); }}, 80);\n'
+            '        }});\n'
+            '      }}\n'
+            '      var active = document.querySelector(\'.nav-item.active[data-section="demo-analytics"]\');\n'
+            '      if (active) {{ window.loadDemoAnalytics(30); }}\n'
+            '    }});\n'
+            '\n'
+            '    // ── Guided Tour ──────────────────────────────────────────────────────\n'
+            f"    var _TOUR_DONE_KEY = 'bluebird_tour_done_' + _demoSlug;\n"
+            '    var _tourSteps = [\n'
+            '      {{\n'
+            '        targetSelector: \'#overview\',\n'
+            '        title: \'Command Deck\',\n'
+            '        text: \'This is your main dashboard. See the current alarm state, user counts, device readiness, and recent alerts at a glance.\',\n'
+            '        position: \'bottom\'\n'
+            '      }},\n'
+            '      {{\n'
+            '        targetSelector: \'#js-alarm-status-pill\',\n'
+            '        title: \'Emergency Alert Button\',\n'
+            '        text: \'This shows your current alarm state. Administrators can trigger school-wide emergency alerts that instantly notify all registered devices.\',\n'
+            '        position: \'bottom\'\n'
+            '      }},\n'
+            '      {{\n'
+            '        targetSelector: \'#user-management\',\n'
+            '        title: \'User Management\',\n'
+            '        text: \'Manage staff accounts here. Add users, assign roles, and control who can trigger alerts or access the admin panel.\',\n'
+            '        position: \'top\'\n'
+            '      }},\n'
+            '      {{\n'
+            '        targetSelector: \'#access-codes\',\n'
+            '        title: \'Access Codes\',\n'
+            '        text: \'Generate one-time access codes for onboarding new staff. Codes can be pre-assigned, emailed, and tracked as claimed or unclaimed.\',\n'
+            '        position: \'top\'\n'
+            '      }},\n'
+            '      {{\n'
+            '        targetSelector: \'#analytics\',\n'
+            '        title: \'Analytics & Reports\',\n'
+            '        text: \'Review incident history, response times, drill compliance, and per-building breakdowns. Sandbox data is seeded for realism.\',\n'
+            '        position: \'top\'\n'
+            '      }},\n'
+            '      {{\n'
+            '        targetSelector: \'#settings\',\n'
+            '        title: \'Settings\',\n'
+            '        text: \'Configure your school name, APNS credentials, quiet period policies, and branding. Changes take effect immediately.\',\n'
+            '        position: \'top\'\n'
+            '      }}\n'
+            '    ];\n'
+            '    var _tourIdx = 0;\n'
+            '    var _tourOverlay = null;\n'
+            '    var _tourTooltip = null;\n'
+            '    var _tourHighlight = null;\n'
+            '\n'
+            '    function _tourCreate() {{\n'
+            '      if (_tourOverlay) return;\n'
+            '      _tourOverlay = document.createElement(\'div\');\n'
+            '      _tourOverlay.style.cssText = \'position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:9000;pointer-events:none;display:none;\';\n'
+            '      document.body.appendChild(_tourOverlay);\n'
+            '      _tourHighlight = document.createElement(\'div\');\n'
+            '      _tourHighlight.style.cssText = \'position:fixed;z-index:9001;border:2px solid #f59e0b;border-radius:6px;box-shadow:0 0 0 4px rgba(245,158,11,0.25);pointer-events:none;display:none;transition:all 0.2s ease;\';\n'
+            '      document.body.appendChild(_tourHighlight);\n'
+            '      _tourTooltip = document.createElement(\'div\');\n'
+            '      _tourTooltip.style.cssText = \'position:fixed;z-index:9002;background:#fff;color:#1e293b;border-radius:10px;box-shadow:0 8px 32px rgba(0,0,0,0.22);padding:20px 22px;max-width:340px;min-width:260px;font-size:0.9rem;display:none;\';\n'
+            '      document.body.appendChild(_tourTooltip);\n'
+            '    }}\n'
+            '\n'
+            '    function _tourPosition(target, position) {{\n'
+            '      var r = target.getBoundingClientRect();\n'
+            '      _tourHighlight.style.display = \'block\';\n'
+            '      _tourHighlight.style.top = (r.top - 6) + \'px\';\n'
+            '      _tourHighlight.style.left = (r.left - 6) + \'px\';\n'
+            '      _tourHighlight.style.width = (r.width + 12) + \'px\';\n'
+            '      _tourHighlight.style.height = (r.height + 12) + \'px\';\n'
+            '      var tw = 340, th = 160;\n'
+            '      var top, left;\n'
+            '      if (position === \'bottom\') {{\n'
+            '        top = r.bottom + 14;\n'
+            '        left = Math.max(12, Math.min(r.left, window.innerWidth - tw - 12));\n'
+            '      }} else {{\n'
+            '        top = Math.max(12, r.top - th - 14);\n'
+            '        left = Math.max(12, Math.min(r.left, window.innerWidth - tw - 12));\n'
+            '      }}\n'
+            '      _tourTooltip.style.top = top + \'px\';\n'
+            '      _tourTooltip.style.left = left + \'px\';\n'
+            '    }}\n'
+            '\n'
+            '    function _tourShow(idx) {{\n'
+            '      if (idx >= _tourSteps.length) {{ _tourEnd(true); return; }}\n'
+            '      var step = _tourSteps[idx];\n'
+            '      var target = document.querySelector(step.targetSelector);\n'
+            '      if (!target) {{ _tourShow(idx + 1); return; }}\n'
+            '      target.scrollIntoView({{ behavior: \'smooth\', block: \'center\' }});\n'
+            '      setTimeout(function() {{\n'
+            '        _tourPosition(target, step.position);\n'
+            '        var isLast = (idx === _tourSteps.length - 1);\n'
+            '        var progress = (idx + 1) + \' / \' + _tourSteps.length;\n'
+            '        _tourTooltip.innerHTML =\n'
+            '          \'<div style="font-size:0.7rem;color:#b45309;font-weight:700;text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px;">Tour \' + progress + \'</div>\'\n'
+            '          + \'<div style="font-weight:700;font-size:1rem;margin-bottom:8px;">\' + step.title + \'</div>\'\n'
+            '          + \'<div style="color:#475569;line-height:1.5;margin-bottom:16px;">\' + step.text + \'</div>\'\n'
+            '          + \'<div style="display:flex;gap:8px;justify-content:flex-end;">\'\n'
+            '          + (idx > 0 ? \'<button id="bb-tour-back" style="padding:5px 14px;border:1px solid #e2e8f0;border-radius:6px;background:#f8fafc;cursor:pointer;font-size:0.82rem;">← Back</button>\' : \'\')\n'
+            '          + (isLast\n'
+            '              ? \'<button id="bb-tour-done" style="padding:5px 16px;background:#d97706;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:0.82rem;">Finish Tour ✓</button>\'\n'
+            '              : \'<button id="bb-tour-next" style="padding:5px 16px;background:#d97706;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:0.82rem;">Next →</button>\')\n'
+            '          + \'<button id="bb-tour-skip" style="padding:5px 10px;border:none;background:transparent;color:#94a3b8;cursor:pointer;font-size:0.78rem;">Skip</button>\'\n'
+            '          + \'</div>\';\n'
+            '        _tourTooltip.style.display = \'block\';\n'
+            '        _tourOverlay.style.display = \'block\';\n'
+            '        var nextBtn = document.getElementById(\'bb-tour-next\');\n'
+            '        var backBtn = document.getElementById(\'bb-tour-back\');\n'
+            '        var doneBtn = document.getElementById(\'bb-tour-done\');\n'
+            '        var skipBtn = document.getElementById(\'bb-tour-skip\');\n'
+            '        if (nextBtn) nextBtn.addEventListener(\'click\', function() {{ _tourShow(idx + 1); }});\n'
+            '        if (backBtn) backBtn.addEventListener(\'click\', function() {{ _tourShow(idx - 1); }});\n'
+            '        if (doneBtn) doneBtn.addEventListener(\'click\', function() {{ _tourEnd(true); }});\n'
+            '        if (skipBtn) skipBtn.addEventListener(\'click\', function() {{ _tourEnd(false); }});\n'
+            '      }}, 220);\n'
+            '    }}\n'
+            '\n'
+            '    function _tourEnd(completed) {{\n'
+            '      if (_tourOverlay) _tourOverlay.style.display = \'none\';\n'
+            '      if (_tourHighlight) _tourHighlight.style.display = \'none\';\n'
+            '      if (_tourTooltip) _tourTooltip.style.display = \'none\';\n'
+            '      if (completed) {{ try {{ localStorage.setItem(_TOUR_DONE_KEY, \'1\'); }} catch(e) {{}} }}\n'
+            '    }}\n'
+            '\n'
+            '    window.startBluebirdTour = function() {{\n'
+            '      _tourCreate();\n'
+            '      _tourIdx = 0;\n'
+            '      _tourShow(0);\n'
+            '    }};\n'
+            '\n'
+            '    // Auto-start tour on first visit\n'
+            '    document.addEventListener(\'DOMContentLoaded\', function() {{\n'
+            '      try {{\n'
+            '        if (!localStorage.getItem(_TOUR_DONE_KEY)) {{\n'
+            '          setTimeout(window.startBluebirdTour, 600);\n'
+            '        }}\n'
+            '      }} catch(e) {{}}\n'
+            '    }});\n'
+            '\n'
+            '  }})();\n'
+            '  </script>'
+        )
+    else:
+        _demo_mode_script_html = ""
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -5548,6 +5805,236 @@ def render_admin_page(
     }});
   }})();
   </script>
+{_demo_mode_script_html}
+
+    window.loadDemoAnalytics = function(days) {{
+      days = days || 30;
+      var body = document.getElementById('demo-analytics-body');
+      var chart = document.getElementById('demo-chart-area');
+      if (body) body.innerHTML = '<div class="signal-card" style="text-align:center;"><p class="mini-copy">Loading…</p></div>';
+      if (chart) chart.innerHTML = '';
+      fetch(_demoAnalyticsUrl + '?days=' + days, {{credentials: 'same-origin'}})
+        .then(function(r) {{ return r.json(); }})
+        .then(function(d) {{
+          if (!body) return;
+          var total = d.total_incidents || 0;
+          var resp = d.avg_response_seconds;
+          var respLabel = resp === null || resp === undefined ? '—'
+            : (resp < 60 ? Math.round(resp) + 's' : Math.round(resp / 60) + 'm ' + (Math.round(resp) % 60) + 's');
+          var drill = d.drill_compliance_pct !== null && d.drill_compliance_pct !== undefined
+            ? Math.round(d.drill_compliance_pct) + '%' : '—';
+          var active = d.active_incidents || 0;
+          var resolved = d.resolved_incidents || 0;
+          var cards = [
+            {{ label: 'Total Incidents', value: total, color: '#1e40af' }},
+            {{ label: 'Avg Response Time', value: respLabel, color: '#065f46' }},
+            {{ label: 'Drill Compliance', value: drill, color: '#7c3aed' }},
+            {{ label: 'Active', value: active, color: '#b45309' }},
+            {{ label: 'Resolved', value: resolved, color: '#15803d' }},
+          ];
+          body.innerHTML = cards.map(function(c) {{
+            return '<div class="signal-card" style="text-align:center;padding:18px 12px;">'
+              + '<div style="font-size:1.9rem;font-weight:800;color:' + c.color + ';">' + c.value + '</div>'
+              + '<div style="font-size:0.78rem;color:var(--muted);margin-top:4px;">' + c.label + '</div>'
+              + '</div>';
+          }}).join('');
+
+          // Inline SVG bar chart for alerts_by_day
+          var bars = d.alerts_by_day || [];
+          if (chart && bars.length > 0) {{
+            var maxVal = Math.max.apply(null, bars.map(function(b) {{ return b.count || 0; }})) || 1;
+            var bw = Math.max(6, Math.min(32, Math.floor(600 / bars.length) - 4));
+            var chartW = bars.length * (bw + 4) + 40;
+            var chartH = 100;
+            var svgBars = bars.map(function(b, i) {{
+              var h = Math.max(2, Math.round(((b.count || 0) / maxVal) * 72));
+              var x = 36 + i * (bw + 4);
+              var y = chartH - 22 - h;
+              var lbl = (b.date || '').slice(5); // MM-DD
+              return '<rect x="' + x + '" y="' + y + '" width="' + bw + '" height="' + h
+                + '" rx="2" fill="#3b82f6" fill-opacity="0.7"/>'
+                + (bars.length <= 31
+                  ? '<text x="' + (x + bw/2) + '" y="' + (chartH - 6) + '" text-anchor="middle" font-size="8" fill="var(--muted)">' + lbl + '</text>'
+                  : '');
+            }}).join('');
+            // Y-axis label
+            var yLabels = '<text x="34" y="22" text-anchor="end" font-size="9" fill="var(--muted)">' + maxVal + '</text>'
+              + '<text x="34" y="' + (chartH - 22) + '" text-anchor="end" font-size="9" fill="var(--muted)">0</text>';
+            chart.innerHTML = '<div style="margin-bottom:8px;font-size:0.78rem;font-weight:600;color:var(--muted);">Alerts by Day (last ' + days + 'd)</div>'
+              + '<svg width="100%" viewBox="0 0 ' + chartW + ' ' + chartH + '" style="display:block;max-width:700px;" xmlns="http://www.w3.org/2000/svg">'
+              + yLabels + svgBars + '</svg>';
+          }}
+        }})
+        .catch(function(e) {{
+          if (body) body.innerHTML = '<div style="color:var(--danger);padding:16px;font-size:0.85rem;">Could not load demo analytics: ' + e.message + '</div>';
+        }});
+    }};
+
+    // Auto-load when demo-analytics nav item is clicked
+    document.addEventListener('DOMContentLoaded', function() {{
+      var navItem = document.querySelector('[data-section="demo-analytics"]');
+      if (navItem) {{
+        navItem.addEventListener('click', function() {{
+          setTimeout(function() {{ window.loadDemoAnalytics(30); }}, 80);
+        }});
+      }}
+      // If starting on demo-analytics section, load immediately
+      var active = document.querySelector('.nav-item.active[data-section="demo-analytics"]');
+      if (active) {{ window.loadDemoAnalytics(30); }}
+    }});
+
+    // ── Guided Tour ────────────────────────────────────────────────────────────
+    var _TOUR_DONE_KEY = 'bluebird_tour_done_' + _demoSlug;
+    var _tourSteps = [
+      {{
+        targetSelector: '#overview',
+        title: 'Command Deck',
+        text: 'This is your main dashboard. See the current alarm state, user counts, device readiness, and recent alerts at a glance.',
+        position: 'bottom'
+      }},
+      {{
+        targetSelector: '.panic-trigger, [data-action="panic"], .alarm-btn, #js-alarm-status-pill',
+        title: 'Emergency Alert Button',
+        text: 'Use this to trigger a school-wide emergency alert. It instantly notifies all registered devices via push notification and SMS.',
+        position: 'bottom'
+      }},
+      {{
+        targetSelector: '#user-management',
+        title: 'User Management',
+        text: 'Manage staff accounts here. Add users, assign roles, and control who can trigger alerts or access the admin panel.',
+        position: 'top'
+      }},
+      {{
+        targetSelector: '#access-codes',
+        title: 'Access Codes',
+        text: 'Generate one-time access codes for onboarding new staff. Codes can be pre-assigned, emailed, and tracked as claimed or unclaimed.',
+        position: 'top'
+      }},
+      {{
+        targetSelector: '#analytics, #demo-analytics',
+        title: 'Analytics & Reports',
+        text: 'Review incident history, response times, drill compliance, and per-building breakdowns. Sandbox data is seeded for realism.',
+        position: 'top'
+      }},
+      {{
+        targetSelector: '#settings',
+        title: 'Settings',
+        text: 'Configure your school name, APNS credentials, quiet period policies, and branding. Changes take effect immediately.',
+        position: 'top'
+      }}
+    ];
+    var _tourIdx = 0;
+    var _tourOverlay = null;
+    var _tourTooltip = null;
+    var _tourHighlight = null;
+
+    function _tourCreate() {{
+      if (_tourOverlay) return;
+      // Semi-transparent overlay
+      _tourOverlay = document.createElement('div');
+      _tourOverlay.id = 'bb-tour-overlay';
+      _tourOverlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:9000;pointer-events:none;display:none;';
+      document.body.appendChild(_tourOverlay);
+      // Highlight box
+      _tourHighlight = document.createElement('div');
+      _tourHighlight.id = 'bb-tour-highlight';
+      _tourHighlight.style.cssText = 'position:fixed;z-index:9001;border:2px solid #f59e0b;border-radius:6px;box-shadow:0 0 0 4px rgba(245,158,11,0.25);pointer-events:none;display:none;transition:all 0.2s ease;';
+      document.body.appendChild(_tourHighlight);
+      // Tooltip
+      _tourTooltip = document.createElement('div');
+      _tourTooltip.id = 'bb-tour-tooltip';
+      _tourTooltip.style.cssText = 'position:fixed;z-index:9002;background:#fff;color:#1e293b;border-radius:10px;box-shadow:0 8px 32px rgba(0,0,0,0.22);padding:20px 22px;max-width:340px;min-width:260px;font-size:0.9rem;display:none;';
+      document.body.appendChild(_tourTooltip);
+    }}
+
+    function _tourPosition(target, position) {{
+      var r = target.getBoundingClientRect();
+      // Highlight around target
+      _tourHighlight.style.display = 'block';
+      _tourHighlight.style.top = (r.top - 6) + 'px';
+      _tourHighlight.style.left = (r.left - 6) + 'px';
+      _tourHighlight.style.width = (r.width + 12) + 'px';
+      _tourHighlight.style.height = (r.height + 12) + 'px';
+      // Tooltip position
+      var tw = 340, th = 160;
+      var top, left;
+      if (position === 'bottom') {{
+        top = r.bottom + 14;
+        left = Math.max(12, Math.min(r.left, window.innerWidth - tw - 12));
+      }} else {{
+        top = Math.max(12, r.top - th - 14);
+        left = Math.max(12, Math.min(r.left, window.innerWidth - tw - 12));
+      }}
+      _tourTooltip.style.top = top + 'px';
+      _tourTooltip.style.left = left + 'px';
+    }}
+
+    function _tourShow(idx) {{
+      if (idx >= _tourSteps.length) {{ _tourEnd(true); return; }}
+      var step = _tourSteps[idx];
+      var target = document.querySelector(step.targetSelector);
+      if (!target) {{
+        // Skip steps where the element doesn't exist (e.g. access-codes not shown for this role)
+        _tourShow(idx + 1);
+        return;
+      }}
+      // Scroll target into view
+      target.scrollIntoView({{ behavior: 'smooth', block: 'center' }});
+      setTimeout(function() {{
+        _tourPosition(target, step.position);
+        var isLast = (idx === _tourSteps.length - 1);
+        var progress = (idx + 1) + ' / ' + _tourSteps.length;
+        _tourTooltip.innerHTML =
+          '<div style="font-size:0.7rem;color:#b45309;font-weight:700;text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px;">Tour ' + progress + '</div>'
+          + '<div style="font-weight:700;font-size:1rem;margin-bottom:8px;">' + step.title + '</div>'
+          + '<div style="color:#475569;line-height:1.5;margin-bottom:16px;">' + step.text + '</div>'
+          + '<div style="display:flex;gap:8px;justify-content:flex-end;">'
+          + (idx > 0 ? '<button id="bb-tour-back" style="padding:5px 14px;border:1px solid #e2e8f0;border-radius:6px;background:#f8fafc;cursor:pointer;font-size:0.82rem;">← Back</button>' : '')
+          + (isLast
+              ? '<button id="bb-tour-done" style="padding:5px 16px;background:#d97706;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:0.82rem;">Finish Tour ✓</button>'
+              : '<button id="bb-tour-next" style="padding:5px 16px;background:#d97706;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:0.82rem;">Next →</button>')
+          + '<button id="bb-tour-skip" style="padding:5px 10px;border:none;background:transparent;color:#94a3b8;cursor:pointer;font-size:0.78rem;">Skip</button>'
+          + '</div>';
+        _tourTooltip.style.display = 'block';
+        _tourOverlay.style.display = 'block';
+        var nextBtn = document.getElementById('bb-tour-next');
+        var backBtn = document.getElementById('bb-tour-back');
+        var doneBtn = document.getElementById('bb-tour-done');
+        var skipBtn = document.getElementById('bb-tour-skip');
+        if (nextBtn) nextBtn.addEventListener('click', function() {{ _tourShow(idx + 1); }});
+        if (backBtn) backBtn.addEventListener('click', function() {{ _tourShow(idx - 1); }});
+        if (doneBtn) doneBtn.addEventListener('click', function() {{ _tourEnd(true); }});
+        if (skipBtn) skipBtn.addEventListener('click', function() {{ _tourEnd(false); }});
+      }}, 220);
+    }}
+
+    function _tourEnd(completed) {{
+      if (_tourOverlay) _tourOverlay.style.display = 'none';
+      if (_tourHighlight) _tourHighlight.style.display = 'none';
+      if (_tourTooltip) _tourTooltip.style.display = 'none';
+      if (completed) {{
+        try {{ localStorage.setItem(_TOUR_DONE_KEY, '1'); }} catch(e) {{}}
+      }}
+    }}
+
+    window.startBluebirdTour = function() {{
+      _tourCreate();
+      _tourIdx = 0;
+      _tourShow(0);
+    }};
+
+    // Auto-start tour on first visit (if not already done)
+    document.addEventListener('DOMContentLoaded', function() {{
+      try {{
+        if (!localStorage.getItem(_TOUR_DONE_KEY)) {{
+          // Slight delay so page renders fully before starting tour
+          setTimeout(window.startBluebirdTour, 600);
+        }}
+      }} catch(e) {{}}
+    }});
+
+  }})();
+  </script>
 </head>
 <body>
   <div class="app-shell">
@@ -5571,6 +6058,7 @@ def render_admin_page(
             {_nav_item("audit-logs", "Audit Logs")}
             {_nav_item("analytics", "Analytics")}
             {_nav_item("district-reports", "District Reports") if show_district_nav else ""}
+            {_nav_item("demo-analytics", "📊 Demo Analytics") if is_demo_mode else ""}
             {_nav_item("settings", "Settings")}
             {_nav_item("district", "District Overview") if show_district_nav else ""}
             {_nav_item("devices", "Active Devices") if show_district_nav else ""}
@@ -5580,6 +6068,7 @@ def render_admin_page(
     </aside>
 
       <section class="content-stack workspace">
+        {_demo_banner_html}
         {_render_flash(flash_message, "success")}
         {_render_flash(flash_error, "error")}
         {super_admin_banner_html}
@@ -5874,6 +6363,26 @@ def render_admin_page(
             <div id="dr-cards" class="um-health-bar" style="flex-wrap:wrap;gap:14px;">
               <span class="mini-copy">Loading district data…</span>
             </div>
+          </section>
+
+          <!-- Phase 12: Demo Analytics section (sandbox tenants only) -->
+          <section class="panel command-section span-12" id="demo-analytics"{_section_style("demo-analytics")}>
+            <div class="panel-header">
+              <div>
+                <p class="eyebrow">Demo Analytics {_demo_badge_html}</p>
+                <h2>System Metrics Overview</h2>
+                <p class="card-copy">Live metrics aggregated from this sandbox environment. Data is seeded with realistic synthetic values when volume is low.</p>
+              </div>
+              <div class="button-row" style="margin-top:0;">
+                <button class="button button-secondary" onclick="loadDemoAnalytics(30)">30 days</button>
+                <button class="button button-secondary" onclick="loadDemoAnalytics(7)">7 days</button>
+                <button class="button button-secondary" onclick="loadDemoAnalytics(90)">90 days</button>
+              </div>
+            </div>
+            <div id="demo-analytics-body" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:16px;margin-bottom:24px;">
+              <div class="signal-card" style="text-align:center;"><p class="mini-copy">Loading…</p></div>
+            </div>
+            <div id="demo-chart-area" style="margin-top:8px;"></div>
           </section>
 
           <section class="panel command-section span-12" id="user-management"{_section_style("user-management")}>

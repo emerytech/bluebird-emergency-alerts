@@ -273,6 +273,52 @@ class IncidentStore:
     async def list_active_incidents(self, *, limit: int = 50) -> List[IncidentRecord]:
         return await anyio.to_thread.run_sync(self._list_active_incidents_sync, int(limit))
 
+    def _resolve_incident_sync(self, incident_id: int, notes: str) -> bool:
+        resolved_at = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT metadata_json FROM incidents WHERE id = ? AND status = 'active';",
+                (incident_id,),
+            ).fetchone()
+            if not row:
+                return False
+            try:
+                meta = json.loads(row[0]) if row[0] else {}
+            except Exception:
+                meta = {}
+            meta["resolved_at"] = resolved_at
+            if notes:
+                meta["resolution_notes"] = notes
+            result = conn.execute(
+                "UPDATE incidents SET status = 'resolved', metadata_json = ? WHERE id = ? AND status = 'active';",
+                (json.dumps(meta), incident_id),
+            )
+            return result.rowcount > 0
+
+    async def resolve_incident(self, incident_id: int, notes: str = "") -> bool:
+        return await anyio.to_thread.run_sync(
+            lambda: self._resolve_incident_sync(incident_id, notes)
+        )
+
+    def _incident_type_counts_sync(self, is_simulation: Optional[bool] = None) -> dict:
+        """Count incidents grouped by type (optionally filtered by is_simulation)."""
+        with self._connect() as conn:
+            if is_simulation is None:
+                rows = conn.execute(
+                    "SELECT type, COUNT(*) FROM incidents GROUP BY type ORDER BY COUNT(*) DESC;"
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT type, COUNT(*) FROM incidents WHERE is_simulation = ? GROUP BY type ORDER BY COUNT(*) DESC;",
+                    (1 if is_simulation else 0,),
+                ).fetchall()
+        return {str(r[0]): int(r[1]) for r in rows}
+
+    async def incident_type_counts(self, is_simulation: Optional[bool] = None) -> dict:
+        return await anyio.to_thread.run_sync(
+            lambda: self._incident_type_counts_sync(is_simulation)
+        )
+
     def _create_team_assist_sync(
         self,
         *,

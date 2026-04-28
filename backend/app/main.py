@@ -26,6 +26,7 @@ from app.services.platform_admin_store import PlatformAdminStore
 from app.services.quiet_state_store import QuietStateStore
 from app.services.school_registry import SchoolRegistry
 from app.services.tenant_manager import TenantManager
+from app.services.demo_live_engine import DemoLiveEngine
 from app.services.twilio_sms import TwilioSMSClient
 from app.services.user_tenant_store import UserTenantStore
 
@@ -189,6 +190,7 @@ async def lifespan(app: FastAPI):
     app.state.health_monitor = health_monitor
     app.state.email_service = email_service
     app.state.access_code_service = access_code_service
+    app.state.demo_live_engine = DemoLiveEngine(tenant_manager)
 
     health_task = asyncio.create_task(
         _health_check_loop(app, settings.HEALTH_CHECK_INTERVAL)
@@ -199,6 +201,7 @@ async def lifespan(app: FastAPI):
 
     yield
 
+    await app.state.demo_live_engine.disable_all()
     health_task.cancel()
     qp_expiry_task.cancel()
     try:
