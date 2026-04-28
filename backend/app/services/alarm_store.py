@@ -8,6 +8,8 @@ from typing import Optional
 
 import anyio
 
+from app.core.db import optimized_connect
+
 
 @dataclass(frozen=True)
 class AlarmStateRecord:
@@ -38,12 +40,11 @@ class AlarmStore:
         self._init_db()
 
     def _connect(self) -> sqlite3.Connection:
-        return sqlite3.connect(self._db_path, timeout=30, isolation_level=None)
+        return optimized_connect(self._db_path)
 
     def _init_db(self) -> None:
         os.makedirs(os.path.dirname(os.path.abspath(self._db_path)), exist_ok=True)
         with self._connect() as conn:
-            conn.execute("PRAGMA journal_mode=WAL;")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS alarm_state (

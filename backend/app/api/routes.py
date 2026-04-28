@@ -107,6 +107,7 @@ from app.models.schemas import (
 from app.services.access_code_service import AccessCodeService
 from app.services.demo_live_engine import DemoLiveEngine
 from app.services.alert_broadcaster import BroadcastPlan, AlertBroadcaster
+from app.services.push_queue import PushJob, PushQueue
 from app.services.alarm_store import AlarmStateRecord, AlarmStore
 from app.services.apns import APNsClient
 from app.services.email_service import EmailService, TEMPLATE_KEYS as EMAIL_TEMPLATE_KEYS
@@ -313,6 +314,10 @@ def _sessions(req: Request):
 
 def _broadcaster(req: Request) -> AlertBroadcaster:
     return _tenant(req).broadcaster  # type: ignore[attr-defined]
+
+
+def _push_queue(req: Request) -> PushQueue:
+    return req.app.state.push_queue  # type: ignore[attr-defined]
 
 
 def _schools(req: Request) -> SchoolRegistry:
@@ -1331,16 +1336,20 @@ async def _push_tokens_for_scope(
     target_user_ids: Optional[set[int]] = None,
 ) -> tuple[list[str], list[str]]:
     tenant_slug = _tenant(request).slug
-    apns_devices = await _registry(request).list_by_provider("apns")
-    fcm_devices = await _registry(request).list_by_provider("fcm")
+    # Fetch APNs devices, FCM devices, and all users in parallel — all are
+    # independent reads that previously ran serially.
+    apns_devices, fcm_devices, all_users = await asyncio.gather(
+        _registry(request).list_by_provider("apns"),
+        _registry(request).list_by_provider("fcm"),
+        _users(request).list_users(),
+    )
+    active_user_ids = {u.id for u in all_users if u.is_active}
     candidate_user_ids = {
         int(device.user_id)
         for device in (*apns_devices, *fcm_devices)
         if device.user_id is not None and int(device.user_id) > 0
     }
     paused_user_ids = await _quiet_suppressed_user_ids(request, candidate_user_ids=candidate_user_ids)
-    all_users = await _users(request).list_users()
-    active_user_ids = {u.id for u in all_users if u.is_active}
 
     def _allow_user(user_id: Optional[int]) -> bool:
         if user_id is not None and user_id not in active_user_ids:
@@ -1409,8 +1418,10 @@ async def _send_help_request_push(
     so the alarm does not play on the device that originated the request,
     even when the app is backgrounded or closed.
     """
-    apns_devices = await _registry(request).list_by_provider("apns")
-    fcm_devices = await _registry(request).list_by_provider("fcm")
+    apns_devices, fcm_devices = await asyncio.gather(
+        _registry(request).list_by_provider("apns"),
+        _registry(request).list_by_provider("fcm"),
+    )
 
     candidate_ids = {
         int(d.user_id)
@@ -1922,9 +1933,12 @@ async def activate_alarm(
     sms_numbers: list[str] = []
     paused_user_ids: set[int] = set()
     if not is_training:
-        apns_devices = await _registry(request).list_by_provider("apns")
-        fcm_devices = await _registry(request).list_by_provider("fcm")
-        all_users_list = await users.list_users()
+        # APNs devices, FCM devices, and user list are independent reads — fetch in parallel.
+        apns_devices, fcm_devices, all_users_list = await asyncio.gather(
+            _registry(request).list_by_provider("apns"),
+            _registry(request).list_by_provider("fcm"),
+            users.list_users(),
+        )
         active_user_ids_set = {int(u.id) for u in all_users_list if u.is_active}
         candidate_user_ids = {
             int(device.user_id)
@@ -1963,7 +1977,12 @@ async def activate_alarm(
             silent_for_sender=True,
         )
         if not _is_simulation_mode(request):
-            background_tasks.add_task(_broadcaster(request).broadcast_panic, alert_id=alert_id, message=body.message, plan=plan)
+            _push_queue(request).enqueue(PushJob(
+                broadcaster=_broadcaster(request),
+                alert_id=alert_id,
+                message=body.message,
+                plan=plan,
+            ))
 
     logger.warning(
         "ALARM ACTIVATED tenant=%s alert_id=%s by_user=%s training=%s label=%r apns=%s fcm=%s sms_targets=%s skipped_users=%s message=%r",
@@ -4545,8 +4564,10 @@ async def admin_create_broadcast(
             trigger_ip=trigger_ip,
             trigger_user_agent=trigger_user_agent,
         )
-        apns_devices = await _registry(request).list_by_provider("apns")
-        fcm_devices = await _registry(request).list_by_provider("fcm")
+        apns_devices, fcm_devices = await asyncio.gather(
+            _registry(request).list_by_provider("apns"),
+            _registry(request).list_by_provider("fcm"),
+        )
         candidate_user_ids = {
             int(device.user_id)
             for device in (*apns_devices, *fcm_devices)
@@ -4570,12 +4591,12 @@ async def admin_create_broadcast(
             tenant_slug=_tenant(request).slug,
         )
         if not _is_simulation_mode(request):
-            background_tasks.add_task(
-                _broadcaster(request).broadcast_panic,
+            _push_queue(request).enqueue(PushJob(
+                broadcaster=_broadcaster(request),
                 alert_id=alert_id,
                 message=normalized_message,
                 plan=plan,
-            )
+            ))
             _set_flash(request, message="Broadcast update posted and queued for push delivery.")
         else:
             _set_flash(request, message="Broadcast update posted (push suppressed — sandbox mode).")
@@ -6804,16 +6825,29 @@ async def panic(
         trigger_user_agent=trigger_user_agent,
     )
 
-    apns_devices = [] if is_training else await _registry(request).list_by_provider("apns")
-    fcm_devices = [] if is_training else await _registry(request).list_by_provider("fcm")
-    provider_counts = await _registry(request).provider_counts()
-    device_count = await _registry(request).count()
+    # Fetch all independent registry/user reads in parallel to minimise latency
+    # on the critical alert path.
+    if is_training:
+        apns_devices, fcm_devices = [], []
+        provider_counts, device_count, all_users_list = await asyncio.gather(
+            _registry(request).provider_counts(),
+            _registry(request).count(),
+            users.list_users(),
+        )
+    else:
+        apns_devices, fcm_devices, provider_counts, device_count, all_users_list = await asyncio.gather(
+            _registry(request).list_by_provider("apns"),
+            _registry(request).list_by_provider("fcm"),
+            _registry(request).provider_counts(),
+            _registry(request).count(),
+            users.list_users(),
+        )
     candidate_user_ids = {
         int(device.user_id)
         for device in (*apns_devices, *fcm_devices)
         if device.user_id is not None and int(device.user_id) > 0
     }
-    candidate_user_ids.update(int(user.id) for user in await users.list_users() if int(user.id) > 0)
+    candidate_user_ids.update(int(user.id) for user in all_users_list if int(user.id) > 0)
     paused_user_ids = await _quiet_suppressed_user_ids(request, candidate_user_ids=candidate_user_ids)
     apns_tokens = list(
         dict.fromkeys(
@@ -6852,7 +6886,12 @@ async def panic(
 
     if not is_training and not _is_simulation_mode(request):
         plan = BroadcastPlan(apns_tokens=apns_tokens, fcm_tokens=fcm_tokens, sms_numbers=sms_numbers, tenant_slug=_panic_tenant_slug)
-        background_tasks.add_task(_broadcaster(request).broadcast_panic, alert_id=alert_id, message=body.message, plan=plan)
+        _push_queue(request).enqueue(PushJob(
+            broadcaster=_broadcaster(request),
+            alert_id=alert_id,
+            message=body.message,
+            plan=plan,
+        ))
 
     await _publish_alert_event(request, event="alert_triggered", alert_id=alert_id)
 

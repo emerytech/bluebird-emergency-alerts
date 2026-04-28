@@ -27,6 +27,7 @@ from app.services.quiet_state_store import QuietStateStore
 from app.services.school_registry import SchoolRegistry
 from app.services.tenant_manager import TenantManager
 from app.services.demo_live_engine import DemoLiveEngine
+from app.services.push_queue import PushQueue
 from app.services.twilio_sms import TwilioSMSClient
 from app.services.user_tenant_store import UserTenantStore
 
@@ -124,6 +125,44 @@ async def _quiet_period_expiry_loop(app: FastAPI, interval: float = 45.0) -> Non
             logger.warning("qp_expiry loop error: %s", exc)
 
 
+async def _wal_checkpoint_loop(app: FastAPI, interval: float = 300.0) -> None:
+    """
+    Periodically checkpoint all tenant WAL files to prevent unbounded growth.
+    SQLite WAL files accumulate until a checkpoint is issued; on a busy server
+    that never checkpoints, reads slow down as the WAL grows.  PASSIVE mode
+    never blocks writers and is safe to call from any thread.
+    """
+    import sqlite3 as _sqlite3
+
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            tenant_manager: TenantManager = app.state.tenant_manager
+            for tenant in list(tenant_manager._cache.values()):
+                try:
+                    db_path = getattr(tenant.user_store, "_db_path", None)
+                    if db_path:
+                        await asyncio.to_thread(
+                            lambda p=db_path: _sqlite3.connect(p, timeout=5, isolation_level=None)
+                            .execute("PRAGMA wal_checkpoint(PASSIVE);")
+                            .close()
+                        )
+                except Exception:
+                    pass
+            # Also checkpoint the platform DB.
+            platform_db = getattr(app.state.settings, "PLATFORM_DB_PATH", None)
+            if platform_db:
+                await asyncio.to_thread(
+                    lambda p=platform_db: _sqlite3.connect(p, timeout=5, isolation_level=None)
+                    .execute("PRAGMA wal_checkpoint(PASSIVE);")
+                    .close()
+                )
+        except asyncio.CancelledError:
+            break
+        except Exception as exc:
+            logger.debug("wal_checkpoint loop error: %s", exc)
+
+
 def _normalize_tenant_candidate(value: str) -> str:
     return _TENANT_CLEAN_RE.sub("-", value.strip().lower()).strip("-")
 
@@ -192,24 +231,37 @@ async def lifespan(app: FastAPI):
     app.state.access_code_service = access_code_service
     app.state.demo_live_engine = DemoLiveEngine(tenant_manager)
 
+    push_queue = PushQueue(maxsize=500)
+    await push_queue.start()
+    app.state.push_queue = push_queue
+
     health_task = asyncio.create_task(
         _health_check_loop(app, settings.HEALTH_CHECK_INTERVAL)
     )
     qp_expiry_task = asyncio.create_task(
         _quiet_period_expiry_loop(app, interval=45.0)
     )
+    wal_checkpoint_task = asyncio.create_task(
+        _wal_checkpoint_loop(app, interval=300.0)
+    )
 
     yield
 
     await app.state.demo_live_engine.disable_all()
+    await push_queue.stop()
     health_task.cancel()
     qp_expiry_task.cancel()
+    wal_checkpoint_task.cancel()
     try:
         await health_task
     except asyncio.CancelledError:
         pass
     try:
         await qp_expiry_task
+    except asyncio.CancelledError:
+        pass
+    try:
+        await wal_checkpoint_task
     except asyncio.CancelledError:
         pass
 

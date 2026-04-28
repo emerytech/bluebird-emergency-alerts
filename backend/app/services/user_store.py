@@ -8,6 +8,7 @@ from typing import List, Optional
 
 import anyio
 
+from app.core.db import optimized_connect
 from app.services.passwords import hash_password, verify_password
 from app.services.permissions import is_dashboard_role
 
@@ -46,13 +47,11 @@ class UserStore:
         self._init_db()
 
     def _connect(self) -> sqlite3.Connection:
-        return sqlite3.connect(self._db_path, timeout=30, isolation_level=None)
+        return optimized_connect(self._db_path)
 
     def _init_db(self) -> None:
         os.makedirs(os.path.dirname(os.path.abspath(self._db_path)), exist_ok=True)
         with self._connect() as conn:
-            conn.execute("PRAGMA journal_mode=WAL;")
-            conn.execute("PRAGMA foreign_keys=ON;")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS users (
