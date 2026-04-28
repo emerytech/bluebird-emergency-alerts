@@ -186,6 +186,7 @@ try {
     makeSearchFilter('audit-search', '#audit-events', 'tbody tr');
     makeSearchFilter('device-search', '#devices', 'tbody tr');
     makeSearchFilter('drill-search', '#drill-reports', 'tbody tr');
+    makeSearchFilter('school-search', '#schools-grid', '.tenant-card');
     var userSearchEl = document.getElementById('user-search');
     if (userSearchEl) {
       userSearchEl.addEventListener('input', function () {

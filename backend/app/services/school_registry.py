@@ -66,6 +66,8 @@ class SchoolRecord:
     source_tenant_slug: Optional[str] = None
     simulation_mode_enabled: bool = False
     suppress_alarm_audio: bool = False
+    is_archived: bool = False
+    archived_at: Optional[str] = None
 
     @property
     def subdomain(self) -> str:
@@ -87,13 +89,15 @@ _DISTRICT_COLS = """
 # Indices: 0=id, 1=created_at, 2=slug, 3=name, 4=is_active,
 #          5=accent, 6=accent_strong, 7=sidebar_start, 8=sidebar_end,
 #          9=setup_pin_salt, 10=setup_pin_hash, 11=district_id, 12=logo_path, 13=sort_order,
-#          14=is_test, 15=source_tenant_slug, 16=simulation_mode_enabled, 17=suppress_alarm_audio
+#          14=is_test, 15=source_tenant_slug, 16=simulation_mode_enabled, 17=suppress_alarm_audio,
+#          18=is_archived, 19=archived_at
 _SCHOOL_COLS = """
     id, created_at, slug, name, is_active,
     accent, accent_strong, sidebar_start, sidebar_end,
     setup_pin_salt, setup_pin_hash,
     district_id, logo_path, sort_order,
-    is_test, source_tenant_slug, simulation_mode_enabled, suppress_alarm_audio
+    is_test, source_tenant_slug, simulation_mode_enabled, suppress_alarm_audio,
+    is_archived, archived_at
 """
 
 
@@ -267,6 +271,8 @@ class SchoolRegistry:
             ("source_tenant_slug",      "ALTER TABLE schools ADD COLUMN source_tenant_slug TEXT NULL;"),
             ("simulation_mode_enabled", "ALTER TABLE schools ADD COLUMN simulation_mode_enabled INTEGER NOT NULL DEFAULT 0;"),
             ("suppress_alarm_audio",    "ALTER TABLE schools ADD COLUMN suppress_alarm_audio INTEGER NOT NULL DEFAULT 0;"),
+            ("is_archived",  "ALTER TABLE schools ADD COLUMN is_archived INTEGER NOT NULL DEFAULT 0;"),
+            ("archived_at",  "ALTER TABLE schools ADD COLUMN archived_at TEXT NULL;"),
         ]:
             if col not in cols:
                 conn.execute(ddl)
@@ -279,7 +285,8 @@ class SchoolRegistry:
         # 0=id, 1=created_at, 2=slug, 3=name, 4=is_active,
         # 5=accent, 6=accent_strong, 7=sidebar_start, 8=sidebar_end,
         # 9=setup_pin_salt, 10=setup_pin_hash, 11=district_id, 12=logo_path, 13=sort_order,
-        # 14=is_test, 15=source_tenant_slug, 16=simulation_mode_enabled, 17=suppress_alarm_audio
+        # 14=is_test, 15=source_tenant_slug, 16=simulation_mode_enabled, 17=suppress_alarm_audio,
+        # 18=is_archived, 19=archived_at
         return SchoolRecord(
             id=int(row[0]),
             created_at=str(row[1]),
@@ -298,6 +305,8 @@ class SchoolRegistry:
             source_tenant_slug=str(row[15]) if len(row) > 15 and row[15] is not None else None,
             simulation_mode_enabled=bool(int(row[16])) if len(row) > 16 and row[16] is not None else False,
             suppress_alarm_audio=bool(int(row[17])) if len(row) > 17 and row[17] is not None else False,
+            is_archived=bool(int(row[18])) if len(row) > 18 and row[18] is not None else False,
+            archived_at=str(row[19]) if len(row) > 19 and row[19] is not None else None,
         )
 
     # Kept for backward compatibility — external callers use this name.
@@ -807,6 +816,47 @@ class SchoolRegistry:
 
     async def set_audio_suppression(self, *, slug: str, enabled: bool) -> Optional[SchoolRecord]:
         return await anyio.to_thread.run_sync(self._set_audio_suppression_sync, slug, enabled)
+
+    def _archive_school_sync(self, school_id: int) -> Optional[SchoolRecord]:
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE schools SET is_archived = 1, archived_at = ?, is_active = 0 WHERE id = ? AND is_archived = 0;",
+                (now, int(school_id)),
+            )
+            row = conn.execute(
+                f"SELECT {_SCHOOL_COLS} FROM schools WHERE id = ? LIMIT 1;",
+                (int(school_id),),
+            ).fetchone()
+        return self._school_from_row(row) if row is not None else None
+
+    async def archive_school(self, school_id: int) -> Optional[SchoolRecord]:
+        return await anyio.to_thread.run_sync(self._archive_school_sync, int(school_id))
+
+    def _restore_school_sync(self, school_id: int) -> Optional[SchoolRecord]:
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE schools SET is_archived = 0, archived_at = NULL, is_active = 1 WHERE id = ? AND is_archived = 1;",
+                (int(school_id),),
+            )
+            row = conn.execute(
+                f"SELECT {_SCHOOL_COLS} FROM schools WHERE id = ? LIMIT 1;",
+                (int(school_id),),
+            ).fetchone()
+        return self._school_from_row(row) if row is not None else None
+
+    async def restore_school(self, school_id: int) -> Optional[SchoolRecord]:
+        return await anyio.to_thread.run_sync(self._restore_school_sync, int(school_id))
+
+    def _delete_archived_school_sync(self, school_id: int) -> bool:
+        with self._connect() as conn:
+            conn.execute("DELETE FROM operator_notes WHERE tenant_slug IN (SELECT slug FROM schools WHERE id = ?);", (int(school_id),))
+            cur = conn.execute("DELETE FROM schools WHERE id = ? AND is_archived = 1;", (int(school_id),))
+        return (cur.rowcount or 0) > 0
+
+    async def delete_archived_school(self, school_id: int) -> bool:
+        """Permanently purge an archived school from the registry. Blocked on non-archived schools."""
+        return await anyio.to_thread.run_sync(self._delete_archived_school_sync, int(school_id))
 
     def _list_test_districts_sync(self) -> List[DistrictRecord]:
         with self._connect() as conn:

@@ -3318,6 +3318,7 @@ async def super_admin_dashboard(
             """
         )
         theme_controls_html = ""
+        billing_status = str(billing.billing_status or "trial").strip().lower()
         school_rows.append(
             {
                 "name": school.name,
@@ -3339,9 +3340,12 @@ async def super_admin_dashboard(
                 "pin_controls_html": pin_controls_html,
                 "theme_controls_html": theme_controls_html,
                 "is_active": school.is_active,
+                "is_archived": getattr(school, "is_archived", False),
+                "archived_at": getattr(school, "archived_at", None) or "",
+                "billing_status": billing_status,
+                "user_count": admin_count,
             }
         )
-        billing_status = str(billing.billing_status or "trial").strip().lower()
         billing_status_class = "ok" if billing_status in {"active", "trial", "free"} else "danger"
         free_override_class = "ok" if billing.is_free_override else "danger"
         billing_rows.append(
@@ -3984,6 +3988,55 @@ async def super_admin_remove_tenant_free_access(
     )
     _set_flash(request, message=f"Removed free-access override for {school.name}.")
     return RedirectResponse(url=_super_admin_url("billing"), status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.post("/super-admin/schools/{slug}/archive", include_in_schema=False)
+async def super_admin_archive_school(request: Request, slug: str) -> RedirectResponse:
+    _require_super_admin(request)
+    from app.services.tenant_manager import normalize_school_slug
+
+    normalized_slug = normalize_school_slug(slug)
+    school = await _schools(request).get_by_slug(normalized_slug)
+    if school is None:
+        _set_flash(request, error="School not found.")
+        return RedirectResponse(url=_super_admin_url("schools"), status_code=status.HTTP_303_SEE_OTHER)
+    if getattr(school, "is_archived", False):
+        _set_flash(request, error="School is already archived.")
+        return RedirectResponse(url=_super_admin_url("schools"), status_code=status.HTTP_303_SEE_OTHER)
+    await _schools(request).archive_school(school.id)
+    _set_flash(request, message=f"Archived {school.name}.")
+    return RedirectResponse(url=_super_admin_url("schools"), status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.post("/super-admin/schools/{slug}/restore", include_in_schema=False)
+async def super_admin_restore_school(request: Request, slug: str) -> RedirectResponse:
+    _require_super_admin(request)
+    from app.services.tenant_manager import normalize_school_slug
+
+    normalized_slug = normalize_school_slug(slug)
+    school = await _schools(request).get_by_slug(normalized_slug)
+    if school is None or not getattr(school, "is_archived", False):
+        _set_flash(request, error="Archived school not found.")
+        return RedirectResponse(url=_super_admin_url("schools"), status_code=status.HTTP_303_SEE_OTHER)
+    await _schools(request).restore_school(school.id)
+    _set_flash(request, message=f"Restored {school.name}.")
+    return RedirectResponse(url=_super_admin_url("schools"), status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.post("/super-admin/schools/{slug}/delete", include_in_schema=False)
+async def super_admin_delete_school_purge(request: Request, slug: str) -> RedirectResponse:
+    _require_super_admin(request)
+    from app.services.tenant_manager import normalize_school_slug
+
+    normalized_slug = normalize_school_slug(slug)
+    school = await _schools(request).get_by_slug(normalized_slug)
+    if school is None or not getattr(school, "is_archived", False):
+        _set_flash(request, error="School must be archived before deletion.")
+        return RedirectResponse(url=_super_admin_url("schools"), status_code=status.HTTP_303_SEE_OTHER)
+    school_name = school.name
+    await _schools(request).delete_archived_school(school.id)
+    _set_flash(request, message=f"Permanently deleted {school_name}.")
+    return RedirectResponse(url=_super_admin_url("schools"), status_code=status.HTTP_303_SEE_OTHER)
 
 
 @router.post("/super-admin/schools/{slug}/enter", include_in_schema=False)

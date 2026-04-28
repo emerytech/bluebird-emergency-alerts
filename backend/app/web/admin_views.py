@@ -814,6 +814,36 @@ def _base_styles() -> str:
     .msp-search-bar input { flex: 1; }
     @media (max-width: 700px) { .msp-grid { grid-template-columns: 1fr; } }
 
+    /* ── Tenant Registry Cards ─────────────────────────────────────────── */
+    .tenant-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+      gap: 16px;
+      margin-bottom: 8px;
+    }
+    .tenant-card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 18px 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      transition: box-shadow 0.15s, transform 0.15s;
+    }
+    .tenant-card:hover { box-shadow: 0 4px 16px rgba(0,0,0,0.09); transform: translateY(-1px); }
+    .tenant-card--archived { opacity: 0.7; border-style: dashed; }
+    .tenant-card-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+    .tenant-card-name { font-size: 1rem; font-weight: 700; color: var(--text); line-height: 1.3; }
+    .tenant-card-badges { display: flex; gap: 4px; flex-wrap: wrap; justify-content: flex-end; flex-shrink: 0; }
+    .tenant-card-meta { font-size: 0.82rem; color: var(--muted); line-height: 1.7; }
+    .tenant-card-actions { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-top: auto; }
+    .tenant-search { margin-bottom: 16px; }
+    .tenant-archived-section { margin-top: 28px; border-top: 1px solid var(--border); padding-top: 20px; }
+    .tenant-archived-toggle { display: flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; background: none; border: none; padding: 0; color: var(--muted); font-size: 0.88rem; font-weight: 600; }
+    .tenant-archived-toggle:hover { color: var(--text); }
+    @media (max-width: 700px) { .tenant-grid { grid-template-columns: 1fr; } }
+
     td.empty-state {
       text-align: center;
       padding: 36px 16px;
@@ -1455,6 +1485,79 @@ def _sandbox_district_cards(sandbox_data: Sequence[Mapping[str, object]]) -> str
     return "".join(parts)
 
 
+def _tenant_registry_card(item: Mapping[str, object]) -> str:
+    name = escape(str(item.get("name", "")))
+    slug_raw = str(item.get("slug", ""))
+    slug = escape(slug_raw)
+    admin_url = escape(str(item.get("admin_url", "#")))
+    admin_url_label = escape(str(item.get("admin_url_label", "")))
+    is_active = bool(item.get("is_active", True))
+    billing_status = str(item.get("billing_status", "trial") or "trial")
+    user_count = int(item.get("user_count", 0) or 0)
+    setup_status = escape(str(item.get("setup_status", "")))
+    setup_hint = escape(str(item.get("setup_hint", "")))
+    status_class = "ok" if is_active else "danger"
+    status_label = "Active" if is_active else "Inactive"
+    billing_class = "ok" if billing_status in {"active", "trial", "free"} else "danger"
+    admins_label = f"{user_count} admin{'s' if user_count != 1 else ''}"
+    confirm_archive = escape(f"Archive {str(item.get('name', slug_raw))}? This will deactivate the school and move it to the archive.")
+    return (
+        f'<div class="tenant-card" data-slug="{slug}">'
+        f'<div class="tenant-card-header">'
+        f'<div class="tenant-card-name">{name}</div>'
+        f'<div class="tenant-card-badges">'
+        f'<span class="status-pill {status_class}">{status_label}</span>'
+        f'<span class="status-pill {billing_class}">{escape(billing_status)}</span>'
+        f'</div></div>'
+        f'<div class="tenant-card-meta">'
+        f'<code>{slug}</code> &middot; {admins_label}<br>'
+        f'<a href="{admin_url}" target="_blank" style="color:var(--accent);font-size:0.8rem;">{admin_url_label}</a><br>'
+        f'<span>{setup_status}</span>'
+        f'{"<br><span>" + setup_hint + "</span>" if setup_hint else ""}'
+        f'</div>'
+        f'<div class="tenant-card-actions">'
+        f'<form method="post" action="/super-admin/schools/{slug}/enter" style="margin:0;">'
+        f'<button class="button button-primary" style="font-size:0.8rem;padding:5px 12px;">Open Admin</button>'
+        f'</form>'
+        f'<a class="button button-secondary" href="/super-admin?section=billing#billing" style="font-size:0.8rem;padding:5px 12px;">Billing</a>'
+        f'<form method="post" action="/super-admin/schools/{slug}/archive" style="margin:0;"'
+        f' onsubmit="return confirm(\'{confirm_archive}\');">'
+        f'<button class="button button-danger-outline" style="font-size:0.8rem;padding:5px 12px;">Archive</button>'
+        f'</form>'
+        f'</div>'
+        f'</div>'
+    )
+
+
+def _tenant_registry_archived_card(item: Mapping[str, object]) -> str:
+    name = escape(str(item.get("name", "")))
+    slug_raw = str(item.get("slug", ""))
+    slug = escape(slug_raw)
+    archived_at = str(item.get("archived_at", "") or "")[:10]
+    confirm_delete = escape(f"Permanently delete {str(item.get('name', slug_raw))} and purge all registry data? This cannot be undone.")
+    return (
+        f'<div class="tenant-card tenant-card--archived" data-slug="{slug}">'
+        f'<div class="tenant-card-header">'
+        f'<div class="tenant-card-name" style="color:var(--muted);">{name}</div>'
+        f'<span class="status-pill danger">Archived</span>'
+        f'</div>'
+        f'<div class="tenant-card-meta">'
+        f'<code>{slug}</code>'
+        f'{"<br><span>Archived " + archived_at + "</span>" if archived_at else ""}'
+        f'</div>'
+        f'<div class="tenant-card-actions">'
+        f'<form method="post" action="/super-admin/schools/{slug}/restore" style="margin:0;">'
+        f'<button class="button button-secondary" style="font-size:0.8rem;padding:5px 12px;">Restore</button>'
+        f'</form>'
+        f'<form method="post" action="/super-admin/schools/{slug}/delete" style="margin:0;"'
+        f' onsubmit="return confirm(\'{confirm_delete}\');">'
+        f'<button class="button button-danger-outline" style="font-size:0.8rem;padding:5px 12px;">Delete</button>'
+        f'</form>'
+        f'</div>'
+        f'</div>'
+    )
+
+
 def render_super_admin_page(
     *,
     base_domain: str,
@@ -1487,19 +1590,11 @@ def render_super_admin_page(
     sandbox_data: Sequence[Mapping[str, object]] = (),
     prod_districts: Sequence[object] = (),
 ) -> str:
-    rows = "".join(
-        (
-            "<tr>"
-            f"<td>{escape(str(item['name']))}</td>"
-            f"<td><code>{escape(str(item['slug']))}</code></td>"
-            f"<td><a href=\"{escape(str(item['admin_url']))}\" target=\"_blank\">{escape(str(item['admin_url_label']))}</a>"
-            f"<div class=\"mini-copy\">Mobile/API base: <code>{escape(str(item['api_base_label']))}</code></div></td>"
-            f"<td>{escape(str(item['setup_status']))}<div class=\"mini-copy\">{escape(str(item['setup_hint']))}</div>{str(item['access_controls_html'])}{str(item['pin_controls_html'])}{str(item['theme_controls_html'])}</td>"
-            f"<td>{'Active' if bool(item['is_active']) else 'Inactive'}</td>"
-            "</tr>"
-        )
-        for item in school_rows
-    ) or '<tr><td colspan="5" class="empty-state">No schools yet.</td></tr>'
+    _active_school_rows = [r for r in school_rows if not r.get("is_archived")]
+    _archived_school_rows = [r for r in school_rows if r.get("is_archived")]
+    active_school_cards_html = "".join(_tenant_registry_card(r) for r in _active_school_rows) or \
+        '<p class="mini-copy" style="color:var(--muted);padding:24px 0;">No schools yet.</p>'
+    archived_school_cards_html = "".join(_tenant_registry_archived_card(r) for r in _archived_school_rows)
     security_feedback = f"{_render_flash(flash_message, 'success')}{_render_flash(flash_error, 'error')}"
     platform_rows = "".join(
         (
@@ -2674,7 +2769,7 @@ def render_super_admin_page(
             <div class="status-row">
               <span class="status-pill ok"><strong>Domain</strong>{escape(base_domain)}</span>
               <span class="status-pill"><strong>Districts</strong>{len([d for d in msp_districts if d.get("is_district")])}</span>
-              <span class="status-pill"><strong>Schools</strong>{len(school_rows)}</span>
+              <span class="status-pill"><strong>Schools</strong>{len(_active_school_rows)}</span>
             </div>
           </div>
           {security_feedback}
@@ -2702,17 +2797,25 @@ def render_super_admin_page(
             </div>
             <div class="status-row">
               <span class="status-pill ok"><strong>Base domain</strong>{escape(base_domain)}</span>
-              <span class="status-pill"><strong>Schools</strong>{len(school_rows)}</span>
+              <span class="status-pill"><strong>Active</strong>{len(_active_school_rows)}</span>
+              {f'<span class="status-pill warn"><strong>Archived</strong>{len(_archived_school_rows)}</span>' if _archived_school_rows else ''}
               <span class="status-pill {'ok' if git_pull_configured else 'danger'}"><strong>Git pull</strong>{'configured' if git_pull_configured else 'not configured'}</span>
             </div>
           </div>
-          <div class="table-search"><input type="search" id="school-search" placeholder="Filter schools..." /></div>
-          <div class="table-wrap"><table class="data-table" id="schools-table">
-            <thead>
-              <tr><th>Name</th><th>Slug</th><th>School URLs</th><th>Setup</th><th>Status</th></tr>
-            </thead>
-            <tbody>{rows}</tbody>
-          </table></div>
+          <div class="tenant-search">
+            <input type="search" id="school-search" placeholder="Filter schools by name or slug..." style="max-width:340px;" />
+          </div>
+          <div class="tenant-grid" id="schools-grid">
+            {active_school_cards_html}
+          </div>
+          {f'''<div class="tenant-archived-section" id="archived-schools-section">
+            <button class="tenant-archived-toggle" onclick="var g=document.getElementById(\'schools-archived-grid\');g.style.display=g.style.display===\'none\'?\'grid\':\' none\';this.textContent=(g.style.display===\'none\'?\'▶ Show archived (\'+{len(_archived_school_rows)}+\')\':\' ▼ Hide archived (\'+{len(_archived_school_rows)}+\')\');" type="button">
+              ▶ Show archived ({len(_archived_school_rows)})
+            </button>
+            <div class="tenant-grid" id="schools-archived-grid" style="display:none;margin-top:16px;">
+              {archived_school_cards_html}
+            </div>
+          </div>''' if _archived_school_rows else ''}
         </section>
         <section class="panel command-section" id="billing"{_section_style("billing")}>
           <div class="panel-header hero-band">
