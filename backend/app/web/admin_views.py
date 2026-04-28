@@ -3664,6 +3664,19 @@ def _um_enterprise_table(
                 f'data-uid="{u.id}" onclick="event.stopPropagation();umToggleEdit({u.id})">Edit</button>'
                 + _archive_btn
             )
+        # 9.1: View As button — visible to district_admin/super_admin for any user,
+        #      visible to building_admin/admin for non-DA/SA users, never for self
+        _can_view_as = (
+            not is_self and (
+                actor_role in {"district_admin", "super_admin"}
+                or (actor_role in {"building_admin", "admin"} and u.role not in {"district_admin", "super_admin"})
+            )
+        )
+        _view_as_btn = (
+            f'<button class="button button-secondary" style="min-height:32px;font-size:0.78rem;padding:0 10px;white-space:nowrap;" '
+            f'type="button" onclick="event.stopPropagation();umOpenViewAs({u.id},{json.dumps(u.name)})">View As</button>'
+        ) if _can_view_as else ""
+
         # 8.2: checkbox cell (excluded for self to avoid accidental self-archival)
         _cb_cell = (
             f'<td style="width:36px;padding-left:8px;" onclick="event.stopPropagation();">'
@@ -3681,6 +3694,7 @@ def _um_enterprise_table(
             f'<td>{status_badge}</td>'
             f'<td style="text-align:right;">'
             f'<div style="display:inline-flex;gap:6px;align-items:center;">'
+            + _view_as_btn
             + _action_cell
             + f'</div>'
             f'</td>'
@@ -3765,6 +3779,25 @@ def _um_delete_modal() -> str:
     <div class="um-modal-actions">
       <button class="button button-secondary" id="dm-cancel">Cancel</button>
       <button class="button button-danger" id="dm-confirm">Delete Permanently</button>
+    </div>
+  </div>
+</div>
+"""
+
+
+def _um_view_as_modal() -> str:
+    return """
+<div class="um-modal-wrap" id="um-viewas-modal" style="z-index:1100;">
+  <div class="um-modal" style="max-width:560px;max-height:85vh;display:flex;flex-direction:column;">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;flex-shrink:0;">
+      <h3 style="margin:0;" id="va-title">View As — Read Only</h3>
+      <button class="button button-secondary" id="va-close" style="min-height:30px;font-size:0.78rem;padding:0 12px;">Close</button>
+    </div>
+    <div style="background:rgba(220,38,38,0.08);border:1px solid rgba(220,38,38,0.22);border-radius:8px;padding:8px 14px;margin-bottom:14px;flex-shrink:0;">
+      <strong style="color:#dc2626;font-size:0.82rem;">&#128274; READ ONLY TROUBLESHOOTING VIEW — Actions are disabled.</strong>
+    </div>
+    <div id="va-body" style="overflow-y:auto;flex:1;font-size:0.85rem;">
+      <div style="color:var(--muted);text-align:center;padding:24px 0;">Loading…</div>
     </div>
   </div>
 </div>
@@ -4148,7 +4181,7 @@ def render_admin_page(
     alarm_status_class = "danger" if alarm_state.is_active and not alarm_state.is_training else ("warn" if alarm_state.is_active else "ok")
     alarm_status_label = "TRAINING ACTIVE" if alarm_state.is_active and alarm_state.is_training else ("ALARM ACTIVE" if alarm_state.is_active else "Alarm clear")
     security_feedback = f"{_render_flash(flash_message, 'success')}{_render_flash(flash_error, 'error')}"
-    section = active_section if active_section in {"dashboard", "user-management", "access-codes", "quiet-periods", "audit-logs", "settings", "drill-reports", "district", "devices"} else "dashboard"
+    section = active_section if active_section in {"dashboard", "user-management", "access-codes", "quiet-periods", "audit-logs", "settings", "drill-reports", "district", "devices", "analytics", "district-reports"} else "dashboard"
     _um_badge_count = len(quiet_periods_active)
     quiet_period_total = len(quiet_periods_active) + len(quiet_periods_history)
     refresh_meta = '<meta http-equiv="refresh" content="30">' if section in {"dashboard", "district"} else ""
@@ -5048,6 +5081,155 @@ def render_admin_page(
         }});
       }}
     }});
+
+    // 9.1: View-As modal
+    var vaModal = document.getElementById('um-viewas-modal');
+    var vaBody = document.getElementById('va-body');
+    var vaTitle = document.getElementById('va-title');
+    window.umOpenViewAs = function(uid, userName) {{
+      if (vaTitle) vaTitle.textContent = 'View As: ' + userName + ' — Read Only';
+      if (vaBody) vaBody.innerHTML = '<div style="color:var(--muted);text-align:center;padding:24px 0;">Loading…</div>';
+      if (vaModal) vaModal.classList.add('open');
+      fetch(BB_PATH_PREFIX + '/admin/users/' + uid + '/view-as', {{credentials: 'same-origin'}})
+        .then(function(r) {{ return r.ok ? r.json() : Promise.reject(r.status); }})
+        .then(function(d) {{
+          if (!vaBody) return;
+          var u = d.user || {{}};
+          var ctx = d.tenant_context || {{}};
+          var qp = d.quiet_period_status || {{}};
+          var alarmBanner = ctx.alarm_active
+            ? '<div style="background:rgba(220,38,38,0.1);border:1px solid rgba(220,38,38,0.3);border-radius:6px;padding:8px 12px;margin-bottom:10px;">'
+              + '<strong style="color:#dc2626;">' + (ctx.alarm_is_training ? '⚠ Training Drill Active' : '⚠ ALARM ACTIVE') + '</strong>'
+              + (ctx.alarm_message ? '<br/><span style="font-size:0.8rem;">' + ctx.alarm_message + '</span>' : '')
+              + '</div>'
+            : '';
+          var infoRows = [
+            ['Role', u.role || '—'], ['Status', u.is_active ? 'Active' : 'Inactive'],
+            ['Username', u.login_name || '—'], ['Title', u.title || '—'],
+            ['Phone', u.phone || '—'], ['Last login', (u.last_login_at || '').slice(0,16).replace('T',' ') || 'Never'],
+            ['School', ctx.school_name || '—'],
+          ];
+          var infoHtml = '<table style="width:100%;border-collapse:collapse;font-size:0.83rem;margin-bottom:14px;">'
+            + infoRows.map(function(r) {{
+              return '<tr><td style="color:var(--muted);padding:4px 0;width:38%;">' + r[0] + '</td>'
+                + '<td style="font-weight:500;padding:4px 0;">' + r[1] + '</td></tr>';
+            }}).join('') + '</table>';
+          var alertsHtml = '';
+          if (d.visible_alerts && d.visible_alerts.length) {{
+            alertsHtml = '<div style="margin-bottom:14px;"><div class="um-panel-sect-label">Recent School Alerts</div><div style="display:grid;gap:6px;">'
+              + d.visible_alerts.map(function(a) {{
+                var tag = a.is_training ? ' <span style="font-size:0.7rem;color:#b45309;">[Training]</span>' : ' <span style="font-size:0.7rem;color:#dc2626;">[Emergency]</span>';
+                return '<div style="padding:6px 10px;background:rgba(0,0,0,0.03);border-radius:6px;font-size:0.8rem;">'
+                  + tag + ' ' + (a.message || '—')
+                  + '<div style="color:var(--muted);font-size:0.72rem;">' + (a.created_at || '').slice(0,16).replace('T',' ') + '</div></div>';
+              }}).join('') + '</div></div>';
+          }} else {{
+            alertsHtml = '<div style="margin-bottom:14px;"><div class="um-panel-sect-label">Recent School Alerts</div><span class="mini-copy">No alerts on record.</span></div>';
+          }}
+          var helpsHtml = '';
+          if (d.visible_help_requests && d.visible_help_requests.length) {{
+            helpsHtml = '<div style="margin-bottom:14px;"><div class="um-panel-sect-label">Active Help Requests</div><div style="display:grid;gap:6px;">'
+              + d.visible_help_requests.map(function(h) {{
+                return '<div style="padding:6px 10px;background:rgba(0,0,0,0.03);border-radius:6px;font-size:0.8rem;">'
+                  + (h.type || 'request') + ' — ' + (h.status || '—')
+                  + '<div style="color:var(--muted);font-size:0.72rem;">' + (h.created_at || '').slice(0,16).replace('T',' ') + '</div></div>';
+              }}).join('') + '</div></div>';
+          }}
+          var qpHtml = '<div style="margin-bottom:6px;"><div class="um-panel-sect-label">Quiet Period Status</div>'
+            + '<div style="font-size:0.83rem;">'
+            + (qp.active ? '✅ Active quiet period — expires ' + ((qp.expires_at || '').slice(0,16).replace('T',' ') || 'unknown')
+              : (qp.pending ? '⏳ Pending approval' : '— No active quiet period'))
+            + '</div></div>';
+          vaBody.innerHTML = alarmBanner + infoHtml + alertsHtml + helpsHtml + qpHtml;
+        }})
+        .catch(function(e) {{
+          if (vaBody) vaBody.innerHTML = '<div style="color:var(--danger);">Could not load view-as data (code: ' + e + ').</div>';
+        }});
+    }};
+    var vaClose = document.getElementById('va-close');
+    if (vaClose) vaClose.addEventListener('click', function() {{ if (vaModal) vaModal.classList.remove('open'); }});
+    if (vaModal) vaModal.addEventListener('click', function(e) {{ if (e.target === vaModal) vaModal.classList.remove('open'); }});
+  }});
+  }})();
+  </script>
+
+  <script>
+  /* ── 9.2/9.3: Analytics + District Reports (lazy-loaded) ─────────────────── */
+  (function() {{
+    var ROLE_LABELS_SHORT = {{
+      teacher: 'Teacher', staff: 'Staff', law_enforcement: 'Law Enforcement',
+      admin: 'Admin', building_admin: 'Building Admin', district_admin: 'District Admin', super_admin: 'Super Admin'
+    }};
+
+    function fmtSeconds(s) {{
+      if (s === null || s === undefined) return '—';
+      if (s < 60) return Math.round(s) + 's';
+      return Math.round(s / 60) + 'm ' + (Math.round(s) % 60) + 's';
+    }}
+
+    function renderBuildingCards(buildings, containerId) {{
+      var container = document.getElementById(containerId);
+      if (!container) return;
+      if (!buildings || !buildings.length) {{
+        container.innerHTML = '<p class="mini-copy">No data available.</p>';
+        return;
+      }}
+      container.innerHTML = buildings.map(function(b) {{
+        var lastAlert = b.last_alert_at ? b.last_alert_at.slice(0,16).replace('T',' ') : 'Never';
+        return '<div class="um-hcard hc-ok" style="min-width:220px;max-width:280px;">'
+          + '<div class="um-hcard-label">' + b.building_name + '</div>'
+          + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px 14px;margin-top:8px;font-size:0.82rem;">'
+          + '<div><div style="color:var(--muted);font-size:0.72rem;">Emergency Alerts</div><div style="font-weight:700;font-size:1.1rem;">' + (b.emergency_alerts||0) + '</div></div>'
+          + '<div><div style="color:var(--muted);font-size:0.72rem;">Training</div><div style="font-weight:700;font-size:1.1rem;">' + (b.training_alerts||0) + '</div></div>'
+          + '<div><div style="color:var(--muted);font-size:0.72rem;">Help Requests</div><div style="font-weight:700;">' + (b.help_requests||0) + ' <span style="color:#b45309;font-size:0.75rem;">(' + (b.cancelled_help_requests||0) + ' cancelled)</span></div></div>'
+          + '<div><div style="color:var(--muted);font-size:0.72rem;">Quiet Requests</div><div style="font-weight:700;">' + (b.quiet_period_requests||0) + '</div></div>'
+          + '<div><div style="color:var(--muted);font-size:0.72rem;">Avg Ack Time</div><div style="font-weight:700;">' + fmtSeconds(b.avg_ack_time_seconds) + '</div></div>'
+          + '<div><div style="color:var(--muted);font-size:0.72rem;">Last Alert</div><div style="font-weight:700;font-size:0.78rem;">' + lastAlert + '</div></div>'
+          + '</div></div>';
+      }}).join('');
+    }}
+
+    function loadAnalytics(days, containerId) {{
+      var container = document.getElementById(containerId);
+      if (container) container.innerHTML = '<span class="mini-copy">Loading…</span>';
+      fetch(BB_PATH_PREFIX + '/admin/analytics/buildings?days=' + days, {{credentials: 'same-origin'}})
+        .then(function(r) {{ return r.ok ? r.json() : Promise.reject(r.status); }})
+        .then(function(data) {{
+          renderBuildingCards(data.buildings || [], containerId);
+        }})
+        .catch(function() {{
+          var el = document.getElementById(containerId);
+          if (el) el.innerHTML = '<span class="mini-copy" style="color:var(--danger);">Could not load analytics.</span>';
+        }});
+    }}
+
+    document.addEventListener('DOMContentLoaded', function() {{
+      // Auto-load analytics if the section is active
+      var analyticsSection = document.getElementById('analytics');
+      if (analyticsSection && analyticsSection.style.display !== 'none') {{
+        loadAnalytics(30, 'analytics-cards');
+      }}
+      var drSection = document.getElementById('district-reports');
+      if (drSection && drSection.style.display !== 'none') {{
+        loadAnalytics(30, 'dr-cards');
+      }}
+
+      // Period filter buttons
+      document.querySelectorAll('[data-analytics-days]').forEach(function(btn) {{
+        btn.addEventListener('click', function() {{
+          var days = parseInt(btn.dataset.analyticsDays, 10);
+          var target = btn.dataset.analyticsTarget;
+          document.querySelectorAll('[data-analytics-target="' + target + '"]').forEach(function(b) {{
+            b.className = b.dataset.analyticsDays == days
+              ? 'button button-primary' : 'button button-secondary';
+            b.style.minHeight = '28px';
+            b.style.fontSize = '0.78rem';
+            b.style.padding = '0 10px';
+          }});
+          loadAnalytics(days, target === 'analytics-cards' ? 'analytics-cards' : 'dr-cards');
+        }});
+      }});
+    }});
   }})();
   </script>
 </head>
@@ -5071,6 +5253,8 @@ def render_admin_page(
             {_nav_item("access-codes", "Access Codes") if _show_access_codes else ""}
             {_nav_item("drill-reports", "Drill Reports")}
             {_nav_item("audit-logs", "Audit Logs")}
+            {_nav_item("analytics", "Analytics")}
+            {_nav_item("district-reports", "District Reports") if show_district_nav else ""}
             {_nav_item("settings", "Settings")}
             {_nav_item("district", "District Overview") if show_district_nav else ""}
             {_nav_item("devices", "Active Devices") if show_district_nav else ""}
@@ -5331,6 +5515,51 @@ def render_admin_page(
             </table>
           </section>
 
+          <!-- 9.2: Per-building analytics (lazy-loaded) -->
+          <section class="panel command-section span-12" id="analytics"{_section_style("analytics")}>
+            <div class="panel-header">
+              <div>
+                <p class="eyebrow">Analytics</p>
+                <h2>Building &amp; School Performance</h2>
+                <p class="card-copy">Operational metrics per building/school. Data is loaded on demand — not computed on every page visit.</p>
+              </div>
+            </div>
+            <div style="display:flex;gap:8px;margin-bottom:18px;align-items:center;">
+              <span style="font-size:0.82rem;color:var(--muted);">Period:</span>
+              <button class="button button-secondary" data-analytics-days="7" data-analytics-target="analytics-cards" style="min-height:28px;font-size:0.78rem;padding:0 10px;">7 days</button>
+              <button class="button button-primary" data-analytics-days="30" data-analytics-target="analytics-cards" style="min-height:28px;font-size:0.78rem;padding:0 10px;">30 days</button>
+              <button class="button button-secondary" data-analytics-days="90" data-analytics-target="analytics-cards" style="min-height:28px;font-size:0.78rem;padding:0 10px;">90 days</button>
+              <button class="button button-secondary" data-analytics-days="365" data-analytics-target="analytics-cards" style="min-height:28px;font-size:0.78rem;padding:0 10px;">All time</button>
+            </div>
+            <div id="analytics-cards" class="um-health-bar" style="flex-wrap:wrap;gap:14px;">
+              <span class="mini-copy">Loading analytics…</span>
+            </div>
+          </section>
+
+          <!-- 9.3: District reports dashboard (lazy-loaded, district_admin/super_admin only) -->
+          {'<section class="panel command-section span-12" id="district-reports"' + _section_style("district-reports") + '>' if show_district_nav else '<section class="panel command-section span-12" id="district-reports" style="display:none;">'}
+            <div class="panel-header">
+              <div>
+                <p class="eyebrow">District Reports</p>
+                <h2>Cross-school reporting</h2>
+                <p class="card-copy">District-wide operational overview across all assigned schools. Use the CSV export for compliance reporting.</p>
+              </div>
+              <div class="button-row">
+                <a class="button button-secondary" href="{prefix}/admin/reports/district.csv?days=30" style="text-decoration:none;min-height:36px;font-size:0.82rem;">Export CSV (30d)</a>
+              </div>
+            </div>
+            <div style="display:flex;gap:8px;margin-bottom:18px;align-items:center;">
+              <span style="font-size:0.82rem;color:var(--muted);">Period:</span>
+              <button class="button button-secondary" data-analytics-days="7" data-analytics-target="dr-cards" style="min-height:28px;font-size:0.78rem;padding:0 10px;">7 days</button>
+              <button class="button button-primary" data-analytics-days="30" data-analytics-target="dr-cards" style="min-height:28px;font-size:0.78rem;padding:0 10px;">30 days</button>
+              <button class="button button-secondary" data-analytics-days="90" data-analytics-target="dr-cards" style="min-height:28px;font-size:0.78rem;padding:0 10px;">90 days</button>
+              <button class="button button-secondary" data-analytics-days="365" data-analytics-target="dr-cards" style="min-height:28px;font-size:0.78rem;padding:0 10px;">All time</button>
+            </div>
+            <div id="dr-cards" class="um-health-bar" style="flex-wrap:wrap;gap:14px;">
+              <span class="mini-copy">Loading district data…</span>
+            </div>
+          </section>
+
           <section class="panel command-section span-12" id="user-management"{_section_style("user-management")}>
             <div class="panel-header">
               <div>
@@ -5436,6 +5665,7 @@ def render_admin_page(
           {_um_role_modal()}
           {_um_delete_modal()}
           {_um_bulk_modal()}
+          {_um_view_as_modal()}
 
           {_access_codes_panel_html}
 

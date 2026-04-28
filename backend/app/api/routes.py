@@ -372,7 +372,7 @@ def _pop_flash(request: Request) -> tuple[Optional[str], Optional[str]]:
 
 def _admin_section(value: Optional[str]) -> str:
     normalized = str(value or "").strip().lower()
-    if normalized in {"dashboard", "user-management", "access-codes", "quiet-periods", "audit-logs", "settings", "drill-reports", "district", "devices"}:
+    if normalized in {"dashboard", "user-management", "access-codes", "quiet-periods", "audit-logs", "settings", "drill-reports", "district", "devices", "analytics", "district-reports"}:
         return normalized
     return "dashboard"
 
@@ -4811,6 +4811,208 @@ async def admin_user_audit_trail(user_id: int, request: Request) -> JSONResponse
             for e in events
         ],
     })
+
+
+@router.get("/admin/users/{user_id}/view-as", include_in_schema=False)
+async def admin_view_as_user(user_id: int, request: Request) -> JSONResponse:
+    """9.1 — Read-only troubleshooting snapshot. Fires audit. Never allows actions."""
+    await _require_dashboard_admin(request)
+    actor = getattr(request.state, "admin_user", None)
+    actor_role = str(getattr(actor, "role", "") or "").strip().lower()
+
+    _view_as_roles = {ROLE_DISTRICT_ADMIN, ROLE_SUPER_ADMIN, ROLE_BUILDING_ADMIN, "admin"}
+    if actor_role not in _view_as_roles:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions for view-as")
+
+    user = await _users(request).get_user(user_id)
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    # building_admin / admin cannot view DA or SA accounts
+    if actor_role in {ROLE_BUILDING_ADMIN, "admin"} and user.role in {ROLE_DISTRICT_ADMIN, ROLE_SUPER_ADMIN}:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cannot view users with higher privilege")
+
+    alarm_state = await _alarm_store(request).get_state()
+    recent_alerts = await _alert_log(request).list_recent(limit=5)
+    quiet_status = await _quiet_periods(request).active_for_user(user_id=user.id)
+    pending_quiet = await _quiet_periods(request).pending_for_user(user_id=user.id)
+    active_assists = await _incident_store(request).list_active_team_assists(limit=50)
+
+    _fire_audit(
+        request,
+        "user_view_as_opened",
+        actor_user_id=_session_user_id(request),
+        actor_label=_current_school_actor_label(request),
+        target_type="user",
+        target_id=str(user_id),
+        metadata={"target_name": user.name, "target_role": user.role},
+    )
+
+    return JSONResponse({
+        "user": {
+            "id": user.id,
+            "name": user.name,
+            "role": user.role,
+            "title": getattr(user, "title", "") or "",
+            "login_name": user.login_name or "",
+            "is_active": user.is_active,
+            "phone": getattr(user, "phone_e164", "") or "",
+            "last_login_at": str(getattr(user, "last_login_at", "") or ""),
+        },
+        "tenant_context": {
+            "school_name": str(request.state.school.name),
+            "school_slug": str(request.state.school.slug),
+            "alarm_active": alarm_state.is_active,
+            "alarm_is_training": alarm_state.is_training,
+            "alarm_message": alarm_state.message or "",
+        },
+        "visible_alerts": [
+            {
+                "id": a.id,
+                "message": a.message,
+                "created_at": a.created_at,
+                "is_training": a.is_training,
+            }
+            for a in recent_alerts
+        ],
+        "visible_help_requests": [
+            {
+                "id": a.id,
+                "type": a.type,
+                "status": a.status,
+                "created_at": a.created_at,
+                "is_own": a.created_by == user.id,
+            }
+            for a in active_assists
+            if a.created_by == user.id
+        ][:10],
+        "quiet_period_status": {
+            "active": quiet_status is not None,
+            "expires_at": quiet_status.expires_at if quiet_status else None,
+            "pending": pending_quiet is not None,
+        },
+    })
+
+
+@router.get("/admin/analytics/buildings", include_in_schema=False)
+async def admin_building_analytics(
+    request: Request,
+    days: int = Query(default=30, ge=1, le=365),
+) -> JSONResponse:
+    """9.2 — Per-building/tenant analytics. Lazy-loaded; not computed on every page load."""
+    await _require_dashboard_admin(request)
+    actor = getattr(request.state, "admin_user", None)
+    actor_role = str(getattr(actor, "role", "") or "").strip().lower()
+
+    if actor_role not in {ROLE_DISTRICT_ADMIN, ROLE_SUPER_ADMIN, ROLE_BUILDING_ADMIN, "admin"}:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
+
+    cutoff_str = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+
+    if actor_role in {ROLE_DISTRICT_ADMIN, ROLE_SUPER_ADMIN}:
+        schools = await _district_accessible_schools(request, actor)
+    else:
+        schools = [getattr(request.state, "admin_effective_school", request.state.school)]
+
+    buildings = []
+    for school in schools:
+        tenant = request.app.state.tenant_manager.get(school)  # type: ignore[attr-defined]
+        if tenant is None:
+            continue
+        all_alerts = await tenant.alert_log.list_recent(limit=500)
+        period_alerts = [a for a in all_alerts if str(a.created_at) >= cutoff_str]
+        emergency_alerts = [a for a in period_alerts if not a.is_training]
+
+        hr_data = await tenant.incident_store.help_request_cancellation_analytics()
+        qp_all = await tenant.quiet_period_store.list_recent(limit=500)
+        qp_period = sum(1 for q in qp_all if str(getattr(q, "created_at", "") or "") >= cutoff_str)
+
+        avg_ack_s = None
+        if emergency_alerts:
+            most_recent = emergency_alerts[0]
+            try:
+                acks = await tenant.alert_log.list_acknowledgements(most_recent.id)
+                alert_dt = datetime.fromisoformat(most_recent.created_at.replace("Z", "+00:00"))
+                deltas = []
+                for ack in acks:
+                    ack_dt = datetime.fromisoformat(ack.acknowledged_at.replace("Z", "+00:00"))
+                    delta = (ack_dt - alert_dt).total_seconds()
+                    if 0 <= delta <= 3600:
+                        deltas.append(delta)
+                if deltas:
+                    avg_ack_s = round(sum(deltas) / len(deltas), 1)
+            except Exception:
+                pass
+
+        buildings.append({
+            "building_id": str(getattr(school, "slug", "")),
+            "building_name": str(getattr(school, "name", "")),
+            "total_alerts": len(period_alerts),
+            "emergency_alerts": len(emergency_alerts),
+            "training_alerts": len(period_alerts) - len(emergency_alerts),
+            "help_requests": int(hr_data.get("total", 0)),
+            "cancelled_help_requests": int(hr_data.get("cancelled", 0)),
+            "quiet_period_requests": qp_period,
+            "avg_ack_time_seconds": avg_ack_s,
+            "last_alert_at": period_alerts[0].created_at if period_alerts else None,
+        })
+
+    return JSONResponse({"buildings": buildings, "period_days": days})
+
+
+@router.get("/admin/reports/district.csv", include_in_schema=False)
+async def admin_district_csv_export(
+    request: Request,
+    days: int = Query(default=30, ge=1, le=365),
+) -> StreamingResponse:
+    """9.3 — District-scoped CSV export. Restricted to district_admin and super_admin."""
+    await _require_dashboard_admin(request)
+    actor = getattr(request.state, "admin_user", None)
+    actor_role = str(getattr(actor, "role", "") or "").strip().lower()
+
+    if actor_role not in {ROLE_DISTRICT_ADMIN, ROLE_SUPER_ADMIN}:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="District admin or super admin required")
+
+    cutoff_str = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    schools = await _district_accessible_schools(request, actor)
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow([
+        "School", "Period (days)", "Total Alerts", "Emergency Alerts",
+        "Training Alerts", "Total Help Requests", "Cancelled Help Requests",
+        "Quiet Period Requests", "Last Alert (UTC)",
+    ])
+    for school in schools:
+        tenant = request.app.state.tenant_manager.get(school)  # type: ignore[attr-defined]
+        if tenant is None:
+            continue
+        all_alerts = await tenant.alert_log.list_recent(limit=500)
+        period_alerts = [a for a in all_alerts if str(a.created_at) >= cutoff_str]
+        emergency = sum(1 for a in period_alerts if not a.is_training)
+        training = sum(1 for a in period_alerts if a.is_training)
+        hr_data = await tenant.incident_store.help_request_cancellation_analytics()
+        qp_all = await tenant.quiet_period_store.list_recent(limit=500)
+        qp_period = sum(1 for q in qp_all if str(getattr(q, "created_at", "") or "") >= cutoff_str)
+        last_alert = period_alerts[0].created_at[:16].replace("T", " ") if period_alerts else ""
+        writer.writerow([
+            str(getattr(school, "name", "")),
+            days,
+            len(period_alerts),
+            emergency,
+            training,
+            int(hr_data.get("total", 0)),
+            int(hr_data.get("cancelled", 0)),
+            qp_period,
+            last_alert,
+        ])
+
+    csv_bytes = output.getvalue().encode("utf-8")
+    return StreamingResponse(
+        iter([csv_bytes]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="district-report-{days}d.csv"'},
+    )
 
 
 @router.post("/admin/users/{user_id}/archive", include_in_schema=False)
