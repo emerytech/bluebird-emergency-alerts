@@ -374,9 +374,9 @@ def _admin_section(value: Optional[str]) -> str:
 
 def _super_admin_section(value: Optional[str]) -> str:
     normalized = str(value or "").strip().lower()
-    if normalized in {"schools", "billing", "platform-audit", "create-school", "security", "configuration", "server-tools", "health", "email-tool", "setup-codes", "noc", "msp", "platform-control", "sandbox"}:
+    if normalized in {"districts", "schools", "billing", "platform-audit", "create-school", "security", "configuration", "server-tools", "health", "email-tool", "setup-codes", "noc", "msp", "platform-control", "sandbox"}:
         return normalized
-    return "schools"
+    return "districts"
 
 
 def _super_admin_url(section: str, anchor: Optional[str] = None) -> str:
@@ -2253,6 +2253,62 @@ async def super_admin_assign_school_to_district(
     return JSONResponse({"ok": True, "slug": school.slug, "district_id": school.district_id})
 
 
+@router.post("/super-admin/districts/{district_id}/archive", include_in_schema=False)
+async def super_admin_archive_district(request: Request, district_id: int) -> RedirectResponse:
+    _require_super_admin(request)
+    district = await _schools(request).get_district(district_id)
+    if district is None:
+        _set_flash(request, error="District not found.")
+        return RedirectResponse(url=_super_admin_url("districts"), status_code=status.HTTP_303_SEE_OTHER)
+    if district.is_archived:
+        _set_flash(request, error="District is already archived.")
+        return RedirectResponse(url=_super_admin_url("districts"), status_code=status.HTTP_303_SEE_OTHER)
+    await _schools(request).archive_district(district_id)
+    admin = await _platform_admins(request).get_by_id(_super_admin_id(request) or 0)
+    actor = admin.login_name if admin else "superadmin"
+    _set_flash(request, message=f"District '{district.name}' archived.")
+    return RedirectResponse(url=_super_admin_url("districts"), status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.post("/super-admin/districts/{district_id}/purge", include_in_schema=False)
+async def super_admin_purge_district(
+    request: Request,
+    district_id: int,
+    confirm_name: str = Form(default=""),
+) -> RedirectResponse:
+    _require_super_admin(request)
+    district = await _schools(request).get_district(district_id)
+    if district is None:
+        _set_flash(request, error="District not found.")
+        return RedirectResponse(url=_super_admin_url("districts"), status_code=status.HTTP_303_SEE_OTHER)
+    if not district.is_archived:
+        _set_flash(request, error="Only archived districts can be purged. Archive the district first.")
+        return RedirectResponse(url=_super_admin_url("districts"), status_code=status.HTTP_303_SEE_OTHER)
+    if confirm_name.strip().lower() != district.name.strip().lower():
+        _set_flash(request, error=f"Confirmation name did not match. Type the district name exactly to confirm purge.")
+        return RedirectResponse(url=_super_admin_url("districts"), status_code=status.HTTP_303_SEE_OTHER)
+    # Get all schools before deletion so we can remove their DB files
+    schools_to_purge = await _schools(request).list_schools_for_district(district_id)
+    from app.services.tenant_manager import TenantManager, normalize_school_slug
+    tenant_manager: TenantManager = request.app.state.tenant_manager  # type: ignore[attr-defined]
+    # Evict from tenant cache and delete DB files
+    for school in schools_to_purge:
+        db_path = tenant_manager.db_path_for_slug(school.slug)
+        with tenant_manager._lock:
+            tenant_manager._cache.pop(normalize_school_slug(school.slug), None)
+        if os.path.exists(db_path):
+            try:
+                os.remove(db_path)
+            except OSError:
+                pass
+    # Delete from registry (schools + district)
+    await _schools(request).delete_district(district_id)
+    admin = await _platform_admins(request).get_by_id(_super_admin_id(request) or 0)
+    actor = admin.login_name if admin else "superadmin"
+    _set_flash(request, message=f"District '{district.name}' and all associated data permanently deleted.")
+    return RedirectResponse(url=_super_admin_url("districts"), status_code=status.HTTP_303_SEE_OTHER)
+
+
 @router.post("/admin/settings/undo/{change_id}", include_in_schema=False)
 async def admin_settings_undo(
     request: Request,
@@ -3029,7 +3085,7 @@ async def super_admin_change_password_submit(
 @router.get("/super-admin", response_class=HTMLResponse, include_in_schema=False)
 async def super_admin_dashboard(
     request: Request,
-    section: str = Query(default="schools"),
+    section: str = Query(default="districts"),
 ) -> HTMLResponse:
     _require_super_admin(request)
     admin = await _platform_admins(request).get_by_id(_super_admin_id(request) or 0)
@@ -3181,6 +3237,8 @@ async def super_admin_dashboard(
         _d_push_failed = sum(int(n.get("push_failed", 0)) for n in _ds_nocs)
         msp_districts.append({
             "id": _d.id, "name": _d.name, "slug": _d.slug, "is_active": _d.is_active,
+            "is_archived": bool(getattr(_d, "is_archived", False)),
+            "archived_at": str(getattr(_d, "archived_at", "") or ""),
             "is_district": True, "school_count": len(_ds),
             "schools": [{"slug": str(getattr(s, "slug", "")), "name": str(getattr(s, "name", ""))} for s in _ds],
             "alarm_count": _d_alarm, "ws_total": _d_ws, "last_activity": _d_last,

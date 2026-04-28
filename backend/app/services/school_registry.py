@@ -43,6 +43,8 @@ class DistrictRecord:
     brand_lock_enabled: bool = False
     is_test: bool = False
     source_district_id: Optional[int] = None
+    is_archived: bool = False
+    archived_at: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -73,11 +75,12 @@ class SchoolRecord:
 # SQL fragment shared by every districts SELECT to keep column ordering consistent.
 # Indices: 0=id, 1=created_at, 2=name, 3=slug, 4=organization_id, 5=is_active,
 #          6=accent, 7=accent_strong, 8=sidebar_start, 9=sidebar_end, 10=logo_path,
-#          11=brand_lock_enabled, 12=is_test, 13=source_district_id
+#          11=brand_lock_enabled, 12=is_test, 13=source_district_id,
+#          14=is_archived, 15=archived_at
 _DISTRICT_COLS = """
     id, created_at, name, slug, organization_id, is_active,
     accent, accent_strong, sidebar_start, sidebar_end, logo_path, brand_lock_enabled,
-    is_test, source_district_id
+    is_test, source_district_id, is_archived, archived_at
 """
 
 # SQL fragment shared by every schools SELECT to keep column ordering consistent.
@@ -241,6 +244,8 @@ class SchoolRegistry:
             ("brand_lock_enabled",  "ALTER TABLE districts ADD COLUMN brand_lock_enabled INTEGER NOT NULL DEFAULT 0;"),
             ("is_test",             "ALTER TABLE districts ADD COLUMN is_test INTEGER NOT NULL DEFAULT 0;"),
             ("source_district_id",  "ALTER TABLE districts ADD COLUMN source_district_id INTEGER NULL;"),
+            ("is_archived",  "ALTER TABLE districts ADD COLUMN is_archived INTEGER NOT NULL DEFAULT 0;"),
+            ("archived_at",  "ALTER TABLE districts ADD COLUMN archived_at TEXT NULL;"),
         ]:
             if col not in cols:
                 conn.execute(ddl)
@@ -329,6 +334,8 @@ class SchoolRegistry:
             brand_lock_enabled=bool(int(row[11])) if len(row) > 11 and row[11] is not None else False,
             is_test=bool(int(row[12])) if len(row) > 12 and row[12] is not None else False,
             source_district_id=int(row[13]) if len(row) > 13 and row[13] is not None else None,
+            is_archived=bool(int(row[14])) if len(row) > 14 and row[14] is not None else False,
+            archived_at=str(row[15]) if len(row) > 15 and row[15] is not None else None,
         )
 
     # ── Schools ───────────────────────────────────────────────────────────────
@@ -641,6 +648,51 @@ class SchoolRegistry:
 
     async def list_districts(self, *, organization_id: Optional[int] = None) -> List[DistrictRecord]:
         return await anyio.to_thread.run_sync(self._list_districts_sync, organization_id)
+
+    def _archive_district_sync(self, district_id: int) -> Optional[DistrictRecord]:
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE districts SET is_archived = 1, archived_at = ?, is_active = 0 WHERE id = ? AND is_archived = 0;",
+                (now, int(district_id)),
+            )
+            row = conn.execute(
+                f"SELECT {_DISTRICT_COLS} FROM districts WHERE id = ? LIMIT 1;",
+                (int(district_id),),
+            ).fetchone()
+        return self._district_from_row(row) if row is not None else None
+
+    async def archive_district(self, district_id: int) -> Optional[DistrictRecord]:
+        return await anyio.to_thread.run_sync(self._archive_district_sync, int(district_id))
+
+    def _list_schools_for_district_sync(self, district_id: int) -> List[SchoolRecord]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"SELECT {_SCHOOL_COLS} FROM schools WHERE district_id = ? ORDER BY name ASC;",
+                (int(district_id),),
+            ).fetchall()
+        return [self._school_from_row(row) for row in rows]
+
+    async def list_schools_for_district(self, district_id: int) -> List[SchoolRecord]:
+        return await anyio.to_thread.run_sync(self._list_schools_for_district_sync, int(district_id))
+
+    def _delete_district_schools_sync(self, district_id: int) -> int:
+        with self._connect() as conn:
+            cur = conn.execute("DELETE FROM schools WHERE district_id = ?;", (int(district_id),))
+        return cur.rowcount or 0
+
+    async def delete_district_schools(self, district_id: int) -> int:
+        return await anyio.to_thread.run_sync(self._delete_district_schools_sync, int(district_id))
+
+    def _delete_district_sync(self, district_id: int) -> bool:
+        with self._connect() as conn:
+            conn.execute("DELETE FROM operator_notes WHERE tenant_slug IN (SELECT slug FROM schools WHERE district_id = ?);", (int(district_id),))
+            conn.execute("DELETE FROM schools WHERE district_id = ?;", (int(district_id),))
+            cur = conn.execute("DELETE FROM districts WHERE id = ? AND is_archived = 1;", (int(district_id),))
+        return (cur.rowcount or 0) > 0
+
+    async def delete_district(self, district_id: int) -> bool:
+        return await anyio.to_thread.run_sync(self._delete_district_sync, int(district_id))
 
     # ── Operator notes ────────────────────────────────────────────────────────
     # Super-admin-only internal notes per district or school. Never exposed to tenants.

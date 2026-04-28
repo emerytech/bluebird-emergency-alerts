@@ -1429,7 +1429,7 @@ def render_super_admin_page(
         for c in setup_codes
     ) or '<tr><td colspan="7" class="empty-state">No setup codes generated yet.</td></tr>'
 
-    section = active_section if active_section in {"schools", "billing", "platform-audit", "create-school", "security", "configuration", "server-tools", "health", "email-tool", "setup-codes", "noc", "msp", "platform-control", "sandbox"} else "schools"
+    section = active_section if active_section in {"districts", "schools", "billing", "platform-audit", "create-school", "security", "configuration", "server-tools", "health", "email-tool", "setup-codes", "noc", "msp", "platform-control", "sandbox"} else "districts"
 
     def _section_style(name: str) -> str:
         return "" if section == name else ' style="display:none;"'
@@ -1776,6 +1776,143 @@ def render_super_admin_page(
           .pctrl-pill.danger{background:#fee2e2;color:#b91c1c;}
           """
 
+    # ── Districts dashboard card helpers ─────────────────────────────────────
+
+    def _billing_status_pill(bstatus: str) -> str:
+        cls = "ok" if bstatus in {"active", "trial", "free"} else "danger"
+        return f'<span class="status-pill {cls}" style="font-size:0.7rem;padding:2px 8px;">{escape(bstatus)}</span>'
+
+    def _district_card(d: Mapping[str, object], bills: Sequence[Mapping[str, object]]) -> str:
+        did = int(d.get("id") or 0)
+        name = escape(str(d.get("name", "")))
+        slug = escape(str(d.get("slug", "")))
+        school_count = int(d.get("school_count") or 0)
+        is_district = bool(d.get("is_district"))
+        dstatus = str(d.get("status", "healthy"))
+        status_pill_cls = {"alarm": "danger", "healthy": "ok", "empty": "", "offline": ""}.get(dstatus, "")
+        status_label = {"alarm": "Alarm Active", "healthy": "Healthy", "empty": "No Schools", "offline": "Offline"}.get(dstatus, dstatus.title())
+        schools_list = d.get("schools", [])
+        # Aggregate billing across schools in this district
+        d_bills = [b for b in bills if any(str(s.get("slug", "")) == b.get("slug", "") for s in (schools_list if isinstance(schools_list, list) else []))]
+        billing_pill = ""
+        if d_bills:
+            worst = "trial"
+            for b in d_bills:
+                bs = str(b.get("billing_status", "trial"))
+                if bs not in {"active", "trial", "free"}:
+                    worst = bs
+                    break
+            billing_pill = _billing_status_pill(worst)
+        # School enter buttons
+        enter_buttons = ""
+        for s in (schools_list if isinstance(schools_list, list) else [])[:3]:
+            s_slug = escape(str(s.get("slug", "")))
+            s_name = escape(str(s.get("name", "")))
+            enter_buttons += (
+                f'<form method="post" action="/super-admin/schools/{s_slug}/enter" style="margin:0;">'
+                f'<button class="button button-primary" type="submit" style="font-size:0.75rem;padding:5px 12px;">Enter {s_name}</button>'
+                f'</form>'
+            )
+        # Billing expand for each school in district
+        billing_forms = ""
+        for b in d_bills:
+            b_name = escape(str(b.get("name", "")))
+            b_slug_raw = str(b.get("slug", ""))
+            b_slug = escape(b_slug_raw)
+            b_bstatus = str(b.get("billing_status", "trial"))
+            billing_forms += f"""
+            <div style="margin-bottom:12px;">
+              <p style="font-size:0.78rem;font-weight:600;margin-bottom:6px;">{b_name} — {_billing_status_pill(b_bstatus)}</p>
+              <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                <form method="post" action="/super-admin/schools/{b_slug}/billing/start-trial" style="display:flex;gap:4px;align-items:center;">
+                  <input name="duration_days" type="number" min="1" max="365" value="14" style="max-width:70px;font-size:0.78rem;padding:3px 6px;" />
+                  <button class="button button-secondary" type="submit" style="font-size:0.73rem;padding:4px 10px;">Start Trial</button>
+                </form>
+                <form method="post" action="/super-admin/schools/{b_slug}/billing/grant-free" style="display:flex;gap:4px;align-items:center;">
+                  <input name="free_reason" placeholder="Reason" style="max-width:120px;font-size:0.78rem;padding:3px 6px;" />
+                  <button class="button button-primary" type="submit" style="font-size:0.73rem;padding:4px 10px;">Grant Free</button>
+                </form>
+                <form method="post" action="/super-admin/schools/{b_slug}/billing/remove-free" onsubmit="return confirm('Remove free access?');">
+                  <button class="button button-danger-outline" type="submit" style="font-size:0.73rem;padding:4px 10px;">Remove Free</button>
+                </form>
+              </div>
+            </div>"""
+        billing_details = (
+            f'<details class="district-billing-expand"><summary>Billing &amp; Access</summary>'
+            f'<div class="district-billing-form">{billing_forms}</div></details>'
+        ) if billing_forms else ""
+        # Archive button (only for real districts with an id)
+        archive_btn = ""
+        if did and is_district:
+            archive_btn = (
+                f'<form method="post" action="/super-admin/districts/{did}/archive"'
+                f' onsubmit="return confirm(\'Archive district {name}? This will disable it and move it to the archived section.\');" style="margin:0;">'
+                f'<button class="button button-danger-outline" type="submit" style="font-size:0.75rem;padding:5px 12px;">Archive</button>'
+                f'</form>'
+            )
+        return (
+            f'<div class="district-card">'
+            f'<div class="district-card-header">'
+            f'<div>'
+            f'<p class="district-card-name">{name}</p>'
+            f'<p class="district-card-slug">{slug} &nbsp;·&nbsp; {"District" if is_district else "School"}</p>'
+            f'</div>'
+            f'<span class="status-pill {status_pill_cls}" style="font-size:0.7rem;padding:2px 10px;white-space:nowrap;">{status_label}</span>'
+            f'</div>'
+            f'<div class="district-card-meta">'
+            f'<span><strong>{school_count}</strong> school{"s" if school_count != 1 else ""}</span>'
+            f'{("<span>" + billing_pill + "</span>") if billing_pill else ""}'
+            f'</div>'
+            f'<div class="district-card-actions">'
+            f'{enter_buttons}'
+            f'{archive_btn}'
+            f'</div>'
+            f'{billing_details}'
+            f'</div>'
+        )
+
+    # Build cards for active (non-archived) districts only
+    _active_msp = [d for d in msp_districts if not bool(d.get("is_archived"))]
+    _district_cards_html = "".join(_district_card(d, billing_rows) for d in _active_msp) or \
+        '<p class="card-copy">No districts or schools provisioned yet. Use <strong>Create School</strong> to get started.</p>'
+
+    # Build archived section
+    _archived_districts = [d for d in msp_districts if bool(d.get("is_archived")) and bool(d.get("is_district"))]
+
+    def _archived_card(d: Mapping[str, object]) -> str:
+        did = int(d.get("id") or 0)
+        name = escape(str(d.get("name", "")))
+        slug = escape(str(d.get("slug", "")))
+        school_count = int(d.get("school_count") or 0)
+        archived_at_raw = str(d.get("archived_at", "") or "")
+        archived_at_fmt = archived_at_raw[:10] if archived_at_raw else "unknown date"
+        raw_name_js = str(d.get("name", ""))
+        return (
+            f'<div class="archived-card">'
+            f'<p class="archived-card-name">{name}</p>'
+            f'<p class="archived-card-meta">{slug} &nbsp;·&nbsp; {school_count} school{"s" if school_count != 1 else ""} &nbsp;·&nbsp; Archived {escape(archived_at_fmt)}</p>'
+            f'<form method="post" action="/super-admin/districts/{did}/purge"'
+            f' onsubmit="return bbConfirmPurge(this, {json.dumps(raw_name_js)});">'
+            f'<div class="purge-confirm-row">'
+            f'<input class="purge-confirm-input" name="confirm_name" placeholder="Type \'{name}\' to confirm" />'
+            f'<button class="button button-danger" type="submit" style="font-size:0.75rem;padding:5px 14px;">Purge Forever</button>'
+            f'</div>'
+            f'<p class="mini-copy" style="margin-top:4px;color:#dc2626;">This permanently deletes all schools, users, alerts, and data.</p>'
+            f'</form>'
+            f'</div>'
+        )
+
+    if _archived_districts:
+        _archived_section_html = (
+            f'<div class="archived-section">'
+            f'<p class="archived-section-title">Archived Districts</p>'
+            f'<div class="archived-grid">'
+            + "".join(_archived_card(d) for d in _archived_districts)
+            + f'</div></div>'
+        )
+    else:
+        _archived_section_html = ""
+
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1804,8 +1941,7 @@ def render_super_admin_page(
             {_nav_item("platform-control", "Platform Control")}
             {_nav_item("msp", "MSP Dashboard", "!" if any(str(d.get("status","")) == "alarm" for d in msp_districts) else (str(len(msp_districts)) if msp_districts else None))}
             {_nav_item("noc", "Operations", "!" if (health_status and health_status.overall != "ok") or any(bool(t.get("alarm_active")) for t in noc_tenant_data) else None)}
-            {_nav_item("schools", "Schools", str(len(school_rows)) if school_rows else None)}
-            {_nav_item("billing", "Billing", str(len(billing_rows)) if billing_rows else None)}
+            {_nav_item("districts", "Districts", str(len(msp_districts)) if msp_districts else None)}
             {_nav_item("create-school", "Create School")}
             {_nav_item("platform-audit", "Platform Audit")}
             {_nav_item("health", "System Health", None if (not health_status or health_status.overall == 'ok') else "!")}
@@ -2381,6 +2517,58 @@ def render_super_admin_page(
             setInterval(fetchActivity, 15000);
             setInterval(fetchPushStats, 30000);
           }})();
+          </script>
+        </section>
+        <section class="panel command-section" id="districts"{_section_style("districts")}>
+          <style>
+          .district-grid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:20px;margin-bottom:32px;}}
+          .district-card{{background:var(--card);border:1px solid var(--border);border-radius:18px;padding:0;overflow:hidden;box-shadow:0 2px 12px rgba(22,53,117,0.06);transition:box-shadow 0.15s;}}
+          .district-card:hover{{box-shadow:0 6px 24px rgba(22,53,117,0.12);}}
+          .district-card-header{{padding:20px 20px 0;display:flex;align-items:flex-start;justify-content:space-between;gap:12px;}}
+          .district-card-name{{font-size:1.1rem;font-weight:700;color:var(--text);margin:0 0 2px;line-height:1.3;}}
+          .district-card-slug{{font-size:0.75rem;color:var(--muted);font-family:monospace;}}
+          .district-card-meta{{padding:10px 20px;display:flex;gap:16px;flex-wrap:wrap;border-bottom:1px solid var(--border);}}
+          .district-card-meta span{{font-size:0.79rem;color:var(--muted);}}
+          .district-card-meta strong{{color:var(--text);}}
+          .district-card-actions{{padding:14px 20px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;}}
+          .district-billing-expand{{padding:0 20px 16px;}}
+          .district-billing-expand summary{{font-size:0.78rem;font-weight:600;color:var(--accent);cursor:pointer;padding:6px 0;}}
+          .district-billing-form{{margin-top:10px;}}
+          .archived-section{{margin-top:40px;padding-top:28px;border-top:2px solid var(--border);}}
+          .archived-section-title{{font-size:0.72rem;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:var(--muted);margin-bottom:16px;}}
+          .archived-grid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px;}}
+          .archived-card{{background:rgba(100,116,139,0.06);border:1px solid var(--border);border-radius:14px;padding:16px 18px;}}
+          .archived-card-name{{font-size:1rem;font-weight:600;color:var(--text);margin:0 0 4px;}}
+          .archived-card-meta{{font-size:0.76rem;color:var(--muted);margin-bottom:12px;}}
+          .purge-confirm-row{{display:flex;gap:8px;align-items:center;margin-top:8px;}}
+          .purge-confirm-input{{flex:1;font-size:0.82rem;padding:6px 10px;border-radius:8px;border:1px solid var(--border);background:var(--card);color:var(--text);}}
+          </style>
+          <div class="panel-header hero-band">
+            <div>
+              <p class="eyebrow">Tenant Registry</p>
+              <h1>Districts &amp; Schools</h1>
+              <p class="hero-copy">Manage all districts, schools, and billing from one place. Active districts are shown as cards. Archive a district to stop its activity; purge to permanently delete all data.</p>
+            </div>
+            <div class="status-row">
+              <span class="status-pill ok"><strong>Domain</strong>{escape(base_domain)}</span>
+              <span class="status-pill"><strong>Districts</strong>{len([d for d in msp_districts if d.get("is_district")])}</span>
+              <span class="status-pill"><strong>Schools</strong>{len(school_rows)}</span>
+            </div>
+          </div>
+          {security_feedback}
+          <div class="district-grid">
+            {_district_cards_html}
+          </div>
+          {_archived_section_html}
+          <script>
+          window.bbConfirmPurge = function(form, name) {{
+            var input = form.querySelector('input[name="confirm_name"]');
+            if (!input || input.value.trim().toLowerCase() !== name.trim().toLowerCase()) {{
+              alert('Type the district name exactly to confirm purge.');
+              return false;
+            }}
+            return confirm('PERMANENTLY DELETE ' + name + '? This cannot be undone.');
+          }};
           </script>
         </section>
         <section class="panel command-section" id="schools"{_section_style("schools")}>
