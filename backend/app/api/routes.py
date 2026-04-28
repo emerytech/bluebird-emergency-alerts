@@ -1282,6 +1282,77 @@ async def _send_basic_push(
         await _fcm(request).send_bulk(fcm_tokens, message, extra_data=extra_data)
 
 
+async def _send_help_request_push(
+    request: Request,
+    *,
+    creator_id: int,
+    responder_user_ids: set[int],
+    message: str,
+    extra_data: dict,
+) -> None:
+    """
+    Per-device help_request push routing.
+
+    Responders receive a normal sound push.  The sender's devices receive a
+    silent banner (no aps.sound on iOS, silent_for_sender="true" on Android)
+    so the alarm does not play on the device that originated the request,
+    even when the app is backgrounded or closed.
+    """
+    apns_devices = await _registry(request).list_by_provider("apns")
+    fcm_devices = await _registry(request).list_by_provider("fcm")
+
+    candidate_ids = {
+        int(d.user_id)
+        for d in (*apns_devices, *fcm_devices)
+        if d.user_id is not None and int(d.user_id) > 0
+    }
+    paused_ids = await _quiet_suppressed_user_ids(request, candidate_user_ids=candidate_ids)
+    active_ids = {u.id for u in await _users(request).list_users() if u.is_active}
+
+    # Sender is excluded from responder set in case of overlap.
+    actual_responder_ids = responder_user_ids - {creator_id}
+
+    def _eligible(uid: Optional[int]) -> bool:
+        return uid is not None and int(uid) > 0 and int(uid) in active_ids and int(uid) not in paused_ids
+
+    responder_apns = list(dict.fromkeys(
+        d.token for d in apns_devices
+        if _eligible(d.user_id) and int(d.user_id) in actual_responder_ids  # type: ignore[arg-type]
+    ))
+    responder_fcm = list(dict.fromkeys(
+        d.token for d in fcm_devices
+        if _eligible(d.user_id) and int(d.user_id) in actual_responder_ids  # type: ignore[arg-type]
+    ))
+    sender_apns = list(dict.fromkeys(
+        d.token for d in apns_devices
+        if _eligible(d.user_id) and int(d.user_id) == creator_id  # type: ignore[arg-type]
+    ))
+    sender_fcm = list(dict.fromkeys(
+        d.token for d in fcm_devices
+        if _eligible(d.user_id) and int(d.user_id) == creator_id  # type: ignore[arg-type]
+    ))
+
+    responder_data = {**extra_data, "silent_for_sender": "false"}
+    sender_data = {**extra_data, "silent_for_sender": "true"}
+
+    coros = []
+    if responder_apns:
+        coros.append(_apns(request).send_bulk(responder_apns, message, extra_data=responder_data))
+    if sender_apns:
+        coros.append(_apns(request).send_silent_for_sender(
+            sender_apns,
+            title="Help request sent",
+            body="Your help request has been sent to your team.",
+            extra_data=sender_data,
+        ))
+    if responder_fcm:
+        coros.append(_fcm(request).send_bulk(responder_fcm, message, extra_data=responder_data))
+    if sender_fcm:
+        coros.append(_fcm(request).send_bulk(sender_fcm, message, extra_data=sender_data))
+    if coros:
+        await asyncio.gather(*coros)
+
+
 async def _send_quiet_period_push_bg(
     apns: object,
     fcm: object,
@@ -5212,14 +5283,14 @@ async def create_team_assist(
         },
     )
     background_tasks.add_task(
-        _send_basic_push,
+        _send_help_request_push,
         request,
+        creator_id=creator_id,
+        responder_user_ids=set(target_user_ids),
         message=f"{get_feature_label('request_help')}: {get_feature_label(team_assist.type)}",
-        target_user_ids=set(target_user_ids),
         extra_data={
             "type": "help_request",
             "triggered_by_user_id": str(creator_id),
-            "silent_for_sender": "true",
         },
     )
     return _to_team_assist_summary(team_assist)

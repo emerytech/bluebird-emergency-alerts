@@ -130,6 +130,69 @@ class APNsClient:
 
         return last_error or APNsSendResult(token=token, ok=False, reason="unknown_error")
 
+    async def send_silent_for_sender(
+        self,
+        tokens: List[str],
+        title: str,
+        body: str,
+        extra_data: Optional[dict] = None,
+    ) -> List[APNsSendResult]:
+        """Send a silent banner (no aps.sound) to the sender's devices.
+
+        APNs plays aps.sound before the app can run any code, so sender silence
+        must be enforced here — not in the mobile app.
+        """
+        if not tokens:
+            return []
+        if not self.is_configured():
+            return [APNsSendResult(token=t, ok=False, reason="apns_not_configured") for t in tokens]
+        sem = asyncio.Semaphore(max(1, int(self._settings.APNS_CONCURRENCY)))
+
+        async def _guarded(t: str) -> APNsSendResult:
+            async with sem:
+                return await self._send_one_silent(t, title, body, extra_data)
+
+        return list(await asyncio.gather(*(_guarded(t) for t in tokens)))
+
+    async def _send_one_silent(
+        self,
+        token: str,
+        title: str,
+        body: str,
+        extra_data: Optional[dict] = None,
+    ) -> APNsSendResult:
+        if not self._client:
+            raise RuntimeError("APNs client not started")
+        jwt_token = self._get_or_create_jwt()
+        url = f"https://{self._settings.apns_host}/3/device/{token}"
+        headers = {
+            "authorization": f"bearer {jwt_token}",
+            "apns-topic": self._settings.APNS_BUNDLE_ID or "",
+            "apns-push-type": "alert",
+            "apns-priority": "10",
+        }
+        # aps.sound intentionally omitted — iOS plays sound before app code runs,
+        # so sender silence must be enforced at the payload level.
+        payload: dict = {
+            "aps": {
+                "alert": {"title": title, "body": body},
+                "interruption-level": "active",
+            }
+        }
+        if extra_data:
+            payload.update({str(k): str(v) for k, v in extra_data.items()})
+        resp = await self._client.post(url, headers=headers, json=payload)
+        if resp.status_code == 200:
+            return APNsSendResult(token=token, ok=True, status_code=200)
+        reason = None
+        try:
+            data = resp.json()
+            reason = data.get("reason")
+        except json.JSONDecodeError:
+            reason = resp.text[:200] if resp.text else None
+        self._logger.warning("APNs silent failed token=%s status=%s reason=%s", token[-8:], resp.status_code, reason)
+        return APNsSendResult(token=token, ok=False, status_code=resp.status_code, reason=reason)
+
     async def send_with_data(
         self,
         tokens: List[str],
