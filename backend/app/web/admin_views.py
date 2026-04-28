@@ -76,7 +76,13 @@ def _admin_header_html(
     tenant_selector_html: str,
     logout_url: str,
     extra_action_html: str = "",
+    selected_tenant_name: str = "",
 ) -> str:
+    viewing_indicator = (
+        f'<span class="hdr-user" style="font-size:0.75rem;">Viewing tenant: <strong>{escape(selected_tenant_name)}</strong></span>'
+        if selected_tenant_name and selected_tenant_name != school_name
+        else f'<span class="hdr-user" style="font-size:0.75rem;">Viewing tenant: <strong>{escape(school_name)}</strong></span>'
+    )
     return f"""
     <header class="app-header">
       <div class="hdr-logo">
@@ -88,6 +94,7 @@ def _admin_header_html(
       </div>
       {tenant_selector_html}
       <div class="hdr-actions">
+        {viewing_indicator}
         <span class="hdr-user">&#128100; {escape(user_display)}</span>
         {extra_action_html}
         <button class="hdr-btn" onclick="bbToggleTheme()" id="bb-theme-btn" type="button">&#9790; Dark</button>
@@ -4700,6 +4707,7 @@ def render_admin_page(
         tenant_selector_html=tenant_selector_html,
         logout_url=f"{prefix}/admin/logout",
         extra_action_html=super_admin_shell_action_html,
+        selected_tenant_name=selected_tenant_name,
     )}
     <aside class="sidebar nav-panel">
       <section class="signal-card">
