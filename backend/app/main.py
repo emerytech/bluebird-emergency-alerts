@@ -169,6 +169,36 @@ def _normalize_tenant_candidate(value: str) -> str:
     return _TENANT_CLEAN_RE.sub("-", value.strip().lower()).strip("-")
 
 
+async def _auto_archive_loop(app: FastAPI, interval_hours: float = 6.0) -> None:
+    """
+    Background loop: auto-archives revoked codes for tenants that have the
+    auto_archive_enabled setting turned on.  Runs every interval_hours.
+    """
+    while True:
+        await asyncio.sleep(interval_hours * 3600)
+        try:
+            school_registry: SchoolRegistry = app.state.school_registry
+            access_code_service: AccessCodeService = app.state.access_code_service
+            schools = await school_registry.list_schools()
+            total = 0
+            for school in schools:
+                if school.is_test or school.simulation_mode_enabled or school.is_archived or not school.is_active:
+                    continue
+                try:
+                    count = await access_code_service.auto_archive_if_enabled(school.slug)
+                    total += count
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    logger.debug("auto_archive error tenant=%s: %s", school.slug, exc)
+            if total:
+                logger.info("Auto-archive: archived %d revoked code(s)", total)
+        except asyncio.CancelledError:
+            break
+        except Exception as exc:
+            logger.warning("auto_archive loop error: %s", exc)
+
+
 async def _auto_reminder_loop(app: FastAPI, interval_hours: float = 24.0) -> None:
     """
     Background loop: sends automated reminder emails for unclaimed access codes.
@@ -403,6 +433,9 @@ async def lifespan(app: FastAPI):
     auto_reminder_task = asyncio.create_task(
         _auto_reminder_loop(app, interval_hours=24.0)
     )
+    auto_archive_task = asyncio.create_task(
+        _auto_archive_loop(app, interval_hours=6.0)
+    )
 
     yield
 
@@ -412,6 +445,7 @@ async def lifespan(app: FastAPI):
     qp_expiry_task.cancel()
     wal_checkpoint_task.cancel()
     auto_reminder_task.cancel()
+    auto_archive_task.cancel()
     try:
         await health_task
     except asyncio.CancelledError:
@@ -426,6 +460,10 @@ async def lifespan(app: FastAPI):
         pass
     try:
         await auto_reminder_task
+    except asyncio.CancelledError:
+        pass
+    try:
+        await auto_archive_task
     except asyncio.CancelledError:
         pass
 

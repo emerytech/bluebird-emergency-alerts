@@ -4315,18 +4315,17 @@ def render_admin_page(
     _total_device_count = len(devices)
 
     _show_access_codes = can_generate_codes(str(getattr(current_user, "role", "")))
-    _ac_status_class = {"active": "ok", "used": "warn", "expired": "warn", "revoked": "danger"}
-    _ac_nav_active = " nav-item-active" if (section == "user-management" and active_tab == "codes") or section == "access-codes" else ""
-    _ac_nav_html = (
-        f'<a class="nav-item{_ac_nav_active}" href="{prefix}/admin?section=user-management&tab=codes">Access Codes</a>'
-        if _show_access_codes else ""
-    )
+    _ac_status_class = {"active": "ok", "used": "warn", "expired": "warn", "revoked": "danger", "archived": "secondary"}
+
+    # Build user-id → user lookup for claimed-by display (Phase 6)
+    _ac_users_by_id = {int(getattr(u, "id", 0)): u for u in users}
 
     def _ac_row(r) -> str:
         _rid = int(getattr(r, "id", 0))
         _code = str(getattr(r, "code", ""))
         _status = str(getattr(r, "status", ""))
-        _is_active = _status == "active"
+        _is_archived = bool(getattr(r, "is_archived", False))
+        _is_active = _status == "active" and not _is_archived
         _qr_url = f"{prefix}/admin/access-codes/{_rid}/qr.png"
         _print_url = f"{prefix}/admin/access-codes/{_rid}/print"
         _download_url = f"{prefix}/admin/access-codes/{_rid}/qr.png"
@@ -4334,12 +4333,25 @@ def render_admin_page(
         _assigned_name = str(getattr(r, "assigned_name", "") or "")
         _assigned_email = str(getattr(r, "assigned_email", "") or "")
         _label = str(getattr(r, "label", "") or "")
-        # Claimed-user display: for used codes, show who it was for
+        _claimed_by_id = getattr(r, "claimed_by_user_id", None)
+        _claimed_by_name = str(getattr(r, "claimed_by_name", "") or "")
+        # Effective display status (archived overrides)
+        _display_status = "archived" if _is_archived else _status
+
+        # Phase 6: Claimed-user display
         if _status == "used":
-            _claimed_label = escape(_assigned_name) if _assigned_name else "Self-registered"
+            # Prefer claimed_by_name (actual claimant); fall back to assigned_name
+            _claimer_name = _claimed_by_name or _assigned_name or "Self-registered"
+            _claimer_user = _ac_users_by_id.get(int(_claimed_by_id)) if _claimed_by_id else None
+            _claimer_link = (
+                f'<button class="button button-secondary" style="font-size:0.72rem;padding:2px 7px;margin-top:2px;" '
+                f'onclick="umOpenViewAs({int(_claimed_by_id)})">View User</button>'
+                if (_claimed_by_id and _claimer_user) else ""
+            )
             _assigned_cell = (
-                f'<span style="font-size:0.82rem;color:var(--success);">&#10003; {_claimed_label}</span>'
+                f'<span style="font-size:0.82rem;color:var(--success);">&#10003; Claimed by: {escape(_claimer_name)}</span>'
                 + (f'<br/><span style="color:var(--muted);font-size:0.75rem;">{escape(_assigned_email)}</span>' if _assigned_email else "")
+                + (f'<br/>{_claimer_link}' if _claimer_link else "")
             )
         else:
             _assigned_cell = (
@@ -4348,6 +4360,7 @@ def render_admin_page(
                 + "</span>"
                 if (_assigned_name or _assigned_email) else "—"
             )
+
         _qr_img = (
             f'<img src="{_qr_url}" alt="QR {escape(_code)}" width="80" height="80"'
             f' style="display:block;image-rendering:pixelated;border:1px solid #ddd;border-radius:4px;" />'
@@ -4371,21 +4384,27 @@ def render_admin_page(
             f' class="button button-secondary" style="font-size:0.75rem;padding:4px 10px;text-decoration:none;">Badge Card</a>'
             + _send_invite_btn
         ) if _is_active else ""
-        # Archive button for non-active, non-already-archived codes
+        # Archive button: non-active and not already archived
         _archive_btn = (
             f'<form method="post" action="{prefix}/admin/access-codes/{_rid}/archive" style="margin:0;">'
             f'<button class="button button-secondary" type="submit"'
             f' style="font-size:0.75rem;padding:4px 10px;" title="Archive this code">Archive</button></form>'
-        ) if not _is_active else ""
+        ) if (not _is_active and not _is_archived) else ""
+        # Row styling: archived rows are muted and hidden by default
+        _row_attrs = (
+            ' data-archived="1" style="opacity:0.45;display:none;"'
+            if _is_archived else ""
+        )
         return (
-            "<tr>"
+            f"<tr{_row_attrs}>"
             f"<td style='min-width:90px;'>{_qr_img}</td>"
             f"<td><code style='font-size:1rem;letter-spacing:.05em;'>{escape(_code)}</code></td>"
             f"<td>{escape(str(getattr(r, 'role', '')))}</td>"
             f"<td>{escape(str(getattr(r, 'title', '') or '—'))}</td>"
             f"<td>{_assigned_cell}</td>"
             f"<td style='font-size:0.82rem;'>{escape(_label) if _label else '—'}</td>"
-            f"<td><span class=\"status-pill {_ac_status_class.get(_status, 'warn')}\">{escape(_status)}</span></td>"
+            f"<td><span class=\"status-pill {_ac_status_class.get(_display_status, 'warn')}\">"
+            f"{escape(_display_status)}</span></td>"
             f"<td>{escape(str(getattr(r, 'expires_at', ''))[:16])}</td>"
             f"<td>{int(getattr(r, 'use_count', 0))}/{int(getattr(r, 'max_uses', 1))}</td>"
             f"<td><div style='display:flex;flex-direction:column;gap:4px;align-items:flex-start;'>"
@@ -4399,6 +4418,7 @@ def render_admin_page(
             "</tr>"
         )
 
+    _archived_count = sum(1 for r in access_code_records if getattr(r, "is_archived", False))
     _access_code_rows = "".join(_ac_row(r) for r in access_code_records) or '<tr><td colspan="10" class="empty-state">No access codes generated yet.</td></tr>'
 
     _client_type_label = {"mobile": "Mobile", "web": "Web"}
@@ -4615,19 +4635,35 @@ def render_admin_page(
             </div>
           </div>
 
+          <!-- ── Toast notification ───────────────────────────────────────── -->
+          <div id="ac-toast" style="display:none;position:fixed;bottom:24px;right:24px;z-index:2000;background:#1e293b;color:#fff;padding:12px 20px;border-radius:10px;font-size:0.9rem;box-shadow:0 8px 24px rgba(0,0,0,.25);max-width:340px;pointer-events:none;"></div>
+
           <!-- ── Codes tab actions bar ──────────────────────────────────────── -->
-          <div id="ac-codes-header" style="display:flex;align-items:center;flex-wrap:wrap;gap:6px;margin-bottom:18px;">
+          <div id="ac-codes-header" style="display:flex;align-items:center;flex-wrap:wrap;gap:6px;margin-bottom:12px;">
             <button class="button button-primary" style="min-height:36px;font-size:0.85rem;" onclick="acOpenGenModal()">+ Generate Code</button>
             <button class="button button-secondary" style="min-height:36px;font-size:0.85rem;" onclick="document.getElementById('ac-bulk-modal').style.display='flex'">Bulk Generate</button>
             <button class="button button-secondary" style="min-height:36px;font-size:0.85rem;" onclick="document.getElementById('ac-csv-modal').style.display='flex'">Import CSV</button>
             <button class="button button-secondary" style="min-height:36px;font-size:0.85rem;" onclick="document.getElementById('ac-invites-modal').style.display='flex'">Send Invites</button>
             <button class="button button-secondary" style="min-height:36px;font-size:0.85rem;" onclick="document.getElementById('ac-reminders-modal').style.display='flex'">Send Reminders</button>
             <button class="button button-secondary" style="min-height:36px;font-size:0.85rem;" onclick="acLoadReports()">Onboarding Reports</button>
+            <button class="button button-secondary" style="min-height:36px;font-size:0.85rem;" onclick="document.getElementById('ac-archive-revoked-modal').style.display='flex'">Archive All Revoked</button>
+          </div>
+          <!-- ── Secondary toolbar: filter + archived controls ─────────────── -->
+          <div style="display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:16px;padding:8px 12px;background:var(--surface,#f8fafc);border-radius:8px;border:1px solid var(--border,#e5e7eb);">
+            <label style="display:flex;align-items:center;gap:6px;font-size:0.85rem;cursor:pointer;">
+              <input type="checkbox" id="ac-show-archived" onchange="acToggleArchived(this.checked)" />
+              Show archived ({_archived_count})
+            </label>
+            <button id="ac-delete-archived-btn" class="button button-danger-outline" style="min-height:30px;font-size:0.8rem;padding:0 12px;display:none;" onclick="document.getElementById('ac-delete-archived-modal').style.display='flex'">Delete Archived Codes</button>
+            <span style="margin-left:auto;font-size:0.8rem;color:var(--muted);">
+              Auto-archive:
+              <button id="ac-autoarchive-toggle" class="button button-secondary" style="font-size:0.78rem;padding:2px 10px;min-height:26px;" onclick="acOpenAutoArchiveSettings()">Configure</button>
+            </span>
           </div>
           <div class="table-wrapper" style="overflow-x:auto;">
             <table class="data-table">
               <thead><tr><th>QR</th><th>Code</th><th>Role</th><th>Title</th><th>Claimed / Assigned</th><th>Label</th><th>Status</th><th>Expires</th><th>Uses</th><th>Actions</th></tr></thead>
-              <tbody>{_access_code_rows}</tbody>
+              <tbody id="ac-table-body">{_access_code_rows}</tbody>
             </table>
           </div>
 
@@ -4727,6 +4763,52 @@ def render_admin_page(
               <div class="button-row">
                 <button class="button button-primary" onclick="acDoSendReminders()">Send Reminders</button>
                 <button class="button button-secondary" onclick="document.getElementById('ac-reminders-modal').style.display='none'">Cancel</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- ── Archive All Revoked Modal (Phase 2+3) ─────────────────────── -->
+          <div id="ac-archive-revoked-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:1100;align-items:center;justify-content:center;">
+            <div style="background:var(--card,#fff);border-radius:12px;padding:28px 32px;max-width:440px;width:100%;box-shadow:0 20px 60px rgba(0,0,0,.25);">
+              <h3 style="margin:0 0 12px;">Archive all revoked access codes?</h3>
+              <p style="font-size:0.88rem;color:var(--muted);margin-bottom:20px;">This will move all revoked access codes to the archive. Archived codes are hidden from the main list but are not deleted. This action can be undone by contacting support.</p>
+              <div class="button-row">
+                <button class="button button-primary" onclick="acDoArchiveRevoked()">Confirm Archive</button>
+                <button class="button button-secondary" onclick="document.getElementById('ac-archive-revoked-modal').style.display='none'">Cancel</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- ── Delete Archived Modal (Phase 7) ───────────────────────────── -->
+          <div id="ac-delete-archived-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:1100;align-items:center;justify-content:center;">
+            <div style="background:var(--card,#fff);border-radius:12px;padding:28px 32px;max-width:440px;width:100%;box-shadow:0 20px 60px rgba(0,0,0,.25);">
+              <h3 style="margin:0 0 12px;color:#dc2626;">Delete all archived access codes?</h3>
+              <p style="font-size:0.88rem;color:var(--muted);margin-bottom:8px;">This permanently deletes all archived codes. <strong>This cannot be undone.</strong></p>
+              <p style="font-size:0.85rem;color:#dc2626;margin-bottom:20px;">Active, used, and expired codes are not affected — only archived codes are deleted.</p>
+              <div class="button-row">
+                <button class="button button-danger-outline" onclick="acDoDeleteArchived()">Delete Permanently</button>
+                <button class="button button-secondary" onclick="document.getElementById('ac-delete-archived-modal').style.display='none'">Cancel</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- ── Auto-Archive Settings Modal (Phase 5) ─────────────────────── -->
+          <div id="ac-autoarchive-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:1100;align-items:center;justify-content:center;">
+            <div style="background:var(--card,#fff);border-radius:12px;padding:28px 32px;max-width:420px;width:100%;box-shadow:0 20px 60px rgba(0,0,0,.25);">
+              <h3 style="margin:0 0 8px;">Auto-Archive Settings</h3>
+              <p style="font-size:0.85rem;color:var(--muted);margin-bottom:18px;">Automatically archive revoked codes after a set number of days.</p>
+              <div class="checkbox-row" style="margin-bottom:14px;">
+                <input type="checkbox" id="aa-enabled" onchange="document.getElementById('aa-days-row').style.display=this.checked?'flex':'none'" />
+                <label for="aa-enabled" style="font-weight:600;">Auto-archive revoked codes</label>
+              </div>
+              <div id="aa-days-row" class="field" style="display:none;margin-bottom:18px;">
+                <label>Archive after (days)</label>
+                <input id="aa-days" type="number" min="1" max="365" value="7" style="width:100%;" />
+              </div>
+              <div id="aa-result" style="display:none;margin-bottom:12px;padding:10px;border-radius:8px;font-size:0.85rem;"></div>
+              <div class="button-row">
+                <button class="button button-primary" onclick="acSaveAutoArchive()">Save Settings</button>
+                <button class="button button-secondary" onclick="document.getElementById('ac-autoarchive-modal').style.display='none'">Cancel</button>
               </div>
             </div>
           </div>
@@ -4971,6 +5053,94 @@ def render_admin_page(
                 res.textContent = 'Error: ' + e.message;
               }});
             }};
+
+            // ── Toast helper (Phase 8) ──────────────────────────────────────
+            window.acToast = function(msg, isError) {{
+              var t = document.getElementById('ac-toast');
+              t.textContent = msg;
+              t.style.background = isError ? '#dc2626' : '#1e293b';
+              t.style.display = 'block';
+              clearTimeout(t._timer);
+              t._timer = setTimeout(function() {{ t.style.display = 'none'; }}, 3500);
+            }};
+
+            // ── Archived row toggle (Phase 7) ───────────────────────────────
+            window.acToggleArchived = function(show) {{
+              var rows = document.querySelectorAll('#ac-table-body tr[data-archived="1"]');
+              rows.forEach(function(r) {{ r.style.display = show ? '' : 'none'; }});
+              var delBtn = document.getElementById('ac-delete-archived-btn');
+              if (delBtn) delBtn.style.display = show ? 'inline-flex' : 'none';
+            }};
+
+            // ── Archive All Revoked (Phase 4) ───────────────────────────────
+            window.acDoArchiveRevoked = function() {{
+              fetch(_pathPrefix + '/admin/access-codes/archive-revoked', {{
+                method: 'POST', credentials: 'same-origin',
+                headers: {{'Content-Type': 'application/json'}},
+              }})
+              .then(function(r) {{ return r.json(); }})
+              .then(function(d) {{
+                document.getElementById('ac-archive-revoked-modal').style.display = 'none';
+                acToast('Revoked codes archived: ' + d.archived);
+                setTimeout(function() {{ window.location.reload(); }}, 1500);
+              }})
+              .catch(function(e) {{
+                document.getElementById('ac-archive-revoked-modal').style.display = 'none';
+                acToast('Error: ' + e.message, true);
+              }});
+            }};
+
+            // ── Delete Archived (Phase 7) ───────────────────────────────────
+            window.acDoDeleteArchived = function() {{
+              fetch(_pathPrefix + '/admin/access-codes/delete-archived', {{
+                method: 'POST', credentials: 'same-origin',
+                headers: {{'Content-Type': 'application/json'}},
+              }})
+              .then(function(r) {{ return r.json(); }})
+              .then(function(d) {{
+                document.getElementById('ac-delete-archived-modal').style.display = 'none';
+                acToast('Archived codes deleted: ' + d.deleted);
+                setTimeout(function() {{ window.location.reload(); }}, 1500);
+              }})
+              .catch(function(e) {{
+                document.getElementById('ac-delete-archived-modal').style.display = 'none';
+                acToast('Error: ' + e.message, true);
+              }});
+            }};
+
+            // ── Auto-Archive Settings (Phase 5) ─────────────────────────────
+            window.acOpenAutoArchiveSettings = function() {{
+              fetch(_pathPrefix + '/admin/access-codes/settings')
+              .then(function(r) {{ return r.json(); }})
+              .then(function(d) {{
+                document.getElementById('aa-enabled').checked = !!d.enabled;
+                document.getElementById('aa-days').value = d.days || 7;
+                document.getElementById('aa-days-row').style.display = d.enabled ? 'flex' : 'none';
+                document.getElementById('aa-result').style.display = 'none';
+                document.getElementById('ac-autoarchive-modal').style.display = 'flex';
+              }})
+              .catch(function(e) {{ acToast('Could not load settings: ' + e.message, true); }});
+            }};
+
+            window.acSaveAutoArchive = function() {{
+              var enabled = document.getElementById('aa-enabled').checked;
+              var days = parseInt(document.getElementById('aa-days').value) || 7;
+              fetch(_pathPrefix + '/admin/access-codes/settings', {{
+                method: 'POST', credentials: 'same-origin',
+                headers: {{'Content-Type': 'application/json'}},
+                body: JSON.stringify({{auto_archive_enabled: enabled, auto_archive_days: days}}),
+              }})
+              .then(function(r) {{ return r.json(); }})
+              .then(function(d) {{
+                document.getElementById('ac-autoarchive-modal').style.display = 'none';
+                acToast(d.auto_archive_enabled
+                  ? 'Auto-archive enabled: archive after ' + d.auto_archive_days + ' days'
+                  : 'Auto-archive disabled');
+              }})
+              .catch(function(e) {{
+                acToast('Error saving settings: ' + e.message, true);
+              }});
+            }};
           }})();
           </script>"""
     else:
@@ -5170,7 +5340,6 @@ def render_admin_page(
           <nav class="nav-list">
             {_nav_item("dashboard", "Dashboard")}
             {_nav_item("user-management", "User Management", str(_um_badge_count) if _um_badge_count else None)}
-            {_ac_nav_html}
             {_nav_item("drill-reports", "Drill Reports")}
             {_nav_item("audit-logs", "Audit Logs")}
             {_nav_item("analytics", "Analytics")}

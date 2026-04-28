@@ -2253,7 +2253,7 @@ async def admin_dashboard(
     _admin_role = str(getattr(request.state.admin_user, "role", "")).strip().lower()
     _access_code_records: list = []
     if can_generate_codes(_admin_role) and selected_section in {"access-codes", "user-management"}:
-        _access_code_records = await _access_codes(request).list_codes(str(request.state.school.slug), limit=200)
+        _access_code_records = await _access_codes(request).list_codes(str(request.state.school.slug), limit=500, include_archived=True)
     _base_domain = str(getattr(request.app.state.settings, "BASE_DOMAIN", "") or "app.bluebirdalerts.com").strip()
 
     html = render_admin_page(
@@ -7012,9 +7012,10 @@ async def onboarding_create_account(request: Request, body: CreateAccountFromCod
         return ValidateCodeResponse(valid=False, error="School not found.")
     tenant_ctx = _tenant_manager(request).get(school)
     user_store: UserStore = tenant_ctx.user_store
+    new_user_name = body.name.strip()
     try:
-        await user_store.create_user(
-            name=body.name.strip(),
+        new_user_id = await user_store.create_user(
+            name=new_user_name,
             role=rec.role,
             phone_e164=None,
             login_name=body.login_name.strip().lower(),
@@ -7028,6 +7029,10 @@ async def onboarding_create_account(request: Request, body: CreateAccountFromCod
     consumed = await _access_codes(request).consume_code(rec.id)
     if not consumed:
         logger.warning("onboarding consume_code failed code_id=%s — user already created", rec.id)
+    try:
+        await _access_codes(request).link_user_to_code(rec.id, new_user_id, new_user_name)
+    except Exception:
+        pass  # non-fatal — claimed_by is informational
     logger.info("onboarding user created tenant=%s role=%s login=%s", rec.tenant_slug, rec.role, body.login_name)
     # Audit: both events fire asynchronously; failures must not block the response.
     _login = body.login_name.strip().lower()
@@ -7600,6 +7605,65 @@ async def admin_send_reminders(request: Request) -> JSONResponse:
         else:
             failed += 1
     return JSONResponse({"sent": sent, "skipped": skipped, "failed": failed})
+
+
+# ── Access code lifecycle management ──────────────────────────────────────────
+
+@router.post("/admin/access-codes/archive-revoked", include_in_schema=False)
+async def admin_archive_revoked_codes(request: Request) -> JSONResponse:
+    """Bulk-archive all revoked codes for this tenant."""
+    users = await _require_dashboard_admin(request)
+    user_id = _session_user_id(request) or 0
+    user = await users.get_user(user_id)
+    if user is None or not can_generate_codes(user.role):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions.")
+    tenant_slug = str(getattr(request.state, "school_slug", "")).strip()
+    count = await _access_codes(request).archive_revoked_bulk(tenant_slug)
+    _fire_audit(request, "access_codes_bulk_archived", actor_user_id=user_id,
+                actor_label=user.name, target_type="access_codes",
+                metadata={"count": count, "filter": "revoked"})
+    return JSONResponse({"archived": count})
+
+
+@router.post("/admin/access-codes/delete-archived", include_in_schema=False)
+async def admin_delete_archived_codes(request: Request) -> JSONResponse:
+    """Permanently delete all archived codes for this tenant."""
+    users = await _require_dashboard_admin(request)
+    user_id = _session_user_id(request) or 0
+    user = await users.get_user(user_id)
+    if user is None or not can_generate_codes(user.role):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions.")
+    tenant_slug = str(getattr(request.state, "school_slug", "")).strip()
+    count = await _access_codes(request).delete_archived(tenant_slug)
+    _fire_audit(request, "access_codes_deleted_archived", actor_user_id=user_id,
+                actor_label=user.name, target_type="access_codes",
+                metadata={"count": count})
+    return JSONResponse({"deleted": count})
+
+
+@router.get("/admin/access-codes/settings", include_in_schema=False)
+async def admin_get_code_settings(request: Request) -> JSONResponse:
+    """Return auto-archive settings for this tenant."""
+    await _require_dashboard_admin(request)
+    tenant_slug = str(getattr(request.state, "school_slug", "")).strip()
+    settings = await _access_codes(request).get_auto_archive_settings(tenant_slug)
+    return JSONResponse(settings)
+
+
+@router.post("/admin/access-codes/settings", include_in_schema=False)
+async def admin_set_code_settings(request: Request) -> JSONResponse:
+    """Update auto-archive settings for this tenant."""
+    users = await _require_dashboard_admin(request)
+    user_id = _session_user_id(request) or 0
+    user = await users.get_user(user_id)
+    if user is None or not can_generate_codes(user.role):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions.")
+    body = await request.json()
+    enabled = bool(body.get("auto_archive_enabled", False))
+    days = max(1, int(body.get("auto_archive_days", 7)))
+    tenant_slug = str(getattr(request.state, "school_slug", "")).strip()
+    await _access_codes(request).set_auto_archive_settings(tenant_slug, enabled, days)
+    return JSONResponse({"auto_archive_enabled": enabled, "auto_archive_days": days})
 
 
 @router.get("/admin/access-codes/badges.pdf", include_in_schema=False)

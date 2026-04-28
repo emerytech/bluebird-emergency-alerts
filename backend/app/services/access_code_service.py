@@ -46,6 +46,9 @@ class AccessCodeRecord:
     reminder_count: int = 0
     last_reminder_sent_at: Optional[str] = None
     is_archived: bool = False
+    # Claimed-user tracking (populated when code is consumed via onboarding)
+    claimed_by_user_id: Optional[int] = None
+    claimed_by_name: Optional[str] = None
 
 
 # ── Service ────────────────────────────────────────────────────────────────────
@@ -111,9 +114,21 @@ class AccessCodeService:
                 ("reminder_count",       "ALTER TABLE access_codes ADD COLUMN reminder_count INTEGER NOT NULL DEFAULT 0;"),
                 ("last_reminder_sent_at","ALTER TABLE access_codes ADD COLUMN last_reminder_sent_at TEXT NULL;"),
                 ("is_archived",          "ALTER TABLE access_codes ADD COLUMN is_archived INTEGER NOT NULL DEFAULT 0;"),
+                ("claimed_by_user_id",   "ALTER TABLE access_codes ADD COLUMN claimed_by_user_id INTEGER NULL;"),
+                ("claimed_by_name",      "ALTER TABLE access_codes ADD COLUMN claimed_by_name TEXT NULL;"),
             ]:
                 if col not in cols:
                     conn.execute(defn)
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS tenant_code_settings (
+                    tenant_slug             TEXT    PRIMARY KEY,
+                    auto_archive_enabled    INTEGER NOT NULL DEFAULT 0,
+                    auto_archive_days       INTEGER NOT NULL DEFAULT 7,
+                    updated_at              TEXT    NOT NULL
+                );
+                """
+            )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_ac_code ON access_codes(code);"
             )
@@ -158,6 +173,8 @@ class AccessCodeService:
             reminder_count=int(row[18]) if len(row) > 18 and row[18] is not None else 0,
             last_reminder_sent_at=str(row[19]) if len(row) > 19 and row[19] else None,
             is_archived=bool(int(row[20])) if len(row) > 20 and row[20] is not None else False,
+            claimed_by_user_id=int(row[21]) if len(row) > 21 and row[21] is not None else None,
+            claimed_by_name=str(row[22]) if len(row) > 22 and row[22] else None,
         )
 
     # ── Generate ───────────────────────────────────────────────────────────────
@@ -345,7 +362,8 @@ class AccessCodeService:
                 SELECT id, code, tenant_slug, role, title, created_by_user_id, created_at,
                        expires_at, max_uses, use_count, last_used_at, status, is_setup_code,
                        invite_email, assigned_name, assigned_email, assigned_user_id, label,
-                       reminder_count, last_reminder_sent_at, COALESCE(is_archived, 0) as is_archived
+                       reminder_count, last_reminder_sent_at, COALESCE(is_archived, 0) as is_archived,
+                       claimed_by_user_id, claimed_by_name
                 FROM access_codes
                 WHERE code = ?
                   AND tenant_slug = ?
@@ -446,7 +464,8 @@ class AccessCodeService:
                 SELECT id, code, tenant_slug, role, title, created_by_user_id, created_at,
                        expires_at, max_uses, use_count, last_used_at, status, is_setup_code,
                        invite_email, assigned_name, assigned_email, assigned_user_id, label,
-                       reminder_count, last_reminder_sent_at, COALESCE(is_archived, 0) as is_archived
+                       reminder_count, last_reminder_sent_at, COALESCE(is_archived, 0) as is_archived,
+                       claimed_by_user_id, claimed_by_name
                 FROM access_codes
                 WHERE tenant_slug = ? AND is_setup_code = ? {arch_clause}
                 ORDER BY id DESC LIMIT ?;
@@ -485,7 +504,8 @@ class AccessCodeService:
                 SELECT id, code, tenant_slug, role, title, created_by_user_id, created_at,
                        expires_at, max_uses, use_count, last_used_at, status, is_setup_code,
                        invite_email, assigned_name, assigned_email, assigned_user_id, label,
-                       reminder_count, last_reminder_sent_at, COALESCE(is_archived, 0) as is_archived
+                       reminder_count, last_reminder_sent_at, COALESCE(is_archived, 0) as is_archived,
+                       claimed_by_user_id, claimed_by_name
                 FROM access_codes
                 WHERE is_setup_code = 1
                 ORDER BY id DESC LIMIT ?;
@@ -571,7 +591,8 @@ class AccessCodeService:
                 SELECT id, code, tenant_slug, role, title, created_by_user_id, created_at,
                        expires_at, max_uses, use_count, last_used_at, status, is_setup_code,
                        invite_email, assigned_name, assigned_email, assigned_user_id, label,
-                       reminder_count, last_reminder_sent_at, COALESCE(is_archived, 0) as is_archived
+                       reminder_count, last_reminder_sent_at, COALESCE(is_archived, 0) as is_archived,
+                       claimed_by_user_id, claimed_by_name
                 FROM access_codes
                 WHERE tenant_slug = ?
                   AND is_setup_code = 0
@@ -632,4 +653,133 @@ class AccessCodeService:
     async def onboarding_report(self, tenant_slug: str) -> List[dict]:
         return await anyio.to_thread.run_sync(
             lambda: self._onboarding_report_sync(tenant_slug)
+        )
+
+    # ── Claimed-user linkage ───────────────────────────────────────────────────
+
+    def _link_user_sync(self, code_id: int, user_id: int, user_name: str) -> bool:
+        with self._connect() as conn:
+            result = conn.execute(
+                """
+                UPDATE access_codes
+                SET claimed_by_user_id = ?, claimed_by_name = ?
+                WHERE id = ?;
+                """,
+                (user_id, user_name, code_id),
+            )
+            return result.rowcount > 0
+
+    async def link_user_to_code(self, code_id: int, user_id: int, user_name: str) -> bool:
+        """Record which user claimed this code. Call after successful consume_code()."""
+        return await anyio.to_thread.run_sync(
+            lambda: self._link_user_sync(code_id, user_id, user_name)
+        )
+
+    # ── Bulk archive revoked ───────────────────────────────────────────────────
+
+    def _archive_revoked_bulk_sync(self, tenant_slug: str) -> int:
+        with self._connect() as conn:
+            result = conn.execute(
+                """
+                UPDATE access_codes
+                SET is_archived = 1
+                WHERE tenant_slug = ?
+                  AND is_setup_code = 0
+                  AND status = 'revoked'
+                  AND COALESCE(is_archived, 0) = 0;
+                """,
+                (tenant_slug,),
+            )
+            return result.rowcount
+
+    async def archive_revoked_bulk(self, tenant_slug: str) -> int:
+        """Archive all revoked (non-archived) codes for the tenant. Returns count."""
+        return await anyio.to_thread.run_sync(
+            lambda: self._archive_revoked_bulk_sync(tenant_slug)
+        )
+
+    # ── Delete archived ────────────────────────────────────────────────────────
+
+    def _delete_archived_sync(self, tenant_slug: str) -> int:
+        with self._connect() as conn:
+            result = conn.execute(
+                """
+                DELETE FROM access_codes
+                WHERE tenant_slug = ?
+                  AND COALESCE(is_archived, 0) = 1;
+                """,
+                (tenant_slug,),
+            )
+            return result.rowcount
+
+    async def delete_archived(self, tenant_slug: str) -> int:
+        """Permanently delete all archived codes for the tenant. Returns count deleted."""
+        return await anyio.to_thread.run_sync(
+            lambda: self._delete_archived_sync(tenant_slug)
+        )
+
+    # ── Auto-archive settings ──────────────────────────────────────────────────
+
+    def _get_auto_archive_settings_sync(self, tenant_slug: str) -> dict:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT auto_archive_enabled, auto_archive_days FROM tenant_code_settings WHERE tenant_slug = ?;",
+                (tenant_slug,),
+            ).fetchone()
+        if row:
+            return {"enabled": bool(int(row[0])), "days": int(row[1])}
+        return {"enabled": False, "days": 7}
+
+    async def get_auto_archive_settings(self, tenant_slug: str) -> dict:
+        return await anyio.to_thread.run_sync(
+            lambda: self._get_auto_archive_settings_sync(tenant_slug)
+        )
+
+    def _set_auto_archive_settings_sync(self, tenant_slug: str, enabled: bool, days: int) -> None:
+        now_iso = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO tenant_code_settings (tenant_slug, auto_archive_enabled, auto_archive_days, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(tenant_slug) DO UPDATE SET
+                    auto_archive_enabled = excluded.auto_archive_enabled,
+                    auto_archive_days = excluded.auto_archive_days,
+                    updated_at = excluded.updated_at;
+                """,
+                (tenant_slug, 1 if enabled else 0, max(1, days), now_iso),
+            )
+
+    async def set_auto_archive_settings(self, tenant_slug: str, enabled: bool, days: int) -> None:
+        await anyio.to_thread.run_sync(
+            lambda: self._set_auto_archive_settings_sync(tenant_slug, enabled, days)
+        )
+
+    def _auto_archive_if_enabled_sync(self, tenant_slug: str) -> int:
+        """Archive revoked codes older than configured days if auto-archive is enabled."""
+        settings = self._get_auto_archive_settings_sync(tenant_slug)
+        if not settings["enabled"]:
+            return 0
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(days=settings["days"])
+        ).isoformat()
+        with self._connect() as conn:
+            result = conn.execute(
+                """
+                UPDATE access_codes
+                SET is_archived = 1
+                WHERE tenant_slug = ?
+                  AND is_setup_code = 0
+                  AND status = 'revoked'
+                  AND COALESCE(is_archived, 0) = 0
+                  AND last_used_at <= ?;
+                """,
+                (tenant_slug, cutoff),
+            )
+            return result.rowcount
+
+    async def auto_archive_if_enabled(self, tenant_slug: str) -> int:
+        """Run auto-archive for a tenant if enabled. Returns count archived."""
+        return await anyio.to_thread.run_sync(
+            lambda: self._auto_archive_if_enabled_sync(tenant_slug)
         )
