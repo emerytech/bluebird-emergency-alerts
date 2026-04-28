@@ -2,12 +2,28 @@
 
 ## Current Phase
 
-### Phase 11 — District Multi-School Admin (active)
+### Phase 12 — Push Reliability + Observability (active)
 
 **In Progress**
-- District admin UI: school list, cross-school quiet period approval queue
-- District admin WebSocket scope (receive events from all assigned schools)
-- `district_admin` role enforcement in mobile role-gated views
+- APNS/FCM error surfacing in web admin UI
+- Audit log viewer for district admins
+- Graceful backend restart (WS reconnect on 1001/1012 close codes)
+- Health monitor admin panel integration
+
+---
+
+## Completed Phases
+
+### Phase 11 — District Multi-School Admin
+
+- Backend `schemas.py`: `DistrictQuietPeriodItem`, `DistrictQuietPeriodsResponse`, `DistrictQuietActionRequest`
+- Backend `routes.py`: `GET /district/quiet-periods` — aggregates pending requests across assigned schools; `POST /district/quiet-periods/{id}/approve|deny` — tenant-scoped approval with assignment verification
+- Android: `district_admin` added to `isAdmin` for role-gated views
+- Android: `DistrictOverviewScreen` — pending quiet period queue with per-row Approve/Deny buttons and confirmation dialog
+- Android: `DistrictQuietPeriodItem` data class + `districtQuietRequests` in `UiState`
+- Android: ViewModel `loadDistrictQuietPeriods`, `approveDistrictQuietRequest`, `denyDistrictQuietRequest`
+- Android: `BackendClient` — `listDistrictQuietPeriods`, `approveDistrictQuietPeriod`, `denyDistrictQuietPeriod`
+- Android: District WebSocket (`/ws/district/alerts`) auto-connects on init for district/super_admin sessions; real-time alarm events fan into existing `districtTenants` state
 
 ---
 
@@ -76,12 +92,6 @@
 ---
 
 ## Pending Phases
-
-### Phase 12 — Push Reliability + Observability
-- APNS/FCM error surfacing in web admin UI
-- Audit log viewer for district admins
-- Graceful backend restart (WS reconnect on 1001/1012 close codes)
-- Health monitor admin panel integration
 
 ### Phase 13 — Production Deployment
 - Docker Compose production config
