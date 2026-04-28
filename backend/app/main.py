@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import io
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import logging
 import re
 
@@ -167,6 +169,160 @@ def _normalize_tenant_candidate(value: str) -> str:
     return _TENANT_CLEAN_RE.sub("-", value.strip().lower()).strip("-")
 
 
+async def _auto_reminder_loop(app: FastAPI, interval_hours: float = 24.0) -> None:
+    """
+    Background loop: sends automated reminder emails for unclaimed access codes.
+
+    Rules:
+    - Skips test, simulation, and archived tenants.
+    - Each code receives at most 3 auto-reminders.
+    - Minimum 3 days between reminders per code.
+    - Only runs when SMTP is configured.
+    - Initial sleep equals the interval so it doesn't fire immediately on startup.
+    """
+    _MAX_REMINDERS = 3
+    _MIN_INTERVAL_DAYS = 3
+
+    while True:
+        await asyncio.sleep(interval_hours * 3600)
+        try:
+            school_registry: SchoolRegistry = app.state.school_registry
+            access_code_service: AccessCodeService = app.state.access_code_service
+            email_service: EmailService = app.state.email_service
+
+            if not email_service.is_configured():
+                continue
+
+            schools = await school_registry.list_schools()
+            now = datetime.now(timezone.utc)
+            cutoff_iso = (now - timedelta(days=_MIN_INTERVAL_DAYS)).isoformat()
+
+            total_sent = total_skipped = total_failed = 0
+            for school in schools:
+                if school.is_test or school.simulation_mode_enabled or school.is_archived or not school.is_active:
+                    continue
+                try:
+                    unclaimed = await access_code_service.list_unclaimed_with_email(school.slug)
+                    for rec in unclaimed:
+                        if rec.reminder_count >= _MAX_REMINDERS:
+                            total_skipped += 1
+                            continue
+                        if rec.last_reminder_sent_at and rec.last_reminder_sent_at >= cutoff_iso:
+                            total_skipped += 1
+                            continue
+                        email = (rec.assigned_email or "").strip()
+                        if not email:
+                            total_skipped += 1
+                            continue
+
+                        try:
+                            import qrcode as _qrcode  # already a project dependency
+                            payload_json = AccessCodeService.qr_payload(rec.code, rec.tenant_slug)
+
+                            def _make_qr(p: str = payload_json) -> bytes:
+                                qr = _qrcode.QRCode(
+                                    version=None,
+                                    error_correction=_qrcode.constants.ERROR_CORRECT_M,
+                                    box_size=10,
+                                    border=4,
+                                )
+                                qr.add_data(p)
+                                qr.make(fit=True)
+                                img = qr.make_image(fill_color="black", back_color="white")
+                                buf = io.BytesIO()
+                                img.save(buf, format="PNG")
+                                return buf.getvalue()
+
+                            qr_bytes = await asyncio.to_thread(_make_qr)
+                            qr_b64 = base64.b64encode(qr_bytes).decode("ascii")
+                        except Exception:
+                            qr_b64 = ""
+
+                        greeting = f"Hi {rec.assigned_name}," if rec.assigned_name else "Hello,"
+                        exp_line = f" &nbsp;·&nbsp; Expires: {rec.expires_at[:10]}" if rec.expires_at else ""
+                        exp_text = f"\nExpires: {rec.expires_at[:10]}" if rec.expires_at else ""
+                        reminder_num = rec.reminder_count + 1
+                        subject = f"[Reminder #{reminder_num}] Your BlueBird Alerts invitation — {school.name}"
+                        body_text = (
+                            f"{greeting}\n\n"
+                            f"This is reminder #{reminder_num} that you have an unclaimed invitation "
+                            f"to join BlueBird Alerts at {school.name}.\n\n"
+                            f"Your access code: {rec.code}\n"
+                            f"Role: {rec.role}{exp_text}\n\n"
+                            "To get started:\n"
+                            "1. Download the BlueBird Alerts app from the App Store or Google Play.\n"
+                            "2. Open the app and tap 'Join with Access Code'.\n"
+                            "3. Enter your code or scan the QR code.\n\n"
+                            "— BlueBird Alerts"
+                        )
+                        qr_img_tag = (
+                            f'<div style="text-align:center;margin:24px 0;">'
+                            f'<img src="data:image/png;base64,{qr_b64}" alt="QR Code" width="200" height="200"'
+                            f' style="image-rendering:pixelated;border:1px solid #e5e7eb;border-radius:8px;padding:8px;" />'
+                            f"</div>"
+                        ) if qr_b64 else ""
+                        body_html = (
+                            "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\"/></head>"
+                            "<body style=\"font-family:-apple-system,BlinkMacSystemFont,Arial,sans-serif;"
+                            "background:#f9fafb;padding:32px 0;margin:0;\">"
+                            "<div style=\"max-width:520px;margin:0 auto;background:#fff;border-radius:12px;"
+                            "overflow:hidden;box-shadow:0 2px 12px rgba(0,0,0,.08);\">"
+                            "<div style=\"background:#1a56db;padding:24px 32px;\">"
+                            "<p style=\"margin:0;color:#fff;font-size:1.3rem;font-weight:700;\">BlueBird Alerts</p>"
+                            f"<p style=\"margin:4px 0 0;color:#bfdbfe;font-size:0.9rem;\">Reminder #{reminder_num} — Staff Onboarding Invitation</p>"
+                            "</div>"
+                            "<div style=\"padding:28px 32px;\">"
+                            f"<p style=\"margin:0 0 16px;\">{greeting}</p>"
+                            f"<p style=\"margin:0 0 16px;\">This is reminder #{reminder_num} that your invitation to join "
+                            f"<strong>{school.name}</strong> on BlueBird Alerts has not been claimed yet.</p>"
+                            f"{qr_img_tag}"
+                            "<div style=\"background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;"
+                            "padding:16px 20px;text-align:center;margin-bottom:20px;\">"
+                            "<p style=\"margin:0 0 4px;font-size:0.8rem;color:#6b7280;\">Your Access Code</p>"
+                            f"<p style=\"margin:0;font-size:2rem;font-weight:700;letter-spacing:.12em;"
+                            f"color:#1a56db;font-family:monospace;\">{rec.code}</p>"
+                            f"<p style=\"margin:4px 0 0;font-size:0.8rem;color:#6b7280;\">Role: {rec.role}{exp_line}</p>"
+                            "</div>"
+                            "<p style=\"margin:0 0 8px;font-weight:600;\">How to get started:</p>"
+                            "<ol style=\"margin:0 0 20px;padding-left:20px;line-height:1.8;\">"
+                            "<li>Download <strong>BlueBird Alerts</strong> from the App Store or Google Play.</li>"
+                            "<li>Open the app and tap <strong>Join with Access Code</strong>.</li>"
+                            "<li>Scan the QR code above or enter your code manually.</li>"
+                            "<li>Complete your profile — you&rsquo;re done!</li>"
+                            "</ol>"
+                            "<p style=\"margin:0;font-size:0.8rem;color:#9ca3af;\">This reminder was sent automatically. "
+                            "If you have already joined or do not recognize this invitation, please ignore it.</p>"
+                            "</div></div></body></html>"
+                        )
+
+                        ok = await email_service.send_html_email(
+                            to_address=email,
+                            subject=subject,
+                            body_text=body_text,
+                            body_html=body_html,
+                            event_type="access_code_auto_reminder",
+                        )
+                        if ok:
+                            await access_code_service.increment_reminder_count(rec.id, rec.tenant_slug)
+                            total_sent += 1
+                        else:
+                            total_failed += 1
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    logger.warning("auto_reminder error tenant=%s: %s", school.slug, exc)
+
+            if total_sent or total_failed:
+                logger.info(
+                    "Auto reminders: sent=%d skipped=%d failed=%d",
+                    total_sent, total_skipped, total_failed,
+                )
+        except asyncio.CancelledError:
+            break
+        except Exception as exc:
+            logger.warning("auto_reminder loop error: %s", exc)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.started_at = datetime.now(timezone.utc)
@@ -244,6 +400,9 @@ async def lifespan(app: FastAPI):
     wal_checkpoint_task = asyncio.create_task(
         _wal_checkpoint_loop(app, interval=300.0)
     )
+    auto_reminder_task = asyncio.create_task(
+        _auto_reminder_loop(app, interval_hours=24.0)
+    )
 
     yield
 
@@ -252,6 +411,7 @@ async def lifespan(app: FastAPI):
     health_task.cancel()
     qp_expiry_task.cancel()
     wal_checkpoint_task.cancel()
+    auto_reminder_task.cancel()
     try:
         await health_task
     except asyncio.CancelledError:
@@ -262,6 +422,10 @@ async def lifespan(app: FastAPI):
         pass
     try:
         await wal_checkpoint_task
+    except asyncio.CancelledError:
+        pass
+    try:
+        await auto_reminder_task
     except asyncio.CancelledError:
         pass
 
