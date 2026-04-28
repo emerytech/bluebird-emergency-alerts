@@ -2162,28 +2162,28 @@ struct ContentView: View {
                         Button {
                             Task { await confirmTeamAssistCancel(item) }
                         } label: {
-                            Text(item.cancelAdminConfirmed ? "Admin Confirmed" : "Confirm Cancel")
+                            Text((item.cancelAdminConfirmed ?? false) ? "Admin Confirmed" : "Confirm Cancel")
                                 .font(.caption.weight(.semibold))
                                 .padding(.horizontal, 12)
                                 .padding(.vertical, 7)
-                                .background(item.cancelAdminConfirmed ? DSColor.success.opacity(0.15) : DSColor.danger.opacity(0.14))
+                                .background((item.cancelAdminConfirmed ?? false) ? DSColor.success.opacity(0.15) : DSColor.danger.opacity(0.14))
                                 .clipShape(Capsule())
                         }
-                        .disabled(isUpdatingTeamAssist || item.cancelAdminConfirmed)
+                        .disabled(isUpdatingTeamAssist || (item.cancelAdminConfirmed ?? false))
                     }
                 }
             } else if appState.userID == item.createdBy && item.status != "cancelled" {
                 Button {
                     Task { await confirmTeamAssistCancel(item) }
                 } label: {
-                    Text(item.cancelRequesterConfirmed ? "Requester Confirmed" : "Confirm Cancel")
+                    Text((item.cancelRequesterConfirmed ?? false) ? "Requester Confirmed" : "Confirm Cancel")
                         .font(.caption.weight(.semibold))
                         .padding(.horizontal, 12)
                         .padding(.vertical, 7)
-                        .background(item.cancelRequesterConfirmed ? DSColor.success.opacity(0.15) : DSColor.warning.opacity(0.14))
+                        .background((item.cancelRequesterConfirmed ?? false) ? DSColor.success.opacity(0.15) : DSColor.warning.opacity(0.14))
                         .clipShape(Capsule())
                 }
-                .disabled(isUpdatingTeamAssist || item.cancelRequesterConfirmed)
+                .disabled(isUpdatingTeamAssist || (item.cancelRequesterConfirmed ?? false))
             }
         }
         .padding(.vertical, 2)
@@ -2200,8 +2200,8 @@ struct ContentView: View {
             parts.append("to \(forwardLabel)")
         }
         if item.status == "cancel_pending" {
-            let requester = item.cancelRequesterConfirmed ? "Requester ✓" : "Requester …"
-            let admin = item.cancelAdminConfirmed ? "Admin ✓" : "Admin …"
+            let requester = (item.cancelRequesterConfirmed ?? false) ? "Requester ✓" : "Requester …"
+            let admin = (item.cancelAdminConfirmed ?? false) ? "Admin ✓" : "Admin …"
             parts.append("\(requester), \(admin)")
         }
         return parts.joined(separator: " • ")
