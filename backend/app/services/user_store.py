@@ -427,6 +427,26 @@ class UserStore:
     async def count_all_district_admins(self) -> int:
         return await anyio.to_thread.run_sync(self._count_all_district_admins_sync)
 
+    def _count_active_sync(self) -> int:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM users WHERE is_active = 1 AND (is_archived IS NULL OR is_archived = 0);"
+            ).fetchone()
+        return int(row[0]) if row else 0
+
+    async def count_active(self) -> int:
+        return await anyio.to_thread.run_sync(self._count_active_sync)
+
+    def _count_by_role_sync(self) -> dict:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT role, COUNT(*) FROM users WHERE is_active = 1 AND (is_archived IS NULL OR is_archived = 0) GROUP BY role;"
+            ).fetchall()
+        return {str(r[0]): int(r[1]) for r in rows}
+
+    async def count_by_role(self) -> dict:
+        return await anyio.to_thread.run_sync(self._count_by_role_sync)
+
     def _authenticate_user_sync(self, login_name: str, password: str) -> Optional[UserRecord]:
         with self._connect() as conn:
             row = conn.execute(

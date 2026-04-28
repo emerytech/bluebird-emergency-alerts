@@ -597,41 +597,239 @@ try {
 // ── Analytics + District Reports ──────────────────────────────────────────────
 try {
   (function () {
+
+    // ── Helpers ──────────────────────────────────────────────────────────────
+
     function fmtSeconds(s) {
       if (s === null || s === undefined) return '—';
       if (s < 60) return Math.round(s) + 's';
       return Math.round(s / 60) + 'm ' + (Math.round(s) % 60) + 's';
     }
 
-    function renderBuildingCards(buildings, containerId) {
+    function _esc(s) {
+      return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    function _statChip(label, val, color) {
+      return '<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:10px 16px;min-width:90px;">'
+        + '<div style="font-size:0.68rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:3px;">' + label + '</div>'
+        + '<div style="font-size:1.5rem;font-weight:700;color:' + color + ';line-height:1;">' + val + '</div>'
+        + '</div>';
+    }
+
+    // ── SVG Primitives ───────────────────────────────────────────────────────
+
+    /* Sparkline: compact 72×22 trend line for table rows. */
+    function _svgSparkline(counts) {
+      var n = counts.length;
+      if (!n) return '<span style="color:var(--muted);font-size:0.7rem;">—</span>';
+      var max = Math.max.apply(null, counts) || 1;
+      var W = 72, H = 22, pad = 2;
+      var step = n > 1 ? (W - pad * 2) / (n - 1) : 0;
+      var pts = counts.map(function (v, i) {
+        return (pad + i * step).toFixed(1) + ',' + (pad + (H - pad * 2) * (1 - v / max)).toFixed(1);
+      }).join(' ');
+      var hasActivity = max > 0;
+      return '<svg width="' + W + '" height="' + H + '" viewBox="0 0 ' + W + ' ' + H + '" style="display:block;overflow:visible;">'
+        + (hasActivity
+          ? '<polyline points="' + pts + '" fill="none" stroke="#3b82f6" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>'
+          : '<line x1="' + pad + '" y1="' + (H / 2) + '" x2="' + (W - pad) + '" y2="' + (H / 2) + '" stroke="var(--border)" stroke-width="1"/>')
+        + '</svg>';
+    }
+
+    /* Area chart: full-width SVG with date labels, for the district trend. */
+    function _svgAreaChart(trend) {
+      var counts = trend.map(function (t) { return t.c || 0; });
+      var dates  = trend.map(function (t) { return t.d || ''; });
+      var n = counts.length;
+      if (!n) return '';
+      var max = Math.max.apply(null, counts) || 1;
+      var W = 600, H = 120, pL = 30, pR = 8, pT = 10, pB = 22;
+      var iW = W - pL - pR, iH = H - pT - pB;
+      function px(i) { return pL + (n > 1 ? iW * i / (n - 1) : iW / 2); }
+      function py(v) { return pT + iH * (1 - v / max); }
+      var linePts = counts.map(function (v, i) { return px(i).toFixed(1) + ',' + py(v).toFixed(1); }).join(' ');
+      var area = 'M' + px(0).toFixed(1) + ',' + (pT + iH).toFixed(1)
+        + ' ' + counts.map(function (v, i) { return 'L' + px(i).toFixed(1) + ',' + py(v).toFixed(1); }).join(' ')
+        + ' L' + px(n - 1).toFixed(1) + ',' + (pT + iH).toFixed(1) + ' Z';
+      var grid = [0, 0.5, 1].map(function (f) {
+        var y = (pT + iH * f).toFixed(1);
+        return '<line x1="' + pL + '" y1="' + y + '" x2="' + (W - pR) + '" y2="' + y + '" stroke="var(--border)" stroke-width="0.5"/>';
+      }).join('');
+      var yLbl = '<text x="0" y="' + (pT + 4) + '" font-size="9" fill="var(--muted)" dominant-baseline="middle">' + max + '</text>';
+      var xLbls = [0, Math.floor((n - 1) / 2), n - 1].filter(function (i) { return i < n; }).map(function (i) {
+        var d = dates[i] ? dates[i].slice(5) : '';
+        return '<text x="' + px(i).toFixed(1) + '" y="' + (H - 2) + '" text-anchor="middle" font-size="9" fill="var(--muted)">' + d + '</text>';
+      }).join('');
+      return '<svg viewBox="0 0 ' + W + ' ' + H + '" style="width:100%;height:120px;display:block;" preserveAspectRatio="none">'
+        + grid + yLbl
+        + '<path d="' + area + '" fill="rgba(59,130,246,0.1)"/>'
+        + '<polyline points="' + linePts + '" fill="none" stroke="#3b82f6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>'
+        + xLbls + '</svg>';
+    }
+
+    // ── Per-building panel (Analytics section) ───────────────────────────────
+
+    function _buildingDetailCard(b) {
+      var lastAlert = b.last_alert_at ? b.last_alert_at.slice(0, 16).replace('T', ' ') : 'Never';
+      var drillPct = b.drill_rate != null ? Math.round(b.drill_rate * 100) : null;
+      var drillBar = drillPct != null
+        ? '<div style="margin-top:10px;">'
+            + '<div style="display:flex;justify-content:space-between;font-size:0.68rem;color:var(--muted);margin-bottom:3px;"><span>Drill Rate</span><span>' + drillPct + '%</span></div>'
+            + '<div style="background:var(--border);border-radius:3px;height:4px;"><div style="background:#3b82f6;width:' + drillPct + '%;height:100%;border-radius:3px;"></div></div>'
+            + '</div>'
+        : '';
+      var userBadge = b.active_users ? '<div style="font-size:0.7rem;color:var(--muted);margin-top:6px;">' + b.active_users + ' active users</div>' : '';
+      return '<div class="signal-card" style="padding:14px 16px;min-width:220px;">'
+        + '<div style="font-weight:700;font-size:0.88rem;margin-bottom:10px;">' + _esc(b.building_name) + '</div>'
+        + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:0.8rem;">'
+        + '<div><div style="color:var(--muted);font-size:0.68rem;">Emergency</div><div style="font-weight:700;color:#dc2626;font-size:1.1rem;">' + (b.emergency_alerts || 0) + '</div></div>'
+        + '<div><div style="color:var(--muted);font-size:0.68rem;">Training</div><div style="font-weight:700;color:#2563eb;font-size:1.1rem;">' + (b.training_alerts || 0) + '</div></div>'
+        + '<div><div style="color:var(--muted);font-size:0.68rem;">Help Requests</div><div style="font-weight:600;">' + (b.help_requests || 0) + ' <span style="color:#b45309;font-size:0.72rem;">(' + (b.cancelled_help_requests || 0) + '✗)</span></div></div>'
+        + '<div><div style="color:var(--muted);font-size:0.68rem;">Quiet Requests</div><div style="font-weight:600;">' + (b.quiet_period_requests || 0) + '</div></div>'
+        + '<div><div style="color:var(--muted);font-size:0.68rem;">Avg Ack</div><div style="font-weight:600;">' + fmtSeconds(b.avg_ack_time_seconds) + '</div></div>'
+        + '<div><div style="color:var(--muted);font-size:0.68rem;">Last Alert</div><div style="font-size:0.75rem;">' + lastAlert + '</div></div>'
+        + '</div>'
+        + drillBar + userBadge
+        + '</div>';
+    }
+
+    function renderBuildingPanel(buildings, containerId) {
       var container = document.getElementById(containerId);
       if (!container) return;
       if (!buildings || !buildings.length) {
-        container.innerHTML = '<p class="mini-copy">No data available.</p>';
+        container.innerHTML = '<p class="mini-copy">No data available for this period.</p>';
         return;
       }
-      container.innerHTML = buildings.map(function (b) {
-        var lastAlert = b.last_alert_at ? b.last_alert_at.slice(0, 16).replace('T', ' ') : 'Never';
-        return '<div class="um-hcard hc-ok" style="min-width:220px;max-width:280px;">'
-          + '<div class="um-hcard-label">' + b.building_name + '</div>'
-          + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px 14px;margin-top:8px;font-size:0.82rem;">'
-          + '<div><div style="color:var(--muted);font-size:0.72rem;">Emergency Alerts</div><div style="font-weight:700;font-size:1.1rem;">' + (b.emergency_alerts || 0) + '</div></div>'
-          + '<div><div style="color:var(--muted);font-size:0.72rem;">Training</div><div style="font-weight:700;font-size:1.1rem;">' + (b.training_alerts || 0) + '</div></div>'
-          + '<div><div style="color:var(--muted);font-size:0.72rem;">Help Requests</div><div style="font-weight:700;">' + (b.help_requests || 0) + ' <span style="color:#b45309;font-size:0.75rem;">(' + (b.cancelled_help_requests || 0) + ' cancelled)</span></div></div>'
-          + '<div><div style="color:var(--muted);font-size:0.72rem;">Quiet Requests</div><div style="font-weight:700;">' + (b.quiet_period_requests || 0) + '</div></div>'
-          + '<div><div style="color:var(--muted);font-size:0.72rem;">Avg Ack Time</div><div style="font-weight:700;">' + fmtSeconds(b.avg_ack_time_seconds) + '</div></div>'
-          + '<div><div style="color:var(--muted);font-size:0.72rem;">Last Alert</div><div style="font-weight:700;font-size:0.78rem;">' + lastAlert + '</div></div>'
-          + '</div></div>';
+
+      var totEmerg = buildings.reduce(function (s, b) { return s + (b.emergency_alerts || 0); }, 0);
+      var totTrain = buildings.reduce(function (s, b) { return s + (b.training_alerts || 0); }, 0);
+      var totHelp  = buildings.reduce(function (s, b) { return s + (b.help_requests || 0); }, 0);
+
+      /* Summary chips */
+      var summary = '<div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:18px;">'
+        + _statChip('Emergency', totEmerg, '#dc2626')
+        + _statChip('Training', totTrain, '#2563eb')
+        + _statChip('Help Requests', totHelp, '#d97706')
+        + _statChip('Buildings', buildings.length, 'var(--accent)')
+        + '</div>';
+
+      /* Comparison table with sparklines */
+      var sorted = buildings.slice().sort(function (a, b) { return (b.emergency_alerts || 0) - (a.emergency_alerts || 0); });
+      var tableRows = sorted.map(function (b) {
+        var spark = b.alert_trend ? _svgSparkline(b.alert_trend.map(function (t) { return t.c; })) : '';
+        return '<tr style="border-bottom:1px solid var(--border);">'
+          + '<td style="padding:8px 6px;font-weight:600;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + _esc(b.building_name) + '</td>'
+          + '<td style="padding:8px 6px;text-align:right;color:#dc2626;font-weight:700;">' + (b.emergency_alerts || 0) + '</td>'
+          + '<td style="padding:8px 6px;text-align:right;color:#2563eb;">' + (b.training_alerts || 0) + '</td>'
+          + '<td style="padding:8px 6px;text-align:right;">' + (b.help_requests || 0) + '</td>'
+          + '<td style="padding:8px 6px;text-align:right;font-size:0.78rem;white-space:nowrap;">' + fmtSeconds(b.avg_ack_time_seconds) + '</td>'
+          + '<td style="padding:8px 6px;">' + spark + '</td>'
+          + '</tr>';
       }).join('');
+      var table = '<div style="overflow-x:auto;margin-bottom:20px;">'
+        + '<table style="width:100%;border-collapse:collapse;font-size:0.82rem;">'
+        + '<thead><tr style="border-bottom:2px solid var(--border);">'
+        + '<th style="padding:6px;text-align:left;color:var(--muted);font-weight:600;font-size:0.74rem;">Building</th>'
+        + '<th style="padding:6px;text-align:right;color:var(--muted);font-weight:600;font-size:0.74rem;">Emergency</th>'
+        + '<th style="padding:6px;text-align:right;color:var(--muted);font-weight:600;font-size:0.74rem;">Training</th>'
+        + '<th style="padding:6px;text-align:right;color:var(--muted);font-weight:600;font-size:0.74rem;">Help</th>'
+        + '<th style="padding:6px;text-align:right;color:var(--muted);font-weight:600;font-size:0.74rem;">Avg Ack</th>'
+        + '<th style="padding:6px;color:var(--muted);font-weight:600;font-size:0.74rem;">30-day Trend</th>'
+        + '</thead><tbody>' + tableRows + '</tbody></table></div>';
+
+      /* Detail cards */
+      var cards = '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px;">'
+        + sorted.map(_buildingDetailCard).join('') + '</div>';
+
+      container.innerHTML = summary + table + cards;
     }
+
+    // ── District dashboard (District Reports section) ────────────────────────
+
+    function renderDistrictPanel(buildings, containerId, days) {
+      var container = document.getElementById(containerId);
+      if (!container) return;
+      if (!buildings || !buildings.length) {
+        container.innerHTML = '<p class="mini-copy">No district data available.</p>';
+        return;
+      }
+
+      var totEmerg = buildings.reduce(function (s, b) { return s + (b.emergency_alerts || 0); }, 0);
+      var totTrain = buildings.reduce(function (s, b) { return s + (b.training_alerts || 0); }, 0);
+      var totHelp  = buildings.reduce(function (s, b) { return s + (b.help_requests || 0); }, 0);
+      var totQP    = buildings.reduce(function (s, b) { return s + (b.quiet_period_requests || 0); }, 0);
+
+      var summary = '<div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:20px;">'
+        + _statChip('Total Alerts', totEmerg + totTrain, '#1d4ed8')
+        + _statChip('Emergency', totEmerg, '#dc2626')
+        + _statChip('Training', totTrain, '#2563eb')
+        + _statChip('Help Requests', totHelp, '#d97706')
+        + _statChip('Quiet Requests', totQP, '#7c3aed')
+        + _statChip('Buildings', buildings.length, 'var(--accent)')
+        + '</div>';
+
+      /* Aggregate daily trend across all buildings */
+      var trendMap = {};
+      buildings.forEach(function (b) {
+        if (!b.alert_trend) return;
+        b.alert_trend.forEach(function (t) {
+          trendMap[t.d] = (trendMap[t.d] || 0) + (t.c || 0);
+        });
+      });
+      var trendDates = Object.keys(trendMap).sort();
+      var trendData = trendDates.map(function (d) { return { d: d, c: trendMap[d] }; });
+
+      var chartSection = '';
+      if (trendData.length >= 3) {
+        chartSection = '<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px 16px;margin-bottom:20px;">'
+          + '<p style="font-size:0.72rem;color:var(--muted);margin:0 0 8px;text-transform:uppercase;letter-spacing:0.04em;">Daily Alert Trend — Last ' + days + ' days</p>'
+          + _svgAreaChart(trendData)
+          + '<div style="display:flex;gap:16px;margin-top:8px;font-size:0.72rem;color:var(--muted);">'
+          + '<span style="display:flex;align-items:center;gap:4px;"><span style="display:inline-block;width:10px;height:2px;background:#3b82f6;border-radius:1px;"></span>All alerts</span>'
+          + '</div></div>';
+      }
+
+      /* Building ranking with dual bars (emergency red + training blue) */
+      var sortedB = buildings.slice().sort(function (a, b) { return (b.emergency_alerts || 0) - (a.emergency_alerts || 0); });
+      var maxE = Math.max.apply(null, sortedB.map(function (b) { return b.emergency_alerts || 0; })) || 1;
+      var rankRows = sortedB.map(function (b) {
+        var ePct = Math.max(Math.round(((b.emergency_alerts || 0) / maxE) * 100), (b.emergency_alerts ? 2 : 0));
+        var tPct = Math.max(Math.round(((b.training_alerts || 0) / maxE) * 100), (b.training_alerts ? 2 : 0));
+        return '<div style="display:grid;grid-template-columns:160px 1fr 80px;gap:10px;align-items:center;padding:5px 0;border-bottom:1px solid var(--border);">'
+          + '<div style="font-size:0.82rem;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + _esc(b.building_name) + '</div>'
+          + '<div style="display:flex;gap:2px;align-items:center;height:10px;">'
+          + '<div style="background:#dc2626;height:100%;width:' + ePct + '%;border-radius:2px;transition:width 0.4s;"></div>'
+          + '<div style="background:#3b82f6;height:100%;width:' + tPct + '%;border-radius:2px;transition:width 0.4s;opacity:0.7;"></div>'
+          + '</div>'
+          + '<div style="font-size:0.74rem;color:var(--muted);text-align:right;">' + (b.emergency_alerts || 0) + 'E / ' + (b.training_alerts || 0) + 'T</div>'
+          + '</div>';
+      }).join('');
+      var rank = '<div style="margin-bottom:16px;">'
+        + '<p style="font-size:0.72rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:0.04em;margin:0 0 10px;">Building Comparison</p>'
+        + '<div style="display:flex;gap:10px;font-size:0.7rem;color:var(--muted);margin-bottom:8px;">'
+        + '<span style="display:flex;align-items:center;gap:4px;"><span style="display:inline-block;width:10px;height:8px;background:#dc2626;border-radius:2px;"></span>Emergency</span>'
+        + '<span style="display:flex;align-items:center;gap:4px;"><span style="display:inline-block;width:10px;height:8px;background:#3b82f6;border-radius:2px;opacity:0.7;"></span>Training</span>'
+        + '</div>'
+        + rankRows + '</div>';
+
+      container.innerHTML = summary + chartSection + rank;
+    }
+
+    // ── Data loading ─────────────────────────────────────────────────────────
 
     function loadAnalytics(days, containerId) {
       var container = document.getElementById(containerId);
-      if (container) container.innerHTML = '<span class="mini-copy">Loading…</span>';
+      if (container) container.innerHTML = '<span class="mini-copy">Loading analytics…</span>';
       fetch(BB_PATH_PREFIX + '/admin/analytics/buildings?days=' + days, { credentials: 'same-origin' })
         .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
         .then(function (data) {
-          renderBuildingCards(data.buildings || [], containerId);
+          var buildings = data.buildings || [];
+          if (containerId === 'dr-cards') {
+            renderDistrictPanel(buildings, containerId, days);
+          } else {
+            renderBuildingPanel(buildings, containerId);
+          }
         })
         .catch(function () {
           var el = document.getElementById(containerId);
@@ -654,8 +852,7 @@ try {
           var days = parseInt(btn.dataset.analyticsDays, 10);
           var target = btn.dataset.analyticsTarget;
           document.querySelectorAll('[data-analytics-target="' + target + '"]').forEach(function (b) {
-            b.className = b.dataset.analyticsDays == days
-              ? 'button button-primary' : 'button button-secondary';
+            b.className = b.dataset.analyticsDays == days ? 'button button-primary' : 'button button-secondary';
             b.style.minHeight = '28px';
             b.style.fontSize = '0.78rem';
             b.style.padding = '0 10px';
@@ -664,5 +861,6 @@ try {
         });
       });
     });
+
   })();
 } catch (e) { console.error('[BB] analytics', e); }

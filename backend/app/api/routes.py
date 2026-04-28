@@ -5129,12 +5129,90 @@ async def admin_view_as_user(user_id: int, request: Request) -> JSONResponse:
     })
 
 
+async def _building_analytics_for_school(
+    school: object,
+    tenant_manager: object,
+    cutoff_str: str,
+    days: int,
+) -> Optional[dict]:
+    """Fetch analytics for one school; runs all DB reads in parallel."""
+    from collections import defaultdict as _dd
+
+    tenant = tenant_manager.get(school)  # type: ignore[union-attr]
+    if tenant is None:
+        return None
+
+    # All independent reads fired concurrently.
+    all_alerts, hr_data, qp_all, active_users = await asyncio.gather(
+        tenant.alert_log.list_recent(limit=500),
+        tenant.incident_store.help_request_cancellation_analytics(),
+        tenant.quiet_period_store.list_recent(limit=500),
+        tenant.user_store.count_active(),
+    )
+
+    period_alerts = [a for a in all_alerts if str(a.created_at) >= cutoff_str]
+    emergency_alerts = [a for a in period_alerts if not a.is_training]
+    qp_period = sum(1 for q in qp_all if str(getattr(q, "created_at", "") or "") >= cutoff_str)
+
+    avg_ack_s = None
+    if emergency_alerts:
+        try:
+            acks = await tenant.alert_log.list_acknowledgements(emergency_alerts[0].id)
+            alert_dt = datetime.fromisoformat(emergency_alerts[0].created_at.replace("Z", "+00:00"))
+            deltas = [
+                (datetime.fromisoformat(a.acknowledged_at.replace("Z", "+00:00")) - alert_dt).total_seconds()
+                for a in acks
+            ]
+            deltas = [d for d in deltas if 0 <= d <= 3600]
+            if deltas:
+                avg_ack_s = round(sum(deltas) / len(deltas), 1)
+        except Exception:
+            pass
+
+    # Daily alert counts for sparkline/trend (capped at 30 data points).
+    trend_days = min(int(days), 30)
+    today_date = datetime.now(timezone.utc).date()
+    daily: dict = _dd(int)
+    for a in period_alerts:
+        try:
+            d = datetime.fromisoformat(a.created_at.replace("Z", "+00:00")).date()
+            daily[d.isoformat()] += 1
+        except Exception:
+            pass
+    alert_trend = [
+        {"d": (today_date - timedelta(days=trend_days - 1 - i)).isoformat(),
+         "c": daily.get((today_date - timedelta(days=trend_days - 1 - i)).isoformat(), 0)}
+        for i in range(trend_days)
+    ]
+
+    drill_rate = (
+        round((len(period_alerts) - len(emergency_alerts)) / len(period_alerts), 3)
+        if period_alerts else None
+    )
+
+    return {
+        "building_id": str(getattr(school, "slug", "")),
+        "building_name": str(getattr(school, "name", "")),
+        "total_alerts": len(period_alerts),
+        "emergency_alerts": len(emergency_alerts),
+        "training_alerts": len(period_alerts) - len(emergency_alerts),
+        "help_requests": int(hr_data.get("total", 0)),
+        "cancelled_help_requests": int(hr_data.get("cancelled", 0)),
+        "quiet_period_requests": qp_period,
+        "avg_ack_time_seconds": avg_ack_s,
+        "last_alert_at": period_alerts[0].created_at if period_alerts else None,
+        "alert_trend": alert_trend,
+        "active_users": int(active_users),
+        "drill_rate": drill_rate,
+    }
+
+
 @router.get("/admin/analytics/buildings", include_in_schema=False)
 async def admin_building_analytics(
     request: Request,
     days: int = Query(default=30, ge=1, le=365),
 ) -> JSONResponse:
-    """9.2 — Per-building/tenant analytics. Lazy-loaded; not computed on every page load."""
+    """Per-building analytics. All schools fetched in parallel; lazy-loaded."""
     await _require_dashboard_admin(request)
     actor = getattr(request.state, "admin_user", None)
     actor_role = str(getattr(actor, "role", "") or "").strip().lower()
@@ -5149,48 +5227,11 @@ async def admin_building_analytics(
     else:
         schools = [getattr(request.state, "admin_effective_school", request.state.school)]
 
-    buildings = []
-    for school in schools:
-        tenant = request.app.state.tenant_manager.get(school)  # type: ignore[attr-defined]
-        if tenant is None:
-            continue
-        all_alerts = await tenant.alert_log.list_recent(limit=500)
-        period_alerts = [a for a in all_alerts if str(a.created_at) >= cutoff_str]
-        emergency_alerts = [a for a in period_alerts if not a.is_training]
-
-        hr_data = await tenant.incident_store.help_request_cancellation_analytics()
-        qp_all = await tenant.quiet_period_store.list_recent(limit=500)
-        qp_period = sum(1 for q in qp_all if str(getattr(q, "created_at", "") or "") >= cutoff_str)
-
-        avg_ack_s = None
-        if emergency_alerts:
-            most_recent = emergency_alerts[0]
-            try:
-                acks = await tenant.alert_log.list_acknowledgements(most_recent.id)
-                alert_dt = datetime.fromisoformat(most_recent.created_at.replace("Z", "+00:00"))
-                deltas = []
-                for ack in acks:
-                    ack_dt = datetime.fromisoformat(ack.acknowledged_at.replace("Z", "+00:00"))
-                    delta = (ack_dt - alert_dt).total_seconds()
-                    if 0 <= delta <= 3600:
-                        deltas.append(delta)
-                if deltas:
-                    avg_ack_s = round(sum(deltas) / len(deltas), 1)
-            except Exception:
-                pass
-
-        buildings.append({
-            "building_id": str(getattr(school, "slug", "")),
-            "building_name": str(getattr(school, "name", "")),
-            "total_alerts": len(period_alerts),
-            "emergency_alerts": len(emergency_alerts),
-            "training_alerts": len(period_alerts) - len(emergency_alerts),
-            "help_requests": int(hr_data.get("total", 0)),
-            "cancelled_help_requests": int(hr_data.get("cancelled", 0)),
-            "quiet_period_requests": qp_period,
-            "avg_ack_time_seconds": avg_ack_s,
-            "last_alert_at": period_alerts[0].created_at if period_alerts else None,
-        })
+    tm = request.app.state.tenant_manager  # type: ignore[attr-defined]
+    results = await asyncio.gather(
+        *[_building_analytics_for_school(s, tm, cutoff_str, days) for s in schools]
+    )
+    buildings = [r for r in results if r is not None]
 
     return JSONResponse({"buildings": buildings, "period_days": days})
 
