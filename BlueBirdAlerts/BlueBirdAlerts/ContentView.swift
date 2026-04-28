@@ -525,6 +525,8 @@ struct ContentView: View {
     @State private var myQuietRequest: QuietPeriodRequestResponse? = nil
     @State private var isCancellingQuietRequest = false
     @State private var showCancelQuietRequestConfirm = false
+    @State private var quietCountdownSeconds: Int = 0
+    @State private var quietCountdownTimer: Timer? = nil
     @State private var processedEventIDs: Set<String> = []
     @State private var pushDeliveryStats: PushDeliveryStatsResponse?
     @State private var showAuditLogModal = false
@@ -1660,10 +1662,29 @@ struct ContentView: View {
                                     .font(.subheadline)
                                     .foregroundStyle(DSColor.textSecondary)
                             }
-                            if let expiresAt = myQuietRequest?.expiresAt {
-                                Text("Expires: \(expiresAt)")
-                                    .font(.subheadline)
-                                    .foregroundStyle(DSColor.textSecondary)
+                            if myQuietRequest?.expiresAt != nil {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "timer")
+                                        .font(.subheadline)
+                                        .foregroundStyle(quietCountdownSeconds > 0 ? DSColor.info : DSColor.textSecondary)
+                                    if quietCountdownSeconds > 0 {
+                                        Text(quietCountdownFormatted(quietCountdownSeconds))
+                                            .font(.system(.subheadline, design: .monospaced))
+                                            .fontWeight(.semibold)
+                                            .foregroundStyle(quietCountdownSeconds < 300 ? DSColor.danger : DSColor.info)
+                                            .contentTransition(.numericText())
+                                            .animation(.easeInOut(duration: 0.25), value: quietCountdownSeconds)
+                                    } else {
+                                        Text("Expired")
+                                            .font(.subheadline)
+                                            .foregroundStyle(DSColor.textSecondary)
+                                    }
+                                    Text("remaining")
+                                        .font(.subheadline)
+                                        .foregroundStyle(DSColor.textSecondary)
+                                }
+                                .onAppear { startQuietCountdown() }
+                                .onDisappear { stopQuietCountdown() }
                             }
                             Button {
                                 showCancelQuietRequestConfirm = true
@@ -2087,6 +2108,49 @@ struct ContentView: View {
         } else {
             appState.lastError = "Incident feed refresh failed: \(errors.joined(separator: " | "))"
         }
+    }
+
+    // ── Quiet period countdown ────────────────────────────────────────────────
+
+    private func startQuietCountdown() {
+        stopQuietCountdown()
+        quietCountdownSeconds = secondsUntilISO(myQuietRequest?.expiresAt)
+        guard quietCountdownSeconds > 0 else { return }
+        quietCountdownTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in
+            let remaining = secondsUntilISO(myQuietRequest?.expiresAt)
+            DispatchQueue.main.async {
+                quietCountdownSeconds = max(0, remaining)
+                if quietCountdownSeconds == 0 { stopQuietCountdown() }
+            }
+        }
+    }
+
+    private func stopQuietCountdown() {
+        quietCountdownTimer?.invalidate()
+        quietCountdownTimer = nil
+    }
+
+    private func secondsUntilISO(_ isoString: String?) -> Int {
+        guard let raw = isoString, !raw.isEmpty else { return 0 }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        var date = formatter.date(from: raw)
+        if date == nil {
+            formatter.formatOptions = [.withInternetDateTime]
+            date = formatter.date(from: raw)
+        }
+        guard let target = date else { return 0 }
+        return max(0, Int(target.timeIntervalSinceNow))
+    }
+
+    private func quietCountdownFormatted(_ totalSeconds: Int) -> String {
+        let h = totalSeconds / 3600
+        let m = (totalSeconds % 3600) / 60
+        let s = totalSeconds % 60
+        if h > 0 {
+            return String(format: "%d:%02d:%02d", h, m, s)
+        }
+        return String(format: "%d:%02d", m, s)
     }
 
     private func registerDevice(token: String) async {
@@ -2520,9 +2584,20 @@ struct ContentView: View {
         guard let userID = appState.userID else { return }
         do {
             let result = try await api.quietPeriodStatus(userID: userID)
+            let prior = myQuietRequest
             myQuietRequest = result.status != nil ? result : nil
+            let isApproved = result.status?.lowercased() == "approved"
+            let wasApproved = prior?.status?.lowercased() == "approved"
+            if isApproved && (!wasApproved || prior?.expiresAt != result.expiresAt) {
+                startQuietCountdown()
+            } else if !isApproved {
+                stopQuietCountdown()
+                quietCountdownSeconds = 0
+            }
         } catch {
             myQuietRequest = nil
+            stopQuietCountdown()
+            quietCountdownSeconds = 0
         }
     }
 
@@ -2534,6 +2609,8 @@ struct ContentView: View {
         do {
             _ = try await api.cancelQuietRequest(requestID: requestID, userID: userID)
             myQuietRequest = nil
+            stopQuietCountdown()
+            quietCountdownSeconds = 0
             quietPeriodLocalFeedback = nil
         } catch {
             quietPeriodLocalFeedback = "Could not cancel request: \(error.localizedDescription)"

@@ -518,6 +518,11 @@ class TeamAssistSummary(BaseModel):
     cancelled_at: Optional[str] = None
     cancel_reason_text: Optional[str] = None
     cancel_reason_category: Optional[str] = None
+    # Cancel-confirmation fields — boolean derived from _at timestamps for mobile compatibility.
+    # iOS Codable requires cancel_requester_confirmed and cancel_admin_confirmed to be present.
+    cancel_requester_confirmed: bool = False
+    cancel_admin_confirmed: bool = False
+    cancel_admin_label: Optional[str] = None
 
 
 class TeamAssistListResponse(BaseModel):

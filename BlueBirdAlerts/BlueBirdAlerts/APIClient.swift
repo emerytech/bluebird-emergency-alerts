@@ -633,9 +633,11 @@ struct TeamAssistSummary: Decodable, Identifiable {
     let actedByLabel: String?
     let forwardToUserID: Int?
     let forwardToLabel: String?
-    let cancelRequesterConfirmed: Bool
-    let cancelAdminConfirmed: Bool
+    let cancelRequesterConfirmed: Bool?
+    let cancelAdminConfirmed: Bool?
     let cancelAdminLabel: String?
+    let cancelledByUserID: Int?
+    let cancelReasonText: String?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -650,6 +652,8 @@ struct TeamAssistSummary: Decodable, Identifiable {
         case cancelRequesterConfirmed = "cancel_requester_confirmed"
         case cancelAdminConfirmed = "cancel_admin_confirmed"
         case cancelAdminLabel = "cancel_admin_label"
+        case cancelledByUserID = "cancelled_by_user_id"
+        case cancelReasonText = "cancel_reason_text"
     }
 }
 

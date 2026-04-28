@@ -1313,6 +1313,10 @@ def _to_team_assist_summary(item) -> TeamAssistSummary:
         cancelled_at=item.cancelled_at,
         cancel_reason_text=item.cancel_reason_text,
         cancel_reason_category=item.cancel_reason_category,
+        # Derived booleans: mobile clients decode these as Bool (non-optional).
+        cancel_requester_confirmed=bool(getattr(item, "cancel_requester_confirmed_at", None)),
+        cancel_admin_confirmed=bool(getattr(item, "cancel_admin_confirmed_at", None)),
+        cancel_admin_label=getattr(item, "cancel_admin_label", None),
     )
 
 
