@@ -2,14 +2,19 @@
 
 ## Current Phase
 
-### Phase 10 — Onboarding + User Management (active)
+### Phase 11 — District Multi-School Admin (active)
 
 **In Progress**
-- Android: role-gated UI for `building_admin` / `staff` (onboarding flow wiring)
-- Android: quiet period overlay → clean modal (tap → Dialog → submit, `Dialog`/`DialogProperties`)
-- Backend: access code service hardening, email service, health monitor
+- District admin UI: school list, cross-school quiet period approval queue
+- District admin WebSocket scope (receive events from all assigned schools)
+- `district_admin` role enforcement in mobile role-gated views
 
-**Completed this phase**
+---
+
+## Completed Phases
+
+### Phase 10 — Onboarding + User Management
+
 - `access_code_service.py` — platform-level setup + access code CRUD
 - `email_service.py` — transactional email scaffolding
 - `health_monitor.py` — background health-check service
@@ -22,13 +27,9 @@
 - iOS `LoginView.swift` — "Get Started" entry point
 - iOS `ContentView.swift` — quiet period inline feedback, admin list refresh on success
 - Android `build.gradle.kts` — ZXing + CameraX dependencies
-- Android `MainActivity.kt` — onboarding flow, role checks, quiet period modal redesign
+- Android `MainActivity.kt` — onboarding flow, role-gated UI (`building_admin`/`staff`), role capability descriptions, username pre-fill after account creation, quiet period Dialog/DialogProperties modal
 - `test_onboarding.py` — full onboarding flow end-to-end (265 lines)
 - `test_permissions_foundation.py` — updated: any active user can submit quiet request; admin cannot approve own request
-
----
-
-## Completed Phases
 
 ### Phase 7 — Android Stabilization
 - WebSocket lifecycle: auto-reconnect with exponential backoff, cleanup on tenant switch
@@ -75,11 +76,6 @@
 ---
 
 ## Pending Phases
-
-### Phase 11 — District Multi-School Admin
-- District admin UI: school list, cross-school quiet period approval queue
-- District admin WebSocket scope (receive events from all assigned schools)
-- `district_admin` role enforcement in mobile role-gated views
 
 ### Phase 12 — Push Reliability + Observability
 - APNS/FCM error surfacing in web admin UI

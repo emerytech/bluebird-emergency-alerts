@@ -1916,7 +1916,11 @@ private fun LoginScreen(onDone: () -> Unit) {
 
     if (showOnboarding) {
         OnboardingSheet(
-            onDismiss = { showOnboarding = false },
+            onDone = { createdUsername ->
+                if (createdUsername.isNotBlank()) username = createdUsername
+                showOnboarding = false
+            },
+            onCancel = { showOnboarding = false },
         )
     }
 }
@@ -6064,8 +6068,38 @@ private sealed class OnboardingStep {
     object Success : OnboardingStep()
 }
 
+private fun onboardingRoleCaps(role: String): List<String> = when (role.lowercase()) {
+    "building_admin" -> listOf(
+        "Manage school users and access codes",
+        "Trigger and deactivate emergency alerts",
+        "Approve or deny quiet period requests",
+        "View incident feed and audit log",
+    )
+    "district_admin" -> listOf(
+        "Oversee multiple schools from one account",
+        "View cross-school incident and alert feed",
+        "Approve quiet period requests across buildings",
+    )
+    "law_enforcement" -> listOf(
+        "Receive emergency alerts instantly",
+        "View incident feed and respond to help requests",
+        "Submit status updates during incidents",
+    )
+    "staff" -> listOf(
+        "Receive school emergency alerts",
+        "Request a quiet period from admins",
+        "Submit and track help requests",
+        "Send status updates during incidents",
+    )
+    else -> listOf(
+        "Receive school emergency alerts",
+        "Submit and track help requests",
+        "Send status updates during incidents",
+    )
+}
+
 @Composable
-private fun OnboardingSheet(onDismiss: () -> Unit) {
+private fun OnboardingSheet(onDone: (username: String) -> Unit, onCancel: () -> Unit) {
     var step by remember { mutableStateOf<OnboardingStep>(OnboardingStep.EnterCode) }
     var codeText by remember { mutableStateOf("") }
     var tenantSlugText by remember { mutableStateOf("") }
@@ -6178,7 +6212,7 @@ private fun OnboardingSheet(onDismiss: () -> Unit) {
                     fontWeight = FontWeight.Bold,
                     color = DSColor.TextPrimary,
                 )
-                TextButton(onClick = onDismiss) {
+                TextButton(onClick = onCancel) {
                     Text("Cancel", color = BluePrimary)
                 }
             }
@@ -6257,6 +6291,32 @@ private fun OnboardingSheet(onDismiss: () -> Unit) {
                             Text("Role: ${s.roleLabel}", fontSize = 14.sp, color = DSColor.TextPrimary)
                             if (!s.title.isNullOrBlank()) {
                                 Text("Title: ${s.title}", fontSize = 14.sp, color = DSColor.TextPrimary)
+                            }
+                        }
+                    }
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = DSColor.Background,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            Text(
+                                "What you can do:",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = DSColor.TextSecondary,
+                            )
+                            onboardingRoleCaps(s.role).forEach { cap ->
+                                Row(
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                    verticalAlignment = Alignment.Top,
+                                ) {
+                                    Text("•", fontSize = 13.sp, color = DSColor.Primary)
+                                    Text(cap, fontSize = 13.sp, color = DSColor.TextPrimary)
+                                }
                             }
                         }
                     }
@@ -6373,14 +6433,14 @@ private fun OnboardingSheet(onDismiss: () -> Unit) {
                             color = DSColor.TextPrimary,
                         )
                         Text(
-                            "Sign in with your username and password on the login screen.",
+                            "Your username has been filled in. Enter your password to sign in.",
                             fontSize = 14.sp,
                             color = DSColor.TextSecondary,
                             textAlign = TextAlign.Center,
                         )
                         PrimaryButton(
-                            text = "Done",
-                            onClick = onDismiss,
+                            text = "Go to Sign In",
+                            onClick = { onDone(usernameText) },
                             enabled = true,
                             modifier = Modifier.fillMaxWidth().height(52.dp),
                         )
