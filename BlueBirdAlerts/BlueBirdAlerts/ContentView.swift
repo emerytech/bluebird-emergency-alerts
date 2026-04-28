@@ -1927,24 +1927,20 @@ struct ContentView: View {
             Task { await loadMyQuietRequest() }
         }
         .confirmationDialog(
-            {
-                switch myQuietRequest?.status?.lowercased() {
-                case "approved": return "End your active quiet period?"
-                case "scheduled": return "Cancel this scheduled quiet period?"
-                default: return "Cancel this quiet period request?"
-                }
-            }(),
+            myQuietRequest?.status?.lowercased() == "approved"
+                ? "End your active quiet period?"
+                : myQuietRequest?.status?.lowercased() == "scheduled"
+                    ? "Cancel this scheduled quiet period?"
+                    : "Cancel this quiet period request?",
             isPresented: $showCancelQuietRequestConfirm,
             titleVisibility: .visible
         ) {
             Button(
-                {
-                    switch myQuietRequest?.status?.lowercased() {
-                    case "approved": return "End Quiet Period"
-                    case "scheduled": return "Cancel Scheduled Period"
-                    default: return "Cancel Request"
-                    }
-                }(),
+                myQuietRequest?.status?.lowercased() == "approved"
+                    ? "End Quiet Period"
+                    : myQuietRequest?.status?.lowercased() == "scheduled"
+                        ? "Cancel Scheduled Period"
+                        : "Cancel Request",
                 role: .destructive
             ) {
                 Task { await cancelQuietPeriodRequest() }
@@ -1954,13 +1950,13 @@ struct ContentView: View {
                 role: .cancel
             ) {}
         } message: {
-            Text({
-                switch myQuietRequest?.status?.lowercased() {
-                case "approved": return "Push notifications will resume immediately."
-                case "scheduled": return "This will cancel your scheduled quiet period."
-                default: return "This will cancel your pending quiet period request."
-                }
-            }())
+            Text(
+                myQuietRequest?.status?.lowercased() == "approved"
+                    ? "Push notifications will resume immediately."
+                    : myQuietRequest?.status?.lowercased() == "scheduled"
+                        ? "This will cancel your scheduled quiet period."
+                        : "This will cancel your pending quiet period request."
+            )
         }
     }
 
