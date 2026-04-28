@@ -42,6 +42,9 @@ class AccessCodeRecord:
     assigned_email: Optional[str] = None
     assigned_user_id: Optional[int] = None
     label: Optional[str] = None  # batch label (e.g. "HS Science Dept")
+    # Phase 11: reminder tracking
+    reminder_count: int = 0
+    last_reminder_sent_at: Optional[str] = None
 
 
 # ── Service ────────────────────────────────────────────────────────────────────
@@ -100,10 +103,12 @@ class AccessCodeService:
             )
             cols = {str(r[1]) for r in conn.execute("PRAGMA table_info(access_codes);").fetchall()}
             for col, defn in [
-                ("assigned_name",    "ALTER TABLE access_codes ADD COLUMN assigned_name TEXT NULL;"),
-                ("assigned_email",   "ALTER TABLE access_codes ADD COLUMN assigned_email TEXT NULL;"),
-                ("assigned_user_id", "ALTER TABLE access_codes ADD COLUMN assigned_user_id INTEGER NULL;"),
-                ("label",            "ALTER TABLE access_codes ADD COLUMN label TEXT NULL;"),
+                ("assigned_name",        "ALTER TABLE access_codes ADD COLUMN assigned_name TEXT NULL;"),
+                ("assigned_email",       "ALTER TABLE access_codes ADD COLUMN assigned_email TEXT NULL;"),
+                ("assigned_user_id",     "ALTER TABLE access_codes ADD COLUMN assigned_user_id INTEGER NULL;"),
+                ("label",                "ALTER TABLE access_codes ADD COLUMN label TEXT NULL;"),
+                ("reminder_count",       "ALTER TABLE access_codes ADD COLUMN reminder_count INTEGER NOT NULL DEFAULT 0;"),
+                ("last_reminder_sent_at","ALTER TABLE access_codes ADD COLUMN last_reminder_sent_at TEXT NULL;"),
             ]:
                 if col not in cols:
                     conn.execute(defn)
@@ -148,6 +153,8 @@ class AccessCodeService:
             assigned_email=str(row[15]) if len(row) > 15 and row[15] else None,
             assigned_user_id=int(row[16]) if len(row) > 16 and row[16] is not None else None,
             label=str(row[17]) if len(row) > 17 and row[17] else None,
+            reminder_count=int(row[18]) if len(row) > 18 and row[18] is not None else 0,
+            last_reminder_sent_at=str(row[19]) if len(row) > 19 and row[19] else None,
         )
 
     # ── Generate ───────────────────────────────────────────────────────────────
@@ -334,7 +341,8 @@ class AccessCodeService:
                 """
                 SELECT id, code, tenant_slug, role, title, created_by_user_id, created_at,
                        expires_at, max_uses, use_count, last_used_at, status, is_setup_code,
-                       invite_email, assigned_name, assigned_email, assigned_user_id, label
+                       invite_email, assigned_name, assigned_email, assigned_user_id, label,
+                       reminder_count, last_reminder_sent_at
                 FROM access_codes
                 WHERE code = ?
                   AND tenant_slug = ?
@@ -433,7 +441,8 @@ class AccessCodeService:
                 """
                 SELECT id, code, tenant_slug, role, title, created_by_user_id, created_at,
                        expires_at, max_uses, use_count, last_used_at, status, is_setup_code,
-                       invite_email, assigned_name, assigned_email, assigned_user_id, label
+                       invite_email, assigned_name, assigned_email, assigned_user_id, label,
+                       reminder_count, last_reminder_sent_at
                 FROM access_codes
                 WHERE tenant_slug = ? AND is_setup_code = ?
                 ORDER BY id DESC LIMIT ?;
@@ -456,7 +465,8 @@ class AccessCodeService:
                 """
                 SELECT id, code, tenant_slug, role, title, created_by_user_id, created_at,
                        expires_at, max_uses, use_count, last_used_at, status, is_setup_code,
-                       invite_email, assigned_name, assigned_email, assigned_user_id, label
+                       invite_email, assigned_name, assigned_email, assigned_user_id, label,
+                       reminder_count, last_reminder_sent_at
                 FROM access_codes
                 WHERE is_setup_code = 1
                 ORDER BY id DESC LIMIT ?;
@@ -511,3 +521,96 @@ class AccessCodeService:
     ) -> str:
         path = "setup" if is_setup else "onboarding"
         return f"https://{base_domain}/{path}?code={code}&tenant={tenant_slug}"
+
+    # ── Reminder tracking ──────────────────────────────────────────────────────
+
+    def _increment_reminder_sync(self, code_id: int, tenant_slug: str) -> bool:
+        now_iso = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            result = conn.execute(
+                """
+                UPDATE access_codes
+                SET reminder_count = reminder_count + 1,
+                    last_reminder_sent_at = ?
+                WHERE id = ? AND tenant_slug = ?;
+                """,
+                (now_iso, code_id, tenant_slug),
+            )
+            return result.rowcount > 0
+
+    async def increment_reminder_count(self, code_id: int, tenant_slug: str) -> bool:
+        return await anyio.to_thread.run_sync(
+            lambda: self._increment_reminder_sync(code_id, tenant_slug)
+        )
+
+    def _list_unclaimed_with_email_sync(self, tenant_slug: str) -> List[AccessCodeRecord]:
+        """Return active codes with assigned_email that have not been claimed."""
+        now_iso = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, code, tenant_slug, role, title, created_by_user_id, created_at,
+                       expires_at, max_uses, use_count, last_used_at, status, is_setup_code,
+                       invite_email, assigned_name, assigned_email, assigned_user_id, label,
+                       reminder_count, last_reminder_sent_at
+                FROM access_codes
+                WHERE tenant_slug = ?
+                  AND is_setup_code = 0
+                  AND status = 'active'
+                  AND expires_at > ?
+                  AND use_count < max_uses
+                  AND assigned_email IS NOT NULL
+                  AND assigned_email != ''
+                ORDER BY id ASC;
+                """,
+                (tenant_slug, now_iso),
+            ).fetchall()
+        return [self._row_to_record(r, now_iso) for r in rows]
+
+    async def list_unclaimed_with_email(self, tenant_slug: str) -> List[AccessCodeRecord]:
+        """Unclaimed active codes that have an assigned email (eligible for reminders/invites)."""
+        return await anyio.to_thread.run_sync(
+            lambda: self._list_unclaimed_with_email_sync(tenant_slug)
+        )
+
+    # ── Onboarding report ──────────────────────────────────────────────────────
+
+    def _onboarding_report_sync(self, tenant_slug: str) -> List[dict]:
+        """Group codes by label, role, and compute claim stats per group."""
+        now_iso = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    COALESCE(label, '') AS grp_label,
+                    role,
+                    COUNT(*) AS total,
+                    SUM(CASE WHEN use_count >= max_uses THEN 1
+                             WHEN status = 'used' THEN 1 ELSE 0 END) AS claimed,
+                    SUM(CASE WHEN status = 'active' AND expires_at > ? AND use_count < max_uses THEN 1 ELSE 0 END) AS unclaimed,
+                    SUM(CASE WHEN (status = 'active' AND expires_at <= ?) OR status = 'expired' THEN 1 ELSE 0 END) AS expired,
+                    SUM(CASE WHEN status = 'revoked' THEN 1 ELSE 0 END) AS revoked
+                FROM access_codes
+                WHERE tenant_slug = ? AND is_setup_code = 0
+                GROUP BY grp_label, role
+                ORDER BY grp_label ASC, role ASC;
+                """,
+                (now_iso, now_iso, tenant_slug),
+            ).fetchall()
+        return [
+            {
+                "label": str(r[0]) if r[0] else None,
+                "role": str(r[1]),
+                "total": int(r[2]),
+                "claimed": int(r[3]),
+                "unclaimed": int(r[4]),
+                "expired": int(r[5]),
+                "revoked": int(r[6]),
+            }
+            for r in rows
+        ]
+
+    async def onboarding_report(self, tenant_slug: str) -> List[dict]:
+        return await anyio.to_thread.run_sync(
+            lambda: self._onboarding_report_sync(tenant_slug)
+        )

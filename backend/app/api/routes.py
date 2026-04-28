@@ -114,7 +114,12 @@ from app.services.alert_log import AlertLog
 from app.services.audit_log_service import AuditLogService, AuditEventRecord
 from app.services.drill_report_service import DrillReportService
 from app.services.drill_report_pdf import generate_pdf
-from app.services.onboarding_pdf import generate_packet_pdf, generate_bulk_packets_pdf
+from app.services.onboarding_pdf import (
+    generate_packet_pdf,
+    generate_bulk_packets_pdf,
+    generate_badge_pdf,
+    generate_bulk_badges_pdf,
+)
 from app.services.device_registry import DeviceRegistry
 from app.services.fcm import FCMClient
 from app.services.incident_store import IncidentStore
@@ -7087,6 +7092,210 @@ async def admin_import_codes_csv(
     return JSONResponse({"created": len(records), "skipped": len(errors), "errors": errors})
 
 
+# ── Phase 11 — Mass Invite, Onboarding Reports, Reminders, Badge PDFs ─────────
+
+def _build_invite_email(
+    school_name: str,
+    code_text: str,
+    role_label: str,
+    assigned_name: Optional[str],
+    qr_b64: str,
+    expires_at: Optional[str],
+) -> tuple:
+    """Return (subject, body_text, body_html) for onboarding invite."""
+    name_greeting = f"Hi {assigned_name}," if assigned_name else "Hello,"
+    exp_str = f"\nExpires: {expires_at[:10]}" if expires_at else ""
+    subject = f"Your BlueBird Alerts invitation — {school_name}"
+    body_text = (
+        f"{name_greeting}\n\n"
+        f"You have been invited to join BlueBird Alerts at {school_name}.\n\n"
+        f"Your access code: {code_text}\n"
+        f"Role: {role_label}{exp_str}\n\n"
+        "To get started:\n"
+        "1. Download the BlueBird Alerts app from the App Store or Google Play.\n"
+        "2. Open the app and tap 'Join with Access Code'.\n"
+        "3. Enter your code or scan the QR code.\n\n"
+        "— BlueBird Alerts"
+    )
+    body_html = f"""<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"/></head>
+<body style="font-family:-apple-system,BlinkMacSystemFont,Arial,sans-serif;background:#f9fafb;padding:32px 0;margin:0;">
+<div style="max-width:520px;margin:0 auto;background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 2px 12px rgba(0,0,0,.08);">
+  <div style="background:#1a56db;padding:24px 32px;">
+    <p style="margin:0;color:#fff;font-size:1.3rem;font-weight:700;">BlueBird Alerts</p>
+    <p style="margin:4px 0 0;color:#bfdbfe;font-size:0.9rem;">Staff Onboarding Invitation</p>
+  </div>
+  <div style="padding:28px 32px;">
+    <p style="margin:0 0 16px;">{name_greeting}</p>
+    <p style="margin:0 0 16px;">You have been invited to join <strong>{school_name}</strong> on BlueBird Alerts.</p>
+    <div style="text-align:center;margin:24px 0;">
+      <img src="data:image/png;base64,{qr_b64}" alt="QR Code" width="200" height="200"
+           style="image-rendering:pixelated;border:1px solid #e5e7eb;border-radius:8px;padding:8px;" />
+    </div>
+    <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:16px 20px;text-align:center;margin-bottom:20px;">
+      <p style="margin:0 0 4px;font-size:0.8rem;color:#6b7280;">Your Access Code</p>
+      <p style="margin:0;font-size:2rem;font-weight:700;letter-spacing:.12em;color:#1a56db;font-family:monospace;">{code_text}</p>
+      <p style="margin:4px 0 0;font-size:0.8rem;color:#6b7280;">Role: {role_label}{(" &nbsp;·&nbsp; Expires: " + expires_at[:10]) if expires_at else ""}</p>
+    </div>
+    <p style="margin:0 0 8px;font-weight:600;">How to get started:</p>
+    <ol style="margin:0 0 20px;padding-left:20px;line-height:1.8;">
+      <li>Download <strong>BlueBird Alerts</strong> from the App Store or Google Play.</li>
+      <li>Open the app and tap <strong>Join with Access Code</strong>.</li>
+      <li>Scan the QR code above or enter your code manually.</li>
+      <li>Complete your profile — you&rsquo;re done!</li>
+    </ol>
+    <p style="margin:0;font-size:0.8rem;color:#9ca3af;">This invitation was sent by your district administrator. If you were not expecting this email, please ignore it.</p>
+  </div>
+</div>
+</body></html>"""
+    return subject, body_text, body_html
+
+
+@router.post("/admin/access-codes/send-invites", include_in_schema=False)
+async def admin_send_invites(request: Request) -> JSONResponse:
+    users = await _require_dashboard_admin(request)
+    user_id = _session_user_id(request) or 0
+    user = await users.get_user(user_id)
+    if user is None or not can_generate_codes(user.role):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions.")
+    es = _email_service(request)
+    if not es.is_configured():
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="SMTP is not configured.")
+    body = await request.json()
+    code_ids: set = {int(x) for x in body.get("code_ids", []) if str(x).isdigit()}
+    if not code_ids:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No code_ids provided.")
+    tenant_slug = str(getattr(request.state, "school_slug", "")).strip()
+    school = request.state.school
+    school_name = str(getattr(school, "name", tenant_slug))
+    records = await _access_codes(request).list_codes(tenant_slug, limit=500)
+    selected = [r for r in records if r.id in code_ids]
+    sent = skipped = failed = 0
+    for rec in selected:
+        email = (rec.assigned_email or "").strip()
+        if not email:
+            skipped += 1
+            continue
+        if rec.status != "active":
+            skipped += 1
+            continue
+        payload_json = AccessCodeService.qr_payload(rec.code, rec.tenant_slug)
+        qr_bytes = await anyio.to_thread.run_sync(lambda p=payload_json: _qr_png_bytes(p, box_size=10, border=4))
+        import base64 as _b64
+        qr_b64 = _b64.b64encode(qr_bytes).decode("ascii")
+        subject, body_text, body_html = _build_invite_email(
+            school_name=school_name,
+            code_text=rec.code,
+            role_label=role_display_label(rec.role),
+            assigned_name=rec.assigned_name,
+            qr_b64=qr_b64,
+            expires_at=rec.expires_at,
+        )
+        ok = await es.send_html_email(
+            to_address=email, subject=subject, body_text=body_text, body_html=body_html,
+            event_type="access_code_invite",
+        )
+        if ok:
+            sent += 1
+            _fire_audit(request, "access_code_invite_sent", actor_user_id=user_id,
+                        actor_label=user.name, target_type="access_code",
+                        metadata={"code_id": rec.id, "to": email})
+        else:
+            failed += 1
+    return JSONResponse({"sent": sent, "skipped": skipped, "failed": failed})
+
+
+@router.get("/admin/onboarding/reports", include_in_schema=False)
+async def admin_onboarding_reports(request: Request) -> JSONResponse:
+    await _require_dashboard_admin(request)
+    if not can_generate_codes(str(getattr(getattr(request.state, "admin_user", None), "role", ""))):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions.")
+    tenant_slug = str(getattr(request.state, "school_slug", "")).strip()
+    groups = await _access_codes(request).onboarding_report(tenant_slug)
+    return JSONResponse({"groups": groups})
+
+
+@router.post("/admin/access-codes/send-reminders", include_in_schema=False)
+async def admin_send_reminders(request: Request) -> JSONResponse:
+    users = await _require_dashboard_admin(request)
+    user_id = _session_user_id(request) or 0
+    user = await users.get_user(user_id)
+    if user is None or not can_generate_codes(user.role):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions.")
+    es = _email_service(request)
+    if not es.is_configured():
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="SMTP is not configured.")
+    body = await request.json()
+    code_ids_filter: Optional[set] = None
+    if "code_ids" in body:
+        code_ids_filter = {int(x) for x in body["code_ids"] if str(x).isdigit()}
+    tenant_slug = str(getattr(request.state, "school_slug", "")).strip()
+    school = request.state.school
+    school_name = str(getattr(school, "name", tenant_slug))
+    unclaimed = await _access_codes(request).list_unclaimed_with_email(tenant_slug)
+    if code_ids_filter:
+        unclaimed = [r for r in unclaimed if r.id in code_ids_filter]
+    sent = skipped = failed = 0
+    for rec in unclaimed:
+        email = (rec.assigned_email or "").strip()
+        if not email:
+            skipped += 1
+            continue
+        payload_json = AccessCodeService.qr_payload(rec.code, rec.tenant_slug)
+        qr_bytes = await anyio.to_thread.run_sync(lambda p=payload_json: _qr_png_bytes(p, box_size=10, border=4))
+        import base64 as _b64
+        qr_b64 = _b64.b64encode(qr_bytes).decode("ascii")
+        subject, body_text, body_html = _build_invite_email(
+            school_name=school_name,
+            code_text=rec.code,
+            role_label=role_display_label(rec.role),
+            assigned_name=rec.assigned_name,
+            qr_b64=qr_b64,
+            expires_at=rec.expires_at,
+        )
+        reminder_subject = f"[Reminder] {subject}"
+        ok = await es.send_html_email(
+            to_address=email, subject=reminder_subject, body_text=body_text, body_html=body_html,
+            event_type="access_code_reminder",
+        )
+        if ok:
+            await _access_codes(request).increment_reminder_count(rec.id, tenant_slug)
+            sent += 1
+            _fire_audit(request, "access_code_reminder_sent", actor_user_id=user_id,
+                        actor_label=user.name, target_type="access_code",
+                        metadata={"code_id": rec.id, "to": email, "reminder_count": rec.reminder_count + 1})
+        else:
+            failed += 1
+    return JSONResponse({"sent": sent, "skipped": skipped, "failed": failed})
+
+
+@router.get("/admin/access-codes/badges.pdf", include_in_schema=False)
+async def admin_bulk_badges_pdf(request: Request, ids: str = Query(default="")) -> StreamingResponse:
+    await _require_dashboard_admin(request)
+    if not can_generate_codes(str(getattr(getattr(request.state, "admin_user", None), "role", ""))):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions.")
+    code_ids = {int(x.strip()) for x in ids.split(",") if x.strip().isdigit()}
+    if not code_ids:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No valid ids provided.")
+    tenant_slug = str(getattr(request.state, "school_slug", "")).strip()
+    records = await _access_codes(request).list_codes(tenant_slug, limit=500)
+    selected = [r for r in records if r.id in code_ids]
+    if not selected:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No matching codes found.")
+    badges = []
+    for rec in selected:
+        payload_json = AccessCodeService.qr_payload(rec.code, rec.tenant_slug)
+        qr_bytes = await anyio.to_thread.run_sync(lambda p=payload_json: _qr_png_bytes(p, box_size=8, border=3))
+        badges.append((rec.code, role_display_label(rec.role), qr_bytes, rec.assigned_name))
+    pdf_bytes = await anyio.to_thread.run_sync(lambda: generate_bulk_badges_pdf(badges))
+    fname = f"bluebird-badges-{tenant_slug}.pdf"
+    return StreamingResponse(
+        iter([pdf_bytes]),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
+
+
 @router.get("/admin/access-codes/{code_id}/qr")
 async def admin_get_access_code_qr(request: Request, code_id: int) -> JSONResponse:
     """Return the QR payload for a specific access code (JSON — front end renders the image)."""
@@ -7340,6 +7549,36 @@ async def admin_get_access_code_packet_pdf(request: Request, code_id: int) -> St
         )
     )
     fname = f"bluebird-onboarding-{rec.code}.pdf"
+    return StreamingResponse(
+        iter([pdf_bytes]),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
+
+
+@router.get("/admin/access-codes/{code_id}/badge.pdf", include_in_schema=False)
+async def admin_get_access_code_badge_pdf(request: Request, code_id: int) -> StreamingResponse:
+    """Return a badge/laminated card PDF for a single access code."""
+    await _require_dashboard_admin(request)
+    effective_role = str(getattr(getattr(request.state, "admin_user", None), "role", "")).strip()
+    if not can_generate_codes(effective_role):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions.")
+    tenant_slug = str(getattr(request.state, "school_slug", "")).strip()
+    records = await _access_codes(request).list_codes(tenant_slug, limit=500)
+    rec = next((r for r in records if r.id == code_id), None)
+    if rec is None or rec.status != "active":
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Code not found or not active.")
+    payload_json = AccessCodeService.qr_payload(rec.code, rec.tenant_slug)
+    qr_bytes = await anyio.to_thread.run_sync(lambda: _qr_png_bytes(payload_json, box_size=8, border=3))
+    pdf_bytes = await anyio.to_thread.run_sync(
+        lambda: generate_badge_pdf(
+            code_text=rec.code,
+            role_label=role_display_label(rec.role),
+            qr_png_bytes=qr_bytes,
+            assigned_name=rec.assigned_name,
+        )
+    )
+    fname = f"bluebird-badge-{rec.code}.pdf"
     return StreamingResponse(
         iter([pdf_bytes]),
         media_type="application/pdf",

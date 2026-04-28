@@ -4256,6 +4256,12 @@ def render_admin_page(
             if _is_active else
             '<span class="mini-copy" style="color:var(--muted);">—</span>'
         )
+        _badge_url = f"{prefix}/admin/access-codes/{_rid}/badge.pdf"
+        _send_invite_btn = (
+            f'<button class="button button-secondary" style="font-size:0.75rem;padding:4px 10px;"'
+            f' onclick="acSendSingleInvite({_rid})">Send Invite</button>'
+            if (_is_active and _assigned_email) else ""
+        )
         _action_buttons = (
             f'<a href="{_download_url}" download="bluebird-invite-{escape(_code)}.png"'
             f' class="button button-secondary" style="font-size:0.75rem;padding:4px 10px;text-decoration:none;">Download QR</a>'
@@ -4263,6 +4269,9 @@ def render_admin_page(
             f' class="button button-secondary" style="font-size:0.75rem;padding:4px 10px;text-decoration:none;">Print Sheet</a>'
             f'<a href="{_pdf_url}" download="bluebird-onboarding-{escape(_code)}.pdf"'
             f' class="button button-secondary" style="font-size:0.75rem;padding:4px 10px;text-decoration:none;">PDF Packet</a>'
+            f'<a href="{_badge_url}" download="bluebird-badge-{escape(_code)}.pdf"'
+            f' class="button button-secondary" style="font-size:0.75rem;padding:4px 10px;text-decoration:none;">Badge Card</a>'
+            + _send_invite_btn
         ) if _is_active else ""
         return (
             "<tr>"
@@ -4428,6 +4437,11 @@ def render_admin_page(
         _ac_section_style = "" if section in {"user-management", "access-codes"} and _show_access_codes else " style='display:none;'"
         _bulk_generate_url = f"{prefix}/admin/access-codes/bulk-generate"
         _import_csv_url = f"{prefix}/admin/access-codes/import-csv"
+        _send_invites_url = f"{prefix}/admin/access-codes/send-invites"
+        _send_reminders_url = f"{prefix}/admin/access-codes/send-reminders"
+        _onboarding_reports_url = f"{prefix}/admin/onboarding/reports"
+        _badges_pdf_url = f"{prefix}/admin/access-codes/badges.pdf"
+        _bulk_packets_url = f"{prefix}/admin/access-codes/bulk-packets.pdf"
         _access_codes_panel_html = f"""
           <section class="panel command-section span-12" id="access-codes"{_ac_section_style}>
             <div class="panel-header">
@@ -4436,9 +4450,12 @@ def render_admin_page(
                 <h2>Invite codes for onboarding</h2>
                 <p class="card-copy">Generate a code so a new user can self-register via the mobile app. Codes are single-use by default and expire after 48 hours.</p>
               </div>
-              <div class="button-row" style="margin-top:0;">
+              <div class="button-row" style="margin-top:0;flex-wrap:wrap;gap:6px;">
                 <button class="button button-secondary" onclick="document.getElementById('ac-bulk-modal').style.display='flex'">Bulk Generate</button>
                 <button class="button button-secondary" onclick="document.getElementById('ac-csv-modal').style.display='flex'">Import CSV</button>
+                <button class="button button-secondary" onclick="document.getElementById('ac-invites-modal').style.display='flex'">Send Invites</button>
+                <button class="button button-secondary" onclick="acLoadReports()">Onboarding Reports</button>
+                <button class="button button-secondary" onclick="document.getElementById('ac-reminders-modal').style.display='flex'">Send Reminders</button>
               </div>
             </div>
             <form method="post" action="{prefix}/admin/access-codes/generate" class="stack" style="max-width:560px;margin-bottom:28px;">
@@ -4552,10 +4569,145 @@ def render_admin_page(
             </div>
           </div>
 
+          <!-- Send Invites Modal -->
+          <div id="ac-invites-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:1100;align-items:center;justify-content:center;">
+            <div style="background:#fff;border-radius:12px;padding:28px 32px;max-width:460px;width:100%;box-shadow:0 20px 60px rgba(0,0,0,.25);">
+              <h3 style="margin-bottom:8px;">Send Invite Emails</h3>
+              <p style="font-size:0.85rem;color:var(--muted);margin-bottom:16px;">Send invitation emails to all codes that have an assigned email address and are still active. Codes without an assigned email will be skipped.</p>
+              <div id="ac-invites-result" style="display:none;margin-bottom:12px;padding:10px;border-radius:8px;font-size:0.85rem;"></div>
+              <div class="button-row">
+                <button class="button button-primary" onclick="acDoSendAllInvites()">Send All Invites</button>
+                <button class="button button-secondary" onclick="document.getElementById('ac-invites-modal').style.display='none'">Cancel</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Send Reminders Modal -->
+          <div id="ac-reminders-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:1100;align-items:center;justify-content:center;">
+            <div style="background:#fff;border-radius:12px;padding:28px 32px;max-width:460px;width:100%;box-shadow:0 20px 60px rgba(0,0,0,.25);">
+              <h3 style="margin-bottom:8px;">Send Reminder Emails</h3>
+              <p style="font-size:0.85rem;color:var(--muted);margin-bottom:16px;">Send reminder emails to all unclaimed codes with an assigned email. Claimed, expired, and revoked codes are automatically skipped.</p>
+              <div id="ac-reminders-result" style="display:none;margin-bottom:12px;padding:10px;border-radius:8px;font-size:0.85rem;"></div>
+              <div class="button-row">
+                <button class="button button-primary" onclick="acDoSendReminders()">Send Reminders</button>
+                <button class="button button-secondary" onclick="document.getElementById('ac-reminders-modal').style.display='none'">Cancel</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Onboarding Reports Panel -->
+          <div id="ac-reports-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:1100;align-items:center;justify-content:center;">
+            <div style="background:#fff;border-radius:12px;padding:28px 32px;max-width:620px;width:100%;max-height:85vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,.25);">
+              <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
+                <h3 style="margin:0;">Onboarding Reports</h3>
+                <button class="button button-secondary" onclick="document.getElementById('ac-reports-modal').style.display='none'" style="font-size:0.8rem;padding:4px 10px;">Close</button>
+              </div>
+              <div id="ac-reports-body">
+                <p style="color:var(--muted);font-size:0.9rem;">Loading...</p>
+              </div>
+            </div>
+          </div>
+
           <script>
           (function() {{
             var _bgUrl = {json.dumps(_bulk_generate_url)};
             var _csvUrl = {json.dumps(_import_csv_url)};
+            var _invitesUrl = {json.dumps(_send_invites_url)};
+            var _remindersUrl = {json.dumps(_send_reminders_url)};
+            var _reportsUrl = {json.dumps(_onboarding_reports_url)};
+
+            window.acSendSingleInvite = function(codeId) {{
+              if (!confirm('Send invite email to the assigned address for this code?')) return;
+              fetch(_invitesUrl, {{
+                method: 'POST',
+                headers: {{'Content-Type': 'application/json'}},
+                body: JSON.stringify({{code_ids: [codeId]}})
+              }})
+              .then(function(r) {{ return r.json(); }})
+              .then(function(d) {{
+                alert('Sent: ' + d.sent + ', Skipped: ' + d.skipped + ', Failed: ' + d.failed);
+              }})
+              .catch(function(e) {{ alert('Error: ' + e.message); }});
+            }};
+
+            window.acDoSendAllInvites = function() {{
+              fetch(_invitesUrl, {{
+                method: 'POST',
+                headers: {{'Content-Type': 'application/json'}},
+                body: JSON.stringify({{code_ids: []}})
+              }})
+              .then(function(r) {{ return r.json(); }})
+              .then(function(d) {{
+                var res = document.getElementById('ac-invites-result');
+                res.style.display = 'block';
+                res.style.background = '#f0fdf4';
+                res.style.border = '1px solid #bbf7d0';
+                res.textContent = 'Sent: ' + d.sent + ' | Skipped: ' + d.skipped + ' | Failed: ' + d.failed;
+              }})
+              .catch(function(e) {{
+                var res = document.getElementById('ac-invites-result');
+                res.style.display = 'block';
+                res.style.background = '#fef2f2';
+                res.style.border = '1px solid #fca5a5';
+                res.textContent = 'Error: ' + e.message;
+              }});
+            }};
+
+            window.acDoSendReminders = function() {{
+              fetch(_remindersUrl, {{
+                method: 'POST',
+                headers: {{'Content-Type': 'application/json'}},
+                body: JSON.stringify({{}}),
+              }})
+              .then(function(r) {{ return r.json(); }})
+              .then(function(d) {{
+                var res = document.getElementById('ac-reminders-result');
+                res.style.display = 'block';
+                res.style.background = '#f0fdf4';
+                res.style.border = '1px solid #bbf7d0';
+                res.textContent = 'Sent: ' + d.sent + ' | Skipped: ' + d.skipped + ' | Failed: ' + d.failed;
+              }})
+              .catch(function(e) {{
+                var res = document.getElementById('ac-reminders-result');
+                res.style.display = 'block';
+                res.style.background = '#fef2f2';
+                res.style.border = '1px solid #fca5a5';
+                res.textContent = 'Error: ' + e.message;
+              }});
+            }};
+
+            window.acLoadReports = function() {{
+              document.getElementById('ac-reports-modal').style.display = 'flex';
+              document.getElementById('ac-reports-body').innerHTML = '<p style="color:var(--muted);font-size:0.9rem;">Loading...</p>';
+              fetch(_reportsUrl)
+              .then(function(r) {{ return r.json(); }})
+              .then(function(d) {{
+                var groups = d.groups || [];
+                if (!groups.length) {{
+                  document.getElementById('ac-reports-body').innerHTML = '<p style="color:var(--muted);">No codes found.</p>';
+                  return;
+                }}
+                var html = '';
+                groups.forEach(function(g) {{
+                  var pct = g.total > 0 ? Math.round(g.claimed / g.total * 100) : 0;
+                  var label = g.label || '(no label)';
+                  html += '<div style="margin-bottom:20px;">';
+                  html += '<div style="display:flex;justify-content:space-between;margin-bottom:4px;">';
+                  html += '<span style="font-weight:600;">' + label + ' &mdash; ' + g.role + '</span>';
+                  html += '<span style="font-size:0.85rem;color:var(--muted);">' + g.claimed + '/' + g.total + ' claimed (' + pct + '%)</span>';
+                  html += '</div>';
+                  html += '<div style="background:#e5e7eb;border-radius:4px;height:8px;overflow:hidden;margin-bottom:6px;">';
+                  html += '<div style="background:#1a56db;height:100%;width:' + pct + '%;border-radius:4px;"></div>';
+                  html += '</div>';
+                  html += '<div style="font-size:0.8rem;color:var(--muted);">Unclaimed: ' + g.unclaimed + ' &nbsp;|&nbsp; Expired: ' + g.expired + ' &nbsp;|&nbsp; Revoked: ' + g.revoked + '</div>';
+                  html += '</div>';
+                }});
+                document.getElementById('ac-reports-body').innerHTML = html;
+              }})
+              .catch(function(e) {{
+                document.getElementById('ac-reports-body').innerHTML = '<p style="color:#dc2626;">Error loading reports: ' + e.message + '</p>';
+              }});
+            }};
 
             window.acDoBulkGenerate = function() {{
               var qty = parseInt(document.getElementById('bg-qty').value) || 1;

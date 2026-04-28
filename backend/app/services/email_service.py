@@ -363,6 +363,70 @@ class EmailService:
                     (key, value, timestamp),
                 )
 
+    def _send_html_sync(self, to_address: str, subject: str, body_text: str, body_html: str) -> None:
+        values = self._settings_map_sync()
+        host = (values.get("SMTP_HOST") or self._settings.SMTP_HOST or "").strip()
+        port = int(values.get("SMTP_PORT") or self._settings.SMTP_PORT or 587)
+        user = (values.get("SMTP_USERNAME") or self._settings.SMTP_USERNAME or "").strip()
+        encrypted_pw = values.get("SMTP_PASSWORD_ENCRYPTED", "")
+        if encrypted_pw:
+            pw = decrypt_secret(encrypted_pw, self._encryption_secret)
+        else:
+            pw = values.get("SMTP_PASSWORD")
+            if pw is None:
+                pw = self._settings.SMTP_PASSWORD or ""
+        from_address = (values.get("SMTP_FROM") or self._settings.SMTP_FROM or "").strip()
+        use_tls = (values.get("SMTP_USE_TLS") or str(self._settings.SMTP_USE_TLS)).strip().lower() in {
+            "1", "true", "yes", "on",
+        }
+        if not host or not from_address:
+            raise RuntimeError("SMTP is not configured")
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = subject
+        msg["From"] = from_address
+        msg["To"] = to_address
+        msg.attach(MIMEText(body_text, "plain", "utf-8"))
+        msg.attach(MIMEText(body_html, "html", "utf-8"))
+        if use_tls and port == 465:
+            with smtplib.SMTP_SSL(host, port, timeout=10) as smtp:
+                if user and pw:
+                    smtp.login(user, pw)
+                smtp.sendmail(from_address, [to_address], msg.as_string())
+        else:
+            with smtplib.SMTP(host, port, timeout=10) as smtp:
+                if use_tls:
+                    smtp.starttls()
+                if user and pw:
+                    smtp.login(user, pw)
+                smtp.sendmail(from_address, [to_address], msg.as_string())
+
+    async def send_html_email(
+        self,
+        *,
+        to_address: str,
+        subject: str,
+        body_text: str,
+        body_html: str,
+        event_type: str = "invite",
+    ) -> bool:
+        timestamp = datetime.now(timezone.utc).isoformat()
+        ok = False
+        error: Optional[str] = None
+        try:
+            await anyio.to_thread.run_sync(
+                self._send_html_sync, to_address, subject, body_text, body_html
+            )
+            ok = True
+        except Exception as exc:
+            error = str(exc)[:500]
+        try:
+            await anyio.to_thread.run_sync(
+                self._log_sync, timestamp, event_type, to_address, subject, ok, error
+            )
+        except Exception:
+            pass
+        return ok
+
     def _send_sync(self, to_address: str, subject: str, body: str) -> None:
         values = self._settings_map_sync()
         host = (values.get("SMTP_HOST") or self._settings.SMTP_HOST or "").strip()
