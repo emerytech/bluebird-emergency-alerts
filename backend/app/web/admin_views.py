@@ -41,6 +41,63 @@ def _brand_mark(logo_url: Optional[str] = None) -> str:
     )
 
 
+def _brand_mark_sm() -> str:
+    return (
+        f'<div style="width:36px;height:36px;border-radius:10px;display:grid;'
+        f'place-items:center;overflow:hidden;background:rgba(255,255,255,0.14);'
+        f'border:1px solid rgba(255,255,255,0.22);flex:0 0 auto;">'
+        f'<img src="{LOGO_PATH}" alt="BlueBird Alerts" style="width:100%;height:100%;'
+        f'object-fit:contain;padding:4px;" /></div>'
+    )
+
+
+def _super_admin_header_html(logout_url: str = "/super-admin/logout") -> str:
+    return f"""
+    <header class="app-header">
+      <div class="hdr-logo">
+        {_brand_mark_sm()}
+        <div class="hdr-wordmark">
+          <span class="hdr-app">BlueBird Platform</span>
+          <span class="hdr-sub">Super Admin Console</span>
+        </div>
+      </div>
+      <div class="hdr-actions">
+        <button class="hdr-btn" onclick="bbToggleTheme()" id="bb-theme-btn" type="button">&#9790; Dark</button>
+        <form method="post" action="{logout_url}" style="margin:0;">
+          <button class="hdr-btn" type="submit">Log out</button>
+        </form>
+      </div>
+    </header>"""
+
+
+def _admin_header_html(
+    user_display: str,
+    school_name: str,
+    tenant_selector_html: str,
+    logout_url: str,
+    extra_action_html: str = "",
+) -> str:
+    return f"""
+    <header class="app-header">
+      <div class="hdr-logo">
+        {_brand_mark_sm()}
+        <div class="hdr-wordmark">
+          <span class="hdr-app">BlueBird Alerts</span>
+          <span class="hdr-sub">{escape(school_name)}</span>
+        </div>
+      </div>
+      {tenant_selector_html}
+      <div class="hdr-actions">
+        <span class="hdr-user">&#128100; {escape(user_display)}</span>
+        {extra_action_html}
+        <button class="hdr-btn" onclick="bbToggleTheme()" id="bb-theme-btn" type="button">&#9790; Dark</button>
+        <form method="post" action="{logout_url}">
+          <button class="hdr-btn" type="submit">Log out</button>
+        </form>
+      </div>
+    </header>"""
+
+
 @lru_cache(maxsize=1)
 def _load_design_tokens() -> Mapping[str, object]:
     token_path = Path(__file__).resolve().parents[3] / "design" / "tokens.json"
@@ -169,6 +226,67 @@ def _base_styles() -> str:
       --muted: var(--color-text-secondary);
       --card: var(--color-card);
       --surface: rgba(19, 31, 53, 0.99);
+      --input-bg: #1e2e4a;
+      --btn-secondary-bg: rgba(255,255,255,0.07);
+      --btn-secondary-hover: rgba(255,255,255,0.12);
+      --card-bg: rgba(25, 40, 66, 0.88);
+    }
+    html[data-theme="dark"] .field input,
+    html[data-theme="dark"] .field select,
+    html[data-theme="dark"] .field textarea {
+      background: var(--input-bg, #1e2e4a);
+      border-color: rgba(99, 140, 210, 0.22);
+      color: var(--text);
+    }
+    html[data-theme="dark"] .field input:focus,
+    html[data-theme="dark"] .field select:focus,
+    html[data-theme="dark"] .field textarea:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(77, 139, 255, 0.20);
+    }
+    html[data-theme="dark"] .table-search input {
+      background: var(--input-bg, #1e2e4a);
+      border-color: rgba(99, 140, 210, 0.22);
+      color: var(--text);
+    }
+    html[data-theme="dark"] .button-secondary {
+      background: var(--btn-secondary-bg);
+      color: var(--text);
+      border-color: rgba(99, 140, 210, 0.28);
+    }
+    html[data-theme="dark"] .button-secondary:hover:not(:disabled) {
+      background: var(--btn-secondary-hover);
+      border-color: var(--accent);
+    }
+    html[data-theme="dark"] .metric-card,
+    html[data-theme="dark"] .user-card {
+      background: var(--card-bg);
+      border-color: rgba(99, 140, 210, 0.14);
+    }
+    html[data-theme="dark"] .data-table tbody tr:hover {
+      background: rgba(77, 139, 255, 0.10);
+    }
+    html[data-theme="dark"] .data-table th {
+      background: rgba(77, 139, 255, 0.06);
+    }
+    html[data-theme="dark"] code {
+      background: rgba(255, 255, 255, 0.07);
+      color: #93c5fd;
+    }
+    html[data-theme="dark"] .status-pill.ok   { background: rgba(22,101,52,0.28); }
+    html[data-theme="dark"] .status-pill.danger { background: rgba(220,38,38,0.22); }
+    html[data-theme="dark"] .status-pill.warn  { background: rgba(180,83,9,0.24); }
+    html[data-theme="dark"] .status-pill.info  { background: rgba(29,78,216,0.24); }
+    html[data-theme="dark"] .status-pill.quiet { background: rgba(142,59,235,0.22); }
+    html[data-theme="dark"] .flash {
+      background: rgba(19,31,53,0.96);
+      border-color: rgba(99, 140, 210, 0.22);
+      color: var(--text);
+    }
+    html[data-theme="dark"] .flash.error { background: rgba(220,38,38,0.14); }
+    html[data-theme="dark"] .flash.success { background: rgba(22,101,52,0.16); }
+    html[data-theme="dark"] .hero-card {
+      background: linear-gradient(180deg, rgba(19,31,53,0.98), rgba(15,25,48,0.96));
     }
     html, body { margin: 0; min-height: 100%; color: var(--text); font-family: var(--body); }
     body {
@@ -357,24 +475,66 @@ def _base_styles() -> str:
     }
     .app-shell {
       display: grid;
-      grid-template-columns: 320px minmax(0, 1fr);
-      gap: 18px;
-      align-items: start;
+      grid-template-areas: "header header" "sidebar workspace";
+      grid-template-rows: 64px 1fr;
+      grid-template-columns: 300px 1fr;
+      height: 100vh;
+      overflow: hidden;
     }
-    .sidebar, .content-stack { display: grid; gap: 18px; }
+    .app-header {
+      grid-area: header;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      padding: 0 20px;
+      background: linear-gradient(90deg, var(--color-sidebar-start), var(--color-sidebar-end));
+      border-bottom: 1px solid var(--nav-border);
+      box-shadow: 0 2px 12px rgba(27,95,228,0.18);
+      z-index: 10;
+    }
+    .app-header .hdr-logo { flex: 0 0 auto; display: flex; align-items: center; gap: 10px; }
+    .app-header .hdr-wordmark { display: grid; gap: 0; }
+    .app-header .hdr-app { font-size: 0.82rem; font-weight: 800; color: var(--nav-text); letter-spacing: 0.01em; }
+    .app-header .hdr-sub { font-size: 0.7rem; color: var(--nav-muted); }
+    .app-header .hdr-actions { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+    .app-header .hdr-user { font-size: 0.8rem; color: var(--nav-muted); white-space: nowrap; }
+    .app-header form { margin: 0; display: flex; align-items: center; gap: 6px; }
+    .app-header select {
+      appearance: none; border: 1px solid rgba(255,255,255,0.16); border-radius: 8px;
+      background: rgba(255,255,255,0.08); color: var(--nav-text); font: inherit;
+      font-size: 0.78rem; padding: 5px 10px; cursor: pointer;
+    }
+    .app-header label { font-size: 0.75rem; color: var(--nav-muted); }
+    .hdr-btn {
+      appearance: none; border: 1px solid rgba(255,255,255,0.16); border-radius: 8px;
+      background: rgba(255,255,255,0.08); color: var(--nav-text); font: inherit;
+      font-size: 0.78rem; font-weight: 600; padding: 5px 11px; cursor: pointer;
+      transition: background 0.15s;
+    }
+    .hdr-btn:hover { background: rgba(255,255,255,0.16); }
+    .hdr-select {
+      appearance: none; border: 1px solid rgba(255,255,255,0.16); border-radius: 8px;
+      background: rgba(255,255,255,0.08); color: var(--nav-text); font: inherit;
+      font-size: 0.78rem; padding: 5px 28px 5px 10px; cursor: pointer;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='rgba(255,255,255,0.6)' stroke-width='2.5'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 8px center;
+    }
     .sidebar {
-      position: sticky;
-      top: 24px;
+      grid-area: sidebar;
+      overflow-y: auto;
+      display: grid;
+      gap: 14px;
+      align-content: start;
+      padding: 16px;
     }
+    .content-stack { display: grid; gap: 18px; align-content: start; }
     .nav-panel {
-      padding: 22px;
-      border-radius: var(--radius);
-      border: 1px solid var(--nav-border);
+      border-right: 1px solid var(--nav-border);
       background:
         radial-gradient(circle at top left, var(--brand-glow), transparent 22%),
         var(--nav-bg);
       color: var(--nav-text);
-      box-shadow: var(--shadow);
     }
     .brand-card, .panel, .command-section { padding: 22px; }
     .brand-block {
@@ -468,7 +628,15 @@ def _base_styles() -> str:
       color: var(--nav-text);
       border: 1px solid rgba(255,255,255,0.08);
     }
-    .workspace { display: grid; gap: 18px; }
+    .workspace {
+      grid-area: workspace;
+      overflow-y: auto;
+      padding: 22px 24px;
+      min-width: 0;
+      display: grid;
+      gap: 18px;
+      align-content: start;
+    }
     .command-section {
       background:
         linear-gradient(135deg, rgba(27, 95, 228, 0.06), transparent 42%),
@@ -550,8 +718,16 @@ def _base_styles() -> str:
     .mini-copy { color: var(--muted); font-size: 0.88rem; line-height: 1.45; }
     .shell-actions { display: grid; gap: 12px; }
     @media (max-width: 1100px) {
-      .app-shell, .login-shell { grid-template-columns: 1fr; }
-      .sidebar { position: static; }
+      .app-shell {
+        grid-template-areas: "header" "sidebar" "workspace";
+        grid-template-rows: 64px auto 1fr;
+        grid-template-columns: 1fr;
+        height: auto;
+        overflow: visible;
+      }
+      .sidebar { overflow-y: visible; padding: 12px 16px; }
+      .workspace { overflow-y: visible; padding: 16px; }
+      .login-shell { grid-template-columns: 1fr; }
       .span-8, .span-7, .span-6, .span-5, .span-4 { grid-column: span 12; }
     }
     .data-table th {
@@ -1923,20 +2099,12 @@ def render_super_admin_page(
   <style>{_base_styles()}</style>
 </head>
 <body>
-  <main class="page-shell">
-    <div class="app-shell">
-      <aside class="sidebar nav-panel">
-        <section class="brand-block">
-          {_brand_mark()}
-          <div class="stack brand-text">
-            <p class="eyebrow">BlueBird Platform</p>
-            <h2>Super admin</h2>
-            <p class="hero-copy">Manage school provisioning across <strong>{escape(base_domain)}</strong>.</p>
-          </div>
-        </section>
-        <section class="signal-card">
-          <div class="nav-group">
-            <p class="nav-label">Control</p>
+  <div class="app-shell">
+    {_super_admin_header_html()}
+    <aside class="sidebar nav-panel">
+      <section class="signal-card">
+        <div class="nav-group">
+          <p class="nav-label">Control</p>
           <nav class="nav-list">
             {_nav_item("platform-control", "Platform Control")}
             {_nav_item("msp", "MSP Dashboard", "!" if any(str(d.get("status","")) == "alarm" for d in msp_districts) else (str(len(msp_districts)) if msp_districts else None))}
@@ -1953,16 +2121,9 @@ def render_super_admin_page(
             {_nav_item("sandbox", "Sandbox")}
             <a class="nav-item" href="/super-admin/change-password">Change password</a>
           </nav>
-          </div>
-          <div class="shell-actions">
-            <p class="signal-copy">Provision schools, manage first-admin setup PINs, and keep onboarding clean from one shared platform console.</p>
-            <a class="button button-secondary" href="/super-admin/change-password">Change Password</a>
-            <form method="post" action="/super-admin/logout">
-              <button class="button button-secondary" type="submit">Log out</button>
-            </form>
-          </div>
-        </section>
-      </aside>
+        </div>
+      </section>
+    </aside>
       <section class="content-stack workspace">
         <section class="panel command-section" id="platform-control"{_section_style("platform-control")}>
           <style>{_pctrl_styles}</style>
@@ -3071,8 +3232,25 @@ def render_super_admin_page(
 
       </section>
     </div>
-  </main>
-  <script>(function(){{var t=localStorage.getItem('bb_theme')||(window.matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');if(t==='dark')document.documentElement.setAttribute('data-theme','dark');}})();</script>
+  </div>
+  <script>
+  (function() {{
+    var K = 'bb_theme', h = document.documentElement;
+    function applyTheme(dark) {{
+      if (dark) h.setAttribute('data-theme','dark'); else h.removeAttribute('data-theme');
+      var btn = document.getElementById('bb-theme-btn');
+      if (btn) btn.textContent = dark ? '☀ Light' : '☾ Dark';
+    }}
+    function bbToggleTheme() {{
+      var dark = !h.hasAttribute('data-theme');
+      localStorage.setItem(K, dark ? 'dark' : 'light');
+      applyTheme(dark);
+    }}
+    window.bbToggleTheme = bbToggleTheme;
+    var saved = localStorage.getItem(K) || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+    applyTheme(saved === 'dark');
+  }})();
+  </script>
 </body>
 </html>"""
 
@@ -4511,23 +4689,18 @@ def render_admin_page(
   </script>
 </head>
 <body>
-  <main class="page-shell">
-    <div class="app-shell">
-      <aside class="sidebar nav-panel">
-        <section class="brand-block">
-          {_brand_mark()}
-          <div class="stack brand-text">
-            <p class="eyebrow">BlueBird Alerts</p>
-            <h2>Safety operations</h2>
-            <p class="hero-copy">Signed in as <strong>{user_display_name}</strong> ({escape(current_user.login_name or 'admin')}).</p>
-            <p class="mini-copy">School: <strong>{escape(school_name)}</strong> ({escape(school_slug)})</p>
-            <p class="mini-copy">Viewing tenant: <strong>{escape(selected_tenant_name)}</strong> ({escape(selected_tenant_slug)})</p>
-            {tenant_selector_html}
-          </div>
-        </section>
-        <section class="signal-card">
-          <div class="nav-group">
-            <p class="nav-label">Command Deck</p>
+  <div class="app-shell">
+    {_admin_header_html(
+        user_display=user_display_name,
+        school_name=school_name,
+        tenant_selector_html=tenant_selector_html,
+        logout_url=f"{prefix}/admin/logout",
+        extra_action_html=super_admin_shell_action_html,
+    )}
+    <aside class="sidebar nav-panel">
+      <section class="signal-card">
+        <div class="nav-group">
+          <p class="nav-label">Command Deck</p>
           <nav class="nav-list">
             {_nav_item("dashboard", "Dashboard")}
             {_nav_item("user-management", "User Management")}
@@ -4539,17 +4712,9 @@ def render_admin_page(
             {_nav_item("district", "District Overview") if show_district_nav else ""}
             {_nav_item("devices", "Active Devices") if show_district_nav else ""}
           </nav>
-          </div>
-          <div class="shell-actions">
-            <p class="signal-copy">Manage people, alerts, readiness, and response from one school operations console.</p>
-            {super_admin_shell_action_html}
-            <button class="theme-toggle-btn" onclick="bbToggleTheme()" id="bb-theme-btn" type="button">&#9790; Dark mode</button>
-            <form method="post" action="{prefix}/admin/logout">
-            <button class="button button-secondary" type="submit">Log out</button>
-          </form>
-          </div>
-        </section>
-      </aside>
+        </div>
+      </section>
+    </aside>
 
       <section class="content-stack workspace">
         {_render_flash(flash_message, "success")}
@@ -5243,7 +5408,7 @@ def render_admin_page(
         </section>
       </section>
     </div>
-  </main>
+  </div>
   <script>
   (function() {{
     var THEME_KEY = 'bb_theme';
