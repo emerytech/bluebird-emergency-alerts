@@ -27,6 +27,8 @@ class UserRecord:
     totp_enabled: bool = False
     title: Optional[str] = None
     email: Optional[str] = None
+    is_archived: bool = False
+    archived_at: Optional[str] = None
 
 
 class UserStore:
@@ -90,6 +92,10 @@ class UserStore:
             conn.execute("ALTER TABLE users ADD COLUMN title TEXT NULL;")
         if "email" not in cols:
             conn.execute("ALTER TABLE users ADD COLUMN email TEXT NULL;")
+        if "is_archived" not in cols:
+            conn.execute("ALTER TABLE users ADD COLUMN is_archived INTEGER NOT NULL DEFAULT 0;")
+        if "archived_at" not in cols:
+            conn.execute("ALTER TABLE users ADD COLUMN archived_at TEXT NULL;")
 
     def _create_user_sync(
         self,
@@ -148,7 +154,9 @@ class UserStore:
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT id, created_at, name, role, phone_e164, is_active, login_name, password_hash, last_login_at, must_change_password, totp_secret, title, email
+                SELECT id, created_at, name, role, phone_e164, is_active, login_name, password_hash,
+                       last_login_at, must_change_password, totp_secret, title, email,
+                       is_archived, archived_at
                 FROM users
                 ORDER BY id ASC;
                 """
@@ -169,6 +177,8 @@ class UserStore:
                 totp_enabled=bool(row[10]),
                 title=str(row[11]) if row[11] is not None else None,
                 email=str(row[12]) if len(row) > 12 and row[12] is not None else None,
+                is_archived=bool(int(row[13])) if len(row) > 13 and row[13] is not None else False,
+                archived_at=str(row[14]) if len(row) > 14 and row[14] is not None else None,
             )
             for row in rows
         ]
@@ -240,7 +250,9 @@ class UserStore:
         with self._connect() as conn:
             row = conn.execute(
                 """
-                SELECT id, created_at, name, role, phone_e164, is_active, login_name, password_hash, last_login_at, must_change_password, totp_secret, title, email
+                SELECT id, created_at, name, role, phone_e164, is_active, login_name, password_hash,
+                       last_login_at, must_change_password, totp_secret, title, email,
+                       is_archived, archived_at
                 FROM users
                 WHERE id = ?
                 LIMIT 1;
@@ -262,6 +274,8 @@ class UserStore:
             must_change_password=bool(int(row[9])) if row[9] is not None else False,
             totp_enabled=bool(row[10]),
             title=str(row[11]) if row[11] is not None else None,
+            is_archived=bool(int(row[13])) if len(row) > 13 and row[13] is not None else False,
+            archived_at=str(row[14]) if len(row) > 14 and row[14] is not None else None,
         )
 
     async def get_user(self, user_id: int) -> Optional[UserRecord]:
@@ -460,6 +474,16 @@ class UserStore:
 
     async def mark_login(self, user_id: int) -> None:
         await anyio.to_thread.run_sync(self._mark_login_sync, int(user_id))
+
+    def _archive_user_sync(self, user_id: int) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE users SET is_archived = 1, archived_at = ?, is_active = 0 WHERE id = ? AND is_archived = 0;",
+                (datetime.now(timezone.utc).isoformat(), int(user_id)),
+            )
+
+    async def archive_user(self, user_id: int) -> None:
+        await anyio.to_thread.run_sync(self._archive_user_sync, int(user_id))
 
     def _delete_user_sync(self, user_id: int) -> None:
         with self._connect() as conn:

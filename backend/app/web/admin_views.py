@@ -288,6 +288,7 @@ def _base_styles() -> str:
     html[data-theme="dark"] .hero-card {
       background: linear-gradient(180deg, rgba(19,31,53,0.98), rgba(15,25,48,0.96));
     }
+    html { scroll-padding-top: 80px; scroll-behavior: smooth; }
     html, body { margin: 0; min-height: 100%; color: var(--text); font-family: var(--body); }
     body {
       min-height: 100vh;
@@ -698,8 +699,24 @@ def _base_styles() -> str:
       border: 1px solid var(--border);
       background: rgba(255,255,255,0.9);
       padding: 0 14px;
+      cursor: pointer;
+      transition: border-color 120ms ease, background 120ms ease;
     }
-    .checkbox-row input { width: 18px; height: 18px; }
+    .checkbox-row:hover { border-color: var(--accent); background: rgba(255,255,255,0.98); }
+    .checkbox-row input { width: 18px; height: 18px; cursor: pointer; flex: 0 0 auto; }
+    .checkbox-row span, .checkbox-row label { font-size: 0.92rem; color: var(--text); }
+    html[data-theme="dark"] .checkbox-row { background: rgba(255,255,255,0.05); border-color: rgba(99,140,210,0.22); }
+    html[data-theme="dark"] .checkbox-row:hover { border-color: var(--accent); background: rgba(255,255,255,0.09); }
+    .field select {
+      appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%236b7280' stroke-width='2.5'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 12px center;
+      padding-right: 32px;
+    }
+    html[data-theme="dark"] .field select {
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%238baad4' stroke-width='2.5'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+    }
     table { width: 100%; border-collapse: collapse; }
     th, td {
       padding: 12px 10px;
@@ -709,6 +726,7 @@ def _base_styles() -> str:
       font-size: 0.95rem;
     }
     th { color: var(--muted); border-top: 0; }
+    .table-wrapper { overflow-x: auto; border-radius: 12px; }
     code {
       font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
       background: rgba(15, 23, 42, 0.05);
@@ -3541,10 +3559,11 @@ def _um_avatar(name: str, role: str) -> str:
 
 
 def _um_health_bar(users: "Sequence[UserRecord]") -> str:
+    archived = sum(1 for u in users if getattr(u, "is_archived", False))
     total = len(users)
-    active = sum(1 for u in users if u.is_active)
-    login_enabled = sum(1 for u in users if getattr(u, "can_login", False))
-    da_count = sum(1 for u in users if u.role == "district_admin" and u.is_active)
+    active = sum(1 for u in users if u.is_active and not getattr(u, "is_archived", False))
+    login_enabled = sum(1 for u in users if getattr(u, "can_login", False) and not getattr(u, "is_archived", False))
+    da_count = sum(1 for u in users if u.role == "district_admin" and u.is_active and not getattr(u, "is_archived", False))
     if da_count >= 2:
         da_cls, da_sub = "hc-ok", "Healthy — redundancy in place"
     elif da_count == 1:
@@ -3553,12 +3572,19 @@ def _um_health_bar(users: "Sequence[UserRecord]") -> str:
         da_cls, da_sub = "hc-danger", "Critical — no district admin!"
     sec_cls = "hc-ok" if da_count >= 1 else "hc-danger"
     sec_label = "Healthy" if da_count >= 1 else "At Risk"
+    archived_card = (
+        f'<div class="um-hcard hc-warn"><div class="um-hcard-label">Archived</div>'
+        f'<div class="um-hcard-value">{archived}</div>'
+        f'<div class="um-hcard-sub">Awaiting permanent deletion</div></div>'
+        if archived > 0 else ""
+    )
     return (
         '<div class="um-health-bar">'
-        f'<div class="um-hcard hc-ok"><div class="um-hcard-label">Total Users</div><div class="um-hcard-value">{total}</div><div class="um-hcard-sub">{active} active</div></div>'
+        f'<div class="um-hcard hc-ok"><div class="um-hcard-label">Total Users</div><div class="um-hcard-value">{total - archived}</div><div class="um-hcard-sub">{active} active</div></div>'
         f'<div class="um-hcard {da_cls}"><div class="um-hcard-label">District Admins</div><div class="um-hcard-value">{da_count}</div><div class="um-hcard-sub">{da_sub}</div></div>'
         f'<div class="um-hcard hc-ok"><div class="um-hcard-label">Login Enabled</div><div class="um-hcard-value">{login_enabled}</div><div class="um-hcard-sub">Can access dashboard</div></div>'
         f'<div class="um-hcard {sec_cls}"><div class="um-hcard-label">Security Status</div><div class="um-hcard-value" style="font-size:1.1rem;padding-top:2px;">{escape(sec_label)}</div><div class="um-hcard-sub">Role hierarchy integrity</div></div>'
+        f'{archived_card}'
         '</div>'
     )
 
@@ -3575,15 +3601,16 @@ def _um_enterprise_table(
     rows = []
     for u in users:
         is_self = actor_user_id is not None and u.id == actor_user_id
-        status_badge = (
-            '<span class="status-pill ok" style="font-size:.72rem;padding:2px 9px;min-height:0;">Active</span>'
-            if u.is_active else
-            '<span class="status-pill danger" style="font-size:.72rem;padding:2px 9px;min-height:0;">Inactive</span>'
-        )
+        is_archived = getattr(u, "is_archived", False)
+        if is_archived:
+            status_badge = '<span class="status-pill offline" style="font-size:.72rem;padding:2px 9px;min-height:0;">Archived</span>'
+        elif u.is_active:
+            status_badge = '<span class="status-pill ok" style="font-size:.72rem;padding:2px 9px;min-height:0;">Active</span>'
+        else:
+            status_badge = '<span class="status-pill danger" style="font-size:.72rem;padding:2px 9px;min-height:0;">Inactive</span>'
         last = escape(getattr(u, "last_login_at", None) or "Never")[:16].replace("T", " ")
         title_str = f'<span class="um-sub">{escape(u.title)}</span>' if getattr(u, "title", "") else ""
         login_str = escape(u.login_name or "—")
-        # Build user JSON for slide panel (no password fields)
         user_json = json.dumps({
             "id": u.id,
             "name": u.name,
@@ -3592,12 +3619,14 @@ def _um_enterprise_table(
             "login": u.login_name or "",
             "phone": getattr(u, "phone_e164", "") or "",
             "is_active": u.is_active,
+            "is_archived": is_archived,
             "last_login": last,
             "is_self": is_self,
         })
         self_badge = ' <span class="role-badge" style="background:rgba(27,95,228,.1);color:#1e40af;font-size:.68rem;">You</span>' if is_self else ""
+        row_style = ' style="opacity:0.62;"' if is_archived else ""
         rows.append(
-            f'<tr class="um-row" data-uid="{u.id}" data-user=\'{escape(user_json)}\' title="Click to view details">'
+            f'<tr class="um-row" data-uid="{u.id}" data-user=\'{escape(user_json)}\' title="Click to view details"{row_style}>'
             f'<td style="width:44px;">{_um_avatar(u.name, u.role)}</td>'
             f'<td><div class="um-name-cell"><div class="um-name-stack"><span class="um-name">{escape(u.name)}{self_badge}</span>{title_str}</div></div></td>'
             f'<td style="font-size:0.8rem;color:var(--muted);">{login_str}</td>'
@@ -3689,6 +3718,24 @@ def _um_role_modal() -> str:
   </div>
 </div>
 """
+
+
+def _user_archive_delete_html(prefix: str, user: UserRecord) -> str:
+    if not getattr(user, "is_archived", False):
+        return (
+            f'<form method="post" action="{prefix}/admin/users/{user.id}/archive"'
+            f' onsubmit="return confirm(\'Archive {escape(user.name)}? They will be deactivated and can be permanently deleted after.\');">'
+            f'<div class="button-row"><button class="button button-danger-outline" type="submit">Archive user</button></div>'
+            f'</form>'
+        )
+    return (
+        f'<div style="background:rgba(220,38,38,0.06);border:1px solid rgba(220,38,38,0.16);border-radius:12px;padding:12px 14px;margin-top:4px;">'
+        f'<p class="mini-copy" style="color:var(--danger);margin:0 0 8px;">&#9888; This user is archived. Permanent deletion cannot be undone.</p>'
+        f'<form method="post" action="{prefix}/admin/users/{user.id}/delete"'
+        f' onsubmit="return confirm(\'Permanently delete {escape(user.name)}? This cannot be undone.\');">'
+        f'<div class="button-row"><button class="button button-danger" type="submit">Permanently delete</button></div>'
+        f'</form></div>'
+    )
 
 
 def _render_user_cards(
@@ -3784,9 +3831,7 @@ def _render_user_cards(
             f'<p class="mini-copy">Dashboard login: <strong>{"enabled" if user.can_login else "disabled"}</strong> • last login: {last_login}</p>'
             f'</form>'
             f'{assignment_block}'
-            f'<form method="post" action="{prefix}/admin/users/{user.id}/delete" onsubmit="return confirm(\'Delete {escape(user.name)}? This cannot be undone.\');">'
-            f'<div class="button-row"><button class="button button-danger-outline" type="submit">Delete user</button></div>'
-            f'</form>'
+            f'{_user_archive_delete_html(prefix, user)}'
             f'</div>'
         )
     return "".join(cards)

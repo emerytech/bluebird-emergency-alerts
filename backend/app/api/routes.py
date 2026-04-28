@@ -4701,6 +4701,41 @@ async def admin_update_user_tenant_assignments(
     return RedirectResponse(url="/admin?section=user-management#users", status_code=status.HTTP_303_SEE_OTHER)
 
 
+@router.post("/admin/users/{user_id}/archive", include_in_schema=False)
+async def admin_archive_user(
+    user_id: int,
+    request: Request,
+) -> RedirectResponse:
+    await _require_dashboard_admin(request)
+    user = await _users(request).get_user(user_id)
+    if user is None:
+        _set_flash(request, error=f"User #{user_id} was not found.")
+        return RedirectResponse(url="/admin?section=user-management#users", status_code=status.HTTP_303_SEE_OTHER)
+
+    if getattr(user, "is_archived", False):
+        _set_flash(request, error=f"{user.name} is already archived.")
+        return RedirectResponse(url="/admin?section=user-management#users", status_code=status.HTTP_303_SEE_OTHER)
+
+    if is_dashboard_role(user.role) and user.can_login and user.is_active:
+        other_admins = await _users(request).count_other_dashboard_admins(user.id)
+        if other_admins <= 0:
+            _set_flash(request, error="You cannot archive the last active admin with dashboard login access.")
+            return RedirectResponse(url="/admin?section=user-management#users", status_code=status.HTTP_303_SEE_OTHER)
+
+    _fire_audit(
+        request,
+        "user_archived",
+        actor_user_id=_session_user_id(request),
+        actor_label=_current_school_actor_label(request),
+        target_type="user",
+        target_id=str(user_id),
+        metadata={"name": user.name, "role": user.role},
+    )
+    await _users(request).archive_user(user_id)
+    _set_flash(request, message=f"Archived {user.name}. You can permanently delete them from the archived users list.")
+    return RedirectResponse(url="/admin?section=user-management#users", status_code=status.HTTP_303_SEE_OTHER)
+
+
 @router.post("/admin/users/{user_id}/delete", include_in_schema=False)
 async def admin_delete_user(
     user_id: int,
@@ -4713,11 +4748,9 @@ async def admin_delete_user(
         _set_flash(request, error=f"User #{user_id} was not found.")
         return RedirectResponse(url="/admin?section=user-management#users", status_code=status.HTTP_303_SEE_OTHER)
 
-    if is_dashboard_role(user.role) and user.can_login and user.is_active:
-        other_admins = await _users(request).count_other_dashboard_admins(user.id)
-        if other_admins <= 0:
-            _set_flash(request, error="You cannot delete the last active admin with dashboard login access.")
-            return RedirectResponse(url="/admin?section=user-management#users", status_code=status.HTTP_303_SEE_OTHER)
+    if not getattr(user, "is_archived", False):
+        _set_flash(request, error=f"Archive {user.name} before permanently deleting them.")
+        return RedirectResponse(url="/admin?section=user-management#users", status_code=status.HTTP_303_SEE_OTHER)
 
     _fire_audit(
         request,
@@ -4734,7 +4767,7 @@ async def admin_delete_user(
         request.session.clear()
         return RedirectResponse(url="/admin/login", status_code=status.HTTP_303_SEE_OTHER)
 
-    _set_flash(request, message=f"Deleted user {user.name}.")
+    _set_flash(request, message=f"Permanently deleted {user.name}.")
     return RedirectResponse(url="/admin?section=user-management#users", status_code=status.HTTP_303_SEE_OTHER)
 
 
