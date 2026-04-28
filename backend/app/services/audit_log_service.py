@@ -224,6 +224,74 @@ class AuditLogService:
             self._list_by_user_id_sync, int(user_id), int(limit)
         )
 
+    def _list_with_filters_sync(
+        self,
+        limit: int,
+        offset: int,
+        event_type_filter: Optional[str],
+        search: Optional[str],
+    ) -> List[AuditEventRecord]:
+        conditions = []
+        params: list = []
+        if event_type_filter:
+            conditions.append("event_type = ?")
+            params.append(event_type_filter)
+        if search:
+            like = "%" + search.replace("%", "\\%").replace("_", "\\_") + "%"
+            conditions.append(
+                "(actor_label LIKE ? ESCAPE '\\' OR event_type LIKE ? ESCAPE '\\')"
+            )
+            params.extend([like, like])
+        where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+        params.extend([max(1, limit), max(0, offset)])
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT id, tenant_slug, timestamp, event_type, actor_user_id,
+                       actor_label, target_type, target_id, metadata
+                FROM audit_log
+                {where}
+                ORDER BY id DESC LIMIT ? OFFSET ?;
+                """,
+                params,
+            ).fetchall()
+        records = []
+        for row in rows:
+            try:
+                meta = json.loads(row[8]) if row[8] else {}
+            except (ValueError, TypeError):
+                meta = {}
+            records.append(
+                AuditEventRecord(
+                    id=int(row[0]),
+                    tenant_slug=str(row[1]),
+                    timestamp=str(row[2]),
+                    event_type=str(row[3]),
+                    actor_user_id=int(row[4]) if row[4] is not None else None,
+                    actor_label=str(row[5]) if row[5] is not None else None,
+                    target_type=str(row[6]) if row[6] is not None else None,
+                    target_id=str(row[7]) if row[7] is not None else None,
+                    metadata=meta,
+                )
+            )
+        return records
+
+    async def list_with_filters(
+        self,
+        *,
+        limit: int = 25,
+        offset: int = 0,
+        event_type_filter: Optional[str] = None,
+        search: Optional[str] = None,
+    ) -> List[AuditEventRecord]:
+        return await anyio.to_thread.run_sync(
+            self._list_with_filters_sync,
+            int(limit),
+            int(offset),
+            event_type_filter or None,
+            search.strip() if search and search.strip() else None,
+        )
+
     async def distinct_event_types(self) -> List[str]:
         def _sync() -> List[str]:
             with self._connect() as conn:

@@ -1836,7 +1836,10 @@ async def alarm_push_stats(
 async def get_audit_log(
     request: Request,
     user_id: int = Query(...),
-    limit: int = Query(default=50, le=200),
+    limit: int = Query(default=25, le=100),
+    offset: int = Query(default=0, ge=0),
+    search: Optional[str] = Query(default=None, max_length=200),
+    event_type: Optional[str] = Query(default=None, max_length=100),
     _: None = Depends(require_api_key),
 ) -> AuditLogResponse:
     users = _users(request)
@@ -1846,7 +1849,12 @@ async def get_audit_log(
         permissions={PERM_MANAGE_OWN_TENANT_USERS, PERM_MANAGE_ASSIGNED_TENANT_USERS},
     )
     _ = actor_id
-    events = await _audit_log_svc(request).list_recent(limit=limit)
+    events = await _audit_log_svc(request).list_with_filters(
+        limit=limit,
+        offset=offset,
+        event_type_filter=event_type or None,
+        search=search or None,
+    )
     return AuditLogResponse(
         events=[
             AuditLogEntry(
@@ -2225,7 +2233,7 @@ async def admin_dashboard(
 
     _admin_role = str(getattr(request.state.admin_user, "role", "")).strip().lower()
     _access_code_records: list = []
-    if can_generate_codes(_admin_role) and selected_section == "access-codes":
+    if can_generate_codes(_admin_role) and selected_section in {"access-codes", "user-management"}:
         _access_code_records = await _access_codes(request).list_codes(str(request.state.school.slug), limit=200)
     _base_domain = str(getattr(request.app.state.settings, "BASE_DOMAIN", "") or "app.bluebirdalerts.com").strip()
 
@@ -5265,6 +5273,56 @@ async def admin_archive_user(
     return RedirectResponse(url="/admin?section=user-management&tab=archived", status_code=status.HTTP_303_SEE_OTHER)
 
 
+@router.post("/admin/users/{user_id}/set-active", include_in_schema=False)
+async def admin_set_user_active(
+    user_id: int,
+    request: Request,
+) -> RedirectResponse:
+    await _require_dashboard_admin(request)
+    form = await request.form()
+    new_active = str(form.get("is_active", "1")).strip() == "1"
+    user = await _users(request).get_user(user_id)
+    if user is None:
+        _set_flash(request, error=f"User #{user_id} was not found.")
+        return RedirectResponse(url="/admin?section=user-management", status_code=status.HTTP_303_SEE_OTHER)
+
+    if getattr(user, "is_archived", False):
+        _set_flash(request, error=f"Cannot change active status of archived user {user.name}.")
+        return RedirectResponse(url="/admin?section=user-management", status_code=status.HTTP_303_SEE_OTHER)
+
+    actor_role = str(getattr(getattr(request.state, "admin_user", None), "role", "") or "")
+    if not can_archive_user(actor_role, user.role):
+        if user.role == ROLE_DISTRICT_ADMIN:
+            _set_flash(request, error="Only district admins can modify district admin accounts.")
+        else:
+            _set_flash(request, error=f"You do not have permission to modify {user.name}.")
+        return RedirectResponse(url="/admin?section=user-management", status_code=status.HTTP_303_SEE_OTHER)
+
+    if not new_active and is_dashboard_role(user.role) and user.can_login and user.is_active:
+        other_admins = await _users(request).count_other_dashboard_admins(user.id)
+        if other_admins <= 0:
+            _set_flash(request, error="You cannot deactivate the last active admin with dashboard login access.")
+            return RedirectResponse(url="/admin?section=user-management", status_code=status.HTTP_303_SEE_OTHER)
+
+    action_label = "user_activated" if new_active else "user_deactivated"
+    _fire_audit(
+        request,
+        action_label,
+        actor_user_id=_session_user_id(request),
+        actor_label=_current_school_actor_label(request),
+        target_type="user",
+        target_id=str(user_id),
+        metadata={"name": user.name, "role": user.role, "new_active": new_active},
+    )
+    await _users(request).set_active(user_id, new_active)
+    if new_active:
+        _set_flash(request, message=f"Activated {user.name}.")
+        return RedirectResponse(url="/admin?section=user-management", status_code=status.HTTP_303_SEE_OTHER)
+    else:
+        _set_flash(request, message=f"Deactivated {user.name}. They can no longer log in or receive alerts.")
+        return RedirectResponse(url="/admin?section=user-management&tab=inactive", status_code=status.HTTP_303_SEE_OTHER)
+
+
 @router.post("/admin/users/{user_id}/restore", include_in_schema=False)
 async def admin_restore_user(
     user_id: int,
@@ -7007,11 +7065,11 @@ async def admin_generate_access_code_form(
     user = await users.get_user(user_id)
     if user is None or not can_generate_codes(user.role):
         _set_flash(request, error="Only district admins may generate access codes.")
-        return RedirectResponse(url="/admin?section=access-codes#access-codes", status_code=status.HTTP_303_SEE_OTHER)
+        return RedirectResponse(url="/admin?section=user-management&tab=codes", status_code=status.HTTP_303_SEE_OTHER)
     normalized_role = role.strip().lower()
     if normalized_role not in CODEGEN_ALLOWED_ROLES:
         _set_flash(request, error=f"Role '{normalized_role}' is not allowed for access codes.")
-        return RedirectResponse(url="/admin?section=access-codes#access-codes", status_code=status.HTTP_303_SEE_OTHER)
+        return RedirectResponse(url="/admin?section=user-management&tab=codes", status_code=status.HTTP_303_SEE_OTHER)
     effective_slug = str(getattr(request.state, "school_slug", "") or tenant_slug).strip()
     rec = await _access_codes(request).generate_code(
         tenant_slug=effective_slug,
@@ -7031,7 +7089,7 @@ async def admin_generate_access_code_form(
         metadata={"code_id": rec.id, "role": normalized_role, "tenant": effective_slug},
     )
     _set_flash(request, message=f"Code {rec.code} generated for role '{normalized_role}'.")
-    return RedirectResponse(url="/admin?section=access-codes#access-codes", status_code=status.HTTP_303_SEE_OTHER)
+    return RedirectResponse(url="/admin?section=user-management&tab=codes", status_code=status.HTTP_303_SEE_OTHER)
 
 
 # ── Admin JSON API — access codes (tenant-scoped, requires dashboard admin) ────
@@ -7057,6 +7115,8 @@ async def admin_generate_access_code(request: Request, body: GenerateAccessCodeR
         expires_hours=body.expires_hours,
         max_uses=body.max_uses,
         is_setup_code=False,
+        assigned_name=body.assigned_name or None,
+        assigned_email=body.assigned_email or None,
     )
     school = _tenant_manager(request).school_for_slug(tenant_slug)
     base_domain = str(request.app.state.settings.BASE_DOMAIN).strip()
@@ -7788,7 +7848,7 @@ async def admin_revoke_access_code(request: Request, code_id: int):
     if user is None or not can_generate_codes(user.role):
         if _is_form:
             _set_flash(request, error="Only district admins may revoke access codes.")
-            return RedirectResponse(url="/admin?section=access-codes#access-codes", status_code=status.HTTP_303_SEE_OTHER)
+            return RedirectResponse(url="/admin?section=user-management&tab=codes", status_code=status.HTTP_303_SEE_OTHER)
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only district admins may revoke access codes.")
     tenant_slug = str(getattr(request.state, "school_slug", "")).strip()
     ok = await _access_codes(request).revoke_code(code_id, tenant_slug)
@@ -7797,10 +7857,27 @@ async def admin_revoke_access_code(request: Request, code_id: int):
             _set_flash(request, message="Code revoked.")
         else:
             _set_flash(request, error="Code not found or already revoked.")
-        return RedirectResponse(url="/admin?section=access-codes#access-codes", status_code=status.HTTP_303_SEE_OTHER)
+        return RedirectResponse(url="/admin?section=user-management&tab=codes", status_code=status.HTTP_303_SEE_OTHER)
     if not ok:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Code not found or already revoked.")
     return JSONResponse({"revoked": True, "code_id": code_id})
+
+
+@router.post("/admin/access-codes/{code_id}/archive", include_in_schema=False)
+async def admin_archive_access_code(request: Request, code_id: int) -> RedirectResponse:
+    users = await _require_dashboard_admin(request)
+    user_id = _session_user_id(request) or 0
+    user = await users.get_user(user_id)
+    if user is None or not can_generate_codes(user.role):
+        _set_flash(request, error="Only district admins may archive access codes.")
+        return RedirectResponse(url="/admin?section=user-management&tab=codes", status_code=status.HTTP_303_SEE_OTHER)
+    tenant_slug = str(getattr(request.state, "school_slug", "")).strip()
+    ok = await _access_codes(request).archive_code(code_id, tenant_slug)
+    if ok:
+        _set_flash(request, message="Code archived.")
+    else:
+        _set_flash(request, error="Code not found.")
+    return RedirectResponse(url="/admin?section=user-management&tab=codes", status_code=status.HTTP_303_SEE_OTHER)
 
 
 @router.post("/admin/access-codes/{code_id}/send-invite", response_model=None)

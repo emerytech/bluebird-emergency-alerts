@@ -649,7 +649,9 @@ class GenerateAccessCodeRequest(BaseModel):
     title: Optional[str] = Field(default=None, max_length=120, description="Optional job title (metadata only).")
     tenant_slug: str = Field(..., min_length=1, max_length=80)
     max_uses: int = Field(default=1, ge=1, le=20)
-    expires_hours: int = Field(default=48, ge=1, le=720)  # 1h–30d
+    expires_hours: int = Field(default=48, ge=1, le=87600)  # 1h–10yr (87600 = no expiry)
+    assigned_name: Optional[str] = Field(default=None, max_length=200, description="Pre-assign to this person's name.")
+    assigned_email: Optional[str] = Field(default=None, max_length=320, description="Pre-assign to this email address.")
 
 
 class AccessCodeResponse(BaseModel):

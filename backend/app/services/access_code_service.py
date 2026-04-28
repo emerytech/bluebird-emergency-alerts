@@ -45,6 +45,7 @@ class AccessCodeRecord:
     # Phase 11: reminder tracking
     reminder_count: int = 0
     last_reminder_sent_at: Optional[str] = None
+    is_archived: bool = False
 
 
 # ── Service ────────────────────────────────────────────────────────────────────
@@ -109,6 +110,7 @@ class AccessCodeService:
                 ("label",                "ALTER TABLE access_codes ADD COLUMN label TEXT NULL;"),
                 ("reminder_count",       "ALTER TABLE access_codes ADD COLUMN reminder_count INTEGER NOT NULL DEFAULT 0;"),
                 ("last_reminder_sent_at","ALTER TABLE access_codes ADD COLUMN last_reminder_sent_at TEXT NULL;"),
+                ("is_archived",          "ALTER TABLE access_codes ADD COLUMN is_archived INTEGER NOT NULL DEFAULT 0;"),
             ]:
                 if col not in cols:
                     conn.execute(defn)
@@ -155,6 +157,7 @@ class AccessCodeService:
             label=str(row[17]) if len(row) > 17 and row[17] else None,
             reminder_count=int(row[18]) if len(row) > 18 and row[18] is not None else 0,
             last_reminder_sent_at=str(row[19]) if len(row) > 19 and row[19] else None,
+            is_archived=bool(int(row[20])) if len(row) > 20 and row[20] is not None else False,
         )
 
     # ── Generate ───────────────────────────────────────────────────────────────
@@ -342,7 +345,7 @@ class AccessCodeService:
                 SELECT id, code, tenant_slug, role, title, created_by_user_id, created_at,
                        expires_at, max_uses, use_count, last_used_at, status, is_setup_code,
                        invite_email, assigned_name, assigned_email, assigned_user_id, label,
-                       reminder_count, last_reminder_sent_at
+                       reminder_count, last_reminder_sent_at, COALESCE(is_archived, 0) as is_archived
                 FROM access_codes
                 WHERE code = ?
                   AND tenant_slug = ?
@@ -433,18 +436,19 @@ class AccessCodeService:
     # ── List ───────────────────────────────────────────────────────────────────
 
     def _list_sync(
-        self, tenant_slug: str, is_setup_code: bool, limit: int
+        self, tenant_slug: str, is_setup_code: bool, limit: int, include_archived: bool = False
     ) -> List[AccessCodeRecord]:
         now_iso = datetime.now(timezone.utc).isoformat()
+        arch_clause = "" if include_archived else "AND COALESCE(is_archived, 0) = 0"
         with self._connect() as conn:
             rows = conn.execute(
-                """
+                f"""
                 SELECT id, code, tenant_slug, role, title, created_by_user_id, created_at,
                        expires_at, max_uses, use_count, last_used_at, status, is_setup_code,
                        invite_email, assigned_name, assigned_email, assigned_user_id, label,
-                       reminder_count, last_reminder_sent_at
+                       reminder_count, last_reminder_sent_at, COALESCE(is_archived, 0) as is_archived
                 FROM access_codes
-                WHERE tenant_slug = ? AND is_setup_code = ?
+                WHERE tenant_slug = ? AND is_setup_code = ? {arch_clause}
                 ORDER BY id DESC LIMIT ?;
                 """,
                 (tenant_slug, 1 if is_setup_code else 0, limit),
@@ -452,10 +456,25 @@ class AccessCodeService:
         return [self._row_to_record(r, now_iso) for r in rows]
 
     async def list_codes(
-        self, tenant_slug: str, *, limit: int = 200
+        self, tenant_slug: str, *, limit: int = 200, include_archived: bool = False
     ) -> List[AccessCodeRecord]:
         return await anyio.to_thread.run_sync(
-            lambda: self._list_sync(tenant_slug, False, limit)
+            lambda: self._list_sync(tenant_slug, False, limit, include_archived)
+        )
+
+    # ── Archive ────────────────────────────────────────────────────────────────
+
+    def _archive_sync(self, code_id: int, tenant_slug: str) -> bool:
+        with self._connect() as conn:
+            result = conn.execute(
+                "UPDATE access_codes SET is_archived = 1 WHERE id = ? AND tenant_slug = ?;",
+                (code_id, tenant_slug),
+            )
+            return result.rowcount > 0
+
+    async def archive_code(self, code_id: int, tenant_slug: str) -> bool:
+        return await anyio.to_thread.run_sync(
+            lambda: self._archive_sync(code_id, tenant_slug)
         )
 
     def _list_all_setup_sync(self, limit: int) -> List[AccessCodeRecord]:
@@ -466,7 +485,7 @@ class AccessCodeService:
                 SELECT id, code, tenant_slug, role, title, created_by_user_id, created_at,
                        expires_at, max_uses, use_count, last_used_at, status, is_setup_code,
                        invite_email, assigned_name, assigned_email, assigned_user_id, label,
-                       reminder_count, last_reminder_sent_at
+                       reminder_count, last_reminder_sent_at, COALESCE(is_archived, 0) as is_archived
                 FROM access_codes
                 WHERE is_setup_code = 1
                 ORDER BY id DESC LIMIT ?;
@@ -552,7 +571,7 @@ class AccessCodeService:
                 SELECT id, code, tenant_slug, role, title, created_by_user_id, created_at,
                        expires_at, max_uses, use_count, last_used_at, status, is_setup_code,
                        invite_email, assigned_name, assigned_email, assigned_user_id, label,
-                       reminder_count, last_reminder_sent_at
+                       reminder_count, last_reminder_sent_at, COALESCE(is_archived, 0) as is_archived
                 FROM access_codes
                 WHERE tenant_slug = ?
                   AND is_setup_code = 0

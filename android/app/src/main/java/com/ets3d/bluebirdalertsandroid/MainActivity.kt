@@ -43,9 +43,15 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -93,6 +99,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -948,6 +955,8 @@ class MainViewModel : ViewModel() {
                 .onSuccess { stats -> _state.update { it.copy(pushDeliveryStats = stats) } }
         }
     }
+
+    fun getClient(): BackendClient? = client
 
     fun refreshAuditLog(ctx: Context) {
         val userId = getUserId(ctx).toIntOrNull() ?: return
@@ -2091,6 +2100,7 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
     val keyboardController = LocalSoftwareKeyboardController.current
     val state by vm.state.collectAsState()
     var showDeactivateDialog by remember { mutableStateOf(false) }
+    var showAuditLogModal by remember { mutableStateOf(false) }
     var showReportDialog by remember { mutableStateOf(false) }
     var showSettingsScreen by remember { mutableStateOf(false) }
     var showQuietRequestOverlay by remember { mutableStateOf(false) }
@@ -2171,7 +2181,6 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
         vm.refreshTeamAssistActionRecipients()
         vm.refreshAdminQuietPeriodRequests(ctx)
         vm.refreshPushDeliveryStats(ctx)
-        vm.refreshAuditLog(ctx)
         while (true) {
             vm.refreshAdminInbox(ctx)
             vm.refreshAdminQuietPeriodRequests(ctx)
@@ -2684,9 +2693,8 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                                     .fillMaxWidth()
                                     .padding(horizontal = 20.dp, vertical = 4.dp),
                             )
-                            AuditLogCard(
-                                entries = state.auditLog,
-                                onRefresh = { vm.refreshAuditLog(ctx) },
+                            AuditLogButtonCard(
+                                onClick = { showAuditLogModal = true },
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .padding(horizontal = 20.dp, vertical = 4.dp),
@@ -2909,6 +2917,14 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                 showTeamAssistDialog = false
                 vm.requestHelp(ctx, type)
             },
+        )
+    }
+
+    if (showAuditLogModal) {
+        AuditLogsModal(
+            client = vm.getClient(),
+            userId = getUserId(ctx).toIntOrNull() ?: 0,
+            onDismiss = { showAuditLogModal = false },
         )
     }
 
@@ -3766,46 +3782,338 @@ private fun PushDeliveryStatsCard(stats: PushDeliveryStats?, modifier: Modifier 
 }
 
 @Composable
-private fun AuditLogCard(entries: List<AuditLogEntry>, onRefresh: () -> Unit, modifier: Modifier = Modifier) {
+private fun AuditLogButtonCard(onClick: () -> Unit, modifier: Modifier = Modifier) {
     Surface(
         modifier = modifier,
         color = SurfaceMain,
         shape = RoundedCornerShape(20.dp),
         shadowElevation = 4.dp,
     ) {
-        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Text("Audit Log", color = TextPri, fontWeight = FontWeight.Bold, fontSize = 16.sp)
-                TextButton(onClick = onRefresh) {
-                    Text("Refresh", color = BluePrimary, fontSize = 12.sp)
+        Row(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp).fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text("Audit Log", color = TextPri, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                Text("Activity, logins, user changes", color = TextMuted, fontSize = 12.sp)
+            }
+            TextButton(
+                onClick = onClick,
+                colors = ButtonDefaults.textButtonColors(contentColor = BluePrimary),
+            ) {
+                Text("View Logs", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                Spacer(Modifier.width(4.dp))
+                Text("›", fontSize = 16.sp)
+            }
+        }
+    }
+}
+
+@Composable
+private fun AuditLogsModal(client: BackendClient?, userId: Int, onDismiss: () -> Unit) {
+    val pageSize = 25
+    var entries by remember { mutableStateOf<List<AuditLogEntry>>(emptyList()) }
+    var isLoading by remember { mutableStateOf(false) }
+    var loadError by remember { mutableStateOf<String?>(null) }
+    var search by remember { mutableStateOf("") }
+    var selectedEventType by remember { mutableStateOf<String?>(null) }
+    var availableTypes by remember { mutableStateOf<List<String>>(emptyList()) }
+    var offset by remember { mutableStateOf(0) }
+    var hasMore by remember { mutableStateOf(true) }
+    var expandedId by remember { mutableStateOf<Int?>(null) }
+    val scope = rememberCoroutineScope()
+
+    fun load(reset: Boolean) {
+        if (client == null || isLoading) return
+        isLoading = true
+        loadError = null
+        val currentOffset = if (reset) 0 else offset
+        scope.launch(Dispatchers.IO) {
+            runCatching {
+                client.auditLog(
+                    userId = userId,
+                    limit = pageSize,
+                    offset = currentOffset,
+                    search = search.trim().takeIf { it.isNotEmpty() },
+                    eventType = selectedEventType,
+                )
+            }.onSuccess { newEntries ->
+                withContext(Dispatchers.Main) {
+                    if (reset) {
+                        entries = newEntries
+                        offset = newEntries.size
+                        if (availableTypes.isEmpty()) {
+                            availableTypes = newEntries.map { it.eventType }.distinct().sorted()
+                        }
+                    } else {
+                        entries = entries + newEntries
+                        offset += newEntries.size
+                    }
+                    hasMore = newEntries.size == pageSize
+                    isLoading = false
+                }
+            }.onFailure { err ->
+                withContext(Dispatchers.Main) {
+                    loadError = err.message ?: "Failed to load logs"
+                    isLoading = false
                 }
             }
-            if (entries.isEmpty()) {
-                Text("No audit events.", color = TextMuted, fontSize = 13.sp)
-            } else {
-                entries.take(20).forEach { entry ->
-                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                        Text(
-                            snakeToTitle(entry.eventType),
-                            color = TextPri,
-                            fontWeight = FontWeight.SemiBold,
-                            fontSize = 13.sp,
-                        )
-                        Text(
-                            buildString {
-                                entry.actorLabel?.let { append(it); append(" • ") }
-                                append(entry.timestamp.take(16))
-                            },
-                            color = TextMuted,
-                            fontSize = 11.sp,
+        }
+    }
+
+    LaunchedEffect(Unit) { load(reset = true) }
+
+    var debounceJob by remember { mutableStateOf<Job?>(null) }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+    ) {
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            color = DSColor.Background,
+        ) {
+            Column(modifier = Modifier.fillMaxSize()) {
+                // Header
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 14.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        "Audit Logs",
+                        color = DSColor.TextPrimary,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 18.sp,
+                    )
+                    IconButton(onClick = onDismiss) {
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = "Close",
+                            tint = DSColor.TextSecondary,
                         )
                     }
-                    if (entry != entries.take(20).last()) {
-                        HorizontalDivider(color = DSColor.Border, thickness = 0.5.dp)
+                }
+                HorizontalDivider(color = DSColor.Border)
+
+                // Search
+                OutlinedTextField(
+                    value = search,
+                    onValueChange = { v ->
+                        search = v
+                        debounceJob?.cancel()
+                        debounceJob = scope.launch {
+                            delay(350)
+                            load(reset = true)
+                        }
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 10.dp),
+                    placeholder = { Text("Search action or user…", color = DSColor.TextSecondary) },
+                    leadingIcon = {
+                        Icon(Icons.Default.Search, contentDescription = null, tint = DSColor.TextSecondary)
+                    },
+                    trailingIcon = if (search.isNotEmpty()) {
+                        { IconButton(onClick = { search = ""; load(reset = true) }) {
+                            Icon(Icons.Default.Close, contentDescription = "Clear", tint = DSColor.TextSecondary)
+                        }}
+                    } else null,
+                    singleLine = true,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = DSColor.Primary,
+                        unfocusedBorderColor = DSColor.Border,
+                        focusedTextColor = DSColor.TextPrimary,
+                        unfocusedTextColor = DSColor.TextPrimary,
+                    ),
+                    shape = RoundedCornerShape(12.dp),
+                )
+
+                // Filter chips
+                if (availableTypes.isNotEmpty()) {
+                    LazyRow(
+                        modifier = Modifier.padding(bottom = 8.dp),
+                        contentPadding = PaddingValues(horizontal = 16.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        item {
+                            FilterChip(
+                                selected = selectedEventType == null,
+                                onClick = { selectedEventType = null; load(reset = true) },
+                                label = { Text("All", fontSize = 12.sp) },
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = DSColor.Primary,
+                                    selectedLabelColor = Color.White,
+                                ),
+                            )
+                        }
+                        items(availableTypes) { type ->
+                            FilterChip(
+                                selected = selectedEventType == type,
+                                onClick = {
+                                    selectedEventType = if (selectedEventType == type) null else type
+                                    load(reset = true)
+                                },
+                                label = { Text(snakeToTitle(type), fontSize = 12.sp) },
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = DSColor.Primary,
+                                    selectedLabelColor = Color.White,
+                                ),
+                            )
+                        }
+                    }
+                }
+
+                HorizontalDivider(color = DSColor.Border)
+
+                // Content
+                when {
+                    isLoading && entries.isEmpty() -> {
+                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            CircularProgressIndicator(color = DSColor.Primary)
+                        }
+                    }
+                    loadError != null && entries.isEmpty() -> {
+                        Column(
+                            modifier = Modifier.fillMaxSize(),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Center,
+                        ) {
+                            Text(
+                                loadError ?: "Error loading logs",
+                                color = DSColor.Danger,
+                                fontSize = 14.sp,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.padding(horizontal = 32.dp),
+                            )
+                            Spacer(Modifier.height(12.dp))
+                            Button(onClick = { load(reset = true) }) { Text("Retry") }
+                        }
+                    }
+                    entries.isEmpty() -> {
+                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            Text("No audit logs found", color = DSColor.TextSecondary, fontSize = 14.sp)
+                        }
+                    }
+                    else -> {
+                        LazyColumn(modifier = Modifier.fillMaxSize()) {
+                            items(entries) { entry ->
+                                AuditLogRow(
+                                    entry = entry,
+                                    isExpanded = expandedId == entry.id,
+                                    onClick = { expandedId = if (expandedId == entry.id) null else entry.id },
+                                )
+                                HorizontalDivider(
+                                    color = DSColor.Border,
+                                    thickness = 0.5.dp,
+                                    modifier = Modifier.padding(horizontal = 16.dp),
+                                )
+                            }
+                            if (hasMore) {
+                                item {
+                                    Box(
+                                        modifier = Modifier.fillMaxWidth().padding(16.dp),
+                                        contentAlignment = Alignment.Center,
+                                    ) {
+                                        if (isLoading) {
+                                            CircularProgressIndicator(
+                                                color = DSColor.Primary,
+                                                modifier = Modifier.size(24.dp),
+                                                strokeWidth = 2.dp,
+                                            )
+                                        } else {
+                                            OutlinedButton(onClick = { load(reset = false) }) {
+                                                Text("Load More", color = DSColor.Primary)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun AuditLogRow(entry: AuditLogEntry, isExpanded: Boolean, onClick: () -> Unit) {
+    val dotColor = when {
+        entry.eventType.contains("alarm") || entry.eventType.contains("alert") -> DSColor.Danger
+        entry.eventType.contains("login") -> DSColor.Primary
+        entry.eventType.contains("user") -> Color(0xFF7C3AED)
+        entry.eventType.contains("quiet") -> Color(0xFF0D9488)
+        else -> DSColor.TextSecondary
+    }
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onClick() }
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+    ) {
+        Row(verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Box(
+                modifier = Modifier
+                    .size(8.dp)
+                    .offset(y = 5.dp)
+                    .clip(CircleShape)
+                    .background(dotColor),
+            )
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Text(
+                    snakeToTitle(entry.eventType),
+                    color = DSColor.TextPrimary,
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 14.sp,
+                )
+                Text(
+                    buildString {
+                        entry.actorLabel?.let { append(it); append(" · ") }
+                        append(entry.timestamp.take(16).replace("T", " "))
+                    },
+                    color = DSColor.TextSecondary,
+                    fontSize = 12.sp,
+                )
+            }
+            Icon(
+                imageVector = if (isExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                contentDescription = null,
+                tint = DSColor.TextSecondary,
+                modifier = Modifier.size(16.dp),
+            )
+        }
+        if (isExpanded) {
+            Spacer(Modifier.height(8.dp))
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(DSColor.Border.copy(alpha = 0.3f), RoundedCornerShape(8.dp))
+                    .padding(10.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                AuditDetailRow("Event ID", entry.id.toString())
+                AuditDetailRow("Timestamp", entry.timestamp)
+                entry.targetType?.let { AuditDetailRow("Target", it) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AuditDetailRow(label: String, value: String) {
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(
+            "$label:",
+            color = DSColor.TextSecondary,
+            fontWeight = FontWeight.SemiBold,
+            fontSize = 12.sp,
+            modifier = Modifier.width(80.dp),
+        )
+        Text(value, color = DSColor.TextPrimary, fontSize = 12.sp)
     }
 }
 
@@ -6034,9 +6342,18 @@ private class BackendClient(baseUrl: String, private val apiKey: String) {
         }
     }
 
-    fun auditLog(userId: Int, limit: Int = 50): List<AuditLogEntry> {
+    fun auditLog(
+        userId: Int,
+        limit: Int = 25,
+        offset: Int = 0,
+        search: String? = null,
+        eventType: String? = null,
+    ): List<AuditLogEntry> {
+        val sb = StringBuilder("$base/audit-log?user_id=$userId&limit=$limit&offset=$offset")
+        if (!search.isNullOrBlank()) sb.append("&search=").append(java.net.URLEncoder.encode(search, "UTF-8"))
+        if (!eventType.isNullOrBlank()) sb.append("&event_type=").append(java.net.URLEncoder.encode(eventType, "UTF-8"))
         val req = Request.Builder()
-            .url("$base/audit-log?user_id=$userId&limit=$limit")
+            .url(sb.toString())
             .withAuth().get().build()
         http.newCall(req).execute().use { res ->
             val j = JSONObject(requireSuccess(res))

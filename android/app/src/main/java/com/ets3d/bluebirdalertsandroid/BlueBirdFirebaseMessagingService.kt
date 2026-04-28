@@ -21,6 +21,11 @@ import java.util.concurrent.TimeUnit
 private const val SILENT_NOTIF_CH = "bluebird_info"
 private const val SILENT_NOTIF_ID = 1002
 private const val HELP_REQUEST_NOTIF_CH = "bluebird_help_request"
+private const val NON_CRITICAL_NOTIF_CH = "non_critical_notifications"
+private const val NON_CRITICAL_NOTIF_ID = 1004
+private val NON_CRITICAL_TYPES = setOf(
+    "quiet_period_update", "quiet_request", "admin_message", "onboarding", "info"
+)
 
 class BlueBirdFirebaseMessagingService : FirebaseMessagingService() {
     override fun onCreate() {
@@ -46,6 +51,7 @@ class BlueBirdFirebaseMessagingService : FirebaseMessagingService() {
 
         val alertType = message.data["type"] ?: ""
         val isHelpRequest = alertType == "help_request"
+        val isNonCritical = alertType in NON_CRITICAL_TYPES
 
         // Detect whether this device belongs to the user who triggered the alert.
         val triggeredByUid = message.data["triggered_by_user_id"]?.toIntOrNull()
@@ -101,7 +107,23 @@ class BlueBirdFirebaseMessagingService : FirebaseMessagingService() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
 
-        if (isHelpRequest) {
+        if (isNonCritical) {
+            ensureNonCriticalNotificationChannel(applicationContext)
+            val notification = NotificationCompat.Builder(this, NON_CRITICAL_NOTIF_CH)
+                .setSmallIcon(R.mipmap.ic_launcher)
+                .setContentTitle(title)
+                .setContentText(body)
+                .setStyle(NotificationCompat.BigTextStyle().bigText(body))
+                .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+                .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+                .setShowWhen(true)
+                .setWhen(System.currentTimeMillis())
+                .setAutoCancel(true)
+                .setContentIntent(pendingIntent)
+                .build()
+            (getSystemService(NOTIFICATION_SERVICE) as NotificationManager)
+                .notify(NON_CRITICAL_NOTIF_ID, notification)
+        } else if (isHelpRequest) {
             ensureHelpRequestNotificationChannel(applicationContext)
             val helpSoundUri = Uri.parse("android.resource://$packageName/${R.raw.help_request_alert}")
             val notification = NotificationCompat.Builder(this, HELP_REQUEST_NOTIF_CH)
@@ -165,6 +187,21 @@ class BlueBirdFirebaseMessagingService : FirebaseMessagingService() {
             enableVibration(true)
             vibrationPattern = longArrayOf(0L, 400L, 200L, 400L)
             setSound(soundUri, attrs)
+        }
+        manager.createNotificationChannel(channel)
+    }
+
+    private fun ensureNonCriticalNotificationChannel(context: Context) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        if (manager.getNotificationChannel(NON_CRITICAL_NOTIF_CH) != null) return
+        val channel = NotificationChannel(
+            NON_CRITICAL_NOTIF_CH,
+            "BlueBird Notifications",
+            NotificationManager.IMPORTANCE_DEFAULT,
+        ).apply {
+            description = "Routine updates: quiet requests, approvals, admin messages"
+            enableVibration(false)
         }
         manager.createNotificationChannel(channel)
     }

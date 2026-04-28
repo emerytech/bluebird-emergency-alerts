@@ -264,14 +264,31 @@ class APNsClient:
             "apns-priority": "10",
         }
 
+        _NON_CRITICAL_TYPES = {
+            "quiet_period_update", "quiet_request", "admin_message",
+            "onboarding", "info",
+        }
         alert_type = (extra_data or {}).get("type", "")
-        sound = "help_request_alert.caf" if alert_type == "help_request" else "bluebird_alarm.caf"
+        is_non_critical = alert_type in _NON_CRITICAL_TYPES
+        if is_non_critical:
+            sound = "default"
+            interruption_level = "active"
+            apns_priority = "5"
+        elif alert_type == "help_request":
+            sound = "help_request_alert.caf"
+            interruption_level = "time-sensitive"
+            apns_priority = "10"
+        else:
+            sound = "bluebird_alarm.caf"
+            interruption_level = "time-sensitive"
+            apns_priority = "10"
+        headers["apns-priority"] = apns_priority
         payload: dict = {
             "aps": {
                 "alert": {"title": "BlueBird Alert", "body": message},
                 "sound": sound,
                 "badge": 1,
-                "interruption-level": "time-sensitive",
+                "interruption-level": interruption_level,
             }
         }
         if extra_data:

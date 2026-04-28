@@ -292,12 +292,22 @@ struct APIClient {
         return try JSONDecoder().decode(PushDeliveryStatsResponse.self, from: data)
     }
 
-    func auditLog(userID: Int, limit: Int = 50) async throws -> AuditLogResponse {
+    func auditLog(
+        userID: Int,
+        limit: Int = 25,
+        offset: Int = 0,
+        search: String? = nil,
+        eventType: String? = nil
+    ) async throws -> AuditLogResponse {
         var components = URLComponents(url: baseURL.appendingPathComponent("audit-log"), resolvingAgainstBaseURL: false)
-        components?.queryItems = [
+        var items = [
             URLQueryItem(name: "user_id", value: String(userID)),
             URLQueryItem(name: "limit", value: String(limit)),
+            URLQueryItem(name: "offset", value: String(offset)),
         ]
+        if let s = search, !s.isEmpty { items.append(URLQueryItem(name: "search", value: s)) }
+        if let e = eventType, !e.isEmpty { items.append(URLQueryItem(name: "event_type", value: e)) }
+        components?.queryItems = items
         guard let url = components?.url else { throw URLError(.badURL) }
         var request = URLRequest(url: url)
         withAPIKey(&request)

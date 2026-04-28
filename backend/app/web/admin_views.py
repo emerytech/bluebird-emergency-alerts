@@ -3710,6 +3710,13 @@ def _um_enterprise_table(
                 f'data-uid="{u.id}" onclick="event.stopPropagation();umToggleEdit({u.id})">Edit</button>'
             )
         else:
+            _deactivate_btn = (
+                f'<form method="post" action="{escape(prefix)}/admin/users/{u.id}/set-active" style="margin:0;"'
+                f' onsubmit="event.stopPropagation();return confirm(\'Deactivate {escape(u.name)}?\');">'
+                f'<input type="hidden" name="is_active" value="0" />'
+                f'<button class="button button-secondary" type="submit" style="min-height:32px;font-size:0.8rem;padding:0 10px;" title="Temporarily deactivate without archiving">Deactivate</button>'
+                f'</form>'
+            ) if not is_archived else ""
             _archive_btn = (
                 f'<form method="post" action="{escape(prefix)}/admin/users/{u.id}/archive" style="margin:0;"'
                 f' onsubmit="event.stopPropagation();return confirm(\'Archive {escape(u.name)}?\');">'
@@ -3719,6 +3726,7 @@ def _um_enterprise_table(
             _action_cell = (
                 f'<button class="button button-secondary um-edit-btn" style="min-height:32px;font-size:0.8rem;padding:0 12px;" '
                 f'data-uid="{u.id}" onclick="event.stopPropagation();umToggleEdit({u.id})">Edit</button>'
+                + _deactivate_btn
                 + _archive_btn
             )
         # 9.1: View As button — visible to district_admin/super_admin for any user,
@@ -4229,10 +4237,11 @@ def render_admin_page(
     role_counts = Counter(user.role for user in users)
     platform_counts = Counter(device.platform for device in devices)
     provider_counts = Counter(device.push_provider for device in devices)
-    _active_user_list = [u for u in users if not getattr(u, "is_archived", False)]
+    _active_user_list = [u for u in users if u.is_active and not getattr(u, "is_archived", False)]
+    _inactive_user_list = [u for u in users if not u.is_active and not getattr(u, "is_archived", False)]
     _archived_user_list = [u for u in users if getattr(u, "is_archived", False)]
-    _um_show_archived = active_tab == "archived"
-    # Count non-archived district admins (for last-DA delete guard in UI)
+    _um_tab = active_tab if active_tab in {"active", "inactive", "archived", "codes"} else "active"
+    # Count active district admins (for last-DA delete guard in UI)
     _active_da_count = sum(1 for u in _active_user_list if u.role == "district_admin")
     active_users = sum(1 for user in users if user.is_active)
     login_enabled = sum(1 for user in users if user.can_login)
@@ -4301,6 +4310,11 @@ def render_admin_page(
 
     _show_access_codes = can_generate_codes(str(getattr(current_user, "role", "")))
     _ac_status_class = {"active": "ok", "used": "warn", "expired": "warn", "revoked": "danger"}
+    _ac_nav_active = " nav-item-active" if (section == "user-management" and active_tab == "codes") or section == "access-codes" else ""
+    _ac_nav_html = (
+        f'<a class="nav-item{_ac_nav_active}" href="{prefix}/admin?section=user-management&tab=codes">Access Codes</a>'
+        if _show_access_codes else ""
+    )
 
     def _ac_row(r) -> str:
         _rid = int(getattr(r, "id", 0))
@@ -4314,12 +4328,20 @@ def render_admin_page(
         _assigned_name = str(getattr(r, "assigned_name", "") or "")
         _assigned_email = str(getattr(r, "assigned_email", "") or "")
         _label = str(getattr(r, "label", "") or "")
-        _assigned_cell = (
-            f'<span style="font-size:0.82rem;">{escape(_assigned_name)}'
-            + (f'<br/><span style="color:var(--muted);font-size:0.75rem;">{escape(_assigned_email)}</span>' if _assigned_email else "")
-            + "</span>"
-            if (_assigned_name or _assigned_email) else "—"
-        )
+        # Claimed-user display: for used codes, show who it was for
+        if _status == "used":
+            _claimed_label = escape(_assigned_name) if _assigned_name else "Self-registered"
+            _assigned_cell = (
+                f'<span style="font-size:0.82rem;color:var(--success);">&#10003; {_claimed_label}</span>'
+                + (f'<br/><span style="color:var(--muted);font-size:0.75rem;">{escape(_assigned_email)}</span>' if _assigned_email else "")
+            )
+        else:
+            _assigned_cell = (
+                f'<span style="font-size:0.82rem;">{escape(_assigned_name)}'
+                + (f'<br/><span style="color:var(--muted);font-size:0.75rem;">{escape(_assigned_email)}</span>' if _assigned_email else "")
+                + "</span>"
+                if (_assigned_name or _assigned_email) else "—"
+            )
         _qr_img = (
             f'<img src="{_qr_url}" alt="QR {escape(_code)}" width="80" height="80"'
             f' style="display:block;image-rendering:pixelated;border:1px solid #ddd;border-radius:4px;" />'
@@ -4343,6 +4365,12 @@ def render_admin_page(
             f' class="button button-secondary" style="font-size:0.75rem;padding:4px 10px;text-decoration:none;">Badge Card</a>'
             + _send_invite_btn
         ) if _is_active else ""
+        # Archive button for non-active, non-already-archived codes
+        _archive_btn = (
+            f'<form method="post" action="{prefix}/admin/access-codes/{_rid}/archive" style="margin:0;">'
+            f'<button class="button button-secondary" type="submit"'
+            f' style="font-size:0.75rem;padding:4px 10px;" title="Archive this code">Archive</button></form>'
+        ) if not _is_active else ""
         return (
             "<tr>"
             f"<td style='min-width:90px;'>{_qr_img}</td>"
@@ -4360,6 +4388,7 @@ def render_admin_page(
             f" onsubmit=\"return confirm('Revoke this code?');\" style='margin:0;'>"
             f"<button class=\"button button-danger-outline\" type=\"submit\""
             f" style='font-size:0.75rem;padding:4px 10px;' {'disabled' if not _is_active else ''}>Revoke</button></form>"
+            f"{_archive_btn}"
             f"</div></td>"
             "</tr>"
         )
@@ -4504,68 +4533,99 @@ def render_admin_page(
           </div>
         """
     if _show_access_codes:
-        _ac_section_style = "" if section in {"user-management", "access-codes"} and _show_access_codes else " style='display:none;'"
         _bulk_generate_url = f"{prefix}/admin/access-codes/bulk-generate"
         _import_csv_url = f"{prefix}/admin/access-codes/import-csv"
         _send_invites_url = f"{prefix}/admin/access-codes/send-invites"
         _send_reminders_url = f"{prefix}/admin/access-codes/send-reminders"
         _onboarding_reports_url = f"{prefix}/admin/onboarding/reports"
-        _badges_pdf_url = f"{prefix}/admin/access-codes/badges.pdf"
-        _bulk_packets_url = f"{prefix}/admin/access-codes/bulk-packets.pdf"
+        _gen_api_url = f"{prefix}/admin/access-codes/generate-api"
+        _ac_user_opts = (
+            '<option value="">— No pre-assignment —</option>'
+            + "".join(
+                f'<option value="{u.id}" data-name="{escape(u.name)}" data-email="{escape(getattr(u, "email", "") or "")}">'
+                f'{escape(u.name)} ({escape(u.role)})</option>'
+                for u in users if u.is_active and not getattr(u, "is_archived", False)
+            )
+        )
         _access_codes_panel_html = f"""
-          <section class="panel command-section span-12" id="access-codes"{_ac_section_style}>
-            <div class="panel-header">
-              <div>
-                <p class="eyebrow">Access Codes</p>
-                <h2>Invite codes for onboarding</h2>
-                <p class="card-copy">Generate a code so a new user can self-register via the mobile app. Codes are single-use by default and expire after 48 hours.</p>
+          <!-- ── Generate Code Modal ─────────────────────────────────────────── -->
+          <div id="ac-gen-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:1100;align-items:center;justify-content:center;">
+            <div style="background:var(--card,#fff);border-radius:12px;padding:28px 32px;max-width:500px;width:100%;max-height:92vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,.25);">
+              <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;">
+                <h3 style="margin:0;">Generate Access Code</h3>
+                <button type="button" class="button button-secondary" style="padding:4px 10px;font-size:0.8rem;" onclick="acCloseGenModal()">&#x2715;</button>
               </div>
-              <div class="button-row" style="margin-top:0;flex-wrap:wrap;gap:6px;">
-                <button class="button button-secondary" onclick="document.getElementById('ac-bulk-modal').style.display='flex'">Bulk Generate</button>
-                <button class="button button-secondary" onclick="document.getElementById('ac-csv-modal').style.display='flex'">Import CSV</button>
-                <button class="button button-secondary" onclick="document.getElementById('ac-invites-modal').style.display='flex'">Send Invites</button>
-                <button class="button button-secondary" onclick="acLoadReports()">Onboarding Reports</button>
-                <button class="button button-secondary" onclick="document.getElementById('ac-reminders-modal').style.display='flex'">Send Reminders</button>
-              </div>
-            </div>
-            <form method="post" action="{prefix}/admin/access-codes/generate" class="stack" style="max-width:560px;margin-bottom:28px;">
-              <input type="hidden" name="tenant_slug" value="{escape(school_slug)}" />
-              <div class="form-grid">
-                <div class="field">
+              <!-- Step 1: form -->
+              <div id="ag-form-step">
+                <div class="field" style="margin-bottom:12px;">
                   <label>Role</label>
-                  <select name="role">
+                  <select id="ag-role" style="width:100%;">
                     <option value="building_admin">Building Admin</option>
                     <option value="teacher">Teacher / Standard</option>
                     <option value="staff">Staff</option>
                     <option value="law_enforcement">Law Enforcement</option>
                   </select>
                 </div>
-                <div class="field">
-                  <label>Job title (optional)</label>
-                  <input name="title" placeholder="e.g. Principal" />
+                <div class="field" style="margin-bottom:12px;">
+                  <label>Pre-assign to existing user (optional)</label>
+                  <select id="ag-user" style="width:100%;">{_ac_user_opts}</select>
                 </div>
-                <div class="field">
+                <div class="field" style="margin-bottom:12px;">
+                  <label>Job title override (optional)</label>
+                  <input id="ag-title" placeholder="e.g. Science Teacher" style="width:100%;" />
+                </div>
+                <div class="checkbox-row" style="margin-bottom:10px;">
+                  <input type="checkbox" id="ag-autoexpire" checked onchange="document.getElementById('ag-expiry-row').style.display=this.checked?'block':'none'" />
+                  <label for="ag-autoexpire">Set expiry date</label>
+                </div>
+                <div id="ag-expiry-row" class="field" style="margin-bottom:12px;">
+                  <label>Expires in (hours) <span style="color:var(--muted);font-size:0.78rem;">default 48h = 2 days</span></label>
+                  <input id="ag-expires" type="number" min="1" max="8760" value="48" style="width:100%;" />
+                </div>
+                <div class="field" style="margin-bottom:20px;">
                   <label>Max uses</label>
-                  <input name="max_uses" type="number" min="1" max="20" value="1" />
+                  <input id="ag-maxuses" type="number" min="1" max="20" value="1" style="width:100%;" />
                 </div>
-                <div class="field">
-                  <label>Expires (hours)</label>
-                  <input name="expires_hours" type="number" min="1" max="720" value="48" />
+                <div id="ag-error" style="display:none;padding:10px;border-radius:8px;background:#fef2f2;border:1px solid #fca5a5;font-size:0.85rem;color:#dc2626;margin-bottom:12px;"></div>
+                <div class="button-row">
+                  <button class="button button-primary" type="button" onclick="acDoGenerate()">Generate Code</button>
+                  <button class="button button-secondary" type="button" onclick="acCloseGenModal()">Cancel</button>
                 </div>
               </div>
-              <div class="button-row">
-                <button class="button button-primary" type="submit">Generate Code</button>
+              <!-- Step 2: QR result -->
+              <div id="ag-result-step" style="display:none;text-align:center;">
+                <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:20px;margin-bottom:16px;">
+                  <div style="font-size:0.78rem;color:#065f46;font-weight:700;text-transform:uppercase;letter-spacing:.04em;margin-bottom:12px;">Code Generated</div>
+                  <img id="ag-qr-img" src="" alt="QR code" width="164" height="164" style="display:block;margin:0 auto 14px;image-rendering:pixelated;border:2px solid #ddd;border-radius:6px;" />
+                  <div id="ag-code-text" style="font-family:monospace;font-size:1.6rem;letter-spacing:.14em;font-weight:800;color:#065f46;margin-bottom:6px;"></div>
+                  <div id="ag-invite-url" style="font-size:0.7rem;color:var(--muted);word-break:break-all;"></div>
+                </div>
+                <div class="button-row" id="ag-result-actions" style="flex-wrap:wrap;justify-content:center;gap:6px;margin-bottom:16px;"></div>
+                <div class="button-row" style="justify-content:center;gap:8px;">
+                  <button class="button button-secondary" type="button" onclick="acGenAnother()">Generate Another</button>
+                  <button class="button button-primary" type="button" onclick="acCloseGenModal();window.location.reload();">Done</button>
+                </div>
               </div>
-            </form>
-            <div class="table-wrapper">
-              <table class="data-table">
-                <thead><tr><th>QR</th><th>Code</th><th>Role</th><th>Title</th><th>Assigned To</th><th>Label</th><th>Status</th><th>Expires</th><th>Uses</th><th>Actions</th></tr></thead>
-                <tbody>{_access_code_rows}</tbody>
-              </table>
             </div>
-          </section>
+          </div>
 
-          <!-- Bulk Generate Modal -->
+          <!-- ── Codes tab actions bar ──────────────────────────────────────── -->
+          <div id="ac-codes-header" style="display:flex;align-items:center;flex-wrap:wrap;gap:6px;margin-bottom:18px;">
+            <button class="button button-primary" style="min-height:36px;font-size:0.85rem;" onclick="acOpenGenModal()">+ Generate Code</button>
+            <button class="button button-secondary" style="min-height:36px;font-size:0.85rem;" onclick="document.getElementById('ac-bulk-modal').style.display='flex'">Bulk Generate</button>
+            <button class="button button-secondary" style="min-height:36px;font-size:0.85rem;" onclick="document.getElementById('ac-csv-modal').style.display='flex'">Import CSV</button>
+            <button class="button button-secondary" style="min-height:36px;font-size:0.85rem;" onclick="document.getElementById('ac-invites-modal').style.display='flex'">Send Invites</button>
+            <button class="button button-secondary" style="min-height:36px;font-size:0.85rem;" onclick="document.getElementById('ac-reminders-modal').style.display='flex'">Send Reminders</button>
+            <button class="button button-secondary" style="min-height:36px;font-size:0.85rem;" onclick="acLoadReports()">Onboarding Reports</button>
+          </div>
+          <div class="table-wrapper" style="overflow-x:auto;">
+            <table class="data-table">
+              <thead><tr><th>QR</th><th>Code</th><th>Role</th><th>Title</th><th>Claimed / Assigned</th><th>Label</th><th>Status</th><th>Expires</th><th>Uses</th><th>Actions</th></tr></thead>
+              <tbody>{_access_code_rows}</tbody>
+            </table>
+          </div>
+
+          <!-- ── Bulk Generate Modal ────────────────────────────────────────── -->
           <div id="ac-bulk-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:1100;align-items:center;justify-content:center;">
             <div style="background:var(--card,#fff);border-radius:12px;padding:28px 32px;max-width:480px;width:100%;max-height:90vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,.25);">
               <h3 style="margin-bottom:16px;">Bulk Generate Codes</h3>
@@ -4685,6 +4745,71 @@ def render_admin_page(
             var _invitesUrl = {json.dumps(_send_invites_url)};
             var _remindersUrl = {json.dumps(_send_reminders_url)};
             var _reportsUrl = {json.dumps(_onboarding_reports_url)};
+            var _genApiUrl = {json.dumps(_gen_api_url)};
+            var _tenantSlug = {json.dumps(school_slug)};
+            var _pathPrefix = {json.dumps(school_path_prefix)};
+
+            window.acOpenGenModal = function() {{
+              document.getElementById('ag-form-step').style.display = 'block';
+              document.getElementById('ag-result-step').style.display = 'none';
+              document.getElementById('ag-error').style.display = 'none';
+              document.getElementById('ac-gen-modal').style.display = 'flex';
+            }};
+
+            window.acCloseGenModal = function() {{
+              document.getElementById('ac-gen-modal').style.display = 'none';
+            }};
+
+            window.acGenAnother = function() {{
+              document.getElementById('ag-form-step').style.display = 'block';
+              document.getElementById('ag-result-step').style.display = 'none';
+              document.getElementById('ag-error').style.display = 'none';
+            }};
+
+            window.acDoGenerate = function() {{
+              var role = document.getElementById('ag-role').value;
+              var userSel = document.getElementById('ag-user');
+              var selOpt = userSel.options[userSel.selectedIndex];
+              var assignedName = selOpt.dataset.name || null;
+              var assignedEmail = selOpt.dataset.email || null;
+              var title = document.getElementById('ag-title').value.trim() || null;
+              var autoExpire = document.getElementById('ag-autoexpire').checked;
+              var expiresHours = autoExpire ? (parseInt(document.getElementById('ag-expires').value) || 48) : 87600;
+              var maxUses = parseInt(document.getElementById('ag-maxuses').value) || 1;
+              var errEl = document.getElementById('ag-error');
+              errEl.style.display = 'none';
+              fetch(_genApiUrl, {{
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: {{'Content-Type': 'application/json'}},
+                body: JSON.stringify({{
+                  role: role, title: title, tenant_slug: _tenantSlug,
+                  max_uses: maxUses, expires_hours: expiresHours,
+                  assigned_name: assignedName, assigned_email: assignedEmail,
+                }})
+              }})
+              .then(function(r) {{
+                if (!r.ok) {{ return r.json().then(function(e) {{ throw new Error(e.detail || 'Server error'); }}); }}
+                return r.json();
+              }})
+              .then(function(d) {{
+                document.getElementById('ag-form-step').style.display = 'none';
+                document.getElementById('ag-result-step').style.display = 'block';
+                document.getElementById('ag-code-text').textContent = d.code;
+                document.getElementById('ag-qr-img').src = _pathPrefix + '/admin/access-codes/' + d.id + '/qr.png';
+                document.getElementById('ag-invite-url').textContent = d.invite_url || '';
+                var acts = document.getElementById('ag-result-actions');
+                acts.innerHTML =
+                  '<a href="' + _pathPrefix + '/admin/access-codes/' + d.id + '/qr.png" download="bb-code-' + d.code + '.png" class="button button-secondary" style="font-size:0.8rem;text-decoration:none;">Download QR</a>' +
+                  '<a href="' + _pathPrefix + '/admin/access-codes/' + d.id + '/print" target="_blank" class="button button-secondary" style="font-size:0.8rem;text-decoration:none;">Print Sheet</a>' +
+                  '<a href="' + _pathPrefix + '/admin/access-codes/' + d.id + '/packet.pdf" download="bb-packet-' + d.code + '.pdf" class="button button-secondary" style="font-size:0.8rem;text-decoration:none;">PDF Packet</a>' +
+                  '<a href="' + _pathPrefix + '/admin/access-codes/' + d.id + '/badge.pdf" download="bb-badge-' + d.code + '.pdf" class="button button-secondary" style="font-size:0.8rem;text-decoration:none;">Badge Card</a>';
+              }})
+              .catch(function(e) {{
+                errEl.style.display = 'block';
+                errEl.textContent = 'Error: ' + e.message;
+              }});
+            }};
 
             window.acSendSingleInvite = function(codeId) {{
               if (!confirm('Send invite email to the assigned address for this code?')) return;
@@ -4845,6 +4970,67 @@ def render_admin_page(
     else:
         _access_codes_panel_html = ""
 
+    # Pre-compute inactive tab HTML
+    _inactive_actor_role = str(getattr(current_user, "role", "") or "")
+
+    def _inactive_rows() -> str:
+        parts = []
+        for u in _inactive_user_list:
+            title_span = f'<span class="um-sub">{escape(u.title)}</span>' if getattr(u, "title", "") else ""
+            name_esc = escape(u.name)
+            _can_act = can_archive_user(_inactive_actor_role, u.role)
+            if _can_act:
+                _reactivate_btn = (
+                    f'<form method="post" action="{prefix}/admin/users/{u.id}/set-active" style="margin:0;">'
+                    f'<input type="hidden" name="is_active" value="1" />'
+                    f'<button class="button button-secondary" style="min-height:30px;font-size:0.78rem;padding:0 10px;" type="submit">Reactivate</button>'
+                    f'</form>'
+                )
+                _archive_btn = (
+                    f'<form method="post" action="{prefix}/admin/users/{u.id}/archive" style="margin:0;"'
+                    f' onsubmit="return confirm(\'Archive {name_esc}? They can be permanently deleted after.\');">'
+                    f'<button class="button button-danger-outline" style="min-height:30px;font-size:0.78rem;padding:0 10px;" type="submit">Archive</button>'
+                    f'</form>'
+                )
+                _row_actions = _reactivate_btn + _archive_btn
+            else:
+                _row_actions = (
+                    '<span style="font-size:0.72rem;color:#7c3aed;background:rgba(124,58,237,0.1);'
+                    'border-radius:6px;padding:3px 9px;white-space:nowrap;">&#128274; Protected Role</span>'
+                )
+            parts.append(
+                f'<tr class="um-row">'
+                f'<td style="width:44px;">{_um_avatar(u.name, u.role)}</td>'
+                f'<td><span class="um-name" style="opacity:0.85;">{name_esc}</span>{title_span}</td>'
+                f'<td>{_um_role_badge(u.role)}</td>'
+                f'<td><span class="status-pill danger" style="font-size:.72rem;padding:2px 9px;min-height:0;">Inactive</span></td>'
+                f'<td style="text-align:right;">'
+                f'<div style="display:flex;gap:6px;justify-content:flex-end;align-items:center;">'
+                + _row_actions
+                + f'</div></td>'
+                f'</tr>'
+            )
+        return "".join(parts)
+
+    if _inactive_user_list:
+        _inactive_tab_html = (
+            '<div class="table-search" style="margin-bottom:14px;">'
+            '<input type="search" id="user-search-inactive" placeholder="Search inactive users..." style="max-width:320px;"'
+            ' oninput="(function(v){document.querySelectorAll(\'#um-inactive-table tbody tr.um-row\').forEach(function(r){r.style.display=r.textContent.toLowerCase().includes(v.toLowerCase())?\'\':\''
+            'none\';})})(this.value)" />'
+            f'<span class="mini-copy" style="margin-left:auto;">{len(_inactive_user_list)} inactive</span>'
+            '</div>'
+            '<div class="table-wrap">'
+            '<table class="um-table" id="um-inactive-table">'
+            '<thead><tr>'
+            '<th></th><th>Name</th><th>Role</th><th>Status</th><th style="text-align:right;">Actions</th>'
+            '</tr></thead>'
+            f'<tbody>{_inactive_rows()}</tbody>'
+            '</table></div>'
+        )
+    else:
+        _inactive_tab_html = '<p class="mini-copy" style="color:var(--muted);padding:24px 0;">No inactive users.</p>'
+
     # Pre-compute archived tab HTML (avoids nested triple-quote f-strings)
     _archived_actor_role = str(getattr(current_user, "role", "") or "")
 
@@ -4976,7 +5162,7 @@ def render_admin_page(
           <nav class="nav-list">
             {_nav_item("dashboard", "Dashboard")}
             {_nav_item("user-management", "User Management", str(_um_badge_count) if _um_badge_count else None)}
-            {_nav_item("access-codes", "Access Codes") if _show_access_codes else ""}
+            {_ac_nav_html}
             {_nav_item("drill-reports", "Drill Reports")}
             {_nav_item("audit-logs", "Audit Logs")}
             {_nav_item("analytics", "Analytics")}
@@ -5315,31 +5501,43 @@ def render_admin_page(
                 <h2>Accounts &amp; Access Control</h2>
                 <p class="card-copy">Enterprise-grade user management. Role changes require confirmation and are fully audited.</p>
               </div>
-              <div class="button-row" id="um-add-btn-wrap"{"" if not _um_show_archived else ' style="display:none;"'}>
+              <div class="button-row" id="um-add-btn-wrap"{"" if _um_tab == "active" else ' style="display:none;"'}>
                 <button class="button button-primary" style="min-height:38px;font-size:0.85rem;padding:0 16px;" onclick="umToggleCreate()">+ Add User</button>
               </div>
             </div>
 
             {_um_health_bar(users)}
 
-            <!-- Active / Archived tab strip -->
+            <!-- Active / Inactive / Archived tab strip -->
             <div class="um-tabs" style="display:flex;gap:0;border-bottom:2px solid var(--border);margin-bottom:18px;">
               <a href="{prefix}/admin?section=user-management"
-                 class="um-tab{"  um-tab-active" if not _um_show_archived else ""}"
-                 style="padding:8px 20px;font-size:0.85rem;font-weight:600;text-decoration:none;color:{"var(--accent)" if not _um_show_archived else "var(--muted)"};border-bottom:{"2px solid var(--accent);margin-bottom:-2px" if not _um_show_archived else "none"};">
+                 class="um-tab{"  um-tab-active" if _um_tab == "active" else ""}"
+                 style="padding:8px 20px;font-size:0.85rem;font-weight:600;text-decoration:none;color:{"var(--accent)" if _um_tab == "active" else "var(--muted)"};border-bottom:{"2px solid var(--accent);margin-bottom:-2px" if _um_tab == "active" else "none"};">
                 Active
                 <span class="count-badge" style="margin-left:6px;">{len(_active_user_list)}</span>
               </a>
+              <a href="{prefix}/admin?section=user-management&tab=inactive"
+                 class="um-tab{"  um-tab-active" if _um_tab == "inactive" else ""}"
+                 style="padding:8px 20px;font-size:0.85rem;font-weight:600;text-decoration:none;color:{"var(--accent)" if _um_tab == "inactive" else "var(--muted)"};border-bottom:{"2px solid var(--accent);margin-bottom:-2px" if _um_tab == "inactive" else "none"};">
+                Inactive
+                {f'<span class="count-badge" style="margin-left:6px;background:rgba(245,158,11,0.12);color:#b45309;">{len(_inactive_user_list)}</span>' if _inactive_user_list else ""}
+              </a>
               <a href="{prefix}/admin?section=user-management&tab=archived"
-                 class="um-tab{"  um-tab-active" if _um_show_archived else ""}"
-                 style="padding:8px 20px;font-size:0.85rem;font-weight:600;text-decoration:none;color:{"var(--accent)" if _um_show_archived else "var(--muted)"};border-bottom:{"2px solid var(--accent);margin-bottom:-2px" if _um_show_archived else "none"};">
+                 class="um-tab{"  um-tab-active" if _um_tab == "archived" else ""}"
+                 style="padding:8px 20px;font-size:0.85rem;font-weight:600;text-decoration:none;color:{"var(--accent)" if _um_tab == "archived" else "var(--muted)"};border-bottom:{"2px solid var(--accent);margin-bottom:-2px" if _um_tab == "archived" else "none"};">
                 Archived
                 {f'<span class="count-badge" style="margin-left:6px;background:rgba(220,38,38,0.12);color:#dc2626;">{len(_archived_user_list)}</span>' if _archived_user_list else ""}
+              </a>
+              <a href="{prefix}/admin?section=user-management&tab=codes"
+                 class="um-tab{"  um-tab-active" if _um_tab == "codes" else ""}"
+                 style="padding:8px 20px;font-size:0.85rem;font-weight:600;text-decoration:none;color:{"var(--accent)" if _um_tab == "codes" else "var(--muted)"};border-bottom:{"2px solid var(--accent);margin-bottom:-2px" if _um_tab == "codes" else "none"};">
+                Codes
+                {f'<span class="count-badge" style="margin-left:6px;background:rgba(27,95,228,0.12);color:var(--accent);">{len(access_code_records)}</span>' if access_code_records else ""}
               </a>
             </div>
 
             <!-- Active tab content -->
-            <div id="um-tab-active"{"" if not _um_show_archived else ' style="display:none;"'}>
+            <div id="um-tab-active"{"" if _um_tab == "active" else ' style="display:none;"'}>
               <div id="um-create-wrap" style="display:none;margin-bottom:18px;">
                 <div class="user-card" style="border-left:3px solid var(--success);">
                   <div class="panel-header">
@@ -5403,9 +5601,19 @@ def render_admin_page(
               </div>
             </div>
 
+            <!-- Inactive tab content -->
+            <div id="um-tab-inactive"{"" if _um_tab == "inactive" else ' style="display:none;"'}>
+              {_inactive_tab_html}
+            </div>
+
             <!-- Archived tab content -->
-            <div id="um-tab-archived"{"" if _um_show_archived else ' style="display:none;"'}>
+            <div id="um-tab-archived"{"" if _um_tab == "archived" else ' style="display:none;"'}>
               {_archived_tab_html}
+            </div>
+
+            <!-- Codes tab content -->
+            <div id="um-tab-codes"{"" if _um_tab == "codes" else ' style="display:none;"'}>
+              {_access_codes_panel_html}
             </div>
           </section>
 
@@ -5414,8 +5622,6 @@ def render_admin_page(
           {_um_delete_modal()}
           {_um_bulk_modal()}
           {_um_view_as_modal()}
-
-          {_access_codes_panel_html}
 
           <section class="panel command-section span-5" id="reports"{_section_style("dashboard")}>
             <div class="panel-header">

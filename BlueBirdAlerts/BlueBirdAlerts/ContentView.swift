@@ -527,8 +527,7 @@ struct ContentView: View {
     @State private var showCancelQuietRequestConfirm = false
     @State private var processedEventIDs: Set<String> = []
     @State private var pushDeliveryStats: PushDeliveryStatsResponse?
-    @State private var auditLogEntries: [AuditLogEntry] = []
-    @State private var isLoadingAuditLog = false
+    @State private var showAuditLogModal = false
     @State private var featureLabels: [String: String] = AppLabels.defaultFeatureLabels
     @State private var holdFlashActive = false
     @State private var holdFlashProgress: Double = 0
@@ -617,7 +616,7 @@ struct ContentView: View {
                         if isAdminSession {
                             trainingModeCard
                             adminPushStatsCard
-                            adminAuditLogCard
+                            auditLogButtonCard
                         }
                     }
                     .padding(.horizontal, 16)
@@ -709,7 +708,6 @@ struct ContentView: View {
                     await loadTeamAssistForwardRecipients()
                     await loadAdminQuietPeriodRequests()
                     await loadPushDeliveryStats()
-                    await loadAuditLog()
                 }
                 if let token = appState.deviceToken, appState.initialDeviceAuthUserID == nil {
                     appState.usingLocalTestToken = (token == localTestToken)
@@ -1872,49 +1870,37 @@ struct ContentView: View {
         }
     }
 
-    private var adminAuditLogCard: some View {
+    private var auditLogButtonCard: some View {
         card {
-            VStack(alignment: .leading, spacing: 10) {
-                HStack {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
                     Text("Audit Log")
                         .font(.headline)
                         .foregroundStyle(textPrimary)
-                    Spacer()
-                    Button {
-                        Task { await loadAuditLog() }
-                    } label: {
-                        Text(isLoadingAuditLog ? "Loading…" : "Refresh")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(bluePrimary)
-                    }
-                    .disabled(isLoadingAuditLog)
-                }
-                if auditLogEntries.isEmpty {
-                    Text("No audit events.")
-                        .font(.subheadline)
+                    Text("View activity, logins, and user changes")
+                        .font(.caption)
                         .foregroundStyle(textMuted)
-                } else {
-                    ForEach(auditLogEntries.prefix(20)) { entry in
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(entry.eventType.replacingOccurrences(of: "_", with: " ").capitalized)
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(textPrimary)
-                            HStack(spacing: 6) {
-                                if let label = entry.actorLabel {
-                                    Text(label)
-                                }
-                                Text(entry.timestamp.prefix(16))
-                            }
+                }
+                Spacer()
+                Button {
+                    showAuditLogModal = true
+                } label: {
+                    HStack(spacing: 4) {
+                        Text("View Logs")
+                            .font(.caption.weight(.semibold))
+                        Image(systemName: "chevron.right")
                             .font(.caption2)
-                            .foregroundStyle(textMuted)
-                        }
-                        .padding(.vertical, 2)
-                        if entry.id != auditLogEntries.prefix(20).last?.id {
-                            Divider()
-                        }
                     }
+                    .foregroundStyle(bluePrimary)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(bluePrimary.opacity(0.1))
+                    .clipShape(Capsule())
                 }
             }
+        }
+        .sheet(isPresented: $showAuditLogModal) {
+            AuditLogsModal(api: api, userID: appState.userID ?? 0)
         }
     }
 
@@ -2287,15 +2273,6 @@ struct ContentView: View {
     private func loadPushDeliveryStats() async {
         guard isAdminSession, let adminUserID = appState.userID else { return }
         pushDeliveryStats = try? await api.alarmPushStats(userID: adminUserID)
-    }
-
-    private func loadAuditLog() async {
-        guard isAdminSession, let adminUserID = appState.userID else { return }
-        isLoadingAuditLog = true
-        defer { isLoadingAuditLog = false }
-        if let response = try? await api.auditLog(userID: adminUserID, limit: 50) {
-            auditLogEntries = response.events
-        }
     }
 
     private func loadFeatureLabels() async {

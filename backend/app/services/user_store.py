@@ -507,6 +507,16 @@ class UserStore:
     async def restore_user(self, user_id: int) -> None:
         await anyio.to_thread.run_sync(self._restore_user_sync, int(user_id))
 
+    def _set_active_sync(self, user_id: int, is_active: bool) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE users SET is_active = ? WHERE id = ? AND is_archived = 0;",
+                (1 if is_active else 0, int(user_id)),
+            )
+
+    async def set_active(self, user_id: int, is_active: bool) -> None:
+        await anyio.to_thread.run_sync(self._set_active_sync, int(user_id), bool(is_active))
+
     def _delete_user_sync(self, user_id: int) -> None:
         with self._connect() as conn:
             conn.execute("DELETE FROM users WHERE id = ?;", (int(user_id),))
