@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import Counter
 from html import escape
+import json
 from typing import Mapping, Optional, Sequence
 
 from app.services.alert_log import AlertRecord
@@ -1595,6 +1596,27 @@ def render_super_admin_page(
     active_school_cards_html = "".join(_tenant_registry_card(r) for r in _active_school_rows) or \
         '<p class="mini-copy" style="color:var(--muted);padding:24px 0;">No schools yet.</p>'
     archived_school_cards_html = "".join(_tenant_registry_archived_card(r) for r in _archived_school_rows)
+    # Pre-compute archived section to avoid backslash-in-f-string-expression (Python <3.12 restriction)
+    if _archived_school_rows:
+        _n_arch = len(_archived_school_rows)
+        _arch_onclick = (
+            "var g=document.getElementById('schools-archived-grid');"
+            "g.style.display=g.style.display==='none'?'grid':'none';"
+            "this.textContent=g.style.display==='none'"
+            "?'▶ Show archived (" + str(_n_arch) + ")'"
+            ":'▼ Hide archived (" + str(_n_arch) + ")';"
+        )
+        _archived_schools_section_html = (
+            '<div class="tenant-archived-section" id="archived-schools-section">'
+            '<button class="tenant-archived-toggle" onclick="' + _arch_onclick + '" type="button">'
+            "▶ Show archived (" + str(_n_arch) + ")"
+            '</button>'
+            '<div class="tenant-grid" id="schools-archived-grid" style="display:none;margin-top:16px;">'
+            + archived_school_cards_html
+            + '</div></div>'
+        )
+    else:
+        _archived_schools_section_html = ""
     security_feedback = f"{_render_flash(flash_message, 'success')}{_render_flash(flash_error, 'error')}"
     platform_rows = "".join(
         (
@@ -2808,14 +2830,7 @@ def render_super_admin_page(
           <div class="tenant-grid" id="schools-grid">
             {active_school_cards_html}
           </div>
-          {f'''<div class="tenant-archived-section" id="archived-schools-section">
-            <button class="tenant-archived-toggle" onclick="var g=document.getElementById(\'schools-archived-grid\');g.style.display=g.style.display===\'none\'?\'grid\':\' none\';this.textContent=(g.style.display===\'none\'?\'▶ Show archived (\'+{len(_archived_school_rows)}+\')\':\' ▼ Hide archived (\'+{len(_archived_school_rows)}+\')\');" type="button">
-              ▶ Show archived ({len(_archived_school_rows)})
-            </button>
-            <div class="tenant-grid" id="schools-archived-grid" style="display:none;margin-top:16px;">
-              {archived_school_cards_html}
-            </div>
-          </div>''' if _archived_school_rows else ''}
+          {_archived_schools_section_html}
         </section>
         <section class="panel command-section" id="billing"{_section_style("billing")}>
           <div class="panel-header hero-band">
