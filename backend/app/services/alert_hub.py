@@ -5,6 +5,7 @@ import json
 import logging
 from collections import defaultdict
 from typing import Any
+from uuid import uuid4
 
 from fastapi import WebSocket
 
@@ -16,8 +17,9 @@ class AlertHub:
         self._connections: dict[str, set[WebSocket]] = defaultdict(set)
         # District connections — keyed by slug, value is set of WebSockets watching that slug.
         self._district_slug_index: dict[str, set[WebSocket]] = defaultdict(set)
-        # Reverse index: id(ws) → frozenset of slugs, for O(1) cleanup on disconnect.
-        self._district_ws_slugs: dict[int, frozenset[str]] = {}
+        # Reverse index: ws._bb_id → frozenset of slugs, for O(1) cleanup on disconnect.
+        # _bb_id is a stable uuid4 hex assigned at connect time — avoids id() reuse hazard.
+        self._district_ws_slugs: dict[str, frozenset[str]] = {}
         self._lock = asyncio.Lock()
 
     async def connect(self, tenant_slug: str, websocket: WebSocket) -> None:
@@ -38,11 +40,12 @@ class AlertHub:
 
     async def connect_district(self, websocket: WebSocket, subscribed_slugs: frozenset[str]) -> None:
         """Register a district-level WebSocket that fans out events for multiple tenant slugs."""
+        websocket._bb_id = uuid4().hex  # type: ignore[attr-defined]
         await websocket.accept()
         async with self._lock:
             for slug in subscribed_slugs:
                 self._district_slug_index[slug].add(websocket)
-            self._district_ws_slugs[id(websocket)] = subscribed_slugs
+            self._district_ws_slugs[websocket._bb_id] = subscribed_slugs  # type: ignore[attr-defined]
         logger.debug(
             "District WebSocket connected: slugs=%s total_district=%d",
             sorted(subscribed_slugs),
@@ -51,8 +54,9 @@ class AlertHub:
 
     async def disconnect_district(self, websocket: WebSocket) -> None:
         """Remove a district WebSocket from all slug subscriptions."""
+        ws_id: str | None = getattr(websocket, "_bb_id", None)
         async with self._lock:
-            slugs = self._district_ws_slugs.pop(id(websocket), frozenset())
+            slugs = self._district_ws_slugs.pop(ws_id, frozenset()) if ws_id else frozenset()
             for slug in slugs:
                 bucket = self._district_slug_index.get(slug)
                 if bucket:
@@ -100,8 +104,9 @@ class AlertHub:
         if district_stale:
             async with self._lock:
                 for websocket in district_stale:
-                    slugs = self._district_ws_slugs.pop(id(websocket), frozenset())
-                    for s in slugs:
+                    ws_id = getattr(websocket, "_bb_id", None)
+                    stale_slugs = self._district_ws_slugs.pop(ws_id, frozenset()) if ws_id else frozenset()
+                    for s in stale_slugs:
                         bucket = self._district_slug_index.get(s)
                         if bucket:
                             bucket.discard(websocket)

@@ -125,6 +125,7 @@ from app.services.device_registry import DeviceRegistry
 from app.services.fcm import FCMClient
 from app.services.incident_store import IncidentStore
 from app.services.permissions import (
+    ALARM_TRIGGER_ROLES,
     CODEGEN_ALLOWED_ROLES,
     PERM_APPROVE_ASSIGNED_TENANT_QUIET_REQUESTS,
     PERM_APPROVE_OWN_TENANT_QUIET_REQUESTS,
@@ -143,6 +144,7 @@ from app.services.permissions import (
     ROLE_SUPER_ADMIN,
     can,
     can_any,
+    can_trigger_alarm,
     can_deactivate_alarm as _can_deactivate_alarm,
     can_archive_user,
     can_generate_codes,
@@ -205,6 +207,26 @@ def _check_code_rate_limit(ip: str, *, max_attempts: int = 5, window_seconds: in
         if ip not in _code_rate_store:
             _code_rate_store[ip] = deque()
         dq = _code_rate_store[ip]
+        while dq and now - dq[0] > window_seconds:
+            dq.popleft()
+        if len(dq) >= max_attempts:
+            return False
+        dq.append(now)
+        return True
+
+
+# ── Admin / super-admin login rate limiter (per-IP, in-memory) ────────────────
+_login_rate_store: dict[str, deque] = {}
+_login_rate_lock = Lock()
+
+
+def _check_login_rate_limit(ip: str, *, max_attempts: int = 10, window_seconds: int = 60) -> bool:
+    """Returns True if within limit. Protects admin and super-admin login endpoints."""
+    now = time.monotonic()
+    with _login_rate_lock:
+        if ip not in _login_rate_store:
+            _login_rate_store[ip] = deque()
+        dq = _login_rate_store[ip]
         while dq and now - dq[0] > window_seconds:
             dq.popleft()
         if len(dq) >= max_attempts:
@@ -853,7 +875,8 @@ async def _platform_activity_feed(
 
 def _client_fingerprint(request: Request) -> str:
     user_agent = request.headers.get("user-agent", "").strip()
-    return hashlib.sha256(user_agent.encode("utf-8")).hexdigest()
+    ip = _client_ip(request)
+    return hashlib.sha256(f"{ip}|{user_agent}".encode("utf-8")).hexdigest()
 
 
 def _sign_trust_payload(request: Request, payload: dict[str, object]) -> str:
@@ -1054,23 +1077,167 @@ async def _require_alarm_trigger_user(
     user_id: Optional[int],
     *,
     allow_platform_super_admin: bool = False,
+    request: Optional[Request] = None,
 ) -> Optional[int]:
+    ip = _client_ip(request) if request else "unknown"
+    tenant = str(getattr(getattr(request, "state", None), "school_slug", "unknown")) if request else "unknown"
+
     if user_id is None:
         if allow_platform_super_admin:
+            logger.warning(
+                "ALARM_TRIGGER_ATTEMPT tenant=%s user_id=super_admin role=super_admin ip=%s result=authorized reason=platform_super_admin",
+                tenant, ip,
+            )
             return None
+        logger.warning(
+            "ALARM_TRIGGER_ATTEMPT tenant=%s user_id=None role=None ip=%s result=denied reason=missing_user_id",
+            tenant, ip,
+        )
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Authorized user_id is required to activate alarm")
+
     user = await users.get_user(int(user_id))
     if user is None or not user.is_active:
+        logger.warning(
+            "ALARM_TRIGGER_ATTEMPT tenant=%s user_id=%s role=unknown ip=%s result=denied reason=%s",
+            tenant, user_id, ip, "user_not_found" if user is None else "user_inactive",
+        )
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only active users in this tenant can activate alarm",
         )
+
+    if not can_trigger_alarm(user.role):
+        logger.warning(
+            "ALARM_TRIGGER_ATTEMPT tenant=%s user_id=%s role=%s ip=%s result=denied reason=insufficient_role allowed_roles=%s",
+            tenant, user_id, user.role, ip, sorted(ALARM_TRIGGER_ROLES),
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Role '{user.role}' is not permitted to trigger alarms. Requires: building_admin or district_admin.",
+        )
+
+    logger.warning(
+        "ALARM_TRIGGER_ATTEMPT tenant=%s user_id=%s role=%s ip=%s result=authorized",
+        tenant, user_id, user.role, ip,
+    )
     return user.id
 
 
 async def _ensure_no_active_alarm(request: Request) -> None:
     if (await _alarm_store(request).get_state()).is_active:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="An alarm is already active")
+
+
+async def _activate_alarm_atomically(
+    *,
+    alert_log,
+    alarm_store,
+    tenant_slug: str,
+    message: str,
+    is_training: bool,
+    training_label: Optional[str],
+    silent_audio: bool,
+    triggered_by_user_id: Optional[int],
+    triggered_by_label: str,
+    trigger_ip: Optional[str],
+    trigger_user_agent: Optional[str],
+) -> tuple[int, object]:
+    """
+    Write alert log entry then activate alarm state, with retry and consistency check.
+
+    Failure model:
+      - log_alert() fails  → exception propagates; no state changed; no orphan.
+      - activate() fails   → orphan risk: alert row exists, state not updated.
+        Recovery: retry activate() once. If both attempts fail, raises 500 with
+        the alert_id so an operator can manually clear it.
+      - Consistency check  → after success, reads back both records and re-activates
+        if state somehow did not persist.
+    """
+    # Phase 1 — log: if this fails nothing else has been written.
+    try:
+        alert_id: int = await alert_log.log_alert(
+            message,
+            is_training=is_training,
+            training_label=training_label,
+            created_by_user_id=triggered_by_user_id,
+            triggered_by_user_id=triggered_by_user_id,
+            triggered_by_label=triggered_by_label,
+            trigger_ip=trigger_ip,
+            trigger_user_agent=trigger_user_agent,
+        )
+    except Exception as exc:
+        logger.critical(
+            "ALARM_LOG_FAILED tenant=%s error=%r — alert not logged, alarm not activated",
+            tenant_slug, exc,
+        )
+        raise
+
+    # Phase 2 — activate: orphan window opens here if this raises.
+    _activate_kwargs = dict(
+        tenant_slug=tenant_slug,
+        message=message,
+        activated_by_user_id=triggered_by_user_id,
+        activated_by_label=triggered_by_label,
+        is_training=is_training,
+        training_label=training_label,
+        silent_audio=silent_audio,
+    )
+    try:
+        state = await alarm_store.activate(**_activate_kwargs)
+    except Exception as first_exc:
+        logger.critical(
+            "ALARM_ACTIVATE_FAILED tenant=%s alert_id=%d error=%r — retrying once",
+            tenant_slug, alert_id, first_exc,
+        )
+        try:
+            state = await alarm_store.activate(**_activate_kwargs)
+            logger.warning(
+                "ALARM_ACTIVATE_RECOVERED tenant=%s alert_id=%d — retry succeeded",
+                tenant_slug, alert_id,
+            )
+        except Exception as second_exc:
+            logger.critical(
+                "ALARM_ACTIVATE_UNRECOVERABLE tenant=%s alert_id=%d "
+                "first_error=%r second_error=%r — orphan alert; manual cleanup required",
+                tenant_slug, alert_id, first_exc, second_exc,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=(
+                    f"Alarm activation failed after retry. "
+                    f"Alert log entry exists (id={alert_id}). "
+                    f"Contact system administrator to clear the orphan record."
+                ),
+            )
+
+    # Phase 3 — verify consistency: both records must exist and state must be active.
+    try:
+        verified_state = await alarm_store.get_state()
+        verified_alert = await alert_log.get_alert(alert_id)
+
+        state_active = bool(getattr(verified_state, "is_active", False))
+        alert_found = verified_alert is not None
+
+        if not state_active or not alert_found:
+            logger.critical(
+                "ALARM_CONSISTENCY_MISMATCH tenant=%s alert_id=%d "
+                "state_active=%s alert_found=%s — recovering",
+                tenant_slug, alert_id, state_active, alert_found,
+            )
+            if not state_active:
+                state = await alarm_store.activate(**_activate_kwargs)
+                logger.warning(
+                    "ALARM_CONSISTENCY_RECOVERED tenant=%s alert_id=%d — state re-written",
+                    tenant_slug, alert_id,
+                )
+    except Exception as verify_exc:
+        # Verification is best-effort — do not abort a successful activation.
+        logger.error(
+            "ALARM_CONSISTENCY_CHECK_ERROR tenant=%s alert_id=%d error=%r",
+            tenant_slug, alert_id, verify_exc,
+        )
+
+    return alert_id, state
 
 
 async def _require_dashboard_admin_id(users: UserStore, user_id: int) -> int:
@@ -1711,6 +1878,7 @@ async def activate_alarm(
         users,
         body.user_id,
         allow_platform_super_admin=allow_platform_super_admin,
+        request=request,
     )
     is_training = bool(body.is_training)
     training_label = body.training_label.strip() if body.training_label else None
@@ -1728,24 +1896,18 @@ async def activate_alarm(
         )
     trigger_ip = request.client.host if request.client else None
     trigger_user_agent = request.headers.get("user-agent")
-    alert_id = await _alert_log(request).log_alert(
-        body.message,
+    alert_id, state = await _activate_alarm_atomically(
+        alert_log=_alert_log(request),
+        alarm_store=_alarm_store(request),
+        tenant_slug=effective_slug,
+        message=body.message,
         is_training=is_training,
         training_label=training_label,
-        created_by_user_id=triggered_by_user_id,
+        silent_audio=silent_audio,
         triggered_by_user_id=triggered_by_user_id,
         triggered_by_label=_current_school_actor_label(request),
         trigger_ip=trigger_ip,
         trigger_user_agent=trigger_user_agent,
-    )
-    state = await _alarm_store(request).activate(
-        tenant_slug=effective_slug,
-        message=body.message,
-        activated_by_user_id=triggered_by_user_id,
-        activated_by_label=_current_school_actor_label(request),
-        is_training=is_training,
-        training_label=training_label,
-        silent_audio=silent_audio,
     )
     apns_tokens: list[str] = []
     fcm_tokens: list[str] = []
@@ -2213,7 +2375,6 @@ async def super_admin_district_info(request: Request, slug: str) -> JSONResponse
         "is_active": district.is_active,
         "is_test": district.is_test,
         "source_district_id": district.source_district_id,
-        "brand_lock_enabled": district.brand_lock_enabled,
     })
 
 
@@ -2552,6 +2713,9 @@ async def admin_login(
     login_name: str = Form(...),
     password: str = Form(...),
 ) -> RedirectResponse:
+    if not _check_login_rate_limit(_client_ip(request)):
+        _set_flash(request, error="Too many login attempts. Please wait a moment and try again.")
+        return RedirectResponse(url="/admin/login", status_code=status.HTTP_303_SEE_OTHER)
     user = await _users(request).authenticate_admin(login_name.strip(), password)
     if user is None:
         _set_flash(request, error="Invalid admin username or password.")
@@ -2836,6 +3000,9 @@ async def super_admin_login(
     login_name: str = Form(...),
     password: str = Form(...),
 ) -> RedirectResponse:
+    if not _check_login_rate_limit(_client_ip(request)):
+        _set_flash(request, error="Too many login attempts. Please wait a moment and try again.")
+        return RedirectResponse(url="/super-admin/login", status_code=status.HTTP_303_SEE_OTHER)
     admin = await _platform_admins(request).authenticate(login_name.strip(), password)
     if admin is None:
         _set_flash(request, error="Invalid super admin credentials.")
@@ -3150,31 +3317,7 @@ async def super_admin_dashboard(
             </form>
             """
         )
-        theme_controls_html = f"""
-            <form method="post" action="/super-admin/schools/{school.slug}/theme" class="stack" style="margin-top:10px;">
-              <div class="form-grid">
-                <div class="field">
-                  <label>Accent</label>
-                  <input name="accent" value="{escape(school.accent or '')}" placeholder="#1b5fe4" />
-                </div>
-                <div class="field">
-                  <label>Accent strong</label>
-                  <input name="accent_strong" value="{escape(school.accent_strong or '')}" placeholder="#2f84ff" />
-                </div>
-                <div class="field">
-                  <label>Sidebar start</label>
-                  <input name="sidebar_start" value="{escape(school.sidebar_start or '')}" placeholder="#092054" />
-                </div>
-                <div class="field">
-                  <label>Sidebar end</label>
-                  <input name="sidebar_end" value="{escape(school.sidebar_end or '')}" placeholder="#071536" />
-                </div>
-              </div>
-              <div class="button-row">
-                <button class="button button-secondary" type="submit">Save Theme</button>
-              </div>
-            </form>
-        """
+        theme_controls_html = ""
         school_rows.append(
             {
                 "name": school.name,
@@ -3266,7 +3409,6 @@ async def super_admin_dashboard(
             "schools": [{"slug": str(getattr(s, "slug", "")), "name": str(getattr(s, "name", ""))} for s in _ds],
             "alarm_count": _d_alarm, "ws_total": _d_ws, "last_activity": _d_last,
             "status": _d_status, "billing_ok": all(b in {"active", "trial", "free"} for b in _d_bills) if _d_bills else True,
-            "brand_locked": bool(getattr(_d, "brand_lock_enabled", False)),
             "push_failed_total": _d_push_failed,
         })
     for _s in _ungrouped_schools:
@@ -3284,16 +3426,11 @@ async def super_admin_dashboard(
             "push_failed_total": int(_s_noc.get("push_failed", 0)),
         })
     # ── Platform Control stats ────────────────────────────────────────────────
-    _branded_schools = sum(1 for s in schools if any([s.accent, s.accent_strong, s.sidebar_start, s.logo_path]))
-    _locked_districts = sum(1 for d in _all_districts if getattr(d, "brand_lock_enabled", False))
     _active_schools = sum(1 for s in schools if s.is_active)
     _platform_stats: dict[str, object] = {
         "total_schools": len(schools),
         "active_schools": _active_schools,
-        "branded_schools": _branded_schools,
-        "branding_coverage_pct": round(100 * _branded_schools / max(len(schools), 1)),
         "total_districts": len(_all_districts),
-        "locked_districts": _locked_districts,
         "alarm_schools": sum(1 for t in _noc_tenant_data if t.get("alarm_active")),
         "ws_connections": sum(int(t.get("ws_connections") or 0) for t in _noc_tenant_data),
     }
@@ -4371,13 +4508,16 @@ async def admin_create_broadcast(
             sms_numbers=[],
             tenant_slug=_tenant(request).slug,
         )
-        background_tasks.add_task(
-            _broadcaster(request).broadcast_panic,
-            alert_id=alert_id,
-            message=normalized_message,
-            plan=plan,
-        )
-        _set_flash(request, message="Broadcast update posted and queued for push delivery.")
+        if not _is_simulation_mode(request):
+            background_tasks.add_task(
+                _broadcaster(request).broadcast_panic,
+                alert_id=alert_id,
+                message=normalized_message,
+                plan=plan,
+            )
+            _set_flash(request, message="Broadcast update posted and queued for push delivery.")
+        else:
+            _set_flash(request, message="Broadcast update posted (push suppressed — sandbox mode).")
     else:
         _set_flash(request, message="Broadcast update posted.")
     return RedirectResponse(url="/admin#reports", status_code=status.HTTP_303_SEE_OTHER)
@@ -5133,6 +5273,11 @@ async def admin_delete_user(
             _set_flash(request, error=f"You do not have permission to delete {user.name}.")
         return RedirectResponse(url="/admin?section=user-management&tab=archived", status_code=status.HTTP_303_SEE_OTHER)
 
+    if user.role == ROLE_DISTRICT_ADMIN:
+        da_total = await _users(request).count_all_district_admins()
+        if da_total <= 1:
+            _set_flash(request, error="Cannot delete the last district admin. At least one must remain.")
+            return RedirectResponse(url="/admin?section=user-management&tab=archived", status_code=status.HTTP_303_SEE_OTHER)
     _fire_audit(
         request,
         "user_deleted",
@@ -5142,11 +5287,6 @@ async def admin_delete_user(
         target_id=str(user_id),
         metadata={"name": user.name, "role": user.role},
     )
-    if user.role == ROLE_DISTRICT_ADMIN:
-        da_total = await _users(request).count_all_district_admins()
-        if da_total <= 1:
-            _set_flash(request, error="Cannot delete the last district admin. At least one must remain.")
-            return RedirectResponse(url="/admin?section=user-management&tab=archived", status_code=status.HTTP_303_SEE_OTHER)
 
     await _registry(request).mark_invalid_by_user(user_id)
     await _users(request).delete_user(user_id)
@@ -6527,7 +6667,7 @@ async def panic(
     """
 
     users = _users(request)
-    triggered_by_user_id = await _require_alarm_trigger_user(users, body.user_id)
+    triggered_by_user_id = await _require_alarm_trigger_user(users, body.user_id, request=request)
     is_training = bool(body.is_training)
     training_label = body.training_label.strip() if body.training_label else None
     silent_audio = bool(body.silent_audio) and is_training
@@ -6539,24 +6679,18 @@ async def panic(
     trigger_ip = request.client.host if request.client else None
     trigger_user_agent = request.headers.get("user-agent")
 
-    alert_id = await _alert_log(request).log_alert(
-        body.message,
+    alert_id, _ = await _activate_alarm_atomically(
+        alert_log=_alert_log(request),
+        alarm_store=_alarm_store(request),
+        tenant_slug=_tenant(request).slug,
+        message=body.message,
         is_training=is_training,
         training_label=training_label,
-        created_by_user_id=triggered_by_user_id,
+        silent_audio=silent_audio,
         triggered_by_user_id=triggered_by_user_id,
         triggered_by_label=_current_school_actor_label(request),
         trigger_ip=trigger_ip,
         trigger_user_agent=trigger_user_agent,
-    )
-    await _alarm_store(request).activate(
-        tenant_slug=_tenant(request).slug,
-        message=body.message,
-        activated_by_user_id=triggered_by_user_id,
-        activated_by_label=_current_school_actor_label(request),
-        is_training=is_training,
-        training_label=training_label,
-        silent_audio=silent_audio,
     )
 
     apns_devices = [] if is_training else await _registry(request).list_by_provider("apns")
@@ -6605,7 +6739,7 @@ async def panic(
         body.message,
     )
 
-    if not is_training:
+    if not is_training and not _is_simulation_mode(request):
         plan = BroadcastPlan(apns_tokens=apns_tokens, fcm_tokens=fcm_tokens, sms_numbers=sms_numbers, tenant_slug=_panic_tenant_slug)
         background_tasks.add_task(_broadcaster(request).broadcast_panic, alert_id=alert_id, message=body.message, plan=plan)
 
@@ -7881,6 +8015,8 @@ async def admin_demo_analytics(
 ) -> JSONResponse:
     """Demo analytics — aggregates real data + synthesizes if sparse."""
     await _require_dashboard_admin(request)
+    if not getattr(request.state.school, "is_test", False):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Demo analytics are only available for sandbox tenants.")
     import random as _rand
     import hashlib as _hash
 

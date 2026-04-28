@@ -144,7 +144,10 @@
     _tourHighlight.style.cssText = 'position:fixed;z-index:9001;border:2px solid #f59e0b;border-radius:6px;box-shadow:0 0 0 4px rgba(245,158,11,0.25);pointer-events:none;display:none;transition:all 0.2s ease;';
     document.body.appendChild(_tourHighlight);
     _tourTooltip = document.createElement('div');
-    _tourTooltip.style.cssText = 'position:fixed;z-index:9002;background:#fff;color:#1e293b;border-radius:10px;box-shadow:0 8px 32px rgba(0,0,0,0.22);padding:20px 22px;max-width:340px;min-width:260px;font-size:0.9rem;display:none;';
+    var _isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+    var _tooltipBg = _isDark ? '#1e2e4a' : '#fff';
+    var _tooltipColor = _isDark ? '#e8f0fe' : '#1e293b';
+    _tourTooltip.style.cssText = 'position:fixed;z-index:9002;background:' + _tooltipBg + ';color:' + _tooltipColor + ';border-radius:10px;box-shadow:0 8px 32px rgba(0,0,0,0.22);padding:20px 22px;max-width:340px;min-width:260px;font-size:0.9rem;display:none;';
     document.body.appendChild(_tourTooltip);
   }
 
@@ -178,6 +181,7 @@
 
   function _tourShow(idx) {
     if (idx >= _tourSteps.length) { _tourEnd(true); return; }
+    if (!_tourHighlight || !_tourTooltip || !_tourOverlay) return;
     var step = _tourSteps[idx];
     var target = document.querySelector(step.targetSelector);
     if (!target) { _tourShow(idx + 1); return; }

@@ -152,8 +152,18 @@ CODEGEN_ALLOWED_ROLES: Final[set[str]] = {
 }
 
 
+# Roles permitted to trigger a school-wide emergency alarm.
+# Intentionally excludes teacher, staff, and law_enforcement — those roles
+# can send help requests (team-assist) but not activate the full alarm.
+ALARM_TRIGGER_ROLES: Final[set[str]] = {
+    ROLE_ADMIN,           # legacy alias for building_admin
+    ROLE_BUILDING_ADMIN,
+    ROLE_DISTRICT_ADMIN,
+}
+
+
 def can_trigger_alarm(role: str | None) -> bool:
-    return is_known_role(role)
+    return normalize_role(role) in ALARM_TRIGGER_ROLES
 
 
 def can_deactivate_alarm(role: str | None) -> bool:

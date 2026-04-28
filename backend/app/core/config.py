@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     HOST: str = "0.0.0.0"
     PORT: int = 8000
     LOG_LEVEL: str = "INFO"
+    ENVIRONMENT: str = "development"  # set to "production" in prod deployments
 
     # Optional shared-secret API key. If set, write endpoints require `X-API-Key`.
     API_KEY: Optional[str] = None
