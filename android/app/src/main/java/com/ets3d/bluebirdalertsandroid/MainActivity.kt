@@ -2878,19 +2878,21 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
         )
     }
     if (showCancelRequestConfirmDialog) {
+        val cancelQStatus = state.quietPeriodStatus?.status?.lowercase()
+        val isScheduledCancel = cancelQStatus == "scheduled"
         AlertDialog(
             onDismissRequest = { if (!state.isBusy) showCancelRequestConfirmDialog = false },
             containerColor = DSColor.Card,
             title = {
                 Text(
-                    "Cancel Request?",
+                    if (isScheduledCancel) "Cancel Scheduled Period?" else "Cancel Request?",
                     color = DSColor.TextPrimary,
                     fontWeight = FontWeight.Bold,
                 )
             },
             text = {
                 Text(
-                    "This will cancel your pending quiet period request.",
+                    if (isScheduledCancel) "This will cancel your scheduled quiet period." else "This will cancel your pending quiet period request.",
                     color = DSColor.TextSecondary,
                 )
             },
@@ -2903,12 +2905,12 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                     enabled = !state.isBusy,
                     colors = ButtonDefaults.buttonColors(containerColor = DSColor.Danger),
                 ) {
-                    Text("Cancel Request", fontWeight = FontWeight.SemiBold)
+                    Text(if (isScheduledCancel) "Cancel Scheduled Period" else "Cancel Request", fontWeight = FontWeight.SemiBold)
                 }
             },
             dismissButton = {
                 TextButton(onClick = { if (!state.isBusy) showCancelRequestConfirmDialog = false }) {
-                    Text("Keep Request", color = DSColor.TextSecondary, fontWeight = FontWeight.SemiBold)
+                    Text(if (isScheduledCancel) "Keep Scheduled Period" else "Keep Request", color = DSColor.TextSecondary, fontWeight = FontWeight.SemiBold)
                 }
             },
         )
