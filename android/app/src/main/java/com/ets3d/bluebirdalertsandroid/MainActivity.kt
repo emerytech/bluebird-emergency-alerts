@@ -109,6 +109,7 @@ import org.json.JSONObject
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import java.util.Calendar
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -469,6 +470,8 @@ data class QuietPeriodMobileStatus(
     val approvedAt: String? = null,
     val approvedByLabel: String? = null,
     val expiresAt: String? = null,
+    val scheduledStartAt: String? = null,
+    val scheduledEndAt: String? = null,
 )
 
 data class AdminQuietPeriodRequest(
@@ -482,6 +485,8 @@ data class AdminQuietPeriodRequest(
     val approvedAt: String? = null,
     val approvedByLabel: String? = null,
     val expiresAt: String? = null,
+    val scheduledStartAt: String? = null,
+    val scheduledEndAt: String? = null,
 )
 
 data class DistrictQuietPeriodItem(
@@ -988,7 +993,7 @@ class MainViewModel : ViewModel() {
         }
     }
 
-    fun requestQuietPeriod(ctx: Context, reason: String?) {
+    fun requestQuietPeriod(ctx: Context, reason: String?, scheduledStartAt: String? = null, scheduledEndAt: String? = null) {
         val userId = getUserId(ctx).toIntOrNull()
         if (userId == null) {
             _state.update { it.copy(errorMsg = "You must be signed in to request a quiet period.") }
@@ -998,7 +1003,7 @@ class MainViewModel : ViewModel() {
         viewModelScope.launch(Dispatchers.IO) {
             _state.update { it.copy(isBusy = true, errorMsg = null) }
             Log.d("QuietPeriod", "POST /quiet-periods/request")
-            runCatching { client!!.requestQuietPeriod(userId = userId, reason = reason) }
+            runCatching { client!!.requestQuietPeriod(userId = userId, reason = reason, scheduledStartAt = scheduledStartAt, scheduledEndAt = scheduledEndAt) }
                 .onSuccess {
                     Log.d("QuietPeriod", "Request submitted successfully")
                     val quiet = runCatching { client!!.quietPeriodStatus(userId = userId) }.getOrNull()
@@ -2648,7 +2653,7 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
 
                     if (activePanel == DashboardPanel.QuietPeriod) {
                         val qStatus = state.quietPeriodStatus?.status?.lowercase()
-                        if (qStatus == "pending") {
+                        if (qStatus == "pending" || qStatus == "scheduled") {
                             PendingQuietRequestCard(
                                 status = state.quietPeriodStatus!!,
                                 isBusy = state.isBusy,
@@ -2856,8 +2861,8 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
             isBusy = state.isBusy,
             errorMsg = state.errorMsg,
             onCancel = { showQuietRequestOverlay = false },
-            onConfirm = { reason ->
-                vm.requestQuietPeriod(ctx, reason)
+            onConfirm = { reason, scheduledStartAt, scheduledEndAt ->
+                vm.requestQuietPeriod(ctx, reason, scheduledStartAt, scheduledEndAt)
             },
             onSuccess = { showQuietRequestOverlay = false },
         )
@@ -3571,13 +3576,14 @@ private fun QuietPeriodStatusBanner(
     val normalized = status.status?.lowercase().orEmpty()
     if (normalized.isBlank()) return
 
-    // Countdown timer for approved state — ticks every second.
-    var secondsLeft by remember(status.expiresAt) { mutableStateOf(0L) }
-    LaunchedEffect(status.expiresAt, normalized) {
-        if (normalized != "approved" || status.expiresAt == null) return@LaunchedEffect
+    // Countdown timer — approved: counts to expiresAt; scheduled: counts to scheduledStartAt.
+    val countdownTarget = if (normalized == "scheduled") status.scheduledStartAt else status.expiresAt
+    var secondsLeft by remember(countdownTarget) { mutableStateOf(0L) }
+    LaunchedEffect(countdownTarget, normalized) {
+        if (normalized !in setOf("approved", "scheduled") || countdownTarget == null) return@LaunchedEffect
         while (true) {
-            val expiry = try { Instant.parse(status.expiresAt).toEpochMilli() } catch (_: Exception) { 0L }
-            secondsLeft = maxOf(0L, (expiry - System.currentTimeMillis()) / 1000)
+            val target = try { Instant.parse(countdownTarget).toEpochMilli() } catch (_: Exception) { 0L }
+            secondsLeft = maxOf(0L, (target - System.currentTimeMillis()) / 1000)
             if (secondsLeft <= 0L) break
             delay(1000L)
         }
@@ -3604,7 +3610,20 @@ private fun QuietPeriodStatusBanner(
             bg = DSColor.Info.copy(alpha = 0.12f)
             border = DSColor.Info.copy(alpha = 0.28f)
             fg = DSColor.Info
-            text = "Quiet period request pending admin approval"
+            val schedInfo = status.scheduledStartAt?.let { " — Starts ${formatIsoForBanner(it) ?: it}" } ?: ""
+            text = "Quiet period request pending approval$schedInfo"
+        }
+        "scheduled" -> {
+            val countdown = when {
+                secondsLeft > 3600 -> "${secondsLeft / 3600}h ${(secondsLeft % 3600) / 60}m"
+                secondsLeft > 60 -> "${secondsLeft / 60}m ${secondsLeft % 60}s"
+                secondsLeft > 0 -> "${secondsLeft}s"
+                else -> formatIsoForBanner(status.scheduledStartAt) ?: "soon"
+            }
+            bg = DSColor.Success.copy(alpha = 0.12f)
+            border = DSColor.Success.copy(alpha = 0.28f)
+            fg = DSColor.Success
+            text = "Quiet period SCHEDULED — Starts in $countdown"
         }
         "denied" -> {
             bg = DSColor.Warning.copy(alpha = 0.14f)
@@ -3627,7 +3646,7 @@ private fun QuietPeriodStatusBanner(
             status.reason?.takeIf { it.isNotBlank() }?.let {
                 Text("Reason: $it", color = fg, fontSize = 12.sp)
             }
-            if (normalized == "pending" || normalized == "approved") {
+            if (normalized in setOf("pending", "approved", "scheduled")) {
                 Button(
                     onClick = {
                         if (normalized == "approved") onDeleteApproved() else onDeletePending()
@@ -3642,7 +3661,12 @@ private fun QuietPeriodStatusBanner(
                     ),
                 ) {
                     Text(
-                        if (isBusy) "Deleting..." else if (normalized == "approved") "End Quiet Period" else "Delete Request",
+                        when {
+                            isBusy -> "Deleting..."
+                            normalized == "approved" -> "End Quiet Period"
+                            normalized == "scheduled" -> "Cancel Scheduled Period"
+                            else -> "Delete Request"
+                        },
                         fontSize = 13.sp,
                         fontWeight = FontWeight.SemiBold,
                     )
@@ -3678,12 +3702,30 @@ private fun AdminQuietPeriodRequestsCard(
                         modifier = Modifier.fillMaxWidth(),
                     ) {
                         Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Text(
-                                text = (item.userName ?: "User #${item.userId}") + " • ${snakeToTitle(item.userRole ?: "user")}",
-                                color = TextPri,
-                                fontWeight = FontWeight.SemiBold,
-                                fontSize = 14.sp,
-                            )
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(
+                                    text = (item.userName ?: "User #${item.userId}") + " • ${snakeToTitle(item.userRole ?: "user")}",
+                                    color = TextPri,
+                                    fontWeight = FontWeight.SemiBold,
+                                    fontSize = 14.sp,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                if (item.scheduledStartAt != null) {
+                                    BBStatusBadge("Scheduled", color = DSColor.Info)
+                                }
+                            }
+                            item.scheduledStartAt?.let { startAt ->
+                                Text(
+                                    text = "Starts: ${formatIsoForBanner(startAt) ?: startAt}",
+                                    color = DSColor.Info,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                )
+                            }
                             Text(
                                 text = "Requested: ${formatIsoForBanner(item.requestedAt) ?: item.requestedAt}",
                                 color = TextMuted,
@@ -4124,11 +4166,16 @@ private fun PendingQuietRequestCard(
     onCancelRequest: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val isScheduled = status.status?.lowercase() == "scheduled"
+    val cardColor = if (isScheduled) DSColor.Success.copy(alpha = 0.10f) else DSColor.Info.copy(alpha = 0.10f)
+    val borderColor = if (isScheduled) DSColor.Success.copy(alpha = 0.25f) else DSColor.Info.copy(alpha = 0.25f)
+    val badgeLabel = if (isScheduled) "Approved — Scheduled" else "Pending Approval"
+    val badgeColor = if (isScheduled) DSColor.Success else DSColor.Info
     Surface(
         modifier = modifier,
         shape = RoundedCornerShape(16.dp),
-        color = DSColor.Info.copy(alpha = 0.10f),
-        border = BorderStroke(1.dp, DSColor.Info.copy(alpha = 0.25f)),
+        color = cardColor,
+        border = BorderStroke(1.dp, borderColor),
     ) {
         Column(
             modifier = Modifier.padding(DSSpacing.LG),
@@ -4140,12 +4187,20 @@ private fun PendingQuietRequestCard(
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Text(
-                    "Quiet Period Requested",
+                    if (isScheduled) "Quiet Period Scheduled" else "Quiet Period Requested",
                     color = DSColor.TextPrimary,
                     fontWeight = FontWeight.Bold,
                     fontSize = DSTypography.Body,
                 )
-                BBStatusBadge("Pending Approval", color = DSColor.Info)
+                BBStatusBadge(badgeLabel, color = badgeColor)
+            }
+            status.scheduledStartAt?.let { startAt ->
+                Text(
+                    "Starts: ${formatIsoForBanner(startAt) ?: startAt}",
+                    color = if (isScheduled) DSColor.Success else DSColor.Info,
+                    fontSize = DSTypography.Caption,
+                    fontWeight = FontWeight.SemiBold,
+                )
             }
             status.requestedAt?.let { at ->
                 Text(
@@ -4162,7 +4217,11 @@ private fun PendingQuietRequestCard(
                 )
             }
             BBSecondaryButton(
-                text = if (isBusy) "Cancelling…" else "Cancel Request",
+                text = when {
+                    isBusy -> "Cancelling…"
+                    isScheduled -> "Cancel Scheduled Period"
+                    else -> "Cancel Request"
+                },
                 onClick = onCancelRequest,
                 enabled = !isBusy,
                 modifier = Modifier.fillMaxWidth(),
@@ -4967,11 +5026,39 @@ private fun QuietPeriodRequestOverlay(
     isBusy: Boolean,
     errorMsg: String?,
     onCancel: () -> Unit,
-    onConfirm: (String?) -> Unit,
+    onConfirm: (reason: String?, scheduledStartAt: String?, scheduledEndAt: String?) -> Unit,
     onSuccess: () -> Unit,
 ) {
     var reason by remember { mutableStateOf("") }
     var submitted by remember { mutableStateOf(false) }
+    var scheduleForLater by remember { mutableStateOf(false) }
+    var scheduledStart by remember { mutableStateOf<java.time.ZonedDateTime?>(null) }
+    var scheduledEnd by remember { mutableStateOf<java.time.ZonedDateTime?>(null) }
+    val context = LocalContext.current
+    val displayFmt = java.time.format.DateTimeFormatter.ofPattern("MMM d, h:mm a")
+    val isoFmt = java.time.format.DateTimeFormatter.ISO_OFFSET_DATE_TIME
+
+    fun pickDateTime(initial: java.time.ZonedDateTime, onPicked: (java.time.ZonedDateTime) -> Unit) {
+        val cal = java.util.Calendar.getInstance()
+        cal.set(initial.year, initial.monthValue - 1, initial.dayOfMonth, initial.hour, initial.minute)
+        android.app.DatePickerDialog(
+            context,
+            { _, year, month, day ->
+                android.app.TimePickerDialog(
+                    context,
+                    { _, hour, minute ->
+                        onPicked(java.time.ZonedDateTime.of(year, month + 1, day, hour, minute, 0, 0, java.time.ZoneId.systemDefault()))
+                    },
+                    cal.get(java.util.Calendar.HOUR_OF_DAY),
+                    cal.get(java.util.Calendar.MINUTE),
+                    false,
+                ).show()
+            },
+            cal.get(java.util.Calendar.YEAR),
+            cal.get(java.util.Calendar.MONTH),
+            cal.get(java.util.Calendar.DAY_OF_MONTH),
+        ).show()
+    }
 
     LaunchedEffect(isBusy) {
         if (submitted && !isBusy && errorMsg == null) {
@@ -5004,16 +5091,61 @@ private fun QuietPeriodRequestOverlay(
                 accentColor = QuietPurple,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
             )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("Schedule for later", color = TextPri, fontSize = DSTypography.Body)
+                Switch(
+                    checked = scheduleForLater,
+                    onCheckedChange = { on ->
+                        scheduleForLater = on
+                        if (on) {
+                            val now = java.time.ZonedDateTime.now()
+                            if (scheduledStart == null) scheduledStart = now.plusHours(1)
+                            if (scheduledEnd == null) scheduledEnd = now.plusHours(5)
+                        }
+                    },
+                    colors = SwitchDefaults.colors(checkedThumbColor = QuietPurple, checkedTrackColor = QuietPurple.copy(alpha = 0.4f)),
+                )
+            }
+            if (scheduleForLater) {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("Start time", color = TextMuted, fontSize = DSTypography.Caption)
+                    OutlinedButton(
+                        onClick = { pickDateTime(scheduledStart ?: java.time.ZonedDateTime.now().plusHours(1)) { scheduledStart = it; if (scheduledEnd != null && scheduledEnd!! <= it) scheduledEnd = it.plusHours(4) } },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(10.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = QuietPurple),
+                    ) {
+                        Text(scheduledStart?.format(displayFmt) ?: "Pick start time", fontWeight = FontWeight.SemiBold)
+                    }
+                    Text("End time", color = TextMuted, fontSize = DSTypography.Caption)
+                    OutlinedButton(
+                        onClick = { pickDateTime(scheduledEnd ?: (scheduledStart?.plusHours(4) ?: java.time.ZonedDateTime.now().plusHours(5))) { scheduledEnd = it } },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(10.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = QuietPurple),
+                    ) {
+                        Text(scheduledEnd?.format(displayFmt) ?: "Pick end time", fontWeight = FontWeight.SemiBold)
+                    }
+                }
+            }
             if (!errorMsg.isNullOrBlank()) {
                 Text(errorMsg, color = AlarmRed, fontSize = DSTypography.Caption)
             }
             BBPrimaryButton(
-                text = "Submit Request",
+                text = if (scheduleForLater) "Schedule Request" else "Submit Request",
                 onClick = {
                     submitted = true
-                    onConfirm(reason.trim().ifBlank { null })
+                    onConfirm(
+                        reason.trim().ifBlank { null },
+                        if (scheduleForLater) scheduledStart?.format(isoFmt) else null,
+                        if (scheduleForLater) scheduledEnd?.format(isoFmt) else null,
+                    )
                 },
-                enabled = !isBusy,
+                enabled = !isBusy && (!scheduleForLater || (scheduledStart != null && scheduledEnd != null)),
                 isLoading = isBusy,
                 modifier = Modifier.fillMaxWidth(),
             )
@@ -6243,10 +6375,12 @@ private class BackendClient(baseUrl: String, private val apiKey: String) {
         http.newCall(req).execute().use { requireSuccess(it) }
     }
 
-    fun requestQuietPeriod(userId: Int, reason: String?) {
+    fun requestQuietPeriod(userId: Int, reason: String?, scheduledStartAt: String? = null, scheduledEndAt: String? = null) {
         val body = JSONObject()
             .put("user_id", userId)
             .apply { reason?.let { put("reason", it) } }
+            .apply { scheduledStartAt?.let { put("scheduled_start_at", it) } }
+            .apply { scheduledEndAt?.let { put("scheduled_end_at", it) } }
         val req = Request.Builder()
             .url("$base/quiet-periods/request")
             .withAuth()
@@ -6284,6 +6418,8 @@ private class BackendClient(baseUrl: String, private val apiKey: String) {
                                 approvedAt = item.optNullableString("approved_at"),
                                 approvedByLabel = item.optNullableString("approved_by_label"),
                                 expiresAt = item.optNullableString("expires_at"),
+                                scheduledStartAt = item.optNullableString("scheduled_start_at"),
+                                scheduledEndAt = item.optNullableString("scheduled_end_at"),
                             ),
                         )
                     }
@@ -6404,6 +6540,8 @@ private class BackendClient(baseUrl: String, private val apiKey: String) {
                 approvedAt = j.optNullableString("approved_at"),
                 approvedByLabel = j.optNullableString("approved_by_label"),
                 expiresAt = j.optNullableString("expires_at"),
+                scheduledStartAt = j.optNullableString("scheduled_start_at"),
+                scheduledEndAt = j.optNullableString("scheduled_end_at"),
             )
         }
     }

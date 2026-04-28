@@ -698,6 +698,8 @@ def _quiet_period_action_label(status: str) -> str:
     normalized = (status or "").strip().lower()
     if normalized == "approved":
         return "Quiet period approved"
+    if normalized == "scheduled":
+        return "Quiet period scheduled"
     if normalized == "cleared":
         return "Quiet period removed"
     if normalized == "denied":
@@ -1331,6 +1333,8 @@ def _to_quiet_period_summary(record) -> QuietPeriodSummary:
         approved_by_user_id=record.approved_by_user_id,
         approved_by_label=record.approved_by_label,
         expires_at=record.expires_at,
+        scheduled_start_at=getattr(record, "scheduled_start_at", None),
+        scheduled_end_at=getattr(record, "scheduled_end_at", None),
     )
 
 
@@ -2209,9 +2213,9 @@ async def admin_dashboard(
     quiet_periods_all = await _quiet_periods(request).list_recent(limit=200)
     hidden_ids = _quiet_hidden_ids(request)
     quiet_periods_active = [
-        item for item in quiet_periods_all if item.status in {"pending", "approved"} and item.id not in hidden_ids
+        item for item in quiet_periods_all if item.status in {"pending", "approved", "scheduled"} and item.id not in hidden_ids
     ]
-    quiet_periods_history = [item for item in quiet_periods_all if item.status not in {"pending", "approved"}]
+    quiet_periods_history = [item for item in quiet_periods_all if item.status not in {"pending", "approved", "scheduled"}]
     selected_section = _admin_section(section)
     _admin_role = str(getattr(request.state.admin_user, "role", "")).strip().lower()
     # Gate district and devices sections to district_admin and super_admin
@@ -4718,18 +4722,22 @@ async def admin_approve_quiet_period(
         admin_user_id=_session_user_id(request) or 0,
         admin_label=_current_school_actor_label(request),
     )
-    if record is None or record.status != "approved":
+    if record is None or record.status not in {"approved", "scheduled"}:
         _set_flash(request, error="Quiet period request was not found or is no longer pending.")
         return RedirectResponse(url="/admin?section=quiet-periods#quiet-periods", status_code=status.HTTP_303_SEE_OTHER)
-    await _apply_law_enforcement_quiet_state_for_request(
-        request,
-        request_user_id=int(record.user_id),
-        source_request_id=int(record.id),
-        approved_by_user_id=(_session_user_id(request) or 0),
-    )
+    if record.status == "approved":
+        await _apply_law_enforcement_quiet_state_for_request(
+            request,
+            request_user_id=int(record.user_id),
+            source_request_id=int(record.id),
+            approved_by_user_id=(_session_user_id(request) or 0),
+        )
     user = await _users(request).get_user(record.user_id)
     label = user.name if user else f"User #{record.user_id}"
-    _set_flash(request, message=f"Approved quiet period request for {label}.")
+    if record.status == "scheduled":
+        _set_flash(request, message=f"Scheduled quiet period approved for {label} — will start at {record.scheduled_start_at}.")
+    else:
+        _set_flash(request, message=f"Approved quiet period request for {label}.")
     return RedirectResponse(url="/admin?section=quiet-periods#quiet-periods", status_code=status.HTTP_303_SEE_OTHER)
 
 
@@ -6401,6 +6409,8 @@ async def request_quiet_period(
     record = await _quiet_periods(request).request_quiet_period(
         user_id=user_id,
         reason=body.reason,
+        scheduled_start_at=getattr(body, "scheduled_start_at", None),
+        scheduled_end_at=getattr(body, "scheduled_end_at", None),
     )
     _fire_audit(
         request,
@@ -6432,7 +6442,7 @@ async def admin_quiet_period_requests(
         permissions={PERM_APPROVE_OWN_TENANT_QUIET_REQUESTS, PERM_APPROVE_ASSIGNED_TENANT_QUIET_REQUESTS},
     )
     records = await _quiet_periods(request).list_recent(limit=limit)
-    visible = [item for item in records if item.status in {"pending", "approved"}]
+    visible = [item for item in records if item.status in {"pending", "approved", "scheduled"}]
     all_users = await _users(request).list_users()
     users_by_id = {int(u.id): u for u in all_users}
     return QuietPeriodAdminListResponse(
@@ -6449,6 +6459,8 @@ async def admin_quiet_period_requests(
                 approved_by_user_id=item.approved_by_user_id,
                 approved_by_label=item.approved_by_label,
                 expires_at=item.expires_at,
+                scheduled_start_at=getattr(item, "scheduled_start_at", None),
+                scheduled_end_at=getattr(item, "scheduled_end_at", None),
             )
             for item in visible
         ]
@@ -6478,22 +6490,23 @@ async def approve_quiet_period_request_api(
         admin_user_id=admin_id,
         admin_label=admin_user.name if admin_user is not None else None,
     )
-    if record is None or record.status != "approved":
+    if record is None or record.status not in {"approved", "scheduled"}:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Quiet period request is not pending")
-    await _apply_law_enforcement_quiet_state_for_request(
-        request,
-        request_user_id=int(record.user_id),
-        source_request_id=int(record.id),
-        approved_by_user_id=admin_id,
-    )
+    if record.status == "approved":
+        await _apply_law_enforcement_quiet_state_for_request(
+            request,
+            request_user_id=int(record.user_id),
+            source_request_id=int(record.id),
+            approved_by_user_id=admin_id,
+        )
     _fire_audit(
         request,
-        "quiet_period_approved",
+        "quiet_period_approved" if record.status == "approved" else "quiet_period_scheduled",
         actor_user_id=admin_id,
         actor_label=admin_user.name if admin_user else None,
         target_type="quiet_period_request",
         target_id=str(record.id),
-        metadata={"requester_user_id": int(record.user_id)},
+        metadata={"requester_user_id": int(record.user_id), "scheduled_start_at": record.scheduled_start_at},
     )
     try:
         # Bypass quiet suppression: the recipient IS the user just granted quiet,
@@ -6501,11 +6514,17 @@ async def approve_quiet_period_request_api(
         _target_uid = int(record.user_id)
         _push_apns = [d.token for d in await _registry(request).list_by_provider("apns") if d.user_id == _target_uid and d.is_valid]
         _push_fcm = [d.token for d in await _registry(request).list_by_provider("fcm") if d.user_id == _target_uid and d.is_valid]
+        if record.status == "scheduled":
+            _push_msg = f"Your quiet period has been scheduled for {record.scheduled_start_at or 'the requested time'}."
+            _push_title = "Quiet Period Scheduled"
+        else:
+            _push_msg = "Your quiet period request has been approved."
+            _push_title = "Quiet Period Approved"
         await _send_quiet_period_push_bg(
             _apns(request), _fcm(request), _push_apns, _push_fcm,
-            title="Quiet Period Approved",
-            message="Your quiet period request has been approved.",
-            extra_data={"type": "quiet_period_update", "status": "approved", "quiet_period_id": str(record.id)},
+            title=_push_title,
+            message=_push_msg,
+            extra_data={"type": "quiet_period_update", "status": record.status, "quiet_period_id": str(record.id)},
         )
     except Exception:
         logger.debug("quiet_period approve push failed user_id=%s", record.user_id, exc_info=True)
@@ -6513,6 +6532,7 @@ async def approve_quiet_period_request_api(
         "request_id": record.id,
         "user_id": record.user_id,
         "expires_at": record.expires_at,
+        "scheduled_start_at": record.scheduled_start_at,
         "event_id": f"qra_{record.id}",
     })
     return _to_quiet_period_summary(record)
@@ -6598,6 +6618,8 @@ async def quiet_period_status(
         approved_by_label=record.approved_by_label,
         expires_at=record.expires_at,
         quiet_mode_active=await _is_effective_quiet_user(request, user_id=user_id),
+        scheduled_start_at=getattr(record, "scheduled_start_at", None),
+        scheduled_end_at=getattr(record, "scheduled_end_at", None),
     )
 
 

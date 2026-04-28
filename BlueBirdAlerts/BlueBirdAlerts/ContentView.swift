@@ -507,6 +507,9 @@ struct ContentView: View {
     @State private var showMessagingCenter = false
     @State private var showQuietPeriodCenter = false
     @State private var quietPeriodReason = ""
+    @State private var scheduleForLater = false
+    @State private var scheduledStartDate = Date(timeIntervalSinceNow: 3600)
+    @State private var scheduledEndDate = Date(timeIntervalSinceNow: 3600 + 3600 * 4)
     @State private var trainingModeEnabled = false
     @State private var silentTrainingAudioEnabled = false
     @State private var trainingLabel = "This is a drill"
@@ -1411,9 +1414,31 @@ struct ContentView: View {
                 } else {
                     ForEach(adminQuietPeriodRequests.prefix(10)) { item in
                         VStack(alignment: .leading, spacing: 8) {
-                            Text("\(item.userName ?? "User #\(item.userID)") • \((item.userRole ?? "user").capitalized)")
-                                .font(.subheadline.weight(.semibold))
-                                .foregroundStyle(textPrimary)
+                            HStack {
+                                Text("\(item.userName ?? "User #\(item.userID)") • \((item.userRole ?? "user").capitalized)")
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(textPrimary)
+                                Spacer()
+                                if item.status.lowercased() == "scheduled" {
+                                    Text("Scheduled")
+                                        .font(.caption2.weight(.semibold))
+                                        .foregroundStyle(DSColor.success)
+                                        .padding(.horizontal, 7)
+                                        .padding(.vertical, 3)
+                                        .background(DSColor.success.opacity(0.12))
+                                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                                }
+                            }
+                            if let startAt = item.scheduledStartAt {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "calendar.clock")
+                                        .font(.caption2)
+                                        .foregroundStyle(DSColor.info)
+                                    Text("Starts: \(formatScheduledTime(startAt))")
+                                        .font(.caption)
+                                        .foregroundStyle(DSColor.info)
+                                }
+                            }
                             Text("Requested: \(item.requestedAt)")
                                 .font(.caption)
                                 .foregroundStyle(textMuted)
@@ -1606,6 +1631,16 @@ struct ContentView: View {
                                     )
                                     .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                             }
+                            if let startAt = myQuietRequest?.scheduledStartAt {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "calendar.clock")
+                                        .font(.subheadline)
+                                        .foregroundStyle(DSColor.info)
+                                    Text("Scheduled: \(formatScheduledTime(startAt))")
+                                        .font(.subheadline)
+                                        .foregroundStyle(DSColor.info)
+                                }
+                            }
                             if let requestedAt = myQuietRequest?.requestedAt {
                                 Text("Requested: \(requestedAt)")
                                     .font(.subheadline)
@@ -1620,6 +1655,86 @@ struct ContentView: View {
                                 showCancelQuietRequestConfirm = true
                             } label: {
                                 Text(isCancellingQuietRequest ? "Cancelling..." : "Cancel Request")
+                                    .font(.body)
+                                    .fontWeight(.semibold)
+                                    .foregroundStyle(DSColor.danger)
+                                    .frame(maxWidth: .infinity, minHeight: 44)
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                            .stroke(DSColor.danger.opacity(0.5), lineWidth: 1.5)
+                                    )
+                            }
+                            .buttonStyle(PressableScaleButtonStyle())
+                            .disabled(isCancellingQuietRequest)
+                            if let feedback = quietPeriodLocalFeedback {
+                                flashBanner(message: feedback, isError: quietPeriodLocalIsError)
+                            }
+                        }
+                    }
+                } else if myQuietRequest?.status?.lowercased() == "scheduled" {
+                    card {
+                        VStack(alignment: .leading, spacing: 12) {
+                            HStack(alignment: .top) {
+                                Text("Quiet Period Scheduled")
+                                    .font(.headline)
+                                    .foregroundStyle(DSColor.textPrimary)
+                                Spacer()
+                                Text("Approved")
+                                    .font(.caption)
+                                    .fontWeight(.semibold)
+                                    .foregroundStyle(DSColor.success)
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 4)
+                                    .background(DSColor.success.opacity(0.12))
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                            .stroke(DSColor.success.opacity(0.35), lineWidth: 1)
+                                    )
+                                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                            }
+                            if let startAt = myQuietRequest?.scheduledStartAt {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "calendar.clock")
+                                        .font(.subheadline)
+                                        .foregroundStyle(DSColor.info)
+                                    Text("Starts: \(formatScheduledTime(startAt))")
+                                        .font(.subheadline)
+                                        .foregroundStyle(DSColor.info)
+                                }
+                            }
+                            if let label = myQuietRequest?.approvedByLabel {
+                                Text("Approved by: \(label)")
+                                    .font(.subheadline)
+                                    .foregroundStyle(DSColor.textSecondary)
+                            }
+                            if myQuietRequest?.scheduledStartAt != nil {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "timer")
+                                        .font(.subheadline)
+                                        .foregroundStyle(quietCountdownSeconds > 0 ? DSColor.info : DSColor.textSecondary)
+                                    if quietCountdownSeconds > 0 {
+                                        Text(quietCountdownFormatted(quietCountdownSeconds))
+                                            .font(.system(.subheadline, design: .monospaced))
+                                            .fontWeight(.semibold)
+                                            .foregroundStyle(DSColor.info)
+                                            .contentTransition(.numericText())
+                                            .animation(.easeInOut(duration: 0.25), value: quietCountdownSeconds)
+                                    } else {
+                                        Text("Starting...")
+                                            .font(.subheadline)
+                                            .foregroundStyle(DSColor.textSecondary)
+                                    }
+                                    Text("until start")
+                                        .font(.subheadline)
+                                        .foregroundStyle(DSColor.textSecondary)
+                                }
+                                .onAppear { startQuietCountdown() }
+                                .onDisappear { stopQuietCountdown() }
+                            }
+                            Button {
+                                showCancelQuietRequestConfirm = true
+                            } label: {
+                                Text(isCancellingQuietRequest ? "Cancelling..." : "Cancel Scheduled Period")
                                     .font(.body)
                                     .fontWeight(.semibold)
                                     .foregroundStyle(DSColor.danger)
@@ -1738,8 +1853,52 @@ struct ContentView: View {
                                 placeholder: "Reason (optional)",
                                 axis: .vertical
                             )
+                            Toggle(isOn: $scheduleForLater) {
+                                Label("Schedule for later", systemImage: "calendar.clock")
+                                    .font(.subheadline)
+                                    .foregroundStyle(DSColor.textPrimary)
+                            }
+                            .tint(DSColor.quietAccent)
+                            .onChange(of: scheduleForLater) { _, on in
+                                if on {
+                                    scheduledStartDate = Date(timeIntervalSinceNow: 3600)
+                                    scheduledEndDate = Date(timeIntervalSinceNow: 3600 + 3600 * 4)
+                                }
+                            }
+                            if scheduleForLater {
+                                VStack(alignment: .leading, spacing: 8) {
+                                    Text("Start time")
+                                        .font(.caption)
+                                        .foregroundStyle(DSColor.textSecondary)
+                                    DatePicker(
+                                        "",
+                                        selection: $scheduledStartDate,
+                                        in: Date(timeIntervalSinceNow: 300)...,
+                                        displayedComponents: [.date, .hourAndMinute]
+                                    )
+                                    .datePickerStyle(.compact)
+                                    .labelsHidden()
+                                    .onChange(of: scheduledStartDate) { _, newStart in
+                                        if scheduledEndDate <= newStart {
+                                            scheduledEndDate = newStart.addingTimeInterval(3600 * 4)
+                                        }
+                                    }
+                                    Text("End time (optional)")
+                                        .font(.caption)
+                                        .foregroundStyle(DSColor.textSecondary)
+                                    DatePicker(
+                                        "",
+                                        selection: $scheduledEndDate,
+                                        in: scheduledStartDate.addingTimeInterval(300)...scheduledStartDate.addingTimeInterval(3600 * 24),
+                                        displayedComponents: [.date, .hourAndMinute]
+                                    )
+                                    .datePickerStyle(.compact)
+                                    .labelsHidden()
+                                }
+                                .padding(.vertical, 4)
+                            }
                             PrimaryButton(
-                                isSubmittingQuickAction ? "Submitting..." : "Submit Request",
+                                isSubmittingQuickAction ? "Submitting..." : (scheduleForLater ? "Schedule Request" : "Submit Request"),
                                 isLoading: isSubmittingQuickAction,
                                 isEnabled: !isSubmittingQuickAction
                             ) {
@@ -1768,14 +1927,24 @@ struct ContentView: View {
             Task { await loadMyQuietRequest() }
         }
         .confirmationDialog(
-            myQuietRequest?.status?.lowercased() == "approved"
-                ? "End your active quiet period?"
-                : "Cancel this quiet period request?",
+            {
+                switch myQuietRequest?.status?.lowercased() {
+                case "approved": return "End your active quiet period?"
+                case "scheduled": return "Cancel this scheduled quiet period?"
+                default: return "Cancel this quiet period request?"
+                }
+            }(),
             isPresented: $showCancelQuietRequestConfirm,
             titleVisibility: .visible
         ) {
             Button(
-                myQuietRequest?.status?.lowercased() == "approved" ? "End Quiet Period" : "Cancel Request",
+                {
+                    switch myQuietRequest?.status?.lowercased() {
+                    case "approved": return "End Quiet Period"
+                    case "scheduled": return "Cancel Scheduled Period"
+                    default: return "Cancel Request"
+                    }
+                }(),
                 role: .destructive
             ) {
                 Task { await cancelQuietPeriodRequest() }
@@ -1785,9 +1954,13 @@ struct ContentView: View {
                 role: .cancel
             ) {}
         } message: {
-            Text(myQuietRequest?.status?.lowercased() == "approved"
-                 ? "Push notifications will resume immediately."
-                 : "This will cancel your pending quiet period request.")
+            Text({
+                switch myQuietRequest?.status?.lowercased() {
+                case "approved": return "Push notifications will resume immediately."
+                case "scheduled": return "This will cancel your scheduled quiet period."
+                default: return "This will cancel your pending quiet period request."
+                }
+            }())
         }
     }
 
@@ -2112,12 +2285,18 @@ struct ContentView: View {
 
     // ── Quiet period countdown ────────────────────────────────────────────────
 
+    private var quietCountdownTargetISO: String? {
+        let st = myQuietRequest?.status?.lowercased()
+        if st == "scheduled" { return myQuietRequest?.scheduledStartAt }
+        return myQuietRequest?.expiresAt
+    }
+
     private func startQuietCountdown() {
         stopQuietCountdown()
-        quietCountdownSeconds = secondsUntilISO(myQuietRequest?.expiresAt)
+        quietCountdownSeconds = secondsUntilISO(quietCountdownTargetISO)
         guard quietCountdownSeconds > 0 else { return }
         quietCountdownTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in
-            let remaining = secondsUntilISO(myQuietRequest?.expiresAt)
+            let remaining = secondsUntilISO(quietCountdownTargetISO)
             DispatchQueue.main.async {
                 quietCountdownSeconds = max(0, remaining)
                 if quietCountdownSeconds == 0 { stopQuietCountdown() }
@@ -2151,6 +2330,21 @@ struct ContentView: View {
             return String(format: "%d:%02d:%02d", h, m, s)
         }
         return String(format: "%d:%02d", m, s)
+    }
+
+    private func formatScheduledTime(_ isoString: String) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        var date = formatter.date(from: isoString)
+        if date == nil {
+            formatter.formatOptions = [.withInternetDateTime]
+            date = formatter.date(from: isoString)
+        }
+        guard let d = date else { return isoString }
+        let display = DateFormatter()
+        display.dateStyle = .short
+        display.timeStyle = .short
+        return display.string(from: d)
     }
 
     private func registerDevice(token: String) async {
@@ -2551,17 +2745,18 @@ struct ContentView: View {
         defer { isSubmittingQuickAction = false }
         do {
             let trimmed = quietPeriodReason.trimmingCharacters(in: .whitespacesAndNewlines)
-            #if DEBUG
-            print("[QuietPeriod] POST /quiet-periods/request — reason: \(trimmed.isEmpty ? "<none>" : trimmed)")
-            #endif
+            let isoFormatter = ISO8601DateFormatter()
+            isoFormatter.formatOptions = [.withInternetDateTime]
+            let startISO: String? = scheduleForLater ? isoFormatter.string(from: scheduledStartDate) : nil
+            let endISO: String? = scheduleForLater ? isoFormatter.string(from: scheduledEndDate) : nil
             let result = try await api.requestQuietPeriod(
                 userID: userID,
-                reason: trimmed.isEmpty ? nil : trimmed
+                reason: trimmed.isEmpty ? nil : trimmed,
+                scheduledStartAt: startISO,
+                scheduledEndAt: endISO
             )
-            #if DEBUG
-            print("[QuietPeriod] Request submitted successfully")
-            #endif
             quietPeriodReason = ""
+            scheduleForLater = false
             myQuietRequest = result
             quietPeriodLocalFeedback = nil
             quietPeriodLocalIsError = false
@@ -2586,11 +2781,13 @@ struct ContentView: View {
             let result = try await api.quietPeriodStatus(userID: userID)
             let prior = myQuietRequest
             myQuietRequest = result.status != nil ? result : nil
-            let isApproved = result.status?.lowercased() == "approved"
-            let wasApproved = prior?.status?.lowercased() == "approved"
-            if isApproved && (!wasApproved || prior?.expiresAt != result.expiresAt) {
+            let newStatus = result.status?.lowercased()
+            let isCountable = newStatus == "approved" || newStatus == "scheduled"
+            let wasCountable = prior?.status?.lowercased() == "approved" || prior?.status?.lowercased() == "scheduled"
+            let targetChanged = prior?.expiresAt != result.expiresAt || prior?.scheduledStartAt != result.scheduledStartAt
+            if isCountable && (!wasCountable || targetChanged) {
                 startQuietCountdown()
-            } else if !isApproved {
+            } else if !isCountable {
                 stopQuietCountdown()
                 quietCountdownSeconds = 0
             }

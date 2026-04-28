@@ -299,6 +299,8 @@ class AdminMessageReplyRequest(BaseModel):
 class QuietPeriodRequestCreate(BaseModel):
     user_id: int
     reason: Optional[str] = Field(default=None, max_length=240)
+    scheduled_start_at: Optional[str] = None
+    scheduled_end_at: Optional[str] = None
 
     @field_validator("reason")
     @classmethod
@@ -307,6 +309,48 @@ class QuietPeriodRequestCreate(BaseModel):
             return None
         normalized = v.strip()
         return normalized or None
+
+    @field_validator("scheduled_start_at")
+    @classmethod
+    def validate_scheduled_start(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        from datetime import datetime, timezone
+        try:
+            dt = datetime.fromisoformat(v)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            if dt <= datetime.now(timezone.utc):
+                raise ValueError("scheduled_start_at must be in the future")
+        except (ValueError, TypeError) as e:
+            raise ValueError(f"Invalid scheduled_start_at: {e}") from e
+        return v
+
+    @field_validator("scheduled_end_at")
+    @classmethod
+    def validate_scheduled_end(cls, v: Optional[str], info) -> Optional[str]:
+        if v is None:
+            return None
+        from datetime import datetime, timezone, timedelta
+        try:
+            end_dt = datetime.fromisoformat(v)
+            if end_dt.tzinfo is None:
+                end_dt = end_dt.replace(tzinfo=timezone.utc)
+        except (ValueError, TypeError) as e:
+            raise ValueError(f"Invalid scheduled_end_at: {e}") from e
+        start_raw = (info.data or {}).get("scheduled_start_at")
+        if start_raw:
+            try:
+                start_dt = datetime.fromisoformat(start_raw)
+                if start_dt.tzinfo is None:
+                    start_dt = start_dt.replace(tzinfo=timezone.utc)
+                if end_dt <= start_dt:
+                    raise ValueError("scheduled_end_at must be after scheduled_start_at")
+                if (end_dt - start_dt) > timedelta(hours=24):
+                    raise ValueError("Scheduled quiet period duration cannot exceed 24 hours")
+            except ValueError:
+                raise
+        return v
 
 
 class QuietPeriodSummary(BaseModel):
@@ -319,6 +363,8 @@ class QuietPeriodSummary(BaseModel):
     approved_by_user_id: Optional[int] = None
     approved_by_label: Optional[str] = None
     expires_at: Optional[str] = None
+    scheduled_start_at: Optional[str] = None
+    scheduled_end_at: Optional[str] = None
 
 
 class QuietPeriodStatusResponse(BaseModel):
@@ -331,6 +377,8 @@ class QuietPeriodStatusResponse(BaseModel):
     approved_by_label: Optional[str] = None
     expires_at: Optional[str] = None
     quiet_mode_active: bool = False
+    scheduled_start_at: Optional[str] = None
+    scheduled_end_at: Optional[str] = None
 
 
 class QuietPeriodDeleteRequest(BaseModel):
@@ -354,6 +402,8 @@ class QuietPeriodAdminItem(BaseModel):
     approved_by_user_id: Optional[int] = None
     approved_by_label: Optional[str] = None
     expires_at: Optional[str] = None
+    scheduled_start_at: Optional[str] = None
+    scheduled_end_at: Optional[str] = None
 
 
 class QuietPeriodAdminListResponse(BaseModel):

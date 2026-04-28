@@ -195,13 +195,13 @@ struct APIClient {
         try await confirmRequestHelpCancel(teamAssistID: teamAssistID, actorUserID: actorUserID)
     }
 
-    func requestQuietPeriod(userID: Int, reason: String?) async throws -> QuietPeriodRequestResponse {
+    func requestQuietPeriod(userID: Int, reason: String?, scheduledStartAt: String? = nil, scheduledEndAt: String? = nil) async throws -> QuietPeriodRequestResponse {
         let url = baseURL.appendingPathComponent("quiet-periods/request")
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         withAPIKey(&request)
-        request.httpBody = try JSONEncoder().encode(QuietPeriodRequestPayload(userID: userID, reason: reason))
+        request.httpBody = try JSONEncoder().encode(QuietPeriodRequestPayload(userID: userID, reason: reason, scheduledStartAt: scheduledStartAt, scheduledEndAt: scheduledEndAt))
         let (data, response) = try await URLSession.shared.data(for: request)
         try requireSuccess(response: response, data: data)
         return try JSONDecoder().decode(QuietPeriodRequestResponse.self, from: data)
@@ -756,10 +756,14 @@ private struct TeamAssistCancelConfirmPayload: Encodable {
 private struct QuietPeriodRequestPayload: Encodable {
     let userID: Int
     let reason: String?
+    let scheduledStartAt: String?
+    let scheduledEndAt: String?
 
     enum CodingKeys: String, CodingKey {
         case userID = "user_id"
         case reason
+        case scheduledStartAt = "scheduled_start_at"
+        case scheduledEndAt = "scheduled_end_at"
     }
 }
 
@@ -811,6 +815,8 @@ struct QuietPeriodRequestResponse: Decodable {
     let approvedByLabel: String?
     let expiresAt: String?
     let quietModeActive: Bool?
+    let scheduledStartAt: String?
+    let scheduledEndAt: String?
 
     enum CodingKeys: String, CodingKey {
         case requestID = "request_id"
@@ -822,6 +828,8 @@ struct QuietPeriodRequestResponse: Decodable {
         case approvedByLabel = "approved_by_label"
         case expiresAt = "expires_at"
         case quietModeActive = "quiet_mode_active"
+        case scheduledStartAt = "scheduled_start_at"
+        case scheduledEndAt = "scheduled_end_at"
     }
 }
 
@@ -840,6 +848,8 @@ struct QuietPeriodAdminRequest: Decodable, Identifiable {
     let approvedAt: String?
     let approvedByLabel: String?
     let expiresAt: String?
+    let scheduledStartAt: String?
+    let scheduledEndAt: String?
 
     var id: Int { requestID }
 
@@ -854,6 +864,8 @@ struct QuietPeriodAdminRequest: Decodable, Identifiable {
         case approvedAt = "approved_at"
         case approvedByLabel = "approved_by_label"
         case expiresAt = "expires_at"
+        case scheduledStartAt = "scheduled_start_at"
+        case scheduledEndAt = "scheduled_end_at"
     }
 }
 

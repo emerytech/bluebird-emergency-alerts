@@ -20,6 +20,8 @@ class QuietPeriodRecord:
     approved_by_user_id: Optional[int]
     approved_by_label: Optional[str]
     expires_at: Optional[str]
+    scheduled_start_at: Optional[str] = None
+    scheduled_end_at: Optional[str] = None
 
 
 class QuietPeriodStore:
@@ -66,6 +68,10 @@ class QuietPeriodStore:
             conn.execute("ALTER TABLE quiet_period_requests ADD COLUMN approved_by_label TEXT NULL;")
         if "expires_at" not in cols:
             conn.execute("ALTER TABLE quiet_period_requests ADD COLUMN expires_at TEXT NULL;")
+        if "scheduled_start_at" not in cols:
+            conn.execute("ALTER TABLE quiet_period_requests ADD COLUMN scheduled_start_at TEXT NULL;")
+        if "scheduled_end_at" not in cols:
+            conn.execute("ALTER TABLE quiet_period_requests ADD COLUMN scheduled_end_at TEXT NULL;")
 
     def _row_to_record(self, row: sqlite3.Row | tuple) -> QuietPeriodRecord:
         return QuietPeriodRecord(
@@ -78,6 +84,8 @@ class QuietPeriodStore:
             approved_by_user_id=int(row[6]) if row[6] is not None else None,
             approved_by_label=str(row[7]) if row[7] is not None else None,
             expires_at=str(row[8]) if row[8] is not None else None,
+            scheduled_start_at=str(row[9]) if len(row) > 9 and row[9] is not None else None,
+            scheduled_end_at=str(row[10]) if len(row) > 10 and row[10] is not None else None,
         )
 
     def _expire_old_sync(self) -> None:
@@ -93,6 +101,17 @@ class QuietPeriodStore:
                 """,
                 (now,),
             )
+            # Activate scheduled requests whose start time has arrived.
+            conn.execute(
+                """
+                UPDATE quiet_period_requests
+                SET status = 'approved'
+                WHERE status = 'scheduled'
+                  AND scheduled_start_at IS NOT NULL
+                  AND scheduled_start_at <= ?;
+                """,
+                (now,),
+            )
 
     async def expire_old(self) -> None:
         await anyio.to_thread.run_sync(self._expire_old_sync)
@@ -102,7 +121,7 @@ class QuietPeriodStore:
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT id, user_id, reason, status, requested_at, approved_at, approved_by_user_id, approved_by_label, expires_at
+                SELECT id, user_id, reason, status, requested_at, approved_at, approved_by_user_id, approved_by_label, expires_at, scheduled_start_at, scheduled_end_at
                 FROM quiet_period_requests
                 WHERE status = 'approved'
                   AND expires_at IS NOT NULL
@@ -123,7 +142,13 @@ class QuietPeriodStore:
     async def expire_and_return(self) -> List[QuietPeriodRecord]:
         return await anyio.to_thread.run_sync(self._expire_and_return_sync)
 
-    def _request_sync(self, user_id: int, reason: Optional[str]) -> QuietPeriodRecord:
+    def _request_sync(
+        self,
+        user_id: int,
+        reason: Optional[str],
+        scheduled_start_at: Optional[str] = None,
+        scheduled_end_at: Optional[str] = None,
+    ) -> QuietPeriodRecord:
         self._expire_old_sync()
         requested_at = datetime.now(timezone.utc).isoformat()
         with self._connect() as conn:
@@ -132,22 +157,23 @@ class QuietPeriodStore:
                 UPDATE quiet_period_requests
                 SET status = 'superseded'
                 WHERE user_id = ?
-                  AND status IN ('pending', 'approved');
+                  AND status IN ('pending', 'approved', 'scheduled');
                 """,
                 (int(user_id),),
             )
             cur = conn.execute(
                 """
                 INSERT INTO quiet_period_requests (
-                    user_id, reason, status, requested_at, approved_at, approved_by_user_id, expires_at
+                    user_id, reason, status, requested_at, approved_at, approved_by_user_id, expires_at,
+                    scheduled_start_at, scheduled_end_at
                 )
-                VALUES (?, ?, 'pending', ?, NULL, NULL, NULL);
+                VALUES (?, ?, 'pending', ?, NULL, NULL, NULL, ?, ?);
                 """,
-                (int(user_id), reason, requested_at),
+                (int(user_id), reason, requested_at, scheduled_start_at, scheduled_end_at),
             )
             row = conn.execute(
                 """
-                SELECT id, user_id, reason, status, requested_at, approved_at, approved_by_user_id, approved_by_label, expires_at
+                SELECT id, user_id, reason, status, requested_at, approved_at, approved_by_user_id, approved_by_label, expires_at, scheduled_start_at, scheduled_end_at
                 FROM quiet_period_requests
                 WHERE id = ?;
                 """,
@@ -156,8 +182,24 @@ class QuietPeriodStore:
         assert row is not None
         return self._row_to_record(row)
 
-    async def request_quiet_period(self, *, user_id: int, reason: Optional[str]) -> QuietPeriodRecord:
-        return await anyio.to_thread.run_sync(self._request_sync, int(user_id), reason)
+    async def request_quiet_period(
+        self,
+        *,
+        user_id: int,
+        reason: Optional[str],
+        scheduled_start_at: Optional[str] = None,
+        scheduled_end_at: Optional[str] = None,
+    ) -> QuietPeriodRecord:
+        import functools
+        return await anyio.to_thread.run_sync(
+            functools.partial(
+                self._request_sync,
+                int(user_id),
+                reason,
+                scheduled_start_at,
+                scheduled_end_at,
+            )
+        )
 
     def _grant_sync(self, user_id: int, reason: Optional[str], admin_user_id: int, admin_label: Optional[str]) -> QuietPeriodRecord:
         self._expire_old_sync()
@@ -184,7 +226,7 @@ class QuietPeriodStore:
             )
             row = conn.execute(
                 """
-                SELECT id, user_id, reason, status, requested_at, approved_at, approved_by_user_id, approved_by_label, expires_at
+                SELECT id, user_id, reason, status, requested_at, approved_at, approved_by_user_id, approved_by_label, expires_at, scheduled_start_at, scheduled_end_at
                 FROM quiet_period_requests
                 WHERE id = ?;
                 """,
@@ -199,12 +241,44 @@ class QuietPeriodStore:
     def _approve_sync(self, request_id: int, admin_user_id: int, admin_label: Optional[str]) -> Optional[QuietPeriodRecord]:
         self._expire_old_sync()
         approved_at = datetime.now(timezone.utc)
-        expires_at = (approved_at + timedelta(hours=24)).isoformat()
         with self._connect() as conn:
+            # Read scheduled times before updating to determine status.
+            rec = conn.execute(
+                "SELECT scheduled_start_at, scheduled_end_at FROM quiet_period_requests WHERE id = ? AND status = 'pending';",
+                (int(request_id),),
+            ).fetchone()
+            if rec is None:
+                return None
+            sched_start_raw = rec[0]
+            sched_end_raw = rec[1]
+
+            # Determine if this is a future-scheduled approval.
+            new_status = "approved"
+            if sched_start_raw:
+                try:
+                    start_dt = datetime.fromisoformat(str(sched_start_raw))
+                    if start_dt.tzinfo is None:
+                        start_dt = start_dt.replace(tzinfo=timezone.utc)
+                    if start_dt > approved_at:
+                        new_status = "scheduled"
+                except ValueError:
+                    pass
+
+            if new_status == "scheduled":
+                if sched_end_raw:
+                    expires_at = str(sched_end_raw)
+                else:
+                    start_dt = datetime.fromisoformat(str(sched_start_raw))
+                    if start_dt.tzinfo is None:
+                        start_dt = start_dt.replace(tzinfo=timezone.utc)
+                    expires_at = (start_dt + timedelta(hours=24)).isoformat()
+            else:
+                expires_at = (approved_at + timedelta(hours=24)).isoformat()
+
             conn.execute(
                 """
                 UPDATE quiet_period_requests
-                SET status = 'approved',
+                SET status = ?,
                     approved_at = ?,
                     approved_by_user_id = ?,
                     approved_by_label = ?,
@@ -212,11 +286,11 @@ class QuietPeriodStore:
                 WHERE id = ?
                   AND status = 'pending';
                 """,
-                (approved_at.isoformat(), int(admin_user_id), admin_label, expires_at, int(request_id)),
+                (new_status, approved_at.isoformat(), int(admin_user_id), admin_label, expires_at, int(request_id)),
             )
             row = conn.execute(
                 """
-                SELECT id, user_id, reason, status, requested_at, approved_at, approved_by_user_id, approved_by_label, expires_at
+                SELECT id, user_id, reason, status, requested_at, approved_at, approved_by_user_id, approved_by_label, expires_at, scheduled_start_at, scheduled_end_at
                 FROM quiet_period_requests
                 WHERE id = ?;
                 """,
@@ -245,7 +319,7 @@ class QuietPeriodStore:
             )
             row = conn.execute(
                 """
-                SELECT id, user_id, reason, status, requested_at, approved_at, approved_by_user_id, approved_by_label, expires_at
+                SELECT id, user_id, reason, status, requested_at, approved_at, approved_by_user_id, approved_by_label, expires_at, scheduled_start_at, scheduled_end_at
                 FROM quiet_period_requests
                 WHERE id = ?;
                 """,
@@ -261,7 +335,7 @@ class QuietPeriodStore:
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT id, user_id, reason, status, requested_at, approved_at, approved_by_user_id, approved_by_label, expires_at
+                SELECT id, user_id, reason, status, requested_at, approved_at, approved_by_user_id, approved_by_label, expires_at, scheduled_start_at, scheduled_end_at
                 FROM quiet_period_requests
                 ORDER BY id DESC
                 LIMIT ?;
@@ -278,7 +352,7 @@ class QuietPeriodStore:
         with self._connect() as conn:
             row = conn.execute(
                 """
-                SELECT id, user_id, reason, status, requested_at, approved_at, approved_by_user_id, approved_by_label, expires_at
+                SELECT id, user_id, reason, status, requested_at, approved_at, approved_by_user_id, approved_by_label, expires_at, scheduled_start_at, scheduled_end_at
                 FROM quiet_period_requests
                 WHERE user_id = ?
                   AND status = 'approved'
@@ -313,7 +387,7 @@ class QuietPeriodStore:
         with self._connect() as conn:
             row = conn.execute(
                 """
-                SELECT id, user_id, reason, status, requested_at, approved_at, approved_by_user_id, approved_by_label, expires_at
+                SELECT id, user_id, reason, status, requested_at, approved_at, approved_by_user_id, approved_by_label, expires_at, scheduled_start_at, scheduled_end_at
                 FROM quiet_period_requests
                 WHERE user_id = ?
                 ORDER BY id DESC
@@ -331,10 +405,10 @@ class QuietPeriodStore:
         with self._connect() as conn:
             row = conn.execute(
                 """
-                SELECT id, user_id, reason, status, requested_at, approved_at, approved_by_user_id, approved_by_label, expires_at
+                SELECT id, user_id, reason, status, requested_at, approved_at, approved_by_user_id, approved_by_label, expires_at, scheduled_start_at, scheduled_end_at
                 FROM quiet_period_requests
                 WHERE user_id = ?
-                  AND status = 'pending'
+                  AND status IN ('pending', 'scheduled')
                 ORDER BY id DESC
                 LIMIT 1;
                 """,
@@ -350,7 +424,7 @@ class QuietPeriodStore:
         with self._connect() as conn:
             row = conn.execute(
                 """
-                SELECT id, user_id, reason, status, requested_at, approved_at, approved_by_user_id, approved_by_label, expires_at
+                SELECT id, user_id, reason, status, requested_at, approved_at, approved_by_user_id, approved_by_label, expires_at, scheduled_start_at, scheduled_end_at
                 FROM quiet_period_requests
                 WHERE id = ?
                 LIMIT 1;
@@ -380,7 +454,7 @@ class QuietPeriodStore:
             )
             row = conn.execute(
                 """
-                SELECT id, user_id, reason, status, requested_at, approved_at, approved_by_user_id, approved_by_label, expires_at
+                SELECT id, user_id, reason, status, requested_at, approved_at, approved_by_user_id, approved_by_label, expires_at, scheduled_start_at, scheduled_end_at
                 FROM quiet_period_requests
                 WHERE id = ?;
                 """,
@@ -401,13 +475,13 @@ class QuietPeriodStore:
                     expires_at = NULL
                 WHERE id = ?
                   AND user_id = ?
-                  AND status IN ('pending', 'approved');
+                  AND status IN ('pending', 'approved', 'scheduled');
                 """,
                 (int(request_id), int(user_id)),
             )
             row = conn.execute(
                 """
-                SELECT id, user_id, reason, status, requested_at, approved_at, approved_by_user_id, approved_by_label, expires_at
+                SELECT id, user_id, reason, status, requested_at, approved_at, approved_by_user_id, approved_by_label, expires_at, scheduled_start_at, scheduled_end_at
                 FROM quiet_period_requests
                 WHERE id = ?;
                 """,
@@ -427,7 +501,7 @@ class QuietPeriodStore:
                 """
                 SELECT id FROM quiet_period_requests
                 WHERE user_id = ?
-                  AND status IN ('pending', 'approved')
+                  AND status IN ('pending', 'approved', 'scheduled')
                 ORDER BY id DESC
                 LIMIT 1;
                 """,
@@ -440,7 +514,7 @@ class QuietPeriodStore:
                 """
                 UPDATE quiet_period_requests
                 SET status = 'cancelled', expires_at = NULL
-                WHERE id = ? AND user_id = ? AND status IN ('pending', 'approved');
+                WHERE id = ? AND user_id = ? AND status IN ('pending', 'approved', 'scheduled');
                 """,
                 (request_id, int(user_id)),
             )
