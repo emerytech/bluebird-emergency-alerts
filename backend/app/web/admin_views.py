@@ -1450,6 +1450,9 @@ def _sandbox_school_row(s: Mapping[str, object]) -> str:
         '<button class="button button-warning-outline" type="submit">Simulate Alert</button>'
         '</form>'
         + _demo_btn +
+        f'<form method="post" action="/super-admin/sandbox/{slug}/seed">'
+        '<button class="button button-secondary" type="submit" title="Seed 50+ users, incidents, alerts, and access codes">Seed Demo Data</button>'
+        '</form>'
         f'<form method="post" action="/super-admin/test-tenants/{slug}/reset"'
         f' onsubmit="return confirm({repr(confirm_msg)});">'
         '<button class="button button-secondary" type="submit">Reset</button>'
@@ -4254,7 +4257,10 @@ def render_admin_page(
         'font-size:0.85rem;color:#92400e;display:flex;align-items:center;gap:10px;position:sticky;top:0;z-index:200;">'
         '<span>⚠</span>'
         '<strong>Demo Environment</strong> — No real alerts are sent. All activity is simulated.'
-        f'<button onclick="startBluebirdTour()" style="margin-left:auto;background:#d97706;color:#fff;border:none;border-radius:6px;padding:4px 12px;font-size:0.8rem;cursor:pointer;">▶ Start Guided Tour</button>'
+        '<div style="margin-left:auto;display:flex;gap:8px;">'
+        '<button onclick="showDemoWalkthrough()" style="background:#fff7ed;color:#92400e;border:1px solid #d97706;border-radius:6px;padding:4px 12px;font-size:0.8rem;cursor:pointer;">🎬 Walkthrough</button>'
+        '<button onclick="startBluebirdTour()" style="background:#d97706;color:#fff;border:none;border-radius:6px;padding:4px 12px;font-size:0.8rem;cursor:pointer;">▶ Guided Tour</button>'
+        '</div>'
         '</div>'
     ) if is_demo_mode else ""
     _demo_badge_html = (
@@ -5107,13 +5113,15 @@ def render_admin_page(
     _demo_analytics_url = prefix + "/admin/analytics/demo"
     _demo_slug_js = escape(school_slug)
     _tour_done_key = "bluebird_tour_done_" + escape(school_slug)
+    _demo_push_feed_url = prefix + "/demo/push-feed"
     if is_demo_mode:
         # Inject server config + load external demo JS (tour + analytics live in bb-demo.js)
         _demo_mode_script_html = (
             f'\n  <script>window.BB_CONFIG = {{'
             f' isDemo: true,'
             f' demoSlug: \'{_demo_slug_js}\','
-            f' demoAnalyticsUrl: \'{_demo_analytics_url}\''
+            f' demoAnalyticsUrl: \'{_demo_analytics_url}\','
+            f' demoPushFeedUrl: \'{_demo_push_feed_url}\''
             f' }};</script>'
             f'\n  <script src="/static/js/bb-demo.js"></script>'
         )
@@ -5483,6 +5491,7 @@ def render_admin_page(
                 <p class="card-copy">Live metrics aggregated from this sandbox environment. Data is seeded with realistic synthetic values when volume is low.</p>
               </div>
               <div class="button-row" style="margin-top:0;">
+                <button class="button button-secondary" onclick="showDemoWalkthrough()" title="Feature overview">🎬 Walkthrough</button>
                 <button class="button button-secondary" onclick="loadDemoAnalytics(30)">30 days</button>
                 <button class="button button-secondary" onclick="loadDemoAnalytics(7)">7 days</button>
                 <button class="button button-secondary" onclick="loadDemoAnalytics(90)">90 days</button>
@@ -5492,6 +5501,13 @@ def render_admin_page(
               <div class="signal-card" style="text-align:center;"><p class="mini-copy">Loading…</p></div>
             </div>
             <div id="demo-chart-area" style="margin-top:8px;"></div>
+            <!-- Live push event ticker -->
+            <div style="margin-top:20px;border-top:1px solid var(--border);padding-top:16px;">
+              <p class="eyebrow" style="margin-bottom:8px;">Live Activity Feed</p>
+              <div id="demo-push-feed" style="font-size:0.8rem;color:var(--muted);min-height:40px;">
+                <span class="mini-copy">Waiting for activity…</span>
+              </div>
+            </div>
           </section>
 
           <section class="panel command-section span-12" id="user-management"{_section_style("user-management")}>

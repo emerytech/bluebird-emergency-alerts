@@ -8114,6 +8114,41 @@ async def super_admin_simulate_alert(slug: str, request: Request, alert_type: st
     return RedirectResponse(url=_super_admin_url("sandbox"), status_code=status.HTTP_303_SEE_OTHER)
 
 
+@router.post("/super-admin/sandbox/{slug}/seed", include_in_schema=False)
+async def super_admin_seed_demo_tenant(slug: str, request: Request) -> RedirectResponse:
+    """Seed a test tenant with realistic demo data (users, incidents, alerts, audit logs, codes)."""
+    _require_super_admin(request)
+    school = await _schools(request).get_by_slug(slug)
+    if school is None or not school.is_test:
+        _set_flash(request, error="School not found or not a sandbox tenant.")
+        return RedirectResponse(url=_super_admin_url("sandbox"), status_code=status.HTTP_303_SEE_OTHER)
+    from app.services.tenant_manager import TenantManager
+    tm: TenantManager = request.app.state.tenant_manager  # type: ignore[attr-defined]
+    tenant_ctx = tm.get(school)
+    if tenant_ctx is None:
+        _set_flash(request, error="Tenant context not available.")
+        return RedirectResponse(url=_super_admin_url("sandbox"), status_code=status.HTTP_303_SEE_OTHER)
+    db_path = getattr(tenant_ctx.user_store, "_db_path", None)
+    if not db_path:
+        _set_flash(request, error="Cannot locate tenant database.")
+        return RedirectResponse(url=_super_admin_url("sandbox"), status_code=status.HTTP_303_SEE_OTHER)
+    from app.services.demo_seed_service import DemoSeedService
+    import anyio as _anyio
+    svc = DemoSeedService(db_path=db_path, tenant_slug=slug)
+    counts = await _anyio.to_thread.run_sync(svc.seed)
+    logger.info(
+        "SANDBOX demo_seed actor=%s slug=%s counts=%s",
+        request.session.get("super_admin_username", "super_admin"), slug, counts,
+    )
+    msg = (
+        f"Demo seeded for '{slug}': "
+        f"{counts['users']} users · {counts['incidents']} incidents · "
+        f"{counts['alerts']} alerts · {counts['access_codes']} codes."
+    )
+    _set_flash(request, message=msg)
+    return RedirectResponse(url=_super_admin_url("sandbox"), status_code=status.HTTP_303_SEE_OTHER)
+
+
 @router.post("/super-admin/sandbox/{slug}/live-demo/enable", include_in_schema=False)
 async def super_admin_live_demo_enable(slug: str, request: Request) -> RedirectResponse:
     _require_super_admin(request)
@@ -8149,26 +8184,23 @@ async def admin_demo_analytics(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Demo analytics are only available for sandbox tenants.")
     import random as _rand
     import hashlib as _hash
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
 
     slug = str(getattr(request.state, "school_slug", "demo")).strip()
     seed = int(_hash.md5(slug.encode()).hexdigest()[:8], 16)
     rng = _rand.Random(seed)
 
-    # Real incident data
     inc_types_real: dict = await _incident_store(request).incident_type_counts()
     total_real_inc = sum(inc_types_real.values())
-
-    # Real alert data
     alerts_real = await _alert_log(request).list_recent(limit=500)
     total_real_alerts = len(alerts_real)
 
-    # Synthesize if sparse (<5 each)
     if total_real_inc < 5:
         inc_types = {
             "panic": rng.randint(8, 24),
             "medical": rng.randint(4, 12),
-            "assist": rng.randint(3, 10),
-            "drill": rng.randint(2, 6),
+            "assist": rng.randint(6, 16),
+            "drill": rng.randint(4, 10),
         }
     else:
         inc_types = inc_types_real
@@ -8177,21 +8209,68 @@ async def admin_demo_analytics(
     active_inc = rng.randint(0, 2)
     resolved_inc = total_inc - active_inc
 
+    from collections import defaultdict as _dd
+    day_range = min(days, 30)
+    base_day = _dt.now(_tz.utc)
+
     if total_real_alerts < 5:
-        alerts_by_day = [
-            {"day": f"Day {i+1}", "count": rng.randint(0, 6)}
-            for i in range(min(days, 14))
-        ]
+        alerts_by_day = []
+        for i in range(day_range):
+            d = (base_day - _td(days=day_range - 1 - i)).strftime("%Y-%m-%d")
+            alerts_by_day.append({"day": d, "count": rng.randint(0, 5)})
     else:
-        from collections import defaultdict
-        day_counts: dict = defaultdict(int)
+        day_counts: dict = _dd(int)
         for a in alerts_real:
             day = str(a.created_at)[:10]
             day_counts[day] += 1
-        alerts_by_day = [{"day": d, "count": c} for d, c in sorted(day_counts.items())[-14:]]
+        alerts_by_day = [{"day": d, "count": c} for d, c in sorted(day_counts.items())[-day_range:]]
 
     avg_response_s = rng.randint(12, 45)
     drill_compliance = rng.randint(72, 98)
+
+    # Response time trend (per-week rolling average)
+    response_trend = []
+    for i in range(min(day_range, 14)):
+        d = (base_day - _td(days=day_range - 1 - i)).strftime("%m/%d")
+        t = max(8, avg_response_s + rng.randint(-12, 12))
+        response_trend.append({"day": d, "seconds": t})
+
+    # User adoption funnel
+    total_users = rng.randint(48, 62)
+    logins_7d = rng.randint(30, total_users)
+    logins_30d = rng.randint(logins_7d, total_users)
+    push_enabled = rng.randint(logins_30d - 5, total_users)
+    user_adoption = {
+        "total": total_users,
+        "push_enabled": min(push_enabled, total_users),
+        "active_30d": min(logins_30d, total_users),
+        "active_7d": min(logins_7d, logins_30d),
+    }
+
+    # Per-building breakdown (3 simulated buildings)
+    buildings = ["Main Building", "East Wing", "Gym / Field House"]
+    building_breakdown = []
+    for b in buildings:
+        building_breakdown.append({
+            "name": b,
+            "incidents": rng.randint(2, 18),
+            "users": rng.randint(12, 28),
+            "avg_response_s": rng.randint(10, 55),
+            "drill_pct": rng.randint(68, 99),
+        })
+
+    # Weekly incident trend (last 8 weeks)
+    weekly_trend = []
+    for i in range(8):
+        week_end = base_day - _td(weeks=7 - i)
+        wlabel = week_end.strftime("W%W")
+        weekly_trend.append({
+            "week": wlabel,
+            "panic": rng.randint(0, 4),
+            "medical": rng.randint(0, 3),
+            "assist": rng.randint(0, 5),
+            "drill": rng.randint(0, 3),
+        })
 
     return JSONResponse({
         "days": days,
@@ -8202,6 +8281,10 @@ async def admin_demo_analytics(
         "active_incidents": active_inc,
         "resolved_incidents": resolved_inc,
         "total_incidents": total_inc,
+        "response_time_trend": response_trend,
+        "user_adoption": user_adoption,
+        "building_breakdown": building_breakdown,
+        "weekly_trend": weekly_trend,
     })
 
 
