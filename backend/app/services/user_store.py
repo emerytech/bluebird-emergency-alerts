@@ -424,6 +424,7 @@ class UserStore:
                 SELECT id, created_at, name, role, phone_e164, is_active, login_name, password_salt, password_hash, last_login_at, must_change_password, totp_secret, title
                 FROM users
                 WHERE login_name = ?
+                  AND COALESCE(is_archived, 0) = 0
                 LIMIT 1;
                 """,
                 (login_name.strip().lower(),),
@@ -484,6 +485,16 @@ class UserStore:
 
     async def archive_user(self, user_id: int) -> None:
         await anyio.to_thread.run_sync(self._archive_user_sync, int(user_id))
+
+    def _restore_user_sync(self, user_id: int) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE users SET is_archived = 0, archived_at = NULL, is_active = 1 WHERE id = ? AND is_archived = 1;",
+                (int(user_id),),
+            )
+
+    async def restore_user(self, user_id: int) -> None:
+        await anyio.to_thread.run_sync(self._restore_user_sync, int(user_id))
 
     def _delete_user_sync(self, user_id: int) -> None:
         with self._connect() as conn:

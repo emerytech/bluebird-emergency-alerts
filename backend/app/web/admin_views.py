@@ -19,6 +19,7 @@ from app.services.report_store import AdminMessageRecord, BroadcastUpdateRecord,
 from app.services.school_registry import SchoolRecord
 from app.services.tenant_settings_store import SettingsChangeRecord
 from app.services.user_store import UserRecord
+from app.services.permissions import can_archive_user, can_generate_codes
 
 
 LOGO_PATH = "/static/bluebird-alert-logo.png"
@@ -3618,6 +3619,7 @@ def _um_enterprise_table(
         last = escape(getattr(u, "last_login_at", None) or "Never")[:16].replace("T", " ")
         title_str = f'<span class="um-sub">{escape(u.title)}</span>' if getattr(u, "title", "") else ""
         login_str = escape(u.login_name or "—")
+        _can_mod = can_archive_user(actor_role, u.role)
         user_json = json.dumps({
             "id": u.id,
             "name": u.name,
@@ -3629,9 +3631,32 @@ def _um_enterprise_table(
             "is_archived": is_archived,
             "last_login": last,
             "is_self": is_self,
+            "can_modify": _can_mod,
         })
         self_badge = ' <span class="role-badge" style="background:rgba(27,95,228,.1);color:#1e40af;font-size:.68rem;">You</span>' if is_self else ""
         row_style = ' style="opacity:0.62;"' if is_archived else ""
+        if not _can_mod:
+            _action_cell = (
+                '<span style="font-size:0.72rem;color:#7c3aed;background:rgba(124,58,237,0.1);'
+                'border-radius:6px;padding:3px 9px;white-space:nowrap;">&#128274; Protected Role</span>'
+            )
+        elif is_self:
+            _action_cell = (
+                f'<button class="button button-secondary um-edit-btn" style="min-height:32px;font-size:0.8rem;padding:0 12px;" '
+                f'data-uid="{u.id}" onclick="event.stopPropagation();umToggleEdit({u.id})">Edit</button>'
+            )
+        else:
+            _archive_btn = (
+                f'<form method="post" action="{escape(prefix)}/admin/users/{u.id}/archive" style="margin:0;"'
+                f' onsubmit="event.stopPropagation();return confirm(\'Archive {escape(u.name)}?\');">'
+                f'<button class="button button-danger-outline" type="submit" style="min-height:32px;font-size:0.8rem;padding:0 10px;">Archive</button>'
+                f'</form>'
+            ) if not is_archived else ""
+            _action_cell = (
+                f'<button class="button button-secondary um-edit-btn" style="min-height:32px;font-size:0.8rem;padding:0 12px;" '
+                f'data-uid="{u.id}" onclick="event.stopPropagation();umToggleEdit({u.id})">Edit</button>'
+                + _archive_btn
+            )
         rows.append(
             f'<tr class="um-row" data-uid="{u.id}" data-user=\'{escape(user_json)}\' title="Click to view details"{row_style}>'
             f'<td style="width:44px;">{_um_avatar(u.name, u.role)}</td>'
@@ -3641,8 +3666,9 @@ def _um_enterprise_table(
             f'<td>{status_badge}</td>'
             f'<td style="color:var(--muted);font-size:0.8rem;">{last}</td>'
             f'<td style="text-align:right;">'
-            f'<button class="button button-secondary um-edit-btn" style="min-height:32px;font-size:0.8rem;padding:0 12px;" '
-            f'data-uid="{u.id}" onclick="event.stopPropagation();umToggleEdit({u.id})">Edit</button>'
+            f'<div style="display:inline-flex;gap:6px;align-items:center;">'
+            + _action_cell
+            + f'</div>'
             f'</td>'
             f'</tr>'
             f'<tr id="um-editrow-{u.id}" class="um-edit-row" style="display:none;">'
@@ -3727,21 +3753,39 @@ def _um_role_modal() -> str:
 """
 
 
-def _user_archive_delete_html(prefix: str, user: UserRecord) -> str:
+def _user_archive_delete_html(prefix: str, user: UserRecord, *, actor_role: str = "") -> str:
+    _can_mod = can_archive_user(actor_role, user.role)
     if not getattr(user, "is_archived", False):
+        if not _can_mod:
+            return (
+                '<p class="mini-copy" style="color:#7c3aed;margin-top:8px;">'
+                '&#128274; This is a protected role. Only district admins can archive this account.'
+                '</p>'
+            )
         return (
             f'<form method="post" action="{prefix}/admin/users/{user.id}/archive"'
             f' onsubmit="return confirm(\'Archive {escape(user.name)}? They will be deactivated and can be permanently deleted after.\');">'
             f'<div class="button-row"><button class="button button-danger-outline" type="submit">Archive user</button></div>'
             f'</form>'
         )
+    if not _can_mod:
+        return (
+            '<div style="background:rgba(124,58,237,0.06);border:1px solid rgba(124,58,237,0.16);border-radius:12px;padding:12px 14px;margin-top:4px;">'
+            '<p class="mini-copy" style="color:#7c3aed;margin:0;">&#128274; Protected Role — only district admins can restore or delete this account.</p>'
+            '</div>'
+        )
     return (
         f'<div style="background:rgba(220,38,38,0.06);border:1px solid rgba(220,38,38,0.16);border-radius:12px;padding:12px 14px;margin-top:4px;">'
-        f'<p class="mini-copy" style="color:var(--danger);margin:0 0 8px;">&#9888; This user is archived. Permanent deletion cannot be undone.</p>'
-        f'<form method="post" action="{prefix}/admin/users/{user.id}/delete"'
+        f'<p class="mini-copy" style="color:var(--danger);margin:0 0 8px;">&#9888; This user is archived.</p>'
+        f'<div class="button-row" style="gap:8px;">'
+        f'<form method="post" action="{prefix}/admin/users/{user.id}/restore" style="margin:0;">'
+        f'<button class="button button-secondary" type="submit">Restore user</button>'
+        f'</form>'
+        f'<form method="post" action="{prefix}/admin/users/{user.id}/delete" style="margin:0;"'
         f' onsubmit="return confirm(\'Permanently delete {escape(user.name)}? This cannot be undone.\');">'
-        f'<div class="button-row"><button class="button button-danger" type="submit">Permanently delete</button></div>'
-        f'</form></div>'
+        f'<button class="button button-danger" type="submit">Delete permanently</button>'
+        f'</form>'
+        f'</div></div>'
     )
 
 
@@ -3838,7 +3882,7 @@ def _render_user_cards(
             f'<p class="mini-copy">Dashboard login: <strong>{"enabled" if user.can_login else "disabled"}</strong> • last login: {last_login}</p>'
             f'</form>'
             f'{assignment_block}'
-            f'{_user_archive_delete_html(prefix, user)}'
+            f'{_user_archive_delete_html(prefix, user, actor_role=actor_role)}'
             f'</div>'
         )
     return "".join(cards)
@@ -4035,11 +4079,15 @@ def render_admin_page(
     school_district_id: Optional[int] = None,
     active_sessions: Sequence[object] = (),
     sessions_users_by_id: Mapping[int, object] = {},
+    active_tab: str = "",
 ) -> str:
     prefix = escape(school_path_prefix)
     role_counts = Counter(user.role for user in users)
     platform_counts = Counter(device.platform for device in devices)
     provider_counts = Counter(device.push_provider for device in devices)
+    _active_user_list = [u for u in users if not getattr(u, "is_archived", False)]
+    _archived_user_list = [u for u in users if getattr(u, "is_archived", False)]
+    _um_show_archived = active_tab == "archived"
     active_users = sum(1 for user in users if user.is_active)
     login_enabled = sum(1 for user in users if user.can_login)
     alarm_status_class = "danger" if alarm_state.is_active and not alarm_state.is_training else ("warn" if alarm_state.is_active else "ok")
@@ -4066,6 +4114,26 @@ def render_admin_page(
     _ds_ok = int(_ds.get("ok", 0))
     _ds_failed = int(_ds.get("failed", 0))
     _ds_last_error = str(_ds.get("last_error") or "") if _ds.get("last_error") else ""
+    _ds_by_provider: dict = _ds.get("by_provider", {}) or {}  # type: ignore[assignment]
+    def _provider_rows() -> str:
+        rows = []
+        for prov, pstats in _ds_by_provider.items():
+            fail_count = int(pstats.get("failed", 0))
+            fail_style = ' style="color:#ef4444;"' if fail_count > 0 else ""
+            last_err = str(pstats.get("last_error") or "")
+            err_row = (
+                f'<tr><td colspan="4" class="mini-copy" style="color:#ef4444;">{escape(last_err[:100])}</td></tr>'
+                if last_err else ""
+            )
+            rows.append(
+                f'<tr>'
+                f'<td style="font-family:monospace;font-size:0.78rem;">{escape(str(prov).upper())}</td>'
+                f'<td>{int(pstats.get("total", 0))}</td>'
+                f'<td>{int(pstats.get("ok", 0))}</td>'
+                f'<td{fail_style}>{fail_count}</td>'
+                f'</tr>{err_row}'
+            )
+        return "".join(rows)
     _push_configured = apns_configured or fcm_configured
     _ios_count = platform_counts.get("ios", 0)
     _android_count = platform_counts.get("android", 0)
@@ -4073,7 +4141,7 @@ def render_admin_page(
     _fcm_token_count = provider_counts.get("fcm", 0)
     _total_device_count = len(devices)
 
-    _show_access_codes = str(getattr(current_user, "role", "")).strip().lower() in {"district_admin", "super_admin"}
+    _show_access_codes = can_generate_codes(str(getattr(current_user, "role", "")))
     _ac_status_class = {"active": "ok", "used": "warn", "expired": "warn", "revoked": "danger"}
 
     def _ac_row(r) -> str:
@@ -4302,6 +4370,65 @@ def render_admin_page(
           </section>"""
     else:
         _access_codes_panel_html = ""
+
+    # Pre-compute archived tab HTML (avoids nested triple-quote f-strings)
+    _archived_actor_role = str(getattr(current_user, "role", "") or "")
+
+    def _archived_rows() -> str:
+        parts = []
+        for u in _archived_user_list:
+            title_span = f'<span class="um-sub">{escape(u.title)}</span>' if getattr(u, "title", "") else ""
+            archived_date = str(getattr(u, "archived_at", "") or "")[:10]
+            name_esc = escape(u.name)
+            _can_act = can_archive_user(_archived_actor_role, u.role)
+            if _can_act:
+                _row_actions = (
+                    f'<form method="post" action="{prefix}/admin/users/{u.id}/restore" style="margin:0;">'
+                    f'<button class="button button-secondary" style="min-height:30px;font-size:0.78rem;padding:0 10px;" type="submit">Restore</button>'
+                    f'</form>'
+                    f'<form method="post" action="{prefix}/admin/users/{u.id}/delete" style="margin:0;"'
+                    f' onsubmit="return confirm(\'Permanently delete {name_esc}? This cannot be undone.\');">'
+                    f'<button class="button button-danger-outline" style="min-height:30px;font-size:0.78rem;padding:0 10px;" type="submit">Delete</button>'
+                    f'</form>'
+                )
+            else:
+                _row_actions = (
+                    '<span style="font-size:0.72rem;color:#7c3aed;background:rgba(124,58,237,0.1);'
+                    'border-radius:6px;padding:3px 9px;white-space:nowrap;">&#128274; Protected Role</span>'
+                )
+            parts.append(
+                f'<tr class="um-row">'
+                f'<td style="width:44px;">{_um_avatar(u.name, u.role)}</td>'
+                f'<td><span class="um-name" style="opacity:0.7;">{name_esc}</span>{title_span}</td>'
+                f'<td>{_um_role_badge(u.role)}</td>'
+                f'<td style="color:var(--muted);font-size:0.8rem;">{archived_date}</td>'
+                f'<td style="text-align:right;">'
+                f'<div style="display:flex;gap:6px;justify-content:flex-end;align-items:center;">'
+                + _row_actions
+                + f'</div></td>'
+                f'</tr>'
+            )
+        return "".join(parts)
+
+    if _archived_user_list:
+        _archived_tab_html = (
+            '<div class="table-search" style="margin-bottom:14px;">'
+            '<input type="search" id="user-search-archived" placeholder="Search archived users..." style="max-width:320px;"'
+            ' oninput="(function(v){document.querySelectorAll(\'#um-archived-table tbody tr.um-row\').forEach(function(r){r.style.display=r.textContent.toLowerCase().includes(v.toLowerCase())?\'\':\''
+            'none\';})})(this.value)" />'
+            f'<span class="mini-copy" style="margin-left:auto;">{len(_archived_user_list)} archived</span>'
+            '</div>'
+            '<div class="table-wrap">'
+            '<table class="um-table" id="um-archived-table">'
+            '<thead><tr>'
+            '<th></th><th>Name</th><th>Role</th><th>Archived</th><th style="text-align:right;">Actions</th>'
+            '</tr></thead>'
+            f'<tbody>{_archived_rows()}</tbody>'
+            '</table></div>'
+        )
+    else:
+        _archived_tab_html = '<p class="mini-copy" style="color:var(--muted);padding:24px 0;">No archived users.</p>'
+
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -4587,10 +4714,19 @@ def render_admin_page(
       if (el('up-actions')) {{
         var isSelf = userData.is_self;
         var isArch = !!userData.is_archived;
-        var editBtn = isArch ? '' : '<button class="button button-primary" style="min-height:36px;font-size:0.82rem;" onclick="umToggleEdit(' + userData.id + ');umClosePanel();">Edit User</button>';
-        var selfNote = (!isArch && isSelf) ? '<p class="mini-copy" style="color:#b45309;">You cannot modify your own account role.</p>' : '';
-        var archNote = isArch ? '<p class="mini-copy" style="color:var(--danger);">This user is archived. Use the edit card to permanently delete them.</p>' : '';
-        el('up-actions').innerHTML = editBtn + selfNote + archNote;
+        var canModify = userData.can_modify !== false;
+        var editBtn = '';
+        var protectedNote = '';
+        if (!isArch) {{
+          if (canModify) {{
+            editBtn = '<button class="button button-primary" style="min-height:36px;font-size:0.82rem;" onclick="umToggleEdit(' + userData.id + ');umClosePanel();">Edit User</button>';
+          }} else {{
+            protectedNote = '<p class="mini-copy" style="color:#7c3aed;">&#128274; Protected Role — only district admins can modify this account.</p>';
+          }}
+        }}
+        var selfNote = (!isArch && isSelf && canModify) ? '<p class="mini-copy" style="color:#b45309;">You cannot modify your own account role.</p>' : '';
+        var archNote = (isArch && canModify) ? '<p class="mini-copy" style="color:var(--danger);">This user is archived. Use the Archived tab to restore or delete them.</p>' : '';
+        el('up-actions').innerHTML = editBtn + protectedNote + selfNote + archNote;
       }}
       // mark active row
       document.querySelectorAll('.um-row').forEach(function(r){{r.classList.remove('um-row-active');}});
@@ -4716,6 +4852,7 @@ def render_admin_page(
           <nav class="nav-list">
             {_nav_item("dashboard", "Dashboard")}
             {_nav_item("user-management", "User Management", str(_um_badge_count) if _um_badge_count else None)}
+            {_nav_item("access-codes", "Access Codes") if _show_access_codes else ""}
             {_nav_item("drill-reports", "Drill Reports")}
             {_nav_item("audit-logs", "Audit Logs")}
             {_nav_item("settings", "Settings")}
@@ -4896,11 +5033,15 @@ def render_admin_page(
             <p class="eyebrow" style="margin-bottom:6px;">Most recent alert deliveries</p>
             {f'''
             <table class="data-table">
+              <thead><tr><th>Provider</th><th>Sent</th><th>OK</th><th>Failed</th></tr></thead>
               <tbody>
-                <tr><td><strong>Attempts</strong></td><td>{_ds_total}</td></tr>
-                <tr><td><strong>Delivered</strong></td><td><span class="status-pill ok">{_ds_ok}</span></td></tr>
-                <tr><td><strong>Failed</strong></td><td><span class="status-pill {"danger" if _ds_failed > 0 else "ok"}">{_ds_failed}</span></td></tr>
-                {f'<tr><td><strong>Last error</strong></td><td class="mini-copy">{escape(_ds_last_error[:120])}</td></tr>' if _ds_last_error else ""}
+                <tr>
+                  <td><strong>Total</strong></td>
+                  <td>{_ds_total}</td>
+                  <td><span class="status-pill ok">{_ds_ok}</span></td>
+                  <td><span class="status-pill {"danger" if _ds_failed > 0 else "ok"}">{_ds_failed}</span></td>
+                </tr>
+                {_provider_rows()}
               </tbody>
             </table>
             ''' if _ds_total > 0 else '<p class="mini-copy">No delivery records for the most recent alert.</p>'}
@@ -4981,66 +5122,90 @@ def render_admin_page(
                 <h2>Accounts &amp; Access Control</h2>
                 <p class="card-copy">Enterprise-grade user management. Role changes require confirmation and are fully audited.</p>
               </div>
-              <div class="button-row">
+              <div class="button-row" id="um-add-btn-wrap"{"" if not _um_show_archived else ' style="display:none;"'}>
                 <button class="button button-primary" style="min-height:38px;font-size:0.85rem;padding:0 16px;" onclick="umToggleCreate()">+ Add User</button>
               </div>
             </div>
 
             {_um_health_bar(users)}
 
-            <div id="um-create-wrap" style="display:none;margin-bottom:18px;">
-              <div class="user-card" style="border-left:3px solid var(--success);">
-                <div class="panel-header">
-                  <div><h3 style="margin:0;">Create new user</h3><p class="mini-copy" style="margin:2px 0 0;">Fill in the fields below — username and password are optional.</p></div>
-                  <button type="button" class="button button-secondary" style="min-height:30px;font-size:0.78rem;padding:0 10px;" onclick="umToggleCreate()">Cancel</button>
+            <!-- Active / Archived tab strip -->
+            <div class="um-tabs" style="display:flex;gap:0;border-bottom:2px solid var(--border);margin-bottom:18px;">
+              <a href="{prefix}/admin?section=user-management"
+                 class="um-tab{"  um-tab-active" if not _um_show_archived else ""}"
+                 style="padding:8px 20px;font-size:0.85rem;font-weight:600;text-decoration:none;color:{"var(--accent)" if not _um_show_archived else "var(--muted)"};border-bottom:{"2px solid var(--accent);margin-bottom:-2px" if not _um_show_archived else "none"};">
+                Active
+                <span class="count-badge" style="margin-left:6px;">{len(_active_user_list)}</span>
+              </a>
+              <a href="{prefix}/admin?section=user-management&tab=archived"
+                 class="um-tab{"  um-tab-active" if _um_show_archived else ""}"
+                 style="padding:8px 20px;font-size:0.85rem;font-weight:600;text-decoration:none;color:{"var(--accent)" if _um_show_archived else "var(--muted)"};border-bottom:{"2px solid var(--accent);margin-bottom:-2px" if _um_show_archived else "none"};">
+                Archived
+                {f'<span class="count-badge" style="margin-left:6px;background:rgba(220,38,38,0.12);color:#dc2626;">{len(_archived_user_list)}</span>' if _archived_user_list else ""}
+              </a>
+            </div>
+
+            <!-- Active tab content -->
+            <div id="um-tab-active"{"" if not _um_show_archived else ' style="display:none;"'}>
+              <div id="um-create-wrap" style="display:none;margin-bottom:18px;">
+                <div class="user-card" style="border-left:3px solid var(--success);">
+                  <div class="panel-header">
+                    <div><h3 style="margin:0;">Create new user</h3><p class="mini-copy" style="margin:2px 0 0;">Fill in the fields below — username and password are optional.</p></div>
+                    <button type="button" class="button button-secondary" style="min-height:30px;font-size:0.78rem;padding:0 10px;" onclick="umToggleCreate()">Cancel</button>
+                  </div>
+                  <form method="post" action="{prefix}/admin/users/create" class="stack">
+                    <div class="form-grid">
+                      <div class="field"><label>Name</label><input name="name" placeholder="Full name" /></div>
+                      <div class="field">
+                        <label>Role</label>
+                        <select name="role">
+                          <option value="teacher">Teacher / Standard</option>
+                          <option value="staff">Staff</option>
+                          <option value="law_enforcement">Law Enforcement</option>
+                          <option value="building_admin">Building Admin</option>
+                          {'<option value="district_admin">District Admin</option>' if current_user.role in {"district_admin", "super_admin"} else ''}
+                        </select>
+                      </div>
+                      <div class="field"><label>Title</label><input name="title" placeholder="e.g. Principal" /></div>
+                      <div class="field"><label>Phone</label><input name="phone_e164" placeholder="+15551234567" /></div>
+                      <div class="field"><label>Username</label><input name="login_name" placeholder="optional login username" /></div>
+                      <div class="field"><label>Password</label><input name="password" type="password" placeholder="optional login password" /></div>
+                      <div class="checkbox-row">
+                        <input type="checkbox" name="must_change_password" value="1" id="must_change_password" />
+                        <label for="must_change_password">Require password change on first login</label>
+                      </div>
+                    </div>
+                    <div class="button-row">
+                      <button class="button button-primary" type="submit">Create user</button>
+                    </div>
+                  </form>
                 </div>
-                <form method="post" action="{prefix}/admin/users/create" class="stack">
-                  <div class="form-grid">
-                    <div class="field"><label>Name</label><input name="name" placeholder="Full name" /></div>
-                    <div class="field">
-                      <label>Role</label>
-                      <select name="role">
-                        <option value="teacher">Teacher / Standard</option>
-                        <option value="staff">Staff</option>
-                        <option value="law_enforcement">Law Enforcement</option>
-                        <option value="building_admin">Building Admin</option>
-                        {'<option value="district_admin">District Admin</option>' if current_user.role in {"district_admin", "super_admin"} else ''}
-                      </select>
-                    </div>
-                    <div class="field"><label>Title</label><input name="title" placeholder="e.g. Principal" /></div>
-                    <div class="field"><label>Phone</label><input name="phone_e164" placeholder="+15551234567" /></div>
-                    <div class="field"><label>Username</label><input name="login_name" placeholder="optional login username" /></div>
-                    <div class="field"><label>Password</label><input name="password" type="password" placeholder="optional login password" /></div>
-                    <div class="checkbox-row">
-                      <input type="checkbox" name="must_change_password" value="1" id="must_change_password" />
-                      <label for="must_change_password">Require password change on first login</label>
-                    </div>
-                  </div>
-                  <div class="button-row">
-                    <button class="button button-primary" type="submit">Create user</button>
-                  </div>
-                </form>
+              </div>
+
+              <div class="table-search" style="margin-bottom:14px;">
+                <input type="search" id="user-search" placeholder="Search by name, username, or role..." style="max-width:320px;" />
+                <span class="mini-copy" style="margin-left:auto;">{len(_active_user_list)} user{"s" if len(_active_user_list) != 1 else ""}</span>
+              </div>
+
+              {_um_enterprise_table(_active_user_list, school_path_prefix, actor_role=str(getattr(current_user, "role", "") or ""), actor_user_id=current_user_id)}
+
+              <div id="um-edit-forms" style="margin-top:16px;">
+                {_render_user_cards(
+                    _active_user_list,
+                    school_path_prefix,
+                    tenant_label=selected_tenant_name,
+                    tenant_options=[{"id": str(item.get("id", "")), "slug": str(item.get("slug", "")), "name": str(item.get("name", ""))} for item in tenant_options],
+                    user_tenant_assignments=user_tenant_assignments,
+                    allow_assignment_edit=(current_user.role in {"district_admin", "super_admin"}),
+                    actor_role=str(getattr(current_user, "role", "") or ""),
+                    actor_user_id=current_user_id,
+                )}
               </div>
             </div>
 
-            <div class="table-search" style="margin-bottom:14px;">
-              <input type="search" id="user-search" placeholder="Search by name, username, or role..." style="max-width:320px;" />
-              <span class="mini-copy" style="margin-left:auto;">{len(users)} user{"s" if len(users) != 1 else ""} total</span>
-            </div>
-
-            {_um_enterprise_table(users, school_path_prefix, actor_role=str(getattr(current_user, "role", "") or ""), actor_user_id=current_user_id)}
-
-            <div id="um-edit-forms" style="margin-top:16px;">
-              {_render_user_cards(
-                  users,
-                  school_path_prefix,
-                  tenant_label=selected_tenant_name,
-                  tenant_options=[{"id": str(item.get("id", "")), "slug": str(item.get("slug", "")), "name": str(item.get("name", ""))} for item in tenant_options],
-                  user_tenant_assignments=user_tenant_assignments,
-                  allow_assignment_edit=(current_user.role in {"district_admin", "super_admin"}),
-                  actor_role=str(getattr(current_user, "role", "") or ""),
-                  actor_user_id=current_user_id,
-              )}
+            <!-- Archived tab content -->
+            <div id="um-tab-archived"{"" if _um_show_archived else ' style="display:none;"'}>
+              {_archived_tab_html}
             </div>
           </section>
 

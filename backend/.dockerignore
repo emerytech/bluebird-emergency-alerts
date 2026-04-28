@@ -1,0 +1,13 @@
+# Never include runtime secrets or dev artifacts in the image
+.env
+data/
+secrets/
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+tests/
+*.egg-info/

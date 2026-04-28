@@ -78,12 +78,14 @@ _ROLE_PERMISSIONS: Final[dict[str, set[str]]] = {
         PERM_TRIGGER_OWN_TENANT_ALERTS,
         PERM_APPROVE_OWN_TENANT_QUIET_REQUESTS,
         PERM_SUBMIT_QUIET_REQUEST,
+        PERM_GENERATE_ACCESS_CODES,
     },
     ROLE_BUILDING_ADMIN: {
         PERM_MANAGE_OWN_TENANT_USERS,
         PERM_TRIGGER_OWN_TENANT_ALERTS,
         PERM_APPROVE_OWN_TENANT_QUIET_REQUESTS,
         PERM_SUBMIT_QUIET_REQUEST,
+        PERM_GENERATE_ACCESS_CODES,
     },
     ROLE_DISTRICT_ADMIN: {
         PERM_MANAGE_ASSIGNED_TENANTS,
@@ -168,6 +170,24 @@ def can_generate_codes(role: str | None) -> bool:
 
 def can_view_reports(role: str | None) -> bool:
     return is_dashboard_role(role) or normalize_role(role) == ROLE_SUPER_ADMIN
+
+
+def can_archive_user(actor_role: str | None, target_role: str | None) -> bool:
+    """Return True if actor_role is permitted to archive/restore/delete a user with target_role.
+
+    Rules (from spec):
+    - super_admin and district_admin can archive/restore/delete anyone.
+    - building_admin (and legacy admin) can archive/restore/delete staff-level users
+      but NOT district_admin users.
+    - Anyone below building_admin cannot archive users.
+    """
+    actor = normalize_role(actor_role)
+    target = normalize_role(target_role)
+    if actor in {ROLE_SUPER_ADMIN, ROLE_DISTRICT_ADMIN}:
+        return True
+    if actor in {ROLE_ADMIN, ROLE_BUILDING_ADMIN}:
+        return target not in {ROLE_DISTRICT_ADMIN, ROLE_SUPER_ADMIN}
+    return False
 
 
 def role_display_label(role: str | None) -> str:

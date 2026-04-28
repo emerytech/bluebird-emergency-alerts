@@ -2,17 +2,37 @@
 
 ## Current Phase
 
-### Phase 12 — Push Reliability + Observability (active)
-
-**In Progress**
-- APNS/FCM error surfacing in web admin UI
-- Audit log viewer for district admins
-- Graceful backend restart (WS reconnect on 1001/1012 close codes)
-- Health monitor admin panel integration
+### Phase 14 — iOS Feature Parity (pending)
 
 ---
 
 ## Completed Phases
+
+### Phase 13 — Production Deployment
+
+- `backend/Dockerfile` — multi-stage Python 3.11-slim build; non-root `bluebird` user; volumes for `/app/data` and `/app/secrets`
+- `backend/.dockerignore` — excludes `.env`, `data/`, `secrets/`, `__pycache__`, tests from image
+- `docker-compose.prod.yml` — `backend` + `nginx` + `certbot` (profile-gated) services; named volume for SQLite data; `secrets/` bind-mounted read-only; backend health-checked before nginx starts
+- `deploy/nginx/bluebird.conf` — HTTP→HTTPS redirect; Let's Encrypt TLS; WebSocket upgrade for `/ws/` routes; per-zone rate limiting (general, alarm, auth); HSTS + security headers; ACME webroot challenge passthrough
+- `tests/test_smoke.py` — live-server smoke suite (`-m smoke`) covering health, schools list, alarm status, super-admin login, API key enforcement, static assets, security headers; excluded from default `pytest` run via `pytest.ini addopts = -m "not smoke"`
+- `pytest.ini` — registered `smoke` marker; `addopts = -m "not smoke"` keeps the 269-test unit suite clean
+
+---
+
+## Completed Phases
+
+### Phase 12 — Push Reliability + Observability
+
+- WS reconnect loop: tracks `closeCode` via `AtomicInteger`; breaks on 4xxx (server rejection); fast-reconnects on 1001/1012 (server restart) — both alarm WS and district WS in `MainActivity.kt`
+- `alert_log.py` `_delivery_stats_sync`: added per-provider GROUP BY query; returns `by_provider` dict with `total`/`ok`/`failed`/`last_error` per provider
+- `schemas.py`: added `ProviderDeliveryStats` model; `PushDeliveryStatsResponse` gains `by_provider: Dict[str, ProviderDeliveryStats]`
+- `routes.py` `/alarm/push-stats`: maps `stats["by_provider"]` through `ProviderDeliveryStats(**v)` into response
+- `admin_views.py` push delivery panel: replaced single-row table with provider-breakdown table (Total row + per-provider APNs/FCM rows); error rows shown inline
+- Android: added `ProviderDeliveryStats` data class; `PushDeliveryStats` gains `byProvider: Map<String, ProviderDeliveryStats>`; `BackendClient.alarmPushStats` parses `by_provider` JSON; `PushDeliveryStatsCard` shows per-provider ok/failed rows
+- `routes.py` `GET /district/audit-log`: aggregates audit events across all accessible schools, merges `tenant_slug` into metadata, sorts by timestamp descending
+- Android: `UiState.districtAuditLog`; `loadDistrictAuditLog` ViewModel method; `BackendClient.listDistrictAuditLog`; `DistrictOverviewScreen` shows district audit log card with last 20 events
+
+---
 
 ### Phase 11 — District Multi-School Admin
 
@@ -89,12 +109,3 @@
 - `test_permissions_foundation.py` expanded
 - `test_onboarding.py` created
 
----
-
-## Pending Phases
-
-### Phase 13 — Production Deployment
-- Docker Compose production config
-- Secrets management (env-based, no hardcoded values)
-- HTTPS termination + reverse proxy setup
-- Smoke test suite against staging

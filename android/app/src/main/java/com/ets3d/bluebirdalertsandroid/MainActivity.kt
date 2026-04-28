@@ -611,11 +611,19 @@ data class TeamAssistFeedItem(
     val cancelReasonCategory: String? = null,
 )
 
+data class ProviderDeliveryStats(
+    val total: Int = 0,
+    val ok: Int = 0,
+    val failed: Int = 0,
+    val lastError: String? = null,
+)
+
 data class PushDeliveryStats(
     val total: Int = 0,
     val ok: Int = 0,
     val failed: Int = 0,
     val lastError: String? = null,
+    val byProvider: Map<String, ProviderDeliveryStats> = emptyMap(),
 )
 
 data class AuditLogEntry(
@@ -650,6 +658,7 @@ data class UiState(
     val userTitle: String = "",
     val districtTenants: List<TenantOverviewItem> = emptyList(),
     val districtQuietRequests: List<DistrictQuietPeriodItem> = emptyList(),
+    val districtAuditLog: List<AuditLogEntry> = emptyList(),
 )
 
 // ── ViewModel ──────────────────────────────────────────────────────────────────
@@ -1275,6 +1284,14 @@ class MainViewModel : ViewModel() {
         }
     }
 
+    fun loadDistrictAuditLog(ctx: Context) {
+        val userId = getUserId(ctx).toIntOrNull() ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { client!!.listDistrictAuditLog(userId) }
+                .onSuccess { entries -> _state.update { it.copy(districtAuditLog = entries) } }
+        }
+    }
+
     private fun startDistrictWebSocket(ctx: Context) {
         districtWsJob?.cancel()
         districtWs?.close(1000, "restart")
@@ -1291,6 +1308,7 @@ class MainViewModel : ViewModel() {
                 if (wsUrl.isBlank()) break
                 Log.d("DistrictWS", "WS connecting: $wsUrl gen=$myGen")
                 val closed = CompletableDeferred<Unit>()
+                val closeCode = AtomicInteger(-1)
                 districtWs = wsHttpClient.newWebSocket(
                     okhttp3.Request.Builder()
                         .url(wsUrl)
@@ -1310,6 +1328,8 @@ class MainViewModel : ViewModel() {
                             closed.complete(Unit)
                         }
                         override fun onClosed(ws: okhttp3.WebSocket, code: Int, reason: String) {
+                            Log.d("DistrictWS", "WS closed: code=$code reason=$reason gen=$myGen")
+                            closeCode.set(code)
                             districtWs = null
                             closed.complete(Unit)
                         }
@@ -1317,6 +1337,12 @@ class MainViewModel : ViewModel() {
                 )
                 closed.await()
                 if (!isActive || districtWsGeneration.get() != myGen) break
+                val code = closeCode.get()
+                if (code in 4000..4999) {
+                    Log.w("DistrictWS", "WS rejected by server code=$code, not reconnecting gen=$myGen")
+                    break
+                }
+                if (code == 1001 || code == 1012) backoffMs = 500L
                 delay(backoffMs)
                 backoffMs = minOf(backoffMs * 2, 30_000L)
             }
@@ -1348,6 +1374,7 @@ class MainViewModel : ViewModel() {
                 if (wsUrl.isBlank()) break
                 Log.d("BluebirdWS", "WS connecting: $wsUrl backoff=${backoffMs}ms gen=$myGen")
                 val closed = CompletableDeferred<Unit>()
+                val closeCode = AtomicInteger(-1)
                 alarmWs = wsHttpClient.newWebSocket(
                     okhttp3.Request.Builder()
                         .url(wsUrl)
@@ -1371,6 +1398,7 @@ class MainViewModel : ViewModel() {
                         }
                         override fun onClosed(ws: okhttp3.WebSocket, code: Int, reason: String) {
                             Log.d("BluebirdWS", "WS closed: code=$code reason=$reason gen=$myGen")
+                            closeCode.set(code)
                             alarmWs = null
                             closed.complete(Unit)
                         }
@@ -1378,6 +1406,15 @@ class MainViewModel : ViewModel() {
                 )
                 closed.await()
                 if (!isActive || wsGeneration.get() != myGen) break
+                val code = closeCode.get()
+                if (code in 4000..4999) {
+                    Log.w("BluebirdWS", "WS rejected by server code=$code, not reconnecting gen=$myGen")
+                    break
+                }
+                if (code == 1001 || code == 1012) {
+                    backoffMs = 500L
+                    Log.d("BluebirdWS", "WS server-restart close code=$code, reconnecting quickly gen=$myGen")
+                }
                 Log.d("BluebirdWS", "WS reconnecting in ${backoffMs}ms gen=$myGen")
                 delay(backoffMs)
                 backoffMs = minOf(backoffMs * 2, 15_000L)
@@ -2342,6 +2379,7 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                             if (showDistrictView) {
                                 vm.loadDistrictOverview(ctx)
                                 vm.loadDistrictQuietPeriods(ctx)
+                                vm.loadDistrictAuditLog(ctx)
                             }
                         }) {
                             Text(
@@ -2415,10 +2453,12 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                 DistrictOverviewScreen(
                     tenants = state.districtTenants,
                     quietRequests = state.districtQuietRequests,
+                    auditLog = state.districtAuditLog,
                     isBusy = state.isBusy,
                     onRefresh = {
                         vm.loadDistrictOverview(ctx)
                         vm.loadDistrictQuietPeriods(ctx)
+                        vm.loadDistrictAuditLog(ctx)
                     },
                     onApproveQuiet = { requestId, tenantSlug -> vm.approveDistrictQuietRequest(ctx, requestId, tenantSlug) },
                     onDenyQuiet = { requestId, tenantSlug -> vm.denyDistrictQuietRequest(ctx, requestId, tenantSlug) },
@@ -3691,6 +3731,32 @@ private fun PushDeliveryStatsCard(stats: PushDeliveryStats?, modifier: Modifier 
                         Text("✗ ${stats.failed} failed", color = Color(0xFFDC2626), fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
                     }
                 }
+                if (stats.byProvider.isNotEmpty()) {
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        stats.byProvider.entries.sortedBy { it.key }.forEach { (provider, ps) ->
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                            ) {
+                                Text(
+                                    provider.uppercase(),
+                                    color = TextMuted,
+                                    fontSize = 11.sp,
+                                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                                )
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Text("${ps.ok}/${ps.total}", color = TextMuted, fontSize = 11.sp)
+                                    if (ps.failed > 0) {
+                                        Text("✗ ${ps.failed}", color = Color(0xFFDC2626), fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                                    }
+                                }
+                            }
+                            ps.lastError?.takeIf { it.isNotBlank() }?.let {
+                                Text(it, color = Color(0xFFDC2626), fontSize = 10.sp, maxLines = 1)
+                            }
+                        }
+                    }
+                }
                 stats.lastError?.takeIf { it.isNotBlank() }?.let {
                     Text("Last error: $it", color = Color(0xFFDC2626), fontSize = 12.sp, maxLines = 2)
                 }
@@ -4067,6 +4133,7 @@ private fun EmergencyAlarmTakeover(
 private fun DistrictOverviewScreen(
     tenants: List<TenantOverviewItem>,
     quietRequests: List<DistrictQuietPeriodItem>,
+    auditLog: List<AuditLogEntry>,
     isBusy: Boolean,
     onRefresh: () -> Unit,
     onApproveQuiet: (requestId: Int, tenantSlug: String) -> Unit,
@@ -4254,6 +4321,48 @@ private fun DistrictOverviewScreen(
         } else {
             tenants.forEach { tenant ->
                 DistrictTenantRow(tenant)
+            }
+        }
+
+        Surface(
+            color = SurfaceMain,
+            shape = RoundedCornerShape(20.dp),
+            shadowElevation = 4.dp,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text(
+                    "District Audit Log",
+                    color = DSColor.TextPrimary,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 16.sp,
+                )
+                if (auditLog.isEmpty()) {
+                    Text("No audit events.", color = TextMuted, fontSize = 13.sp)
+                } else {
+                    auditLog.take(20).forEach { entry ->
+                        HorizontalDivider(color = DSColor.Border)
+                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text(
+                                snakeToTitle(entry.eventType),
+                                color = DSColor.TextPrimary,
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 13.sp,
+                            )
+                            Text(
+                                buildString {
+                                    entry.actorLabel?.let { append(it); append(" • ") }
+                                    append(entry.timestamp.take(16))
+                                },
+                                color = DSColor.TextSecondary,
+                                fontSize = 11.sp,
+                            )
+                        }
+                    }
+                }
             }
         }
     }
@@ -5901,11 +6010,26 @@ private class BackendClient(baseUrl: String, private val apiKey: String) {
             .withAuth().get().build()
         http.newCall(req).execute().use { res ->
             val j = JSONObject(requireSuccess(res))
+            val byProvider = buildMap<String, ProviderDeliveryStats> {
+                val bp = j.optJSONObject("by_provider")
+                if (bp != null) {
+                    bp.keys().forEach { key ->
+                        val pj = bp.optJSONObject(key) ?: return@forEach
+                        put(key, ProviderDeliveryStats(
+                            total = pj.optInt("total", 0),
+                            ok = pj.optInt("ok", 0),
+                            failed = pj.optInt("failed", 0),
+                            lastError = pj.optNullableString("last_error"),
+                        ))
+                    }
+                }
+            }
             return PushDeliveryStats(
                 total = j.optInt("total", 0),
                 ok = j.optInt("ok", 0),
                 failed = j.optInt("failed", 0),
                 lastError = j.optNullableString("last_error"),
+                byProvider = byProvider,
             )
         }
     }
@@ -6310,6 +6434,30 @@ private class BackendClient(baseUrl: String, private val apiKey: String) {
             .post(body.toString().toRequestBody(json))
             .build()
         http.newCall(req).execute().use { requireSuccess(it) }
+    }
+
+    fun listDistrictAuditLog(userId: Int, limit: Int = 50): List<AuditLogEntry> {
+        val req = Request.Builder()
+            .url("$base/district/audit-log?user_id=$userId&limit=$limit")
+            .withAuth().get().build()
+        http.newCall(req).execute().use { res ->
+            val j = JSONObject(requireSuccess(res))
+            val items = j.optJSONArray("events")
+            return buildList {
+                if (items != null) {
+                    for (i in 0 until items.length()) {
+                        val item = items.optJSONObject(i) ?: continue
+                        add(AuditLogEntry(
+                            id = item.optInt("id"),
+                            timestamp = item.optString("timestamp"),
+                            eventType = item.optString("event_type"),
+                            actorLabel = item.optNullableString("actor_label"),
+                            targetType = item.optNullableString("target_type"),
+                        ))
+                    }
+                }
+            }
+        }
     }
 
     private fun requireSuccess(res: okhttp3.Response): String {

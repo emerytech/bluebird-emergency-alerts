@@ -612,11 +612,19 @@ class DistrictOverviewResponse(BaseModel):
 
 # ── Phase 8: Production hardening schemas ─────────────────────────────────────
 
+class ProviderDeliveryStats(BaseModel):
+    total: int = 0
+    ok: int = 0
+    failed: int = 0
+    last_error: Optional[str] = None
+
+
 class PushDeliveryStatsResponse(BaseModel):
     total: int = 0
     ok: int = 0
     failed: int = 0
     last_error: Optional[str] = None
+    by_provider: Dict[str, ProviderDeliveryStats] = {}
 
 
 class AuditLogEntry(BaseModel):

@@ -84,6 +84,7 @@ from app.models.schemas import (
     UserSummary,
     UsersResponse,
     PushDeliveryStatsResponse,
+    ProviderDeliveryStats,
     AuditLogEntry,
     AuditLogResponse,
     GenerateAccessCodeRequest,
@@ -135,6 +136,7 @@ from app.services.permissions import (
     can,
     can_any,
     can_deactivate_alarm as _can_deactivate_alarm,
+    can_archive_user,
     can_generate_codes,
     is_dashboard_role,
     role_display_label,
@@ -1645,6 +1647,10 @@ async def alarm_push_stats(
         ok=stats.get("ok", 0),
         failed=stats.get("failed", 0),
         last_error=stats.get("last_error"),
+        by_provider={
+            k: ProviderDeliveryStats(**v)
+            for k, v in stats.get("by_provider", {}).items()
+        },
     )
 
 
@@ -1964,6 +1970,7 @@ async def _build_district_overview_items(request: Request, *, admin_user) -> lis
 async def admin_dashboard(
     request: Request,
     section: str = Query(default="dashboard"),
+    tab: str = Query(default=""),
     tenant: Optional[str] = Query(default=None),
     audit_event_type: str = Query(default=""),
 ) -> HTMLResponse:
@@ -2093,6 +2100,7 @@ async def admin_dashboard(
             else None
         ),
         active_section=selected_section,
+        active_tab=tab.strip().lower(),
         acknowledgement_count=_dashboard_ack_count,
         fcm_configured=fcm_configured,
         delivery_stats=_dashboard_delivery_stats,
@@ -4587,6 +4595,9 @@ async def admin_update_user(
     if existing_user is None:
         _set_flash(request, error=f"User #{user_id} was not found.")
         return RedirectResponse(url="/admin?section=user-management#users", status_code=status.HTTP_303_SEE_OTHER)
+    if existing_user.role == ROLE_DISTRICT_ADMIN and actor_role not in {ROLE_DISTRICT_ADMIN, ROLE_SUPER_ADMIN}:
+        _set_flash(request, error="Only district admins can modify district admin accounts.")
+        return RedirectResponse(url="/admin?section=user-management#users", status_code=status.HTTP_303_SEE_OTHER)
     normalized_name = name.strip()
     normalized_role = role.strip().lower()
     normalized_title = title.strip() or None
@@ -4719,6 +4730,14 @@ async def admin_archive_user(
         _set_flash(request, error=f"{user.name} is already archived.")
         return RedirectResponse(url="/admin?section=user-management#users", status_code=status.HTTP_303_SEE_OTHER)
 
+    actor_role = str(getattr(getattr(request.state, "admin_user", None), "role", "") or "")
+    if not can_archive_user(actor_role, user.role):
+        if user.role == ROLE_DISTRICT_ADMIN:
+            _set_flash(request, error="Only district admins can modify district admin accounts.")
+        else:
+            _set_flash(request, error=f"You do not have permission to archive {user.name}.")
+        return RedirectResponse(url="/admin?section=user-management#users", status_code=status.HTTP_303_SEE_OTHER)
+
     if is_dashboard_role(user.role) and user.can_login and user.is_active:
         other_admins = await _users(request).count_other_dashboard_admins(user.id)
         if other_admins <= 0:
@@ -4736,7 +4755,44 @@ async def admin_archive_user(
     )
     await _users(request).archive_user(user_id)
     _set_flash(request, message=f"Archived {user.name}. You can permanently delete them from the archived users list.")
-    return RedirectResponse(url="/admin?section=user-management#users", status_code=status.HTTP_303_SEE_OTHER)
+    return RedirectResponse(url="/admin?section=user-management&tab=archived", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.post("/admin/users/{user_id}/restore", include_in_schema=False)
+async def admin_restore_user(
+    user_id: int,
+    request: Request,
+) -> RedirectResponse:
+    await _require_dashboard_admin(request)
+    user = await _users(request).get_user(user_id)
+    if user is None:
+        _set_flash(request, error=f"User #{user_id} was not found.")
+        return RedirectResponse(url="/admin?section=user-management&tab=archived", status_code=status.HTTP_303_SEE_OTHER)
+
+    if not getattr(user, "is_archived", False):
+        _set_flash(request, error=f"{user.name} is not archived.")
+        return RedirectResponse(url="/admin?section=user-management&tab=archived", status_code=status.HTTP_303_SEE_OTHER)
+
+    actor_role = str(getattr(getattr(request.state, "admin_user", None), "role", "") or "")
+    if not can_archive_user(actor_role, user.role):
+        if user.role == ROLE_DISTRICT_ADMIN:
+            _set_flash(request, error="Only district admins can modify district admin accounts.")
+        else:
+            _set_flash(request, error=f"You do not have permission to restore {user.name}.")
+        return RedirectResponse(url="/admin?section=user-management&tab=archived", status_code=status.HTTP_303_SEE_OTHER)
+
+    _fire_audit(
+        request,
+        "user_restored",
+        actor_user_id=_session_user_id(request),
+        actor_label=_current_school_actor_label(request),
+        target_type="user",
+        target_id=str(user_id),
+        metadata={"name": user.name, "role": user.role},
+    )
+    await _users(request).restore_user(user_id)
+    _set_flash(request, message=f"Restored {user.name}. They can now log in and receive alerts.")
+    return RedirectResponse(url="/admin?section=user-management", status_code=status.HTTP_303_SEE_OTHER)
 
 
 @router.post("/admin/users/{user_id}/delete", include_in_schema=False)
@@ -4753,7 +4809,15 @@ async def admin_delete_user(
 
     if not getattr(user, "is_archived", False):
         _set_flash(request, error=f"Archive {user.name} before permanently deleting them.")
-        return RedirectResponse(url="/admin?section=user-management#users", status_code=status.HTTP_303_SEE_OTHER)
+        return RedirectResponse(url="/admin?section=user-management&tab=archived", status_code=status.HTTP_303_SEE_OTHER)
+
+    actor_role = str(getattr(getattr(request.state, "admin_user", None), "role", "") or "")
+    if not can_archive_user(actor_role, user.role):
+        if user.role == ROLE_DISTRICT_ADMIN:
+            _set_flash(request, error="Only district admins can modify district admin accounts.")
+        else:
+            _set_flash(request, error=f"You do not have permission to delete {user.name}.")
+        return RedirectResponse(url="/admin?section=user-management&tab=archived", status_code=status.HTTP_303_SEE_OTHER)
 
     _fire_audit(
         request,
@@ -4771,7 +4835,7 @@ async def admin_delete_user(
         return RedirectResponse(url="/admin/login", status_code=status.HTTP_303_SEE_OTHER)
 
     _set_flash(request, message=f"Permanently deleted {user.name}.")
-    return RedirectResponse(url="/admin?section=user-management#users", status_code=status.HTTP_303_SEE_OTHER)
+    return RedirectResponse(url="/admin?section=user-management&tab=archived", status_code=status.HTTP_303_SEE_OTHER)
 
 
 @router.get("/devices", response_model=DevicesResponse)
@@ -5573,6 +5637,43 @@ async def district_deny_quiet_period(
         metadata={"requester_user_id": int(record.user_id), "tenant_slug": body.tenant_slug},
     )
     return _to_quiet_period_summary(record)
+
+
+@router.get("/district/audit-log", response_model=AuditLogResponse)
+async def district_audit_log(
+    request: Request,
+    user_id: int = Query(..., ge=1),
+    limit: int = Query(default=50, le=200),
+    _: None = Depends(require_api_key),
+) -> AuditLogResponse:
+    users = _users(request)
+    admin = await users.get_user(user_id)
+    if admin is None or not admin.is_active:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin not found or inactive")
+    if not can_any(admin.role, {PERM_MANAGE_ASSIGNED_TENANT_USERS, PERM_FULL_ACCESS}):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
+    schools = await _district_accessible_schools(request, admin)
+    per_school_limit = max(limit, 20)
+    all_events: list[AuditLogEntry] = []
+    for school in schools:
+        tenant = request.app.state.tenant_manager.get(school)
+        raw = await tenant.audit_log_service.list_recent(limit=per_school_limit)
+        slug = str(getattr(school, "slug", ""))
+        for e in raw:
+            all_events.append(
+                AuditLogEntry(
+                    id=e.id,
+                    timestamp=e.timestamp,
+                    event_type=e.event_type,
+                    actor_user_id=e.actor_user_id,
+                    actor_label=e.actor_label,
+                    target_type=e.target_type,
+                    target_id=e.target_id,
+                    metadata={**(e.metadata or {}), "tenant_slug": slug},
+                )
+            )
+    all_events.sort(key=lambda e: e.timestamp or "", reverse=True)
+    return AuditLogResponse(events=all_events[:limit])
 
 
 @router.post("/register-device", response_model=RegisterDeviceResponse)
@@ -6477,7 +6578,7 @@ async def admin_list_access_codes(request: Request, limit: int = Query(default=2
     user_id = _session_user_id(request) or 0
     user = await users.get_user(user_id)
     if user is None or not can_generate_codes(user.role):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only district admins may view access codes.")
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions to view access codes.")
     tenant_slug = str(getattr(request.state, "school_slug", "")).strip()
     records = await _access_codes(request).list_codes(tenant_slug, limit=limit)
     school = _tenant_manager(request).school_for_slug(tenant_slug)
@@ -6511,7 +6612,7 @@ async def admin_get_access_code_qr(request: Request, code_id: int) -> JSONRespon
     await _require_dashboard_admin(request)
     effective_role = str(getattr(getattr(request.state, "admin_user", None), "role", "")).strip()
     if not can_generate_codes(effective_role):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only district admins may view access codes.")
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions to view access codes.")
     tenant_slug = str(getattr(request.state, "school_slug", "")).strip()
     records = await _access_codes(request).list_codes(tenant_slug, limit=500)
     rec = next((r for r in records if r.id == code_id), None)
@@ -6550,7 +6651,7 @@ async def admin_get_access_code_qr_png(request: Request, code_id: int) -> Stream
     await _require_dashboard_admin(request)
     effective_role = str(getattr(getattr(request.state, "admin_user", None), "role", "")).strip()
     if not can_generate_codes(effective_role):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only district admins may view access codes.")
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions to view access codes.")
     tenant_slug = str(getattr(request.state, "school_slug", "")).strip()
     records = await _access_codes(request).list_codes(tenant_slug, limit=500)
     rec = next((r for r in records if r.id == code_id), None)
@@ -6573,7 +6674,7 @@ async def admin_get_access_code_print(request: Request, code_id: int) -> HTMLRes
     await _require_dashboard_admin(request)
     effective_role = str(getattr(getattr(request.state, "admin_user", None), "role", "")).strip()
     if not can_generate_codes(effective_role):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only district admins may view access codes.")
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions to view access codes.")
     tenant_slug = str(getattr(request.state, "school_slug", "")).strip()
     school = request.state.school
     school_name = _esc(str(getattr(school, "name", tenant_slug)))

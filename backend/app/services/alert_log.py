@@ -481,11 +481,33 @@ class AlertLog:
                 """,
                 (int(alert_id),),
             ).fetchone()
+            provider_rows = conn.execute(
+                """
+                SELECT provider,
+                       COUNT(*),
+                       SUM(CASE WHEN ok=1 THEN 1 ELSE 0 END),
+                       MAX(CASE WHEN ok=0 THEN COALESCE(error,'') ELSE NULL END)
+                FROM alert_deliveries
+                WHERE alert_id = ?
+                GROUP BY provider;
+                """,
+                (int(alert_id),),
+            ).fetchall()
         if not row or row[0] == 0:
-            return {"total": 0, "ok": 0, "failed": 0, "last_error": None}
+            return {"total": 0, "ok": 0, "failed": 0, "last_error": None, "by_provider": {}}
         total = int(row[0])
         ok = int(row[1] or 0)
-        return {"total": total, "ok": ok, "failed": total - ok, "last_error": row[2]}
+        by_provider: dict = {}
+        for pr, pt, po, pe in provider_rows:
+            pt_i = int(pt)
+            po_i = int(po or 0)
+            by_provider[str(pr)] = {
+                "total": pt_i,
+                "ok": po_i,
+                "failed": pt_i - po_i,
+                "last_error": pe if pe else None,
+            }
+        return {"total": total, "ok": ok, "failed": total - ok, "last_error": row[2], "by_provider": by_provider}
 
     async def delivery_stats(self, alert_id: int) -> dict:
         """Returns delivery attempt counts (total/ok/failed) for a given alert. Read-only."""
