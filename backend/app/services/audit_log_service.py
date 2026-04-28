@@ -185,6 +185,45 @@ class AuditLogService:
             self._list_recent_sync, int(limit), event_type or None
         )
 
+    def _list_by_user_id_sync(self, user_id: int, limit: int) -> List[AuditEventRecord]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, tenant_slug, timestamp, event_type, actor_user_id,
+                       actor_label, target_type, target_id, metadata
+                FROM audit_log
+                WHERE (target_type = 'user' AND target_id = ?)
+                   OR actor_user_id = ?
+                ORDER BY id DESC LIMIT ?;
+                """,
+                (str(user_id), int(user_id), max(1, limit)),
+            ).fetchall()
+        records = []
+        for row in rows:
+            try:
+                meta = json.loads(row[8]) if row[8] else {}
+            except (ValueError, TypeError):
+                meta = {}
+            records.append(
+                AuditEventRecord(
+                    id=int(row[0]),
+                    tenant_slug=str(row[1]),
+                    timestamp=str(row[2]),
+                    event_type=str(row[3]),
+                    actor_user_id=int(row[4]) if row[4] is not None else None,
+                    actor_label=str(row[5]) if row[5] is not None else None,
+                    target_type=str(row[6]) if row[6] is not None else None,
+                    target_id=str(row[7]) if row[7] is not None else None,
+                    metadata=meta,
+                )
+            )
+        return records
+
+    async def list_by_user_id(self, user_id: int, limit: int = 50) -> List[AuditEventRecord]:
+        return await anyio.to_thread.run_sync(
+            self._list_by_user_id_sync, int(user_id), int(limit)
+        )
+
     async def distinct_event_types(self) -> List[str]:
         def _sync() -> List[str]:
             with self._connect() as conn:

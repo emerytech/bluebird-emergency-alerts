@@ -4715,6 +4715,104 @@ async def admin_update_user_tenant_assignments(
     return RedirectResponse(url="/admin?section=user-management#users", status_code=status.HTTP_303_SEE_OTHER)
 
 
+@router.post("/admin/users/bulk-archive", include_in_schema=False)
+async def admin_bulk_archive_users(request: Request) -> JSONResponse:
+    await _require_dashboard_admin(request)
+    actor_role = str(getattr(getattr(request.state, "admin_user", None), "role", "") or "")
+    try:
+        body = await request.json()
+        raw_ids = [int(x) for x in (body.get("user_ids") or [])]
+    except Exception:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="user_ids must be a list of integers")
+
+    success_count = 0
+    skipped: list[str] = []
+    for uid in raw_ids:
+        user = await _users(request).get_user(uid)
+        if user is None:
+            skipped.append(f"#{uid}: not found")
+            continue
+        if getattr(user, "is_archived", False):
+            skipped.append(f"#{uid}: already archived")
+            continue
+        if not can_archive_user(actor_role, user.role):
+            skipped.append(f"#{uid}: insufficient permissions")
+            continue
+        if is_dashboard_role(user.role) and user.can_login and user.is_active:
+            other_admins = await _users(request).count_other_dashboard_admins(uid)
+            if other_admins <= 0:
+                skipped.append(f"#{uid}: last active admin")
+                continue
+        _fire_audit(request, "user_archived", actor_user_id=_session_user_id(request),
+                    actor_label=_current_school_actor_label(request),
+                    target_type="user", target_id=str(uid),
+                    metadata={"name": user.name, "role": user.role, "bulk": True})
+        await _users(request).archive_user(uid)
+        await _registry(request).mark_invalid_by_user(uid)
+        success_count += 1
+
+    return JSONResponse({"success_count": success_count, "skipped_count": len(skipped), "skipped": skipped})
+
+
+@router.post("/admin/users/bulk-restore", include_in_schema=False)
+async def admin_bulk_restore_users(request: Request) -> JSONResponse:
+    await _require_dashboard_admin(request)
+    actor_role = str(getattr(getattr(request.state, "admin_user", None), "role", "") or "")
+    try:
+        body = await request.json()
+        raw_ids = [int(x) for x in (body.get("user_ids") or [])]
+    except Exception:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="user_ids must be a list of integers")
+
+    success_count = 0
+    skipped: list[str] = []
+    for uid in raw_ids:
+        user = await _users(request).get_user(uid)
+        if user is None:
+            skipped.append(f"#{uid}: not found")
+            continue
+        if not getattr(user, "is_archived", False):
+            skipped.append(f"#{uid}: not archived")
+            continue
+        if not can_archive_user(actor_role, user.role):
+            skipped.append(f"#{uid}: insufficient permissions")
+            continue
+        _fire_audit(request, "user_restored", actor_user_id=_session_user_id(request),
+                    actor_label=_current_school_actor_label(request),
+                    target_type="user", target_id=str(uid),
+                    metadata={"name": user.name, "role": user.role, "bulk": True})
+        await _users(request).restore_user(uid)
+        success_count += 1
+
+    return JSONResponse({"success_count": success_count, "skipped_count": len(skipped), "skipped": skipped})
+
+
+@router.get("/admin/users/{user_id}/audit", include_in_schema=False)
+async def admin_user_audit_trail(user_id: int, request: Request) -> JSONResponse:
+    await _require_dashboard_admin(request)
+    actor_role = str(getattr(getattr(request.state, "admin_user", None), "role", "") or "")
+    user = await _users(request).get_user(user_id)
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    if not can_archive_user(actor_role, user.role) and actor_role not in {ROLE_DISTRICT_ADMIN, ROLE_SUPER_ADMIN}:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
+    events = await _audit_log_svc(request).list_by_user_id(user_id, limit=50)
+    return JSONResponse({
+        "user_id": user_id,
+        "user_name": user.name,
+        "events": [
+            {
+                "id": e.id,
+                "timestamp": e.timestamp,
+                "event_type": e.event_type,
+                "actor_label": e.actor_label,
+                "metadata": e.metadata,
+            }
+            for e in events
+        ],
+    })
+
+
 @router.post("/admin/users/{user_id}/archive", include_in_schema=False)
 async def admin_archive_user(
     user_id: int,
@@ -4754,6 +4852,7 @@ async def admin_archive_user(
         metadata={"name": user.name, "role": user.role},
     )
     await _users(request).archive_user(user_id)
+    await _registry(request).mark_invalid_by_user(user_id)
     _set_flash(request, message=f"Archived {user.name}. You can permanently delete them from the archived users list.")
     return RedirectResponse(url="/admin?section=user-management&tab=archived", status_code=status.HTTP_303_SEE_OTHER)
 
@@ -4828,6 +4927,13 @@ async def admin_delete_user(
         target_id=str(user_id),
         metadata={"name": user.name, "role": user.role},
     )
+    if user.role == ROLE_DISTRICT_ADMIN:
+        da_total = await _users(request).count_all_district_admins()
+        if da_total <= 1:
+            _set_flash(request, error="Cannot delete the last district admin. At least one must remain.")
+            return RedirectResponse(url="/admin?section=user-management&tab=archived", status_code=status.HTTP_303_SEE_OTHER)
+
+    await _registry(request).mark_invalid_by_user(user_id)
     await _users(request).delete_user(user_id)
 
     if current_admin_id is not None and current_admin_id == user_id:

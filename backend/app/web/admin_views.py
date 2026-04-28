@@ -3620,6 +3620,13 @@ def _um_enterprise_table(
         title_str = f'<span class="um-sub">{escape(u.title)}</span>' if getattr(u, "title", "") else ""
         login_str = escape(u.login_name or "—")
         _can_mod = can_archive_user(actor_role, u.role)
+        # 8.3: activity indicator
+        _last_login_display = last if last != "Never" else None
+        _activity_str = (
+            f'<span class="um-sub" style="color:var(--muted);font-size:0.72rem;">Last login: {escape(_last_login_display)}</span>'
+            if _last_login_display else
+            '<span class="um-sub" style="color:var(--muted);font-size:0.72rem;opacity:0.7;">Never logged in</span>'
+        )
         user_json = json.dumps({
             "id": u.id,
             "name": u.name,
@@ -3657,14 +3664,21 @@ def _um_enterprise_table(
                 f'data-uid="{u.id}" onclick="event.stopPropagation();umToggleEdit({u.id})">Edit</button>'
                 + _archive_btn
             )
+        # 8.2: checkbox cell (excluded for self to avoid accidental self-archival)
+        _cb_cell = (
+            f'<td style="width:36px;padding-left:8px;" onclick="event.stopPropagation();">'
+            f'<input type="checkbox" class="um-bulk-cb" data-uid="{u.id}" style="width:16px;height:16px;cursor:pointer;" /></td>'
+            if not is_self else
+            '<td style="width:36px;"></td>'
+        )
         rows.append(
             f'<tr class="um-row" data-uid="{u.id}" data-user=\'{escape(user_json)}\' title="Click to view details"{row_style}>'
-            f'<td style="width:44px;">{_um_avatar(u.name, u.role)}</td>'
-            f'<td><div class="um-name-cell"><div class="um-name-stack"><span class="um-name">{escape(u.name)}{self_badge}</span>{title_str}</div></div></td>'
+            + _cb_cell
+            + f'<td style="width:44px;">{_um_avatar(u.name, u.role)}</td>'
+            f'<td><div class="um-name-cell"><div class="um-name-stack"><span class="um-name">{escape(u.name)}{self_badge}</span>{title_str}{_activity_str}</div></div></td>'
             f'<td style="font-size:0.8rem;color:var(--muted);">{login_str}</td>'
             f'<td>{_um_role_badge(u.role)}</td>'
             f'<td>{status_badge}</td>'
-            f'<td style="color:var(--muted);font-size:0.8rem;">{last}</td>'
             f'<td style="text-align:right;">'
             f'<div style="display:inline-flex;gap:6px;align-items:center;">'
             + _action_cell
@@ -3681,8 +3695,9 @@ def _um_enterprise_table(
         '<div class="table-wrap">'
         '<table class="um-table">'
         '<thead><tr>'
+        '<th style="width:36px;padding-left:8px;"><input type="checkbox" id="um-select-all" title="Select all" style="width:16px;height:16px;cursor:pointer;" /></th>'
         '<th></th><th>Name</th><th>Username</th><th>Role</th>'
-        '<th>Status</th><th>Last Login</th><th style="text-align:right;">Actions</th>'
+        '<th>Status</th><th style="text-align:right;">Actions</th>'
         '</tr></thead>'
         '<tbody>' + "".join(rows) + '</tbody>'
         '</table></div>'
@@ -3729,6 +3744,44 @@ def _um_slide_panel() -> str:
       <div class="um-panel-sect-label">Actions</div>
       <div class="um-panel-actions" id="up-actions"></div>
     </div>
+    <div>
+      <div class="um-panel-sect-label">Activity Timeline</div>
+      <div id="up-timeline" style="font-size:0.8rem;max-height:320px;overflow-y:auto;">
+        <span style="color:var(--muted);">Select a user to load timeline.</span>
+      </div>
+    </div>
+  </div>
+</div>
+"""
+
+
+def _um_delete_modal() -> str:
+    return """
+<div class="um-modal-wrap" id="um-delete-modal">
+  <div class="um-modal">
+    <h3>Delete User Permanently</h3>
+    <p class="um-modal-desc">You are about to delete <strong id="dm-user-name"></strong>.</p>
+    <p class="um-modal-desc" style="color:var(--danger);font-weight:600;">This will permanently delete the user and cannot be undone.</p>
+    <div class="um-modal-actions">
+      <button class="button button-secondary" id="dm-cancel">Cancel</button>
+      <button class="button button-danger" id="dm-confirm">Delete Permanently</button>
+    </div>
+  </div>
+</div>
+"""
+
+
+def _um_bulk_modal() -> str:
+    return """
+<div class="um-modal-wrap" id="um-bulk-modal">
+  <div class="um-modal">
+    <h3 id="bm-title">Bulk Action</h3>
+    <p class="um-modal-desc">Apply this action to <strong id="bm-count"></strong> selected user<span id="bm-plural"></span>?</p>
+    <p class="um-modal-desc" id="bm-warning" style="color:var(--danger);font-weight:600;display:none;"></p>
+    <div class="um-modal-actions">
+      <button class="button button-secondary" id="bm-cancel">Cancel</button>
+      <button class="button button-primary" id="bm-confirm">Confirm</button>
+    </div>
   </div>
 </div>
 """
@@ -3774,6 +3827,8 @@ def _user_archive_delete_html(prefix: str, user: UserRecord, *, actor_role: str 
             '<p class="mini-copy" style="color:#7c3aed;margin:0;">&#128274; Protected Role — only district admins can restore or delete this account.</p>'
             '</div>'
         )
+    _delete_url = json.dumps(f"{prefix}/admin/users/{user.id}/delete")
+    _user_name_js = json.dumps(user.name)
     return (
         f'<div style="background:rgba(220,38,38,0.06);border:1px solid rgba(220,38,38,0.16);border-radius:12px;padding:12px 14px;margin-top:4px;">'
         f'<p class="mini-copy" style="color:var(--danger);margin:0 0 8px;">&#9888; This user is archived.</p>'
@@ -3781,10 +3836,8 @@ def _user_archive_delete_html(prefix: str, user: UserRecord, *, actor_role: str 
         f'<form method="post" action="{prefix}/admin/users/{user.id}/restore" style="margin:0;">'
         f'<button class="button button-secondary" type="submit">Restore user</button>'
         f'</form>'
-        f'<form method="post" action="{prefix}/admin/users/{user.id}/delete" style="margin:0;"'
-        f' onsubmit="return confirm(\'Permanently delete {escape(user.name)}? This cannot be undone.\');">'
-        f'<button class="button button-danger" type="submit">Delete permanently</button>'
-        f'</form>'
+        f'<button class="button button-danger" type="button"'
+        f' onclick="umOpenDeleteModal({_delete_url},{_user_name_js})">Delete permanently</button>'
         f'</div></div>'
     )
 
@@ -4088,6 +4141,8 @@ def render_admin_page(
     _active_user_list = [u for u in users if not getattr(u, "is_archived", False)]
     _archived_user_list = [u for u in users if getattr(u, "is_archived", False)]
     _um_show_archived = active_tab == "archived"
+    # Count non-archived district admins (for last-DA delete guard in UI)
+    _active_da_count = sum(1 for u in _active_user_list if u.role == "district_admin")
     active_users = sum(1 for user in users if user.is_active)
     login_enabled = sum(1 for user in users if user.can_login)
     alarm_status_class = "danger" if alarm_state.is_active and not alarm_state.is_training else ("warn" if alarm_state.is_active else "ok")
@@ -4382,14 +4437,28 @@ def render_admin_page(
             name_esc = escape(u.name)
             _can_act = can_archive_user(_archived_actor_role, u.role)
             if _can_act:
+                _delete_url = f"{prefix}/admin/users/{u.id}/delete"
+                # 8.1: disable delete if this is the last district admin (archived count + active count = 1)
+                _is_last_da = (
+                    u.role == "district_admin" and
+                    _active_da_count == 0 and
+                    sum(1 for x in _archived_user_list if x.role == "district_admin") == 1
+                )
+                if _is_last_da:
+                    _delete_btn = (
+                        '<button class="button button-danger-outline" style="min-height:30px;font-size:0.78rem;padding:0 10px;opacity:0.45;cursor:not-allowed;" '
+                        'type="button" disabled title="At least one district admin is required">Delete</button>'
+                    )
+                else:
+                    _delete_btn = (
+                        f'<button class="button button-danger-outline" style="min-height:30px;font-size:0.78rem;padding:0 10px;" type="button"'
+                        f' onclick="umOpenDeleteModal({json.dumps(_delete_url)},{json.dumps(u.name)})">Delete</button>'
+                    )
                 _row_actions = (
                     f'<form method="post" action="{prefix}/admin/users/{u.id}/restore" style="margin:0;">'
                     f'<button class="button button-secondary" style="min-height:30px;font-size:0.78rem;padding:0 10px;" type="submit">Restore</button>'
                     f'</form>'
-                    f'<form method="post" action="{prefix}/admin/users/{u.id}/delete" style="margin:0;"'
-                    f' onsubmit="return confirm(\'Permanently delete {name_esc}? This cannot be undone.\');">'
-                    f'<button class="button button-danger-outline" style="min-height:30px;font-size:0.78rem;padding:0 10px;" type="submit">Delete</button>'
-                    f'</form>'
+                    + _delete_btn
                 )
             else:
                 _row_actions = (
@@ -4728,6 +4797,39 @@ def render_admin_page(
         var archNote = (isArch && canModify) ? '<p class="mini-copy" style="color:var(--danger);">This user is archived. Use the Archived tab to restore or delete them.</p>' : '';
         el('up-actions').innerHTML = editBtn + protectedNote + selfNote + archNote;
       }}
+      // 8.5: audit timeline
+      var tlEl = el('up-timeline');
+      if (tlEl) {{
+        tlEl.innerHTML = '<span style="color:var(--muted);">Loading…</span>';
+        fetch(BB_PATH_PREFIX + '/admin/users/' + userData.id + '/audit', {{credentials: 'same-origin'}})
+          .then(function(r) {{ return r.ok ? r.json() : Promise.reject(r.status); }})
+          .then(function(events) {{
+            if (!events || !events.length) {{
+              tlEl.innerHTML = '<span style="color:var(--muted);">No activity recorded yet.</span>';
+              return;
+            }}
+            var EVENT_LABELS = {{
+              'user_created': 'Created', 'user_archived': 'Archived', 'user_restored': 'Restored',
+              'user_deleted': 'Deleted', 'user_updated': 'Updated', 'role_changed': 'Role changed',
+              'login': 'Login', 'login_failed': 'Login failed', 'password_changed': 'Password changed',
+              'totp_enabled': '2FA enabled', 'totp_disabled': '2FA disabled',
+            }};
+            var html = '<div style="position:relative;padding-left:20px;">';
+            events.forEach(function(ev) {{
+              var label = EVENT_LABELS[ev.event_type] || ev.event_type;
+              var ts = (ev.timestamp || '').slice(0, 16).replace('T', ' ');
+              var actor = ev.actor_label ? ' by ' + ev.actor_label : '';
+              html += '<div style="margin-bottom:10px;position:relative;">'
+                + '<div style="position:absolute;left:-18px;top:4px;width:8px;height:8px;border-radius:50%;background:var(--accent);"></div>'
+                + '<div style="font-weight:600;font-size:0.78rem;">' + label + '</div>'
+                + '<div style="color:var(--muted);font-size:0.72rem;">' + ts + actor + '</div>'
+                + '</div>';
+            }});
+            html += '</div>';
+            tlEl.innerHTML = html;
+          }})
+          .catch(function() {{ tlEl.innerHTML = '<span style="color:var(--muted);">Could not load timeline.</span>'; }});
+      }}
       // mark active row
       document.querySelectorAll('.um-row').forEach(function(r){{r.classList.remove('um-row-active');}});
       var activeRow = document.querySelector('.um-row[data-uid="' + userData.id + '"]');
@@ -4831,6 +4933,120 @@ def render_admin_page(
           pendingRoleForm = null;
         }}
       }});
+
+      // Delete confirmation modal
+      var deleteModal = document.getElementById('um-delete-modal');
+      var _dmPendingUrl = null;
+      window.umOpenDeleteModal = function(url, userName) {{
+        _dmPendingUrl = url;
+        var nameEl = document.getElementById('dm-user-name');
+        if (nameEl) nameEl.textContent = userName || 'this user';
+        if (deleteModal) deleteModal.classList.add('open');
+      }};
+      var dmCancel = document.getElementById('dm-cancel');
+      if (dmCancel) dmCancel.addEventListener('click', function() {{
+        if (deleteModal) deleteModal.classList.remove('open');
+        _dmPendingUrl = null;
+      }});
+      var dmConfirm = document.getElementById('dm-confirm');
+      if (dmConfirm) dmConfirm.addEventListener('click', function() {{
+        if (!_dmPendingUrl) return;
+        if (deleteModal) deleteModal.classList.remove('open');
+        var f = document.createElement('form');
+        f.method = 'post';
+        f.action = _dmPendingUrl;
+        document.body.appendChild(f);
+        f.submit();
+      }});
+
+      // 8.2: Bulk selection — select-all checkbox + bar
+      var bulkBar = document.getElementById('um-bulk-bar');
+      var bulkCountEl = document.getElementById('um-bulk-count');
+      var bulkModal = document.getElementById('um-bulk-modal');
+      var _bulkAction = null;
+
+      function getCheckedUids() {{
+        return Array.from(document.querySelectorAll('.um-bulk-cb:checked')).map(function(cb) {{ return parseInt(cb.dataset.uid, 10); }});
+      }}
+      function updateBulkBar() {{
+        var uids = getCheckedUids();
+        if (bulkBar) bulkBar.style.display = uids.length ? 'flex' : 'none';
+        if (bulkCountEl) bulkCountEl.textContent = uids.length + ' user' + (uids.length !== 1 ? 's' : '') + ' selected';
+        var selAll = document.getElementById('um-select-all');
+        if (selAll) {{
+          var total = document.querySelectorAll('.um-bulk-cb').length;
+          selAll.indeterminate = uids.length > 0 && uids.length < total;
+          selAll.checked = total > 0 && uids.length === total;
+        }}
+      }}
+      document.querySelectorAll('.um-bulk-cb').forEach(function(cb) {{
+        cb.addEventListener('change', updateBulkBar);
+      }});
+      var selAll = document.getElementById('um-select-all');
+      if (selAll) {{
+        selAll.addEventListener('change', function() {{
+          document.querySelectorAll('.um-bulk-cb').forEach(function(cb) {{ cb.checked = selAll.checked; }});
+          updateBulkBar();
+        }});
+      }}
+      var bulkClearBtn = document.getElementById('um-bulk-clear-btn');
+      if (bulkClearBtn) {{
+        bulkClearBtn.addEventListener('click', function() {{
+          document.querySelectorAll('.um-bulk-cb').forEach(function(cb) {{ cb.checked = false; }});
+          updateBulkBar();
+        }});
+      }}
+
+      function openBulkModal(action, label, warningText) {{
+        _bulkAction = action;
+        var uids = getCheckedUids();
+        var titleEl = document.getElementById('bm-title');
+        var countEl = document.getElementById('bm-count');
+        var pluralEl = document.getElementById('bm-plural');
+        var warnEl = document.getElementById('bm-warning');
+        var confirmBtn = document.getElementById('bm-confirm');
+        if (titleEl) titleEl.textContent = label;
+        if (countEl) countEl.textContent = uids.length;
+        if (pluralEl) pluralEl.textContent = uids.length !== 1 ? 's' : '';
+        if (warnEl) {{ warnEl.textContent = warningText || ''; warnEl.style.display = warningText ? '' : 'none'; }}
+        if (confirmBtn) confirmBtn.className = action === 'archive' ? 'button button-danger' : 'button button-primary';
+        if (bulkModal) bulkModal.classList.add('open');
+      }}
+
+      var bulkArchiveBtn = document.getElementById('um-bulk-archive-btn');
+      if (bulkArchiveBtn) {{
+        bulkArchiveBtn.addEventListener('click', function() {{
+          openBulkModal('archive', 'Bulk Archive Users', 'Archived users will be deactivated and cannot log in.');
+        }});
+      }}
+      var bmCancel = document.getElementById('bm-cancel');
+      if (bmCancel) {{
+        bmCancel.addEventListener('click', function() {{
+          if (bulkModal) bulkModal.classList.remove('open');
+          _bulkAction = null;
+        }});
+      }}
+      var bmConfirm = document.getElementById('bm-confirm');
+      if (bmConfirm) {{
+        bmConfirm.addEventListener('click', function() {{
+          if (bulkModal) bulkModal.classList.remove('open');
+          var uids = getCheckedUids();
+          if (!uids.length || !_bulkAction) return;
+          var endpoint = BB_PATH_PREFIX + '/admin/users/bulk-' + _bulkAction;
+          fetch(endpoint, {{
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: {{'Content-Type': 'application/json'}},
+            body: JSON.stringify({{user_ids: uids}})
+          }}).then(function(r) {{ return r.json(); }}).then(function(data) {{
+            var msg = (data.success_count || 0) + ' user(s) ' + _bulkAction + 'd.';
+            if (data.skipped_count) msg += ' ' + data.skipped_count + ' skipped (protected role or not allowed).';
+            alert(msg);
+            window.location.reload();
+          }}).catch(function() {{ alert('Bulk action failed. Please try again.'); }});
+          _bulkAction = null;
+        }});
+      }}
     }});
   }})();
   </script>
@@ -5182,9 +5398,16 @@ def render_admin_page(
                 </div>
               </div>
 
-              <div class="table-search" style="margin-bottom:14px;">
+              <div class="table-search" style="margin-bottom:8px;">
                 <input type="search" id="user-search" placeholder="Search by name, username, or role..." style="max-width:320px;" />
                 <span class="mini-copy" style="margin-left:auto;">{len(_active_user_list)} user{"s" if len(_active_user_list) != 1 else ""}</span>
+              </div>
+
+              <!-- 8.2: Bulk action bar (hidden until rows are selected) -->
+              <div id="um-bulk-bar" style="display:none;align-items:center;gap:10px;padding:8px 12px;margin-bottom:10px;background:rgba(27,95,228,0.07);border:1px solid rgba(27,95,228,0.18);border-radius:8px;">
+                <span class="mini-copy" id="um-bulk-count" style="font-weight:600;"></span>
+                <button class="button button-danger-outline" id="um-bulk-archive-btn" style="min-height:30px;font-size:0.78rem;padding:0 12px;">Archive Selected</button>
+                <button class="button button-secondary" id="um-bulk-clear-btn" style="min-height:30px;font-size:0.78rem;padding:0 10px;">Clear</button>
               </div>
 
               {_um_enterprise_table(_active_user_list, school_path_prefix, actor_role=str(getattr(current_user, "role", "") or ""), actor_user_id=current_user_id)}
@@ -5211,6 +5434,8 @@ def render_admin_page(
 
           {_um_slide_panel()}
           {_um_role_modal()}
+          {_um_delete_modal()}
+          {_um_bulk_modal()}
 
           {_access_codes_panel_html}
 

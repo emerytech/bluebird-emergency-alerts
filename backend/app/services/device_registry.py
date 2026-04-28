@@ -107,7 +107,8 @@ class DeviceRegistry:
                         device_name = excluded.device_name,
                         user_id = excluded.user_id,
                         first_user_id = COALESCE(registered_devices.first_user_id, excluded.first_user_id),
-                        last_seen_at = CURRENT_TIMESTAMP;
+                        last_seen_at = CURRENT_TIMESTAMP,
+                        is_valid = 1;
                     """,
                     (token, platform, push_provider, device_name, user_id, user_id),
                 )
