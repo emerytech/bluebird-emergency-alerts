@@ -1,45 +1,8 @@
 import SwiftUI
 import UIKit
 
-private enum EmergencyType: String, CaseIterable, Identifiable {
-    case secure, lockdown, evacuate, shelter, hold
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .secure:   return "Secure"
-        case .lockdown: return "Lockdown"
-        case .evacuate: return "Evacuate"
-        case .shelter:  return "Shelter in Place"
-        case .hold:     return "Hold"
-        }
-    }
-
-    var symbol: String {
-        switch self {
-        case .secure:   return "🔐"
-        case .lockdown: return "🔒"
-        case .evacuate: return "🚶"
-        case .shelter:  return "🏠"
-        case .hold:     return "⏸"
-        }
-    }
-
-    var message: String {
-        switch self {
-        case .secure:   return "SECURE emergency initiated. Follow school secure procedures."
-        case .lockdown: return "LOCKDOWN emergency initiated. Follow lockdown procedures immediately."
-        case .evacuate: return "EVACUATE emergency initiated. Move to evacuation locations now."
-        case .shelter:  return "SHELTER emergency initiated. Move into shelter protocol."
-        case .hold:     return "HOLD emergency initiated. Keep current position until cleared."
-        }
-    }
-}
-
 struct ContentView: View {
     @EnvironmentObject private var appState: AppState
-    @State private var showEmergencyTypeSheet: Bool = false
     @State private var pendingEmergencyMessage: String = ""
     @State private var showConfirm: Bool = false
     @State private var isSending: Bool = false
@@ -77,7 +40,10 @@ struct ContentView: View {
                 CircularEmergencyButton(
                     holdSeconds: holdSeconds,
                     enabled: !isSending,
-                    onHoldComplete: { showEmergencyTypeSheet = true }
+                    onHoldComplete: {
+                        pendingEmergencyMessage = "EMERGENCY ALERT initiated. All users are being notified immediately."
+                        showConfirm = true
+                    }
                 )
 
                 Button {
@@ -117,40 +83,6 @@ struct ContentView: View {
                 }
             } message: {
                 Text(pendingEmergencyMessage)
-            }
-            .sheet(isPresented: $showEmergencyTypeSheet) {
-                NavigationStack {
-                    List {
-                        Section {
-                            ForEach(EmergencyType.allCases) { type in
-                                Button {
-                                    pendingEmergencyMessage = type.message
-                                    showEmergencyTypeSheet = false
-                                    showConfirm = true
-                                } label: {
-                                    HStack(spacing: 16) {
-                                        Text(type.symbol)
-                                            .font(.title2)
-                                        Text(type.title)
-                                            .font(.headline)
-                                            .foregroundStyle(.primary)
-                                    }
-                                    .padding(.vertical, 4)
-                                }
-                                .tint(.primary)
-                            }
-                        } header: {
-                            Text("Select Emergency Type")
-                        }
-                    }
-                    .navigationTitle("Activate Emergency")
-                    .navigationBarTitleDisplayMode(.inline)
-                    .toolbar {
-                        ToolbarItem(placement: .topBarLeading) {
-                            Button("Cancel") { showEmergencyTypeSheet = false }
-                        }
-                    }
-                }
             }
             .sheet(isPresented: $showMessageAdminSheet) {
                 NavigationStack {
