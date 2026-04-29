@@ -399,15 +399,6 @@ def _base_styles() -> str:
       --radius: 24px;
       --radius-soft: 18px;
       --input-bg: #ffffff;
-      /* ── Design-system tokens (aligned with login portal) ── */
-      --blue:          #1b5fe4;
-      --blue-dark:     #1048c0;
-      --blue-soft:     #eff6ff;
-      --input-radius:  12px;
-      --btn-radius:    12px;
-      --card-radius:   20px;
-      --shadow-card:   0 32px 80px rgba(0,0,0,.35);
-      --shadow-btn:    0 4px 14px rgba(27,95,228,.3);
       --btn-secondary-bg: rgba(255, 255, 255, 0.80);
       --btn-secondary-hover: #ffffff;
       --headline: "Avenir Next", "Segoe UI Variable Display", "SF Pro Display", "Trebuchet MS", sans-serif;
@@ -1838,7 +1829,6 @@ def render_login_page(
         '<input id="name" name="name" autocomplete="name" placeholder="Your full name" />'
         '</div>'
     ) if setup_mode else ""
-    _slug_js = escape(school_slug)
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1849,17 +1839,12 @@ def render_login_page(
   <style>
     *, *::before, *::after {{ box-sizing: border-box; margin: 0; padding: 0; }}
     :root {{
-      --blue:        #1b5fe4;
-      --blue-dark:   #1048c0;
-      --blue-soft:   #eff6ff;
-      --text:        #10203f;
-      --muted:       #5d7398;
-      --border:      rgba(18,52,120,.12);
-      --input-radius: 12px;
-      --btn-radius:  12px;
-      --card-radius: 20px;
-      --shadow-card: 0 32px 80px rgba(0,0,0,.35);
-      --shadow-btn:  0 4px 14px rgba(27,95,228,.3);
+      --blue:      #1b5fe4;
+      --blue-dark: #1048c0;
+      --blue-soft: #eff6ff;
+      --text:      #10203f;
+      --muted:     #5d7398;
+      --border:    rgba(18,52,120,.12);
     }}
     html {{ height: 100%; }}
     body {{
@@ -1871,47 +1856,30 @@ def render_login_page(
       align-items: center; justify-content: center;
       padding: 24px;
     }}
-
-    /* ── Card ──────────────────────────────────────────────────────── */
     .portal-card {{
-      background: #fff;
-      border-radius: var(--card-radius);
+      background: #fff; border-radius: 20px;
       padding: 40px 44px;
       max-width: 460px; width: 100%;
-      box-shadow: var(--shadow-card);
-      animation: bbFadeUp .35s cubic-bezier(.22,.61,.36,1) both;
+      box-shadow: 0 32px 80px rgba(0,0,0,.35);
+      animation: bbFadeUp .35s ease both;
     }}
     @keyframes bbFadeUp {{
-      from {{ opacity: 0; transform: translateY(16px); }}
+      from {{ opacity: 0; transform: translateY(14px); }}
       to   {{ opacity: 1; transform: translateY(0); }}
     }}
-
-    /* ── Logo ──────────────────────────────────────────────────────── */
     .portal-logo {{
       display: flex; align-items: center; gap: 10px;
       margin-bottom: 24px;
     }}
     .portal-logo img {{
       width: 36px; height: 36px; object-fit: contain; border-radius: 8px;
-      animation: bbLogoEntry .55s cubic-bezier(.34,1.56,.64,1) both;
-      animation-delay: .05s;
     }}
-    @keyframes bbLogoEntry {{
-      from {{ opacity: 0; transform: scale(.72) rotate(-10deg); }}
-      to   {{ opacity: 1; transform: scale(1)  rotate(0deg); }}
-    }}
-    .portal-logo span {{
-      font-weight: 800; font-size: 1.1rem; color: var(--text);
-      animation: bbFadeUp .35s ease both;
-      animation-delay: .12s;
-    }}
-
-    /* ── School context ────────────────────────────────────────────── */
+    .portal-logo span {{ font-weight: 800; font-size: 1.1rem; color: var(--text); }}
     .school-context {{
       display: flex; align-items: center; justify-content: space-between;
       gap: 12px;
       background: var(--blue-soft); border: 1px solid rgba(27,95,228,.18);
-      border-radius: var(--input-radius); padding: 12px 16px;
+      border-radius: 12px; padding: 12px 16px;
       margin-bottom: 22px;
     }}
     .school-context.setup {{
@@ -1931,16 +1899,12 @@ def render_login_page(
       text-decoration: none; white-space: nowrap; flex-shrink: 0;
     }}
     .school-context-change:hover {{ color: var(--blue); text-decoration: underline; }}
-
-    /* ── Heading ───────────────────────────────────────────────────── */
     .portal-heading {{
       font-size: 1.28rem; font-weight: 800; color: var(--text); margin-bottom: 5px;
     }}
     .portal-sub {{
       font-size: 0.87rem; color: var(--muted); margin-bottom: 22px; line-height: 1.5;
     }}
-
-    /* ── Notice / Flash ────────────────────────────────────────────── */
     .notice-box {{
       background: rgba(27,95,228,.07); border: 1px solid rgba(27,95,228,.18);
       border-radius: 10px; padding: 10px 14px;
@@ -1959,14 +1923,11 @@ def render_login_page(
       background: rgba(22,163,74,.07); border: 1px solid rgba(22,163,74,.18);
       color: #166534;
     }}
-
-    /* ── Fields ────────────────────────────────────────────────────── */
     .field {{ display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }}
     .field label {{ font-size: 0.82rem; font-weight: 600; color: var(--text); }}
     .field input {{
       width: 100%; padding: 12px 14px;
-      border: 1.5px solid var(--border);
-      border-radius: var(--input-radius);
+      border: 1.5px solid var(--border); border-radius: 12px;
       font-size: 0.95rem; color: var(--text);
       background: #fff; outline: none;
       transition: border-color .15s, box-shadow .15s;
@@ -1977,83 +1938,21 @@ def render_login_page(
       border-color: var(--blue);
       box-shadow: 0 0 0 3px rgba(27,95,228,.12);
     }}
-    .field-label-row {{
-      display: flex; align-items: center; justify-content: space-between;
-    }}
-    .field-label-row label {{ margin: 0; }}
-
-    /* ── Password wrapper ──────────────────────────────────────────── */
-    .pwd-wrap {{ position: relative; }}
-    .pwd-wrap input {{ padding-right: 44px; }}
-    .pwd-toggle {{
-      position: absolute; right: 12px; top: 50%;
-      transform: translateY(-50%);
-      background: none; border: none; cursor: pointer; padding: 4px;
-      color: var(--muted); font-size: 1rem; line-height: 1;
-      transition: color .15s;
-    }}
-    .pwd-toggle:hover {{ color: var(--blue); }}
-
-    /* ── Forgot password ───────────────────────────────────────────── */
-    .forgot-link {{
-      font-size: 0.78rem; color: var(--muted); font-weight: 600;
-      background: none; border: none; cursor: pointer; padding: 0;
-      text-decoration: none;
-    }}
-    .forgot-link:hover {{ color: var(--blue); text-decoration: underline; }}
-    .forgot-panel {{
-      overflow: hidden;
-      max-height: 0;
-      opacity: 0;
-      transition: max-height .3s cubic-bezier(.22,.61,.36,1), opacity .25s ease, margin .3s ease;
-      margin-bottom: 0;
-    }}
-    .forgot-panel.open {{
-      max-height: 220px;
-      opacity: 1;
-      margin-bottom: 14px;
-    }}
-    .forgot-inner {{
-      background: rgba(27,95,228,.06); border: 1px solid rgba(27,95,228,.16);
-      border-radius: 10px; padding: 14px 16px;
-      font-size: 0.84rem; color: #1e3a6e; line-height: 1.55;
-    }}
-    .forgot-inner p {{ margin-bottom: 8px; }}
-    .forgot-inner p:last-child {{ margin-bottom: 0; }}
-    .forgot-back {{
-      background: none; border: none; cursor: pointer; padding: 0;
-      color: var(--blue); font-size: 0.8rem; font-weight: 600;
-      text-decoration: underline;
-    }}
-
-    /* ── Submit ────────────────────────────────────────────────────── */
     .btn-signin {{
-      display: flex; align-items: center; justify-content: center; gap: 8px;
+      display: flex; align-items: center; justify-content: center;
       width: 100%; padding: 13px 20px; margin-top: 6px;
       background: var(--blue); color: #fff;
-      font-size: 0.97rem; font-weight: 700;
-      border-radius: var(--btn-radius);
+      font-size: 0.97rem; font-weight: 700; border-radius: 12px;
       border: none; cursor: pointer; font-family: inherit;
       transition: background .15s, transform .1s, box-shadow .15s;
-      box-shadow: var(--shadow-btn);
+      box-shadow: 0 4px 14px rgba(27,95,228,.3);
     }}
     .btn-signin:hover {{
       background: var(--blue-dark);
       transform: translateY(-1px);
       box-shadow: 0 6px 20px rgba(27,95,228,.42);
     }}
-    .btn-signin:active {{ transform: translateY(0); box-shadow: 0 2px 8px rgba(27,95,228,.22); }}
-    .btn-signin:focus-visible {{ outline: 3px solid rgba(27,95,228,.4); outline-offset: 2px; }}
-    .btn-spinner {{
-      width: 16px; height: 16px; border-radius: 50%;
-      border: 2px solid rgba(255,255,255,.35);
-      border-top-color: #fff;
-      animation: bbSpin .6s linear infinite;
-      display: none;
-    }}
-    @keyframes bbSpin {{ to {{ transform: rotate(360deg); }} }}
-
-    /* ── Footer ────────────────────────────────────────────────────── */
+    .btn-signin:active {{ transform: translateY(0); box-shadow: 0 2px 8px rgba(27,95,228,.25); }}
     .portal-footer {{
       text-align: center; margin-top: 20px;
       font-size: 0.8rem; color: rgba(255,255,255,.5);
@@ -2064,13 +1963,9 @@ def render_login_page(
       margin-top: 10px; font-size: 0.71rem; color: rgba(255,255,255,.32);
       line-height: 1.5; max-width: 380px; margin-left: auto; margin-right: auto;
     }}
-
-    /* ── Responsive ────────────────────────────────────────────────── */
     @media (max-width: 520px) {{
       .portal-card {{ padding: 28px 22px; border-radius: 16px; }}
     }}
-
-    /* ── Dark mode ─────────────────────────────────────────────────── */
     @media (prefers-color-scheme: dark) {{
       .portal-card {{ background: #1e293b; }}
       .portal-logo span, .portal-heading {{ color: #e2e8f0; }}
@@ -2087,63 +1982,38 @@ def render_login_page(
         border-color: #60a5fa;
         box-shadow: 0 0 0 3px rgba(96,165,250,.12);
       }}
-      .forgot-inner {{ background: rgba(27,95,228,.12); border-color: rgba(96,165,250,.2); color: #93c5fd; }}
     }}
   </style>
 </head>
 <body>
 
-<div class="portal-card" role="main">
+<div class="portal-card">
   <div class="portal-logo">
-    <img src="{LOGO_PATH}" alt="BlueBird Alerts logo" />
+    <img src="{LOGO_PATH}" alt="BlueBird Alerts" />
     <span>BlueBird Alerts</span>
   </div>
 
   {_school_ctx_html}
 
-  <h1 class="portal-heading">{escape(heading)}</h1>
+  <h2 class="portal-heading">{escape(heading)}</h2>
   <p class="portal-sub">{escape(helper)}</p>
 
   {_setup_notice_html}
-  {"" if not _err_html else f'<div role="alert">{_err_html}</div>'}
   {_msg_html}
+  {_err_html}
 
-  <form method="post" action="{action}" id="login-form" novalidate>
+  <form method="post" action="{action}">
     {_extra_fields_html}
     {_pin_field_html}
     <div class="field">
       <label for="login_name">Username</label>
-      <input id="login_name" name="login_name" autocomplete="username"
-             placeholder="Enter your username" spellcheck="false"
-             autocapitalize="off" autocorrect="off" />
+      <input id="login_name" name="login_name" autocomplete="username" placeholder="Enter your username" />
     </div>
     <div class="field">
-      <div class="field-label-row">
-        <label for="password">Password</label>
-        {"" if setup_mode else '<button type="button" class="forgot-link" id="forgot-btn" aria-expanded="false" aria-controls="forgot-panel">Forgot password?</button>'}
-      </div>
-      <div class="pwd-wrap">
-        <input id="password" name="password" type="password"
-               autocomplete="current-password" placeholder="Enter your password" />
-        <button type="button" class="pwd-toggle" id="pwd-toggle"
-                aria-label="Show password" tabindex="-1">&#128065;</button>
-      </div>
+      <label for="password">Password</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" placeholder="Enter your password" />
     </div>
-
-    {"" if setup_mode else '''
-    <div class="forgot-panel" id="forgot-panel" aria-hidden="true">
-      <div class="forgot-inner">
-        <p><strong>Password resets are managed by your school admin.</strong></p>
-        <p>Contact your building administrator or IT department to have your password reset. They can update your credentials from the admin console.</p>
-        <button type="button" class="forgot-back" onclick="bbForgot(false)">&#8592; Back to sign in</button>
-      </div>
-    </div>
-    '''}
-
-    <button class="btn-signin" type="submit" id="signin-btn">
-      <span id="signin-label">{escape(button)}</span>
-      <span class="btn-spinner" id="signin-spinner" aria-hidden="true"></span>
-    </button>
+    <button class="btn-signin" type="submit">{escape(button)}</button>
   </form>
 </div>
 
@@ -2154,88 +2024,6 @@ def render_login_page(
     Always call 911 in a real emergency.
   </p>
 </div>
-
-<script>
-(function() {{
-  var SLUG = '{_slug_js}';
-  var UKEY = 'bb_username_' + SLUG;
-
-  /* ── Remember username ───────────────────────────────────────── */
-  var _nameInp = document.getElementById('login_name');
-  var _pwdInp  = document.getElementById('password');
-  var _form    = document.getElementById('login-form');
-  var _btn     = document.getElementById('signin-btn');
-  var _spinner = document.getElementById('signin-spinner');
-  var _label   = document.getElementById('signin-label');
-
-  if (_nameInp) {{
-    var _saved = '';
-    try {{ _saved = localStorage.getItem(UKEY) || ''; }} catch(e) {{}}
-    if (_saved && !_nameInp.value) {{
-      _nameInp.value = _saved;
-    }}
-    /* autofocus: jump to password if username already filled */
-    if (_saved && _pwdInp) {{
-      _pwdInp.focus();
-    }} else if (_nameInp) {{
-      _nameInp.focus();
-    }}
-  }}
-
-  if (_form) {{
-    _form.addEventListener('submit', function() {{
-      /* Save username */
-      var uval = _nameInp ? _nameInp.value.trim() : '';
-      if (uval) {{ try {{ localStorage.setItem(UKEY, uval); }} catch(e) {{}} }}
-      /* Loading state */
-      if (_btn) {{ _btn.disabled = true; }}
-      if (_spinner) {{ _spinner.style.display = ''; }}
-      if (_label)   {{ _label.style.opacity = '.7'; }}
-    }});
-  }}
-
-  /* ── Enter key: username → password ─────────────────────────── */
-  if (_nameInp && _pwdInp) {{
-    _nameInp.addEventListener('keydown', function(e) {{
-      if (e.key === 'Enter') {{ e.preventDefault(); _pwdInp.focus(); }}
-    }});
-  }}
-
-  /* ── Password show/hide ──────────────────────────────────────── */
-  var _pwdToggle = document.getElementById('pwd-toggle');
-  if (_pwdToggle && _pwdInp) {{
-    _pwdToggle.addEventListener('click', function() {{
-      var show = _pwdInp.type === 'password';
-      _pwdInp.type = show ? 'text' : 'password';
-      _pwdToggle.setAttribute('aria-label', show ? 'Hide password' : 'Show password');
-      _pwdToggle.innerHTML = show ? '&#128683;' : '&#128065;';
-    }});
-  }}
-
-  /* ── Forgot password panel ───────────────────────────────────── */
-  window.bbForgot = function(open) {{
-    var panel = document.getElementById('forgot-panel');
-    var btn   = document.getElementById('forgot-btn');
-    if (!panel) return;
-    if (open) {{
-      panel.classList.add('open');
-      panel.setAttribute('aria-hidden', 'false');
-      if (btn) btn.setAttribute('aria-expanded', 'true');
-    }} else {{
-      panel.classList.remove('open');
-      panel.setAttribute('aria-hidden', 'true');
-      if (btn) {{ btn.setAttribute('aria-expanded', 'false'); btn.focus(); }}
-    }}
-  }};
-  var _forgotBtn = document.getElementById('forgot-btn');
-  if (_forgotBtn) {{
-    _forgotBtn.addEventListener('click', function() {{
-      var open = this.getAttribute('aria-expanded') === 'true';
-      bbForgot(!open);
-    }});
-  }}
-}})();
-</script>
 
 </body>
 </html>"""
