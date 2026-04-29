@@ -15,6 +15,7 @@ from app.services.incident_store import TeamAssistRecord
 from app.services.quiet_period_store import QuietPeriodRecord
 from app.services.report_store import AdminMessageRecord, BroadcastUpdateRecord, ReportRecord
 from app.services.school_registry import SchoolRecord
+from app.services.tenant_settings import TenantSettings
 from app.services.tenant_settings_store import SettingsChangeRecord
 from app.services.user_store import UserRecord
 from app.services.permissions import can_archive_user, can_generate_codes
@@ -4129,12 +4130,330 @@ def render_change_password_page(
 
 
 
+def _render_tenant_settings_panels(
+    prefix: str,
+    settings: TenantSettings,
+    can_edit: bool,
+    hidden: str,
+) -> str:
+    """HTML for the 5 per-category tenant settings panels + inline JS."""
+    n = settings.notifications
+    q = settings.quiet_periods
+    a = settings.alerts
+    d = settings.devices
+    ac = settings.access_codes
+
+    def _yesno(val: bool) -> str:
+        color = "#16a34a" if val else "#9ca3af"
+        return f'<span style="font-weight:600;color:{color};">{"Yes" if val else "No"}</span>'
+
+    def _row_ro(label: str, value_html: str) -> str:
+        return (
+            f'<div style="display:flex;justify-content:space-between;align-items:center;'
+            f'padding:10px 0;border-bottom:1px solid var(--border);font-size:0.9rem;">'
+            f'<span style="color:var(--text);">{escape(label)}</span>'
+            f'<span>{value_html}</span>'
+            f'</div>'
+        )
+
+    def _cb(fid: str, name: str, label: str, val: bool, hint: str = "") -> str:
+        checked = " checked" if val else ""
+        hint_html = (
+            f'<span style="font-size:0.8rem;color:var(--muted);display:block;margin-top:2px;">{escape(hint)}</span>'
+            if hint else ""
+        )
+        return (
+            f'<div class="checkbox-row" style="margin-bottom:8px;">'
+            f'<input type="checkbox" id="{fid}_{name}" name="{name}"{checked}/>'
+            f'<label for="{fid}_{name}">{escape(label)}{hint_html}</label>'
+            f'</div>'
+        )
+
+    def _num(fid: str, name: str, label: str, val: int, lo: int, hi: int, unit: str = "") -> str:
+        unit_html = (
+            f'<span style="font-size:0.85rem;color:var(--muted);margin-left:6px;">{escape(unit)}</span>'
+            if unit else ""
+        )
+        return (
+            f'<div class="field" style="margin-bottom:12px;">'
+            f'<label for="{fid}_{name}">{escape(label)}</label>'
+            f'<div style="display:flex;align-items:center;">'
+            f'<input type="number" id="{fid}_{name}" name="{name}" value="{val}" min="{lo}" max="{hi}" style="width:130px;"/>'
+            f'{unit_html}</div></div>'
+        )
+
+    def _sel(fid: str, name: str, label: str, val: str, opts: list[tuple[str, str]]) -> str:
+        opts_html = "".join(
+            f'<option value="{escape(v)}"{" selected" if v == val else ""}>{escape(lbl)}</option>'
+            for v, lbl in opts
+        )
+        return (
+            f'<div class="field" style="margin-bottom:12px;">'
+            f'<label for="{fid}_{name}">{escape(label)}</label>'
+            f'<select id="{fid}_{name}" name="{name}">{opts_html}</select>'
+            f'</div>'
+        )
+
+    def _save(fid: str, category: str, sid: str) -> str:
+        return (
+            f'<div class="button-row" style="margin-top:16px;">'
+            f'<button class="button button-primary" type="button" '
+            f'onclick="tsSubmit(\'{category}\',\'{fid}\',\'{sid}\')">Save changes</button>'
+            f'<span id="{sid}" style="font-size:0.88rem;margin-left:12px;"></span>'
+            f'</div>'
+        )
+
+    locked_banner = (
+        '<p style="font-size:0.88rem;color:var(--muted);margin-bottom:16px;padding:10px 14px;'
+        'background:rgba(14,165,233,0.07);border:1px solid rgba(14,165,233,0.2);border-radius:6px;">'
+        'View only — settings can only be changed by a district administrator.</p>'
+    ) if not can_edit else ""
+
+    # ── Notifications ────────────────────────────────────────────────────────
+    if can_edit:
+        notif_body = (
+            '<form id="tsf-notifications" class="stack" style="max-width:580px;" onsubmit="return false;">'
+            + _cb("tsf-n", "non_critical_sound_enabled", "Non-critical notification sound enabled",
+                  n.non_critical_sound_enabled,
+                  "Affects quiet period, access code, admin message pushes — never emergency alerts.")
+            + _sel("tsf-n", "non_critical_sound_name", "Non-critical sound name",
+                   n.non_critical_sound_name,
+                   [("notification_soft", "notification_soft (default)")])
+            + '<div style="height:1px;background:var(--border);margin:12px 0;"></div>'
+            + _cb("tsf-n", "quiet_period_notifications_enabled", "Quiet period notifications",
+                  n.quiet_period_notifications_enabled)
+            + _cb("tsf-n", "admin_message_notifications_enabled", "Admin message notifications",
+                  n.admin_message_notifications_enabled)
+            + _cb("tsf-n", "access_code_notifications_enabled", "Access code notifications",
+                  n.access_code_notifications_enabled)
+            + _cb("tsf-n", "audit_notifications_enabled", "Audit event notifications",
+                  n.audit_notifications_enabled)
+            + _save("tsf-notifications", "notifications", "ts-notif-status")
+            + '</form>'
+            + '<p style="font-size:0.83rem;color:var(--muted);margin-top:8px;">'
+              '\U0001f512 Emergency alert sound is system-locked and cannot be changed.</p>'
+        )
+    else:
+        notif_body = (
+            '<div style="max-width:580px;">'
+            + _row_ro("Non-critical sound enabled", _yesno(n.non_critical_sound_enabled))
+            + _row_ro("Non-critical sound name", f'<code>{escape(n.non_critical_sound_name)}</code>')
+            + _row_ro("Quiet period notifications", _yesno(n.quiet_period_notifications_enabled))
+            + _row_ro("Admin message notifications", _yesno(n.admin_message_notifications_enabled))
+            + _row_ro("Access code notifications", _yesno(n.access_code_notifications_enabled))
+            + _row_ro("Audit event notifications", _yesno(n.audit_notifications_enabled))
+            + _row_ro("Emergency alert sound",
+                      '<span style="font-weight:600;color:var(--muted);">\U0001f512 System-locked</span>')
+            + '</div>'
+        )
+
+    # ── Quiet periods ────────────────────────────────────────────────────────
+    if can_edit:
+        qp_body = (
+            '<form id="tsf-quiet_periods" class="stack" style="max-width:580px;" onsubmit="return false;">'
+            + _cb("tsf-qp", "enabled", "Quiet periods enabled", q.enabled)
+            + _cb("tsf-qp", "requires_approval", "Require admin approval", q.requires_approval)
+            + _cb("tsf-qp", "allow_scheduling", "Allow scheduled quiet periods", q.allow_scheduling)
+            + _cb("tsf-qp", "district_admin_can_approve_all", "District admin can approve all buildings",
+                  q.district_admin_can_approve_all)
+            + _sel("tsf-qp", "building_admin_scope", "Building admin approval scope",
+                   q.building_admin_scope,
+                   [("building", "Building — own building only"),
+                    ("district", "District — any building")])
+            + _num("tsf-qp", "max_duration_minutes", "Maximum duration",
+                   q.max_duration_minutes, 15, 10080, "minutes")
+            + _num("tsf-qp", "default_duration_minutes", "Default duration",
+                   q.default_duration_minutes, 15, 1440, "minutes")
+            + _cb("tsf-qp", "allow_self_approval", "Allow self-approval", q.allow_self_approval,
+                  "Caution: permits users to approve their own quiet period requests.")
+            + _save("tsf-quiet_periods", "quiet_periods", "ts-qp-status")
+            + '</form>'
+        )
+    else:
+        qp_body = (
+            '<div style="max-width:580px;">'
+            + _row_ro("Enabled", _yesno(q.enabled))
+            + _row_ro("Requires approval", _yesno(q.requires_approval))
+            + _row_ro("Allow scheduling", _yesno(q.allow_scheduling))
+            + _row_ro("District admin approves all", _yesno(q.district_admin_can_approve_all))
+            + _row_ro("Building admin scope", f'<code>{escape(q.building_admin_scope)}</code>')
+            + _row_ro("Max duration", f'<strong>{q.max_duration_minutes}</strong> min')
+            + _row_ro("Default duration", f'<strong>{q.default_duration_minutes}</strong> min')
+            + _row_ro("Allow self-approval", _yesno(q.allow_self_approval))
+            + '</div>'
+        )
+
+    # ── Alerts ───────────────────────────────────────────────────────────────
+    if can_edit:
+        alerts_body = (
+            '<form id="tsf-alerts" class="stack" style="max-width:580px;" onsubmit="return false;">'
+            + _cb("tsf-al", "teachers_can_trigger_secure_perimeter",
+                  "Teachers can trigger Secure Perimeter", a.teachers_can_trigger_secure_perimeter)
+            + _cb("tsf-al", "teachers_can_trigger_lockdown",
+                  "Teachers can trigger Lockdown", a.teachers_can_trigger_lockdown)
+            + _cb("tsf-al", "law_enforcement_can_trigger",
+                  "Law enforcement can trigger alerts", a.law_enforcement_can_trigger)
+            + _cb("tsf-al", "require_hold_to_activate",
+                  "Require hold-to-activate", a.require_hold_to_activate)
+            + _num("tsf-al", "hold_seconds", "Hold duration", a.hold_seconds, 1, 10, "seconds")
+            + _cb("tsf-al", "disable_requires_admin",
+                  "Only admins can disable alarm", a.disable_requires_admin)
+            + _save("tsf-alerts", "alerts", "ts-alerts-status")
+            + '</form>'
+        )
+    else:
+        alerts_body = (
+            '<div style="max-width:580px;">'
+            + _row_ro("Teachers can trigger Secure Perimeter",
+                      _yesno(a.teachers_can_trigger_secure_perimeter))
+            + _row_ro("Teachers can trigger Lockdown", _yesno(a.teachers_can_trigger_lockdown))
+            + _row_ro("Law enforcement can trigger", _yesno(a.law_enforcement_can_trigger))
+            + _row_ro("Require hold-to-activate", _yesno(a.require_hold_to_activate))
+            + _row_ro("Hold duration", f'<strong>{a.hold_seconds}</strong> sec')
+            + _row_ro("Only admins can disable alarm", _yesno(a.disable_requires_admin))
+            + '</div>'
+        )
+
+    # ── Devices ──────────────────────────────────────────────────────────────
+    if can_edit:
+        devices_body = (
+            '<form id="tsf-devices" class="stack" style="max-width:580px;" onsubmit="return false;">'
+            + _cb("tsf-dv", "device_status_reporting_enabled",
+                  "Device status reporting enabled", d.device_status_reporting_enabled)
+            + _num("tsf-dv", "mark_device_stale_after_minutes",
+                   "Mark device stale after", d.mark_device_stale_after_minutes, 5, 1440, "minutes")
+            + _cb("tsf-dv", "exclude_inactive_devices_from_push",
+                  "Exclude inactive devices from push", d.exclude_inactive_devices_from_push)
+            + _save("tsf-devices", "devices", "ts-devices-status")
+            + '</form>'
+        )
+    else:
+        devices_body = (
+            '<div style="max-width:580px;">'
+            + _row_ro("Status reporting", _yesno(d.device_status_reporting_enabled))
+            + _row_ro("Mark stale after", f'<strong>{d.mark_device_stale_after_minutes}</strong> min')
+            + _row_ro("Exclude inactive from push", _yesno(d.exclude_inactive_devices_from_push))
+            + '</div>'
+        )
+
+    # ── Access codes ─────────────────────────────────────────────────────────
+    if can_edit:
+        ac_body = (
+            '<form id="tsf-access_codes" class="stack" style="max-width:580px;" onsubmit="return false;">'
+            + _cb("tsf-ac", "enabled", "Access codes enabled", ac.enabled)
+            + _cb("tsf-ac", "auto_expire_enabled", "Auto-expire enabled", ac.auto_expire_enabled)
+            + _num("tsf-ac", "default_expiration_days",
+                   "Default expiration", ac.default_expiration_days, 1, 365, "days")
+            + _cb("tsf-ac", "auto_archive_revoked_enabled",
+                  "Auto-archive revoked codes", ac.auto_archive_revoked_enabled)
+            + _num("tsf-ac", "auto_archive_revoked_after_days",
+                   "Archive revoked codes after", ac.auto_archive_revoked_after_days, 1, 90, "days")
+            + _save("tsf-access_codes", "access_codes", "ts-ac-status")
+            + '</form>'
+        )
+    else:
+        ac_body = (
+            '<div style="max-width:580px;">'
+            + _row_ro("Enabled", _yesno(ac.enabled))
+            + _row_ro("Auto-expire", _yesno(ac.auto_expire_enabled))
+            + _row_ro("Default expiration", f'<strong>{ac.default_expiration_days}</strong> days')
+            + _row_ro("Auto-archive revoked", _yesno(ac.auto_archive_revoked_enabled))
+            + _row_ro("Archive revoked after",
+                      f'<strong>{ac.auto_archive_revoked_after_days}</strong> days')
+            + '</div>'
+        )
+
+    # ── Assemble panels ──────────────────────────────────────────────────────
+    return f"""
+    <section class="panel command-section" id="ts-notifications"{hidden}>
+      <div class="panel-header"><div>
+        <p class="eyebrow">Tenant Settings</p>
+        <h2>Notification preferences</h2>
+        <p class="card-copy">Control which push channels are active and configure non-critical sound behaviour. Emergency alert sounds are system-locked.</p>
+      </div></div>
+      {locked_banner}{notif_body}
+    </section>
+
+    <section class="panel command-section" id="ts-quiet-periods"{hidden}>
+      <div class="panel-header"><div>
+        <p class="eyebrow">Tenant Settings</p>
+        <h2>Quiet period rules</h2>
+        <p class="card-copy">Configure approval workflows, duration limits, and role-based scope for quiet periods.</p>
+      </div></div>
+      {locked_banner}{qp_body}
+    </section>
+
+    <section class="panel command-section" id="ts-alerts"{hidden}>
+      <div class="panel-header"><div>
+        <p class="eyebrow">Tenant Settings</p>
+        <h2>Alert trigger rules</h2>
+        <p class="card-copy">Configure who can trigger alerts and how hold-to-activate works.</p>
+      </div></div>
+      {locked_banner}{alerts_body}
+    </section>
+
+    <section class="panel command-section" id="ts-devices"{hidden}>
+      <div class="panel-header"><div>
+        <p class="eyebrow">Tenant Settings</p>
+        <h2>Device management</h2>
+        <p class="card-copy">Control device status reporting and staleness thresholds.</p>
+      </div></div>
+      {locked_banner}{devices_body}
+    </section>
+
+    <section class="panel command-section" id="ts-access-codes"{hidden}>
+      <div class="panel-header"><div>
+        <p class="eyebrow">Tenant Settings</p>
+        <h2>Access code settings</h2>
+        <p class="card-copy">Configure access code defaults, auto-expiry, and lifecycle management.</p>
+      </div></div>
+      {locked_banner}{ac_body}
+    </section>
+
+    <script>
+    (function() {{
+      function tsSubmit(category, formId, statusId) {{
+        var form = document.getElementById(formId);
+        if (!form) return;
+        var data = {{}};
+        form.querySelectorAll('input[name], select[name]').forEach(function(el) {{
+          if (el.type === 'checkbox') {{ data[el.name] = el.checked; }}
+          else if (el.type === 'number') {{ data[el.name] = Number(el.value); }}
+          else {{ data[el.name] = el.value; }}
+        }});
+        var statusEl = document.getElementById(statusId);
+        fetch(BB_PATH_PREFIX + '/admin/settings/' + category, {{
+          method: 'POST',
+          headers: {{'Content-Type': 'application/json'}},
+          body: JSON.stringify(data),
+        }}).then(function(r) {{
+          return r.json().then(function(d) {{ return {{ok: r.ok, data: d}}; }});
+        }}).then(function(res) {{
+          if (res.ok) {{
+            if (statusEl) {{ statusEl.textContent = '✓ Saved'; statusEl.style.color = '#16a34a'; }}
+          }} else {{
+            var d = res.data && res.data.detail;
+            var errs = (d && d.errors) ? d.errors.join('; ') : JSON.stringify(d || res.data);
+            if (statusEl) {{ statusEl.textContent = 'Error: ' + errs; statusEl.style.color = '#dc2626'; }}
+          }}
+          setTimeout(function() {{ if (statusEl) statusEl.textContent = ''; }}, 4000);
+        }}).catch(function() {{
+          if (statusEl) {{ statusEl.textContent = 'Network error'; statusEl.style.color = '#dc2626'; }}
+        }});
+      }}
+      window.tsSubmit = tsSubmit;
+    }})();
+    </script>"""
+
+
 def _render_settings_panels(
     prefix: str,
     school_name: str,
     school_slug: str,
     settings_history: Sequence[SettingsChangeRecord],
     _section_style,
+    effective_settings: Optional[TenantSettings] = None,
+    can_edit: bool = False,
 ) -> str:
     # ── Change History ───────────────────────────────────────────────────────
     if settings_history:
@@ -4175,6 +4494,11 @@ def _render_settings_panels(
         history_html = '<p class="card-copy">No settings changes recorded yet.</p>'
 
     hidden = _section_style("settings")
+    tenant_panels_html = (
+        _render_tenant_settings_panels(prefix, effective_settings, can_edit, hidden)
+        if effective_settings is not None
+        else ""
+    )
     return f"""
         <section class="panel command-section" id="school-info"{hidden}>
           <div class="panel-header">
@@ -4197,6 +4521,8 @@ def _render_settings_panels(
             </form>
           </div>
         </section>
+
+        {tenant_panels_html}
 
         <section class="panel command-section" id="settings-history"{hidden}>
           <div class="panel-header">
@@ -4261,6 +4587,8 @@ def render_admin_page(
     sessions_users_by_id: Mapping[int, object] = {},
     active_tab: str = "",
     is_demo_mode: bool = False,
+    effective_settings: Optional[TenantSettings] = None,
+    can_edit_tenant_settings: bool = False,
 ) -> str:
     prefix = escape(school_path_prefix)
     role_counts = Counter(user.role for user in users)
@@ -5418,7 +5746,7 @@ def render_admin_page(
           </div>
         </section>
 
-        {_render_settings_panels(prefix, school_name, school_slug, settings_history, _section_style)}
+        {_render_settings_panels(prefix, school_name, school_slug, settings_history, _section_style, effective_settings=effective_settings, can_edit=can_edit_tenant_settings)}
 
         <section class="panel command-section" id="security"{_section_style("settings")}>
           <div class="panel-header">

@@ -2349,10 +2349,14 @@ async def admin_dashboard(
     _ws_home_tenant_slug = str(request.state.school.slug)
 
     _settings_history: list = []
+    _effective_settings = None
+    _can_edit_tenant_settings = False
+    _admin_role = str(getattr(request.state.admin_user, "role", "")).strip().lower()
     if selected_section == "settings":
         _settings_history = await _settings_store(request).get_history(limit=50)
-
-    _admin_role = str(getattr(request.state.admin_user, "role", "")).strip().lower()
+        if can_view_settings(_admin_role):
+            _effective_settings = await _settings_store(request).get_effective_settings()
+            _can_edit_tenant_settings = can_edit_settings(_admin_role, "notifications")
     _access_code_records: list = []
     if can_generate_codes(_admin_role) and selected_section in {"access-codes", "user-management"}:
         _access_code_records = await _access_codes(request).list_codes(str(request.state.school.slug), limit=500, include_archived=True)
@@ -2420,6 +2424,8 @@ async def admin_dashboard(
         active_sessions=_active_sessions,
         sessions_users_by_id=_sessions_users_by_id,
         is_demo_mode=bool(getattr(request.state.school, "is_test", False)),
+        effective_settings=_effective_settings,
+        can_edit_tenant_settings=_can_edit_tenant_settings,
     )
     return HTMLResponse(content=html)
 
