@@ -8144,6 +8144,11 @@ def render_admin_page(
     }}
 
     function _navigateTo(nav) {{
+      /* Skip navigation (and the page reload it triggers) if already on this section. */
+      var currentSection = new URLSearchParams(window.location.search).get('section') || 'dashboard';
+      if (currentSection === nav) return;
+      /* Store the step to resume after the page reload caused by nav-link click. */
+      sessionStorage.setItem('bb_tour_resume', String(_step));
       var link = document.querySelector('.nav-item[href*="section=' + nav + '"]');
       if (link) link.click();
     }}
@@ -8217,10 +8222,18 @@ def render_admin_page(
 
     document.addEventListener('DOMContentLoaded', function() {{
       _init();
-      // Show tour button in header once JS is ready
       var btn = document.getElementById('bb-tour-btn');
       if (btn) btn.style.display = '';
-      // Auto-start for first-time visitors (not in demo mode)
+
+      /* Resume tour after a cross-section nav-link navigation. */
+      var resumeStep = sessionStorage.getItem('bb_tour_resume');
+      if (resumeStep !== null) {{
+        sessionStorage.removeItem('bb_tour_resume');
+        setTimeout(function() {{ _showStep(parseInt(resumeStep, 10) || 0); }}, 200);
+        return;
+      }}
+
+      /* Auto-start for first-time visitors (not in demo mode). */
       if (!localStorage.getItem('bb_tour_seen') && !document.querySelector('[data-demo]')) {{
         setTimeout(window.startBluebirdTour, 1400);
       }}
