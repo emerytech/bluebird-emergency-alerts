@@ -26,7 +26,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Query, Requ
 from fastapi import HTTPException, status
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse, JSONResponse
 
-from app.web.landing import render_landing_page
+from app.web.landing import render_landing_page, render_login_portal
 from app.api.deps import require_api_key
 from app.constants.labels import FEATURE_LABELS, get_feature_label
 from app.models.schemas import (
@@ -1672,6 +1672,46 @@ def _to_admin_inbox_item(item: AdminMessageRecord) -> AdminMessageInboxItem:
 @router.get("/", include_in_schema=False)
 async def root(request: Request) -> HTMLResponse:
     return HTMLResponse(content=render_landing_page())
+
+
+@router.get("/login", include_in_schema=False)
+async def login_portal(request: Request) -> HTMLResponse:
+    return HTMLResponse(content=render_login_portal())
+
+
+# ── Public district/school listing (no auth, safe metadata only) ─────────────
+
+
+@router.get("/api/public/districts", include_in_schema=False)
+async def public_list_districts(request: Request) -> JSONResponse:
+    """Return active, non-test district names and IDs. No credentials exposed."""
+    registry: object = request.app.state.school_registry
+    districts = await registry.list_districts()
+    payload = [
+        {"district_id": d.id, "district_name": d.name}
+        for d in districts
+        if d.is_active
+        and not getattr(d, "is_archived", False)
+        and not getattr(d, "is_test", False)
+    ]
+    return JSONResponse(sorted(payload, key=lambda x: x["district_name"]))
+
+
+@router.get("/api/public/districts/{district_id}/schools", include_in_schema=False)
+async def public_list_schools(request: Request, district_id: int) -> JSONResponse:
+    """Return active, non-test school names and slugs for a district."""
+    registry: object = request.app.state.school_registry
+    schools = await registry.list_schools_for_district(district_id)
+    payload = [
+        {"tenant_slug": s.slug, "tenant_name": s.name}
+        for s in schools
+        if s.is_active
+        and not getattr(s, "is_archived", False)
+        and not getattr(s, "is_test", False)
+    ]
+    if not payload:
+        return JSONResponse({"error": "No schools found for this district."}, status_code=404)
+    return JSONResponse(sorted(payload, key=lambda x: x["tenant_name"]))
 
 
 @router.get("/health")

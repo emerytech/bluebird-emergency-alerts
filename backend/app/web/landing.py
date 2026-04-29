@@ -1,8 +1,10 @@
 """
-BlueBird Alerts — public marketing landing page.
+BlueBird Alerts — public marketing landing page + district/school login portal.
 
-Served at GET / as a fast, self-contained HTMLResponse.
-No external dependencies; CSS is inline; logo is served from /static/.
+render_landing_page() → GET /
+render_login_portal()  → GET /login
+
+Both are self-contained HTMLResponses; CSS is inline; logo from /static/.
 """
 from __future__ import annotations
 
@@ -340,7 +342,7 @@ def render_landing_page() -> str:
     </a>
     <div class="nav-actions">
       <a href="mailto:{DEMO_EMAIL}?subject=BlueBird%20Alerts%20Demo%20Request" class="btn btn-secondary">Request Demo</a>
-      <a href="/super-admin/login" class="btn btn-primary">Admin Login</a>
+      <a href="/login" class="btn btn-primary">Admin Login</a>
     </div>
   </div>
 </nav>
@@ -352,7 +354,7 @@ def render_landing_page() -> str:
   <p class="hero-sub">BlueBird Alerts puts instant push notifications and real-time acknowledgement tracking in the hands of every administrator — no complex setup, no delays.</p>
   <div class="hero-actions">
     <a href="mailto:{DEMO_EMAIL}?subject=BlueBird%20Alerts%20Demo%20Request" class="btn btn-primary btn-lg">&#128231; Schedule a Demo</a>
-    <a href="/super-admin/login" class="btn btn-ghost btn-lg">Admin Login &rarr;</a>
+    <a href="/login" class="btn btn-ghost btn-lg">Admin Login &rarr;</a>
   </div>
   <div class="hero-stats">
     <div>
@@ -629,7 +631,7 @@ def render_landing_page() -> str:
     </div>
     <div class="footer-links">
       <a href="mailto:{DEMO_EMAIL}?subject=BlueBird%20Alerts%20Demo%20Request">Request Demo</a>
-      <a href="/super-admin/login">Admin Login</a>
+      <a href="/login">Admin Login</a>
       <a href="mailto:{DEMO_EMAIL}">Contact</a>
     </div>
     <p class="footer-copy">
@@ -638,6 +640,442 @@ def render_landing_page() -> str:
     </p>
   </div>
 </footer>
+
+</body>
+</html>"""
+
+
+def render_login_portal() -> str:
+    """
+    District → School login portal at GET /login.
+
+    Step 1: User selects (or searches) their district from a dropdown.
+    Step 2: Schools for that district load via /api/public/districts/{id}/schools.
+    Step 3: Clicking a school redirects to /{slug}/admin/login.
+
+    localStorage keys:
+      bb_login_district  – {{"id": N, "name": "..."}}
+      bb_login_school    – {{"slug": "...", "name": "..."}}
+
+    Public API calls only. Zero credentials exposed.
+    """
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Admin Login — BlueBird Alerts</title>
+  <meta name="robots" content="noindex" />
+  <link rel="icon" type="image/png" href="{LOGO}" />
+  <style>
+    *, *::before, *::after {{ box-sizing: border-box; margin: 0; padding: 0; }}
+    :root {{
+      --blue:      #1b5fe4;
+      --blue-dark: #1048c0;
+      --blue-soft: #eff6ff;
+      --dark:      #0f172a;
+      --text:      #10203f;
+      --muted:     #5d7398;
+      --border:    rgba(18,52,120,.12);
+      --white:     #ffffff;
+      --radius:    12px;
+      --error:     #dc2626;
+    }}
+    html {{ height: 100%; }}
+    body {{
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+      color: var(--text);
+      background: linear-gradient(150deg, #0f172a 0%, #1b3a7a 55%, #1b5fe4 100%);
+      min-height: 100vh;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      padding: 24px;
+    }}
+
+    /* ── CARD ─────────────────────────────────────────────────────────── */
+    .portal-card {{
+      background: #fff; border-radius: 20px;
+      padding: 40px 44px;
+      max-width: 480px; width: 100%;
+      box-shadow: 0 32px 80px rgba(0,0,0,0.35);
+    }}
+    .portal-logo {{
+      display: flex; align-items: center; gap: 10px;
+      margin-bottom: 28px;
+    }}
+    .portal-logo img {{ width: 36px; height: 36px; object-fit: contain; }}
+    .portal-logo span {{ font-weight: 800; font-size: 1.1rem; color: var(--text); }}
+
+    /* ── STEP HEADER ──────────────────────────────────────────────────── */
+    .step-label {{
+      font-size: 0.7rem; font-weight: 700;
+      text-transform: uppercase; letter-spacing: .1em;
+      color: var(--blue); margin-bottom: 6px;
+    }}
+    .step-title {{
+      font-size: 1.3rem; font-weight: 800;
+      color: var(--text); margin-bottom: 6px;
+    }}
+    .step-sub {{ font-size: 0.87rem; color: var(--muted); margin-bottom: 24px; }}
+
+    /* ── FORM ELEMENTS ────────────────────────────────────────────────── */
+    .field {{ position: relative; margin-bottom: 16px; }}
+    .field-icon {{
+      position: absolute; left: 12px; top: 50%;
+      transform: translateY(-50%); font-size: 1rem;
+      pointer-events: none; color: var(--muted);
+    }}
+    input[type="text"], select {{
+      width: 100%; padding: 11px 14px 11px 40px;
+      border: 1.5px solid var(--border); border-radius: 10px;
+      font-size: 0.93rem; color: var(--text);
+      background: #fff; outline: none;
+      transition: border-color .15s;
+      appearance: none; -webkit-appearance: none;
+    }}
+    input[type="text"]::placeholder {{ color: var(--muted); }}
+    input[type="text"]:focus, select:focus {{ border-color: var(--blue); }}
+    .select-arrow {{
+      position: absolute; right: 12px; top: 50%;
+      transform: translateY(-50%); pointer-events: none;
+      color: var(--muted); font-size: 0.75rem;
+    }}
+
+    /* ── BUTTONS ──────────────────────────────────────────────────────── */
+    .btn {{
+      display: inline-flex; align-items: center; justify-content: center;
+      gap: 8px; font-size: 0.9rem; font-weight: 600; border-radius: 10px;
+      padding: 11px 22px; cursor: pointer; text-decoration: none;
+      transition: opacity .15s, transform .1s; border: none;
+    }}
+    .btn:hover {{ opacity: .88; transform: translateY(-1px); }}
+    .btn-primary {{ background: var(--blue); color: #fff; width: 100%; }}
+    .btn-ghost {{
+      background: none; color: var(--muted); font-size: 0.84rem;
+      padding: 0; font-weight: 600;
+    }}
+    .btn-ghost:hover {{ color: var(--blue); transform: none; opacity: 1; }}
+    .btn:disabled {{ opacity: .45; cursor: not-allowed; transform: none; }}
+
+    /* ── SCHOOL CARDS ─────────────────────────────────────────────────── */
+    .school-list {{ display: flex; flex-direction: column; gap: 10px; margin-bottom: 20px; }}
+    .school-btn {{
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 14px 18px; border-radius: 10px;
+      border: 1.5px solid var(--border); background: #fff;
+      cursor: pointer; text-align: left;
+      transition: border-color .15s, background .15s, transform .1s;
+      font-family: inherit;
+    }}
+    .school-btn:hover {{
+      border-color: var(--blue); background: var(--blue-soft);
+      transform: translateX(2px);
+    }}
+    .school-btn:focus {{ outline: 2px solid var(--blue); outline-offset: 2px; }}
+    .school-name {{ font-size: 0.93rem; font-weight: 700; color: var(--text); }}
+    .school-slug {{ font-size: 0.74rem; color: var(--muted); margin-top: 2px; }}
+    .school-arrow {{ color: var(--blue); font-size: 1.1rem; flex-shrink: 0; }}
+
+    /* ── REMEMBERED SHORTCUT ──────────────────────────────────────────── */
+    .quick-access {{
+      background: var(--blue-soft); border: 1px solid rgba(27,95,228,.15);
+      border-radius: 10px; padding: 14px 16px;
+      margin-bottom: 20px; display: none;
+    }}
+    .quick-label {{ font-size: 0.72rem; font-weight: 700; color: var(--blue);
+      text-transform: uppercase; letter-spacing: .06em; margin-bottom: 6px; }}
+    .quick-name {{ font-size: 0.93rem; font-weight: 700; color: var(--text); }}
+    .quick-actions {{
+      display: flex; gap: 10px; margin-top: 10px; align-items: center;
+    }}
+
+    /* ── STATES ───────────────────────────────────────────────────────── */
+    .spinner {{
+      display: inline-block; width: 20px; height: 20px;
+      border: 2.5px solid rgba(27,95,228,.2);
+      border-top-color: var(--blue);
+      border-radius: 50%; animation: spin .7s linear infinite;
+    }}
+    @keyframes spin {{ to {{ transform: rotate(360deg); }} }}
+    .loading-row {{
+      display: flex; align-items: center; gap: 10px;
+      color: var(--muted); font-size: 0.87rem; padding: 12px 0;
+    }}
+    .error-msg {{
+      color: var(--error); font-size: 0.85rem; padding: 10px 0;
+      display: none;
+    }}
+    .back-row {{
+      display: flex; align-items: center; gap: 6px; margin-bottom: 20px;
+    }}
+
+    /* ── FOOTER LINK ──────────────────────────────────────────────────── */
+    .portal-footer {{
+      text-align: center; margin-top: 20px;
+      font-size: 0.8rem; color: rgba(255,255,255,.5);
+    }}
+    .portal-footer a {{ color: rgba(255,255,255,.7); text-decoration: none; }}
+    .portal-footer a:hover {{ color: #fff; text-decoration: underline; }}
+
+    @media (max-width: 520px) {{
+      .portal-card {{ padding: 28px 24px; }}
+    }}
+    @media (prefers-color-scheme: dark) {{
+      .portal-card {{ background: #1e293b; }}
+      .portal-logo span, .step-title, .school-name {{ color: #e2e8f0; }}
+      input[type="text"], select {{ background: #0f172a; color: #e2e8f0; border-color: rgba(255,255,255,.12); }}
+      .school-btn {{ background: #1e293b; border-color: rgba(255,255,255,.1); }}
+      .school-btn:hover {{ background: rgba(27,95,228,.15); }}
+      .quick-access {{ background: rgba(27,95,228,.12); border-color: rgba(27,95,228,.25); }}
+    }}
+  </style>
+</head>
+<body>
+
+<div class="portal-card" id="portal">
+
+  <div class="portal-logo">
+    <img src="{LOGO}" alt="BlueBird Alerts" />
+    <span>BlueBird Alerts</span>
+  </div>
+
+  <!-- Quick-access shortcut (remembered school) -->
+  <div class="quick-access" id="quick-access">
+    <div class="quick-label">&#9889; Quick access</div>
+    <div class="quick-name" id="quick-school-name"></div>
+    <div class="quick-actions">
+      <button class="btn btn-primary" id="quick-go-btn" onclick="bbQuickGo()" style="width:auto;padding:8px 18px;">
+        Continue &rarr;
+      </button>
+      <button class="btn btn-ghost" onclick="bbClearQuick()">Use a different school</button>
+    </div>
+  </div>
+
+  <!-- Step 1 — District selection -->
+  <div id="step-district">
+    <div class="step-label">Step 1 of 2</div>
+    <div class="step-title">Select your district</div>
+    <div class="step-sub">Choose the school district you belong to.</div>
+
+    <div class="field">
+      <span class="field-icon">&#127979;</span>
+      <input type="text" id="district-search" placeholder="Search districts..." autocomplete="off"
+             oninput="bbFilterDistricts()" />
+    </div>
+
+    <div id="district-loading" class="loading-row" style="display:none;">
+      <div class="spinner"></div> Loading districts&hellip;
+    </div>
+    <div id="district-error" class="error-msg"></div>
+    <div id="district-list" class="school-list"></div>
+  </div>
+
+  <!-- Step 2 — School selection -->
+  <div id="step-school" style="display:none;">
+    <div class="back-row">
+      <button class="btn btn-ghost" onclick="bbBackToDistricts()">&#8592; Back</button>
+    </div>
+    <div class="step-label">Step 2 of 2</div>
+    <div class="step-title" id="district-selected-name"></div>
+    <div class="step-sub">Select your school to continue to login.</div>
+
+    <div id="school-loading" class="loading-row" style="display:none;">
+      <div class="spinner"></div> Loading schools&hellip;
+    </div>
+    <div id="school-error" class="error-msg"></div>
+    <div id="school-list" class="school-list"></div>
+  </div>
+
+</div>
+
+<div class="portal-footer">
+  <a href="/">&larr; Back to home</a>
+  &nbsp;&middot;&nbsp;
+  <a href="/super-admin/login">Super admin login</a>
+</div>
+
+<script>
+(function() {{
+  var _DISTRICTS_URL = '/api/public/districts';
+  var _SCHOOLS_URL   = '/api/public/districts/';
+  var _LS_DISTRICT   = 'bb_login_district';
+  var _LS_SCHOOL     = 'bb_login_school';
+
+  var _allDistricts  = [];
+  var _selDistrict   = null;  /* {{id, name}} */
+
+  /* ── Utility ──────────────────────────────────────────────────────── */
+  function _$(id) {{ return document.getElementById(id); }}
+
+  function _show(id) {{ _$(id).style.display = ''; }}
+  function _hide(id) {{ _$(id).style.display = 'none'; }}
+
+  function _err(targetId, msg) {{
+    var el = _$(targetId);
+    el.textContent = msg;
+    el.style.display = 'block';
+  }}
+
+  function _clearErr(targetId) {{
+    var el = _$(targetId);
+    el.textContent = '';
+    el.style.display = 'none';
+  }}
+
+  /* ── localStorage ─────────────────────────────────────────────────── */
+  function _saveDistrict(d)  {{ try {{ localStorage.setItem(_LS_DISTRICT, JSON.stringify(d)); }} catch(e) {{}} }}
+  function _saveSchool(s)    {{ try {{ localStorage.setItem(_LS_SCHOOL,   JSON.stringify(s)); }} catch(e) {{}} }}
+  function _loadDistrict()   {{ try {{ return JSON.parse(localStorage.getItem(_LS_DISTRICT)); }} catch(e) {{ return null; }} }}
+  function _loadSchool()     {{ try {{ return JSON.parse(localStorage.getItem(_LS_SCHOOL));   }} catch(e) {{ return null; }} }}
+  function _clearSaved()     {{ try {{ localStorage.removeItem(_LS_DISTRICT); localStorage.removeItem(_LS_SCHOOL); }} catch(e) {{}} }}
+
+  /* ── Quick-access banner ──────────────────────────────────────────── */
+  function _maybeShowQuick() {{
+    var school = _loadSchool();
+    if (!school || !school.slug || !school.name) return;
+    _$('quick-school-name').textContent = school.name;
+    _$('quick-go-btn').setAttribute('data-slug', school.slug);
+    _show('quick-access');
+  }}
+
+  window.bbQuickGo = function() {{
+    var slug = _$('quick-go-btn').getAttribute('data-slug') || '';
+    if (slug) window.location.href = '/' + slug + '/admin/login';
+  }};
+
+  window.bbClearQuick = function() {{
+    _clearSaved();
+    _hide('quick-access');
+  }};
+
+  /* ── District list ────────────────────────────────────────────────── */
+  function _renderDistrictList(districts) {{
+    var container = _$('district-list');
+    if (!districts.length) {{
+      container.innerHTML = '<p style="color:var(--muted);font-size:.87rem;">No districts available.</p>';
+      return;
+    }}
+    var html = '';
+    districts.forEach(function(d) {{
+      html += '<button class="school-btn" onclick="bbSelectDistrict(' + d.district_id + ', ' + JSON.stringify(d.district_name) + ')">'
+            + '<div>'
+            + '<div class="school-name">' + _esc(d.district_name) + '</div>'
+            + '</div>'
+            + '<span class="school-arrow">&#8594;</span>'
+            + '</button>';
+    }});
+    container.innerHTML = html;
+  }}
+
+  window.bbFilterDistricts = function() {{
+    var q = (_$('district-search').value || '').toLowerCase().trim();
+    if (!q) {{
+      _renderDistrictList(_allDistricts);
+      return;
+    }}
+    _renderDistrictList(_allDistricts.filter(function(d) {{
+      return d.district_name.toLowerCase().includes(q);
+    }}));
+  }};
+
+  function _loadDistricts() {{
+    _show('district-loading');
+    _clearErr('district-error');
+    fetch(_DISTRICTS_URL)
+      .then(function(r) {{ return r.json(); }})
+      .then(function(data) {{
+        _hide('district-loading');
+        if (Array.isArray(data)) {{
+          _allDistricts = data;
+          _renderDistrictList(data);
+          /* Auto-select remembered district if still in list */
+          var saved = _loadDistrict();
+          if (saved && saved.id) {{
+            var match = data.find(function(d) {{ return d.district_id === saved.id; }});
+            if (match) {{
+              _$('district-search').value = match.district_name;
+              _renderDistrictList([match]);
+            }}
+          }}
+        }} else {{
+          _err('district-error', (data && data.error) || 'Failed to load districts.');
+        }}
+      }})
+      .catch(function() {{
+        _hide('district-loading');
+        _err('district-error', 'Network error — please check your connection and try again.');
+      }});
+  }}
+
+  /* ── Select district → load schools ──────────────────────────────── */
+  window.bbSelectDistrict = function(id, name) {{
+    _selDistrict = {{id: id, name: name}};
+    _saveDistrict(_selDistrict);
+
+    _$('district-selected-name').textContent = name;
+    _hide('step-district');
+    _show('step-school');
+    _hide('quick-access');
+
+    _clearErr('school-error');
+    _$('school-list').innerHTML = '';
+    _show('school-loading');
+
+    fetch(_SCHOOLS_URL + id + '/schools')
+      .then(function(r) {{
+        if (!r.ok) {{ return r.json().then(function(e) {{ throw e; }}); }}
+        return r.json();
+      }})
+      .then(function(data) {{
+        _hide('school-loading');
+        if (!Array.isArray(data) || !data.length) {{
+          _err('school-error', 'No schools found for this district.');
+          return;
+        }}
+        var html = '';
+        data.forEach(function(s) {{
+          html += '<button class="school-btn" onclick="bbSelectSchool(' + JSON.stringify(s.tenant_slug) + ', ' + JSON.stringify(s.tenant_name) + ')">'
+                + '<div>'
+                + '<div class="school-name">' + _esc(s.tenant_name) + '</div>'
+                + '<div class="school-slug">' + _esc(s.tenant_slug) + '</div>'
+                + '</div>'
+                + '<span class="school-arrow">&#8594;</span>'
+                + '</button>';
+        }});
+        _$('school-list').innerHTML = html;
+      }})
+      .catch(function(err) {{
+        _hide('school-loading');
+        _err('school-error', (err && err.error) || 'Failed to load schools. Please try again.');
+      }});
+  }};
+
+  /* ── Select school → redirect ─────────────────────────────────────── */
+  window.bbSelectSchool = function(slug, name) {{
+    _saveSchool({{slug: slug, name: name}});
+    window.location.href = '/' + slug + '/admin/login';
+  }};
+
+  /* ── Back to districts ────────────────────────────────────────────── */
+  window.bbBackToDistricts = function() {{
+    _hide('step-school');
+    _show('step-district');
+    _selDistrict = null;
+    _maybeShowQuick();
+  }};
+
+  /* ── XSS-safe text escaping for innerHTML ────────────────────────── */
+  function _esc(str) {{
+    return String(str)
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+      .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }}
+
+  /* ── Init ─────────────────────────────────────────────────────────── */
+  _maybeShowQuick();
+  _loadDistricts();
+}})();
+</script>
 
 </body>
 </html>"""
