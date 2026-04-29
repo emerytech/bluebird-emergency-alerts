@@ -1823,6 +1823,21 @@ async def config_labels(_: None = Depends(require_api_key)) -> dict[str, str]:
     return FEATURE_LABELS
 
 
+@router.get("/tenant-settings", include_in_schema=False)
+async def get_tenant_settings_mobile(
+    request: Request,
+    _: None = Depends(require_api_key),
+) -> JSONResponse:
+    """Return effective tenant settings for mobile clients.
+
+    No user auth beyond the API key — settings are tenant-wide config, not
+    per-user data.  Clients should fetch once at startup and cache the result.
+    """
+    from app.services.tenant_settings import effective_settings_dict
+    settings = await _settings_store(request).get_effective_settings()
+    return JSONResponse(effective_settings_dict(settings))
+
+
 @router.post("/auth/login", response_model=MobileLoginResponse)
 async def mobile_login(body: MobileLoginRequest, request: Request) -> MobileLoginResponse:
     user = await _users(request).authenticate_user(body.login_name, body.password)

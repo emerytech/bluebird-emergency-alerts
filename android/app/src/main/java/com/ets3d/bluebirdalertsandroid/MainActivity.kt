@@ -688,6 +688,7 @@ data class UiState(
     val districtTenants: List<TenantOverviewItem> = emptyList(),
     val districtQuietRequests: List<DistrictQuietPeriodItem> = emptyList(),
     val districtAuditLog: List<AuditLogEntry> = emptyList(),
+    val tenantSettings: TenantSettings = TenantSettings(),
 )
 
 // ── ViewModel ──────────────────────────────────────────────────────────────────
@@ -1261,6 +1262,7 @@ class MainViewModel : ViewModel() {
                     client = BackendClient(newUrl, BuildConfig.BACKEND_API_KEY)
                     startAlarmWebSocket(ctx)
                 }
+                loadTenantSettings()
             }
         }
     }
@@ -1282,6 +1284,14 @@ class MainViewModel : ViewModel() {
         currentBaseUrl = newUrl
         client = BackendClient(newUrl, BuildConfig.BACKEND_API_KEY)
         startAlarmWebSocket(ctx)
+    }
+
+    fun loadTenantSettings() {
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { client?.getTenantSettings() ?: TenantSettings() }
+                .onSuccess { settings -> _state.update { it.copy(tenantSettings = settings) } }
+            // silently ignore failures — safe defaults remain in UiState
+        }
     }
 
     fun loadDistrictOverview(ctx: Context) {
@@ -6127,6 +6137,60 @@ private object AlarmAudioController {
     }
 }
 
+// ── Tenant settings data classes ───────────────────────────────────────────────
+
+data class TenantNotificationSettings(
+    val nonCriticalSoundName: String = "notification_soft",
+    val nonCriticalSoundEnabled: Boolean = true,
+    val quietPeriodNotificationsEnabled: Boolean = true,
+    val adminMessageNotificationsEnabled: Boolean = true,
+    val accessCodeNotificationsEnabled: Boolean = true,
+    val auditNotificationsEnabled: Boolean = false,
+    val criticalAlertSoundLocked: Boolean = true,
+)
+
+data class TenantQuietPeriodSettings(
+    val enabled: Boolean = true,
+    val requiresApproval: Boolean = true,
+    val allowScheduling: Boolean = true,
+    val maxDurationMinutes: Int = 1440,
+    val defaultDurationMinutes: Int = 60,
+    val allowSelfApproval: Boolean = false,
+    val districtAdminCanApproveAll: Boolean = true,
+    val buildingAdminScope: String = "building",
+)
+
+data class TenantAlertSettings(
+    val teachersCanTriggerSecurePerimeter: Boolean = true,
+    val teachersCanTriggerLockdown: Boolean = true,
+    val lawEnforcementCanTrigger: Boolean = false,
+    val requireHoldToActivate: Boolean = true,
+    val holdSeconds: Int = 3,
+    val disableRequiresAdmin: Boolean = true,
+)
+
+data class TenantDeviceSettings(
+    val deviceStatusReportingEnabled: Boolean = true,
+    val markDeviceStaleAfterMinutes: Int = 30,
+    val excludeInactiveDevicesFromPush: Boolean = true,
+)
+
+data class TenantAccessCodeSettings(
+    val enabled: Boolean = true,
+    val autoExpireEnabled: Boolean = true,
+    val defaultExpirationDays: Int = 14,
+    val autoArchiveRevokedEnabled: Boolean = false,
+    val autoArchiveRevokedAfterDays: Int = 7,
+)
+
+data class TenantSettings(
+    val notifications: TenantNotificationSettings = TenantNotificationSettings(),
+    val quietPeriods: TenantQuietPeriodSettings = TenantQuietPeriodSettings(),
+    val alerts: TenantAlertSettings = TenantAlertSettings(),
+    val devices: TenantDeviceSettings = TenantDeviceSettings(),
+    val accessCodes: TenantAccessCodeSettings = TenantAccessCodeSettings(),
+)
+
 // ── Backend client ─────────────────────────────────────────────────────────────
 private class BackendClient(baseUrl: String, private val apiKey: String) {
     private val http = OkHttpClient.Builder()
@@ -6972,6 +7036,64 @@ private class BackendClient(baseUrl: String, private val apiKey: String) {
                     }
                 }
             }
+        }
+    }
+
+    fun getTenantSettings(): TenantSettings {
+        val req = Request.Builder()
+            .url("$base/tenant-settings")
+            .withAuth()
+            .get()
+            .build()
+        http.newCall(req).execute().use { res ->
+            val body = requireSuccess(res)
+            val j = JSONObject(body)
+            val n  = j.optJSONObject("notifications")  ?: JSONObject()
+            val q  = j.optJSONObject("quiet_periods")  ?: JSONObject()
+            val a  = j.optJSONObject("alerts")         ?: JSONObject()
+            val d  = j.optJSONObject("devices")        ?: JSONObject()
+            val ac = j.optJSONObject("access_codes")   ?: JSONObject()
+            return TenantSettings(
+                notifications = TenantNotificationSettings(
+                    nonCriticalSoundName              = n.optString("non_critical_sound_name", "notification_soft"),
+                    nonCriticalSoundEnabled           = n.optBoolean("non_critical_sound_enabled", true),
+                    quietPeriodNotificationsEnabled   = n.optBoolean("quiet_period_notifications_enabled", true),
+                    adminMessageNotificationsEnabled  = n.optBoolean("admin_message_notifications_enabled", true),
+                    accessCodeNotificationsEnabled    = n.optBoolean("access_code_notifications_enabled", true),
+                    auditNotificationsEnabled         = n.optBoolean("audit_notifications_enabled", false),
+                    criticalAlertSoundLocked          = n.optBoolean("critical_alert_sound_locked", true),
+                ),
+                quietPeriods = TenantQuietPeriodSettings(
+                    enabled                     = q.optBoolean("enabled", true),
+                    requiresApproval            = q.optBoolean("requires_approval", true),
+                    allowScheduling             = q.optBoolean("allow_scheduling", true),
+                    maxDurationMinutes          = q.optInt("max_duration_minutes", 1440),
+                    defaultDurationMinutes      = q.optInt("default_duration_minutes", 60),
+                    allowSelfApproval           = q.optBoolean("allow_self_approval", false),
+                    districtAdminCanApproveAll  = q.optBoolean("district_admin_can_approve_all", true),
+                    buildingAdminScope          = q.optString("building_admin_scope", "building"),
+                ),
+                alerts = TenantAlertSettings(
+                    teachersCanTriggerSecurePerimeter = a.optBoolean("teachers_can_trigger_secure_perimeter", true),
+                    teachersCanTriggerLockdown        = a.optBoolean("teachers_can_trigger_lockdown", true),
+                    lawEnforcementCanTrigger          = a.optBoolean("law_enforcement_can_trigger", false),
+                    requireHoldToActivate             = a.optBoolean("require_hold_to_activate", true),
+                    holdSeconds                       = a.optInt("hold_seconds", 3),
+                    disableRequiresAdmin              = a.optBoolean("disable_requires_admin", true),
+                ),
+                devices = TenantDeviceSettings(
+                    deviceStatusReportingEnabled   = d.optBoolean("device_status_reporting_enabled", true),
+                    markDeviceStaleAfterMinutes    = d.optInt("mark_device_stale_after_minutes", 30),
+                    excludeInactiveDevicesFromPush = d.optBoolean("exclude_inactive_devices_from_push", true),
+                ),
+                accessCodes = TenantAccessCodeSettings(
+                    enabled                      = ac.optBoolean("enabled", true),
+                    autoExpireEnabled            = ac.optBoolean("auto_expire_enabled", true),
+                    defaultExpirationDays        = ac.optInt("default_expiration_days", 14),
+                    autoArchiveRevokedEnabled    = ac.optBoolean("auto_archive_revoked_enabled", false),
+                    autoArchiveRevokedAfterDays  = ac.optInt("auto_archive_revoked_after_days", 7),
+                ),
+            )
         }
     }
 
