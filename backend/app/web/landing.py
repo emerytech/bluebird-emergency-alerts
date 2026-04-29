@@ -1185,3 +1185,266 @@ def render_login_portal() -> str:
 
 </body>
 </html>"""
+
+
+def render_safety_page() -> str:
+    """GET /safety — public compliance and safety information page."""
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Safety &amp; Compliance — BlueBird Alerts</title>
+  <meta name="description" content="How BlueBird Alerts approaches safety, emergency protocols, data privacy, and system reliability for schools." />
+  <link rel="icon" type="image/png" href="{LOGO}" />
+  <style>
+    *, *::before, *::after {{ box-sizing: border-box; margin: 0; padding: 0; }}
+    :root {{
+      --blue:      #1b5fe4;
+      --blue-dark: #1048c0;
+      --blue-soft: #eff6ff;
+      --dark:      #0f172a;
+      --text:      #10203f;
+      --muted:     #5d7398;
+      --border:    rgba(18,52,120,.10);
+      --white:     #ffffff;
+      --radius:    12px;
+    }}
+    html {{ scroll-behavior: smooth; }}
+    body {{
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+      color: var(--text);
+      background: var(--white);
+      line-height: 1.6;
+    }}
+    .nav {{
+      position: sticky; top: 0; z-index: 100;
+      background: var(--dark);
+      padding: 0 5%;
+      display: flex; align-items: center; justify-content: space-between;
+      height: 60px;
+    }}
+    .nav-logo {{ display: flex; align-items: center; gap: 10px; text-decoration: none; }}
+    .nav-logo img {{ height: 32px; border-radius: 6px; }}
+    .nav-logo span {{ color: #fff; font-weight: 700; font-size: 1.05rem; }}
+    .nav-actions {{ display: flex; gap: 12px; align-items: center; }}
+    .nav-link {{ color: rgba(255,255,255,.75); text-decoration: none; font-size: 0.9rem; }}
+    .nav-link:hover {{ color: #fff; }}
+    .btn {{ display: inline-flex; align-items: center; justify-content: center; padding: 8px 18px; border-radius: 8px; font-weight: 600; font-size: 0.9rem; text-decoration: none; cursor: pointer; border: none; }}
+    .btn-primary {{ background: var(--blue); color: #fff; }}
+    .btn-primary:hover {{ background: var(--blue-dark); }}
+    .page-hero {{
+      background: linear-gradient(135deg, var(--dark) 0%, #1a2d5a 100%);
+      color: #fff;
+      padding: 64px 5% 56px;
+      text-align: center;
+    }}
+    .page-hero .eyebrow {{
+      font-size: 0.78rem; font-weight: 700; letter-spacing: .12em;
+      text-transform: uppercase; color: rgba(255,255,255,.6); margin-bottom: 12px;
+    }}
+    .page-hero h1 {{ font-size: clamp(1.8rem, 4vw, 2.8rem); font-weight: 800; margin-bottom: 16px; }}
+    .page-hero p {{ font-size: 1.05rem; color: rgba(255,255,255,.8); max-width: 620px; margin: 0 auto; }}
+    .disclaimer-banner {{
+      background: rgba(251,191,36,.12);
+      border: 1px solid rgba(217,119,6,.3);
+      border-left: 4px solid #d97706;
+      padding: 16px 5%;
+      text-align: center;
+      color: #78350f;
+      font-size: 0.92rem;
+      line-height: 1.5;
+    }}
+    .content-wrap {{
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 56px 5% 80px;
+    }}
+    .safety-section {{ margin-bottom: 48px; }}
+    .safety-section:last-child {{ margin-bottom: 0; }}
+    .section-num {{
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 26px; height: 26px;
+      background: var(--blue); color: #fff;
+      border-radius: 50%; font-size: 0.76rem; font-weight: 700;
+      margin-right: 10px; flex-shrink: 0;
+    }}
+    .safety-section h2 {{
+      font-size: 1.18rem; font-weight: 700; margin-bottom: 14px;
+      display: flex; align-items: center;
+      border-bottom: 1px solid var(--border); padding-bottom: 12px;
+    }}
+    .safety-section p {{ color: var(--muted); margin-bottom: 10px; line-height: 1.7; }}
+    .safety-section ul {{ padding-left: 0; list-style: none; display: flex; flex-direction: column; gap: 8px; margin-bottom: 10px; }}
+    .safety-section li {{ color: var(--muted); padding-left: 20px; position: relative; line-height: 1.6; }}
+    .safety-section li::before {{ content: '→'; position: absolute; left: 0; color: var(--blue); font-weight: 700; }}
+    .callout {{
+      background: var(--blue-soft); border: 1px solid rgba(27,95,228,.15);
+      border-left: 4px solid var(--blue);
+      border-radius: 8px; padding: 14px 18px; margin: 16px 0;
+      color: #1e3a6e; font-size: 0.92rem; line-height: 1.6;
+    }}
+    .warn-callout {{
+      background: rgba(254,243,199,.7); border: 1px solid rgba(180,83,9,.22);
+      border-left: 4px solid #d97706;
+      border-radius: 8px; padding: 14px 18px; margin: 16px 0;
+      color: #78350f; font-size: 0.92rem; line-height: 1.6;
+    }}
+    footer {{
+      background: var(--dark); color: rgba(255,255,255,.5);
+      padding: 28px 5%; text-align: center; font-size: 0.82rem;
+    }}
+    footer a {{ color: rgba(255,255,255,.6); text-decoration: none; }}
+    footer a:hover {{ color: #fff; }}
+    .footer-links {{ display: flex; gap: 20px; justify-content: center; flex-wrap: wrap; margin-bottom: 12px; }}
+    .footer-disclaimer {{ max-width: 640px; margin: 12px auto 0; font-size: 0.78rem; color: rgba(255,255,255,.38); line-height: 1.5; }}
+  </style>
+</head>
+<body>
+
+<nav class="nav">
+  <a class="nav-logo" href="/">
+    <img src="{LOGO}" alt="BlueBird Alerts" />
+    <span>BlueBird Alerts</span>
+  </a>
+  <div class="nav-actions">
+    <a class="nav-link" href="/#features">Features</a>
+    <a class="nav-link" href="/#pricing">Pricing</a>
+    <a class="btn btn-primary" href="/login">Admin Login</a>
+  </div>
+</nav>
+
+<div class="page-hero">
+  <p class="eyebrow">Trust &amp; Compliance</p>
+  <h1>Safety &amp; Compliance</h1>
+  <p>How BlueBird Alerts approaches emergency communication, data protection, and operational reliability for schools and districts.</p>
+</div>
+
+<div class="disclaimer-banner">
+  <strong>&#9888; Important:</strong> BlueBird Alerts is an internal communication tool.
+  It does not contact 911 or replace professional emergency services.
+  <strong>Always call 911 in a real emergency.</strong>
+</div>
+
+<div class="content-wrap">
+
+  <div class="safety-section">
+    <h2><span class="section-num">1</span>Purpose &amp; Scope</h2>
+    <p>BlueBird Alerts is designed to deliver fast, reliable internal emergency notifications to school staff who have the BlueBird app installed. It is a push-notification and in-app alert system — not an emergency dispatch system.</p>
+    <ul>
+      <li>Sends real-time push notifications to registered iOS and Android devices</li>
+      <li>Provides administrators a single activation point for school-wide alerts</li>
+      <li>Supports training drills via a dedicated "Training Mode" that does not trigger real notifications</li>
+      <li>Scoped to individual school tenants — each school's data and alerts are fully isolated</li>
+    </ul>
+    <div class="callout">BlueBird Alerts is intended to <strong>augment</strong> existing emergency protocols, not replace them. Schools should maintain separate emergency response plans independent of this system.</div>
+  </div>
+
+  <div class="safety-section">
+    <h2><span class="section-num">2</span>Emergency Disclaimer</h2>
+    <div class="warn-callout">
+      <strong>&#9888; BlueBird Alerts does not contact 911 or emergency services.</strong><br />
+      Activating an alert sends push notifications to registered staff devices only. It does not notify police, fire, or medical services. In any real emergency, call 911 immediately.
+    </div>
+    <p>When activating a live (non-training) alarm, administrators are required to check an EMS acknowledgment confirming that 911 has been contacted or is not required before the alert is sent.</p>
+    <ul>
+      <li>Live alarm activation requires an explicit EMS acknowledgment checkbox</li>
+      <li>Training mode alarms are visually distinct and never trigger real notifications or SMS</li>
+      <li>Safety disclaimers are shown on the admin dashboard, login portal, and alarm activation form</li>
+      <li>Administrators cannot bypass the EMS acknowledgment during live alarm activation</li>
+    </ul>
+  </div>
+
+  <div class="safety-section">
+    <h2><span class="section-num">3</span>Data Privacy</h2>
+    <p>BlueBird Alerts collects only the data required to deliver its core service. No student data is collected or processed.</p>
+    <ul>
+      <li>User accounts store name, email, phone (optional), and hashed credentials — no student records</li>
+      <li>Device tokens are stored and used exclusively for push notification delivery</li>
+      <li>Alert history is retained within the platform for audit and drill-report purposes</li>
+      <li>Message content sent via push or SMS is logged for audit trail and troubleshooting</li>
+      <li>Data is scoped per school tenant — administrators can only access their own school's data</li>
+    </ul>
+    <div class="callout">No data is sold to third parties. Device tokens are transmitted to Apple (APNs) and Google (FCM) solely for push delivery, under the terms of their respective developer agreements.</div>
+  </div>
+
+  <div class="safety-section">
+    <h2><span class="section-num">4</span>Role-Based Access Control</h2>
+    <p>BlueBird Alerts uses a multi-tier role system to ensure users have access only to what they need.</p>
+    <ul>
+      <li><strong>Staff</strong> — can receive alerts and acknowledge them on their device; no admin console access</li>
+      <li><strong>Building Admin</strong> — can activate and deactivate alarms, manage users, and view reports for their school</li>
+      <li><strong>District Admin</strong> — oversight access across all schools in their district</li>
+      <li><strong>Super Admin</strong> — platform-level access; manages tenant provisioning and system configuration</li>
+    </ul>
+    <p>All authenticated active users can trigger emergency alarms. Only Building Admins and above can deactivate an active alarm. TOTP two-factor authentication is strongly encouraged for all administrator accounts.</p>
+  </div>
+
+  <div class="safety-section">
+    <h2><span class="section-num">5</span>Audit Logging</h2>
+    <p>BlueBird Alerts maintains a full audit log of all significant actions within the platform.</p>
+    <ul>
+      <li>Alarm activations and deactivations — who, when, and message content</li>
+      <li>User account changes — creation, role changes, and deactivation</li>
+      <li>Admin logins and session events</li>
+      <li>Access code generation and redemption</li>
+      <li>Push delivery outcomes and acknowledgement events</li>
+    </ul>
+    <div class="callout">Audit logs are visible to Building Admins and above in the Admin Console under the Activity section. Super Admins have access to platform-wide audit trails.</div>
+  </div>
+
+  <div class="safety-section">
+    <h2><span class="section-num">6</span>Device Awareness</h2>
+    <p>Real-time push delivery depends on staff having the BlueBird app installed and registered. The platform provides device health visibility to administrators at all times.</p>
+    <ul>
+      <li>Total registered device count is shown in the System Health panel on the admin dashboard</li>
+      <li>Recently active devices (seen within 30 days) are tracked separately from stale registrations</li>
+      <li>Device coverage — ratio of active users with registered devices — is a key readiness indicator</li>
+      <li>Stale or revoked device tokens are automatically pruned from the delivery pool on the next push attempt</li>
+    </ul>
+    <p>Schools should aim for at least one registered device per active user to ensure full push coverage during an emergency.</p>
+  </div>
+
+  <div class="safety-section">
+    <h2><span class="section-num">7</span>System Reliability</h2>
+    <p>BlueBird Alerts is designed with high availability in mind for critical communication paths.</p>
+    <ul>
+      <li>Emergency alert delivery is never blocked by billing status or subscription plan limits</li>
+      <li>Push delivery uses industry-standard APNs and FCM infrastructure with automatic retry logic</li>
+      <li>SMS fallback via Twilio provides a secondary delivery channel when push is unavailable</li>
+      <li>Training Mode allows administrators to test the full alert flow without sending real notifications</li>
+      <li>The admin console provides real-time alarm state visibility with no polling delay</li>
+    </ul>
+    <div class="warn-callout">BlueBird Alerts requires an active internet connection on both the server and registered staff devices. It is not a replacement for hardwired PA systems or offline emergency equipment.</div>
+  </div>
+
+  <div class="safety-section">
+    <h2><span class="section-num">8</span>Training Support</h2>
+    <p>Regular drills are essential for ensuring staff familiarity with the alert system before a real emergency occurs.</p>
+    <ul>
+      <li>Training Mode activates the full alarm flow on staff devices without sending real push or SMS</li>
+      <li>The Drill Readiness panel on the dashboard shows push configuration status and device registration counts</li>
+      <li>Post-drill PDF reports are automatically generated and available for download</li>
+      <li>The system surfaces a "no recent drill" reminder when no alerts have been sent in the past 7 days</li>
+      <li>Access codes allow new staff to self-register before a drill without requiring admin action per-user</li>
+    </ul>
+    <div class="callout">It is recommended to run at least one training drill per semester to verify device registrations, delivery paths, and staff familiarity with the alert flow.</div>
+  </div>
+
+</div>
+
+<footer>
+  <div class="footer-links">
+    <a href="/">Home</a>
+    <a href="/#features">Features</a>
+    <a href="/#pricing">Pricing</a>
+    <a href="/#safety">Safety</a>
+    <a href="/login">Admin Login</a>
+    <a href="mailto:{DEMO_EMAIL}">Contact</a>
+  </div>
+  <p>&copy; 2025 BlueBird Alerts. All rights reserved.</p>
+  <p class="footer-disclaimer">BlueBird Alerts is a communication tool and is not a replacement for 911 or professional emergency services. Always call 911 in a real emergency. No student data is collected.</p>
+</footer>
+
+</body>
+</html>"""

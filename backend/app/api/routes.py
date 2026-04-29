@@ -26,7 +26,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Query, Requ
 from fastapi import HTTPException, status
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse, JSONResponse
 
-from app.web.landing import render_landing_page, render_login_portal
+from app.web.landing import render_landing_page, render_login_portal, render_safety_page
 from app.api.deps import require_api_key
 from app.constants.labels import FEATURE_LABELS, get_feature_label
 from app.models.schemas import (
@@ -1677,6 +1677,11 @@ async def root(request: Request) -> HTMLResponse:
 @router.get("/login", include_in_schema=False)
 async def login_portal(request: Request) -> HTMLResponse:
     return HTMLResponse(content=render_login_portal())
+
+
+@router.get("/safety", include_in_schema=False)
+async def safety_page(request: Request) -> HTMLResponse:
+    return HTMLResponse(content=render_safety_page())
 
 
 # ── Public district/school listing (no auth, safe metadata only) ─────────────

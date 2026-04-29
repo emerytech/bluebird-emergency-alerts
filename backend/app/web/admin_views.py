@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections import Counter
 from html import escape
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Mapping, Optional, Sequence
 
 from app.services.alert_log import AlertRecord
@@ -5960,6 +5960,31 @@ def render_admin_page(
     _apns_token_count = provider_counts.get("apns", 0)
     _fcm_token_count = provider_counts.get("fcm", 0)
     _total_device_count = len(devices)
+    _thirty_days_ago = (datetime.utcnow() - timedelta(days=30)).isoformat()
+    _recently_active_device_count = sum(
+        1 for d in devices
+        if getattr(d, "last_seen_at", None) and str(d.last_seen_at) >= _thirty_days_ago
+    )
+    _coverage_ratio = (_recently_active_device_count / max(active_users, 1)) if active_users > 0 else 0.0
+    _readiness_score = (
+        (25 if _push_configured else 0)
+        + (20 if _total_device_count > 0 else 0)
+        + (15 if _coverage_ratio >= 0.5 else 0)
+        + (20 if totp_enabled else 0)
+        + (10 if len(access_code_records) > 0 else 0)
+        + (10 if len(alerts) > 0 else 0)
+    )
+    _readiness_label = (
+        "Excellent" if _readiness_score >= 90
+        else "Good" if _readiness_score >= 70
+        else "Fair" if _readiness_score >= 50
+        else "Needs attention"
+    )
+    _readiness_class = (
+        "ok" if _readiness_score >= 70
+        else "warn" if _readiness_score >= 50
+        else "danger"
+    )
 
     _show_access_codes = can_generate_codes(str(getattr(current_user, "role", "")))
     _ac_status_class = {"active": "ok", "used": "warn", "expired": "warn", "revoked": "danger", "archived": "secondary"}
@@ -6185,6 +6210,15 @@ def render_admin_page(
     )
     super_admin_shell_action_html = ""
     super_admin_banner_html = ""
+    _bb_911_notice_html = (
+        '<div class="bb-911-notice" id="bb-911-notice" style="display:none;">'
+        '<span>&#9888; <strong>BlueBird is an internal communication tool.</strong>'
+        ' It does not contact 911 or replace emergency services.'
+        ' Always call 911 in a real emergency.</span>'
+        '<button class="bb-911-notice-close" onclick="bb911Dismiss()" aria-label="Dismiss">&times;</button>'
+        '</div>'
+        if section == "dashboard" else ""
+    )
     if super_admin_mode:
         super_admin_shell_action_html = f"""
             <form method="post" action="{prefix}/admin/super-admin/exit">
@@ -7075,12 +7109,7 @@ def render_admin_page(
         {_render_flash(flash_error, "error")}
         {super_admin_banner_html}
 
-        {"" if section != "dashboard" else """<div class="bb-911-notice" id="bb-911-notice" style="display:none;">
-          <span>&#9888; <strong>BlueBird is an internal communication tool.</strong>
-          It does not contact 911 or replace emergency services.
-          Always call 911 in a real emergency.</span>
-          <button class="bb-911-notice-close" onclick="bb911Dismiss()" aria-label="Dismiss">&times;</button>
-        </div>"""}
+        {_bb_911_notice_html}
 
         <section class="panel command-section" id="overview"{_section_style("dashboard")}>
           <div class="panel-header hero-band">
@@ -7202,6 +7231,13 @@ def render_admin_page(
                 <input type="checkbox" name="silent_audio" value="1" id="silent_audio" />
                 <label for="silent_audio">Silent audio test — show alarm screens without siren volume{_help_tip('Useful for testing the visual alert flow without triggering the siren sound in a occupied building.')}</label>
               </div>
+              <div id="ems-ack-row" class="checkbox-row" style="display:none; background:rgba(185,28,28,.07); border-color:rgba(185,28,28,.35);">
+                <input type="checkbox" name="ems_acknowledged" value="1" id="ems_acknowledged" />
+                <label for="ems_acknowledged"><strong>911 / emergency services have been contacted or are not required for this situation.</strong>{_help_tip('Required before sending a live alarm. Confirms that professional emergency services have already been called or that this situation does not require them.')}</label>
+              </div>
+              <div id="ems-ack-err" class="flash error" style="display:none; margin-bottom:0; padding:8px 12px; font-size:0.85rem;">
+                Please confirm emergency services status before activating a live alarm.
+              </div>
               <div class="field">
                 <label for="alarm_message">Alarm message</label>
                 <textarea id="alarm_message" name="message">Emergency alert. Please follow school procedures.</textarea>
@@ -7244,6 +7280,7 @@ def render_admin_page(
                 <tr><td><strong>FCM (Android push)</strong></td><td><span class="status-pill {"ok" if fcm_configured else "warn"}">{("Configured" if fcm_configured else "Not configured")}</span></td></tr>
                 <tr><td><strong>SMS (Twilio)</strong></td><td><span class="status-pill {"ok" if twilio_configured else "warn"}">{("Configured" if twilio_configured else "Not configured")}</span></td></tr>
                 <tr><td><strong>Registered devices</strong></td><td>{_total_device_count}</td></tr>
+                <tr><td><strong>Active devices (30d)</strong></td><td><span class="status-pill {"ok" if _recently_active_device_count > 0 else "warn"}">{_recently_active_device_count}</span></td></tr>
                 <tr><td><strong>Acknowledgements (current)</strong></td><td>{acknowledgement_count if alarm_state.is_active else "—"}</td></tr>
                 <tr><td><strong>Last alarm activated</strong></td><td>{escape(alarm_state.activated_at or "Never")}</td></tr>
                 <tr><td><strong>Last alarm deactivated</strong></td><td>{escape(alarm_state.deactivated_at or "Never")}</td></tr>
@@ -7273,11 +7310,22 @@ def render_admin_page(
                 <h2>Ready to drill?</h2>
               </div>
             </div>
+            <div style="display:flex;align-items:center;gap:14px;margin-bottom:16px;padding:12px 14px;background:var(--blue-soft,#eff6ff);border-radius:10px;border:1px solid rgba(27,95,228,.13);">
+              <div style="font-size:2rem;font-weight:800;color:{"#16a34a" if _readiness_score >= 70 else "#d97706" if _readiness_score >= 50 else "#dc2626"};">{_readiness_score}</div>
+              <div>
+                <div style="font-weight:700;font-size:0.9rem;color:var(--text,#10203f);">Readiness Score <span class="status-pill {_readiness_class}" style="margin-left:6px;font-size:0.75rem;">{_readiness_label}</span></div>
+                <div style="font-size:0.78rem;color:var(--muted,#5d7398);margin-top:2px;">Out of 100 — push config, devices, coverage, 2FA, access codes, recent drill</div>
+              </div>
+            </div>
             <table class="data-table" style="margin-bottom:12px;">
               <tbody>
                 <tr><td><strong>Push configured</strong></td><td><span class="status-pill {"ok" if _push_configured else "warn"}">{("Yes" if _push_configured else "No — set up APNs or FCM")}</span></td></tr>
                 <tr><td><strong>Devices registered</strong></td><td><span class="status-pill {"ok" if _total_device_count > 0 else "warn"}">{(_total_device_count if _total_device_count > 0 else "None registered")}</span></td></tr>
-                <tr><td><strong>Training mode</strong></td><td><span class="status-pill ok">Available</span></td></tr>
+                <tr><td><strong>Active devices (30d)</strong></td><td><span class="status-pill {"ok" if _recently_active_device_count > 0 else "warn"}">{_recently_active_device_count}</span></td></tr>
+                <tr><td><strong>Device coverage</strong></td><td><span class="status-pill {"ok" if _coverage_ratio >= 0.5 else "warn"}">{int(_coverage_ratio * 100)}%</span></td></tr>
+                <tr><td><strong>2FA enabled</strong></td><td><span class="status-pill {"ok" if totp_enabled else "warn"}">{("Yes" if totp_enabled else "Not enabled")}</span></td></tr>
+                <tr><td><strong>Access codes</strong></td><td><span class="status-pill {"ok" if len(access_code_records) > 0 else "warn"}">{(len(access_code_records) if access_code_records else "None")}</span></td></tr>
+                <tr><td><strong>Recent drill (7d)</strong></td><td><span class="status-pill {"ok" if len(alerts) > 0 else "warn"}">{("Yes" if len(alerts) > 0 else "No recent drill")}</span></td></tr>
                 <tr><td><strong>Alarm currently</strong></td><td><span class="status-pill {alarm_status_class}">{escape(alarm_status_label)}</span></td></tr>
               </tbody>
             </table>
@@ -8272,10 +8320,33 @@ def render_admin_page(
       /* Upgrade alarm activation form for live (non-training) alerts */
       var alarmForm = document.getElementById('alarm_activate_form');
       if (alarmForm) {{
+        var _trainingCb = document.getElementById('is_training');
+        var _emsRow = document.getElementById('ems-ack-row');
+        var _emsErr = document.getElementById('ems-ack-err');
+        var _emsCb  = document.getElementById('ems_acknowledged');
+        var _liveWarn = document.getElementById('live_alert_warning');
+
+        function _syncLiveMode() {{
+          var live = _trainingCb && !_trainingCb.checked;
+          if (_emsRow) _emsRow.style.display = live ? '' : 'none';
+          if (_emsErr) _emsErr.style.display = 'none';
+          if (_emsCb && !live) _emsCb.checked = false;
+          if (_liveWarn) _liveWarn.style.display = live ? '' : 'none';
+        }}
+
+        if (_trainingCb) _trainingCb.addEventListener('change', _syncLiveMode);
+        _syncLiveMode();
+
         alarmForm.addEventListener('submit', function(e) {{
-          var training = document.getElementById('is_training');
-          if (training && !training.checked) {{
+          var live = _trainingCb && !_trainingCb.checked;
+          if (live) {{
             e.preventDefault();
+            if (!_emsCb || !_emsCb.checked) {{
+              if (_emsErr) _emsErr.style.display = '';
+              if (_emsRow) _emsRow.scrollIntoView({{behavior:'smooth', block:'nearest'}});
+              return;
+            }}
+            if (_emsErr) _emsErr.style.display = 'none';
             var devCount = {json.dumps(len(devices))};
             window.bbSmartConfirm({{
               icon: '🚨',
