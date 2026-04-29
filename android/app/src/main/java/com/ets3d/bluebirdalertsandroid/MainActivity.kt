@@ -63,7 +63,9 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -2606,7 +2608,7 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                                 holdFlashProgress = progress.coerceIn(0f, 1f)
                                 holdFlashColor = color
                             },
-                            modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
                         )
                     }
 
@@ -3179,6 +3181,12 @@ private fun CircularEmergencyButton(
 ) {
     val scope = rememberCoroutineScope()
     val haptic = LocalHapticFeedback.current
+    val configuration = LocalConfiguration.current
+    val screenWidth = configuration.screenWidthDp.dp
+    val buttonSize = (screenWidth * 0.4f).coerceIn(180.dp, 320.dp)
+    val innerSize = buttonSize * (130f / 148f)
+    val strokeWidth = (buttonSize * 0.054f).coerceIn(6.dp, 14.dp)
+    val iconFontSize = with(LocalDensity.current) { (buttonSize * 0.31f).toSp() }
     val holdProgress = remember { Animatable(0f) }
     var holdState by remember { mutableStateOf(HoldActivationUiState.Idle) }
     var holdJob by remember { mutableStateOf<Job?>(null) }
@@ -3227,7 +3235,7 @@ private fun CircularEmergencyButton(
         Box(
             contentAlignment = Alignment.Center,
             modifier = Modifier
-                .size(148.dp)
+                .size(buttonSize)
                 .pointerInput(enabled, holdDurationMs) {
                     detectTapGestures(
                         onPress = {
@@ -3274,20 +3282,20 @@ private fun CircularEmergencyButton(
             CircularProgressIndicator(
                 progress = { 1f },
                 color = AlarmRed.copy(alpha = 0.20f),
-                strokeWidth = 8.dp,
+                strokeWidth = strokeWidth,
                 modifier = Modifier.fillMaxSize(),
             )
             CircularProgressIndicator(
                 progress = { holdProgress.value },
                 color = ringColor,
-                strokeWidth = 8.dp,
+                strokeWidth = strokeWidth,
                 modifier = Modifier.fillMaxSize(),
             )
             Surface(
                 shape = CircleShape,
                 color = AlarmRed,
                 modifier = Modifier
-                    .size(130.dp)
+                    .size(innerSize)
                     .graphicsLayer {
                         scaleX = buttonScale
                         scaleY = buttonScale
@@ -3295,7 +3303,7 @@ private fun CircularEmergencyButton(
                 shadowElevation = (8f + holdProgress.value * 18f).dp,
             ) {
                 Box(contentAlignment = Alignment.Center) {
-                    Text("🚨", fontSize = 46.sp)
+                    Text("🚨", fontSize = iconFontSize)
                 }
             }
         }
