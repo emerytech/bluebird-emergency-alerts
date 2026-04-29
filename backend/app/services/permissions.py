@@ -273,11 +273,9 @@ def valid_tenant_roles() -> set[str]:
 # ---------------------------------------------------------------------------
 
 # Roles permitted to trigger a school-wide emergency alarm.
-ALARM_TRIGGER_ROLES: Final[set[str]] = {
-    ROLE_ADMIN,
-    ROLE_BUILDING_ADMIN,
-    ROLE_DISTRICT_ADMIN,
-}
+# Any authenticated, active tenant user may activate — teachers and staff
+# are on the front line and must not be blocked from calling for help.
+ALARM_TRIGGER_ROLES: Final[set[str]] = ALL_ROLES
 
 CODEGEN_ALLOWED_ROLES: Final[set[str]] = {
     ROLE_BUILDING_ADMIN,

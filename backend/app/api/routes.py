@@ -1141,7 +1141,7 @@ async def _require_alarm_trigger_user(
         )
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"Role '{user.role}' is not permitted to trigger alarms. Requires: building_admin or district_admin.",
+            detail=f"Role '{user.role}' is not a recognized tenant role and cannot trigger alarms.",
         )
 
     logger.warning(
