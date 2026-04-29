@@ -115,6 +115,12 @@ def render_landing_page() -> str:
     }}
     .hero-actions {{
       display: flex; gap: 12px; justify-content: center; flex-wrap: wrap;
+      align-items: flex-start;
+    }}
+    .hero-login-wrap {{ display: flex; flex-direction: column; align-items: center; gap: 7px; }}
+    .hero-login-hint {{
+      font-size: 0.73rem; color: rgba(255,255,255,.52);
+      letter-spacing: .02em;
     }}
     .hero-stats {{
       display: flex; gap: 40px; justify-content: center; flex-wrap: wrap;
@@ -354,7 +360,10 @@ def render_landing_page() -> str:
   <p class="hero-sub">BlueBird Alerts puts instant push notifications and real-time acknowledgement tracking in the hands of every administrator — no complex setup, no delays.</p>
   <div class="hero-actions">
     <a href="mailto:{DEMO_EMAIL}?subject=BlueBird%20Alerts%20Demo%20Request" class="btn btn-primary btn-lg">&#128231; Schedule a Demo</a>
-    <a href="/login" class="btn btn-ghost btn-lg">Admin Login &rarr;</a>
+    <div class="hero-login-wrap">
+      <a href="/login" class="btn btn-ghost btn-lg">Admin Login &rarr;</a>
+      <span class="hero-login-hint">Select your district &amp; school to sign in</span>
+    </div>
   </div>
   <div class="hero-stats">
     <div>
@@ -809,6 +818,31 @@ def render_login_portal() -> str:
       display: flex; align-items: center; gap: 6px; margin-bottom: 20px;
     }}
 
+    /* ── STEP PROGRESS ───────────────────────────────────────────────── */
+    .progress-track {{
+      display: flex; align-items: center; gap: 8px;
+      margin-bottom: 28px;
+    }}
+    .progress-dot {{
+      width: 9px; height: 9px; border-radius: 50%;
+      background: rgba(27,95,228,.18);
+      transition: background .25s, transform .25s;
+      flex-shrink: 0;
+    }}
+    .progress-dot.active {{ background: var(--blue); transform: scale(1.2); }}
+    .progress-line {{
+      flex: 1; height: 2px; max-width: 52px;
+      background: rgba(27,95,228,.18);
+      transition: background .25s;
+    }}
+    .progress-line.active {{ background: var(--blue); }}
+    @keyframes bbFadeSlide {{
+      from {{ opacity: 0; transform: translateY(10px); }}
+      to   {{ opacity: 1; transform: translateY(0); }}
+    }}
+    .step-anim {{ animation: bbFadeSlide .22s ease both; }}
+    .selecting {{ border-color: var(--blue) !important; background: var(--blue-soft) !important; }}
+
     /* ── FOOTER LINK ──────────────────────────────────────────────────── */
     .portal-footer {{
       text-align: center; margin-top: 20px;
@@ -837,6 +871,13 @@ def render_login_portal() -> str:
   <div class="portal-logo">
     <img src="{LOGO}" alt="BlueBird Alerts" />
     <span>BlueBird Alerts</span>
+  </div>
+
+  <!-- Step progress indicator -->
+  <div class="progress-track">
+    <div class="progress-dot active" id="pdot-1"></div>
+    <div class="progress-line" id="pdot-line"></div>
+    <div class="progress-dot" id="pdot-2"></div>
   </div>
 
   <!-- Quick-access shortcut (remembered school) -->
@@ -910,6 +951,20 @@ def render_login_portal() -> str:
   function _show(id) {{ _$(id).style.display = ''; }}
   function _hide(id) {{ _$(id).style.display = 'none'; }}
 
+  function _animateIn(id) {{
+    var el = _$(id);
+    el.style.display = '';
+    el.classList.remove('step-anim');
+    void el.offsetHeight; /* force reflow so animation re-fires */
+    el.classList.add('step-anim');
+  }}
+
+  function _setStep(n) {{
+    _$('pdot-1').classList.toggle('active', n >= 1);
+    _$('pdot-2').classList.toggle('active', n >= 2);
+    _$('pdot-line').classList.toggle('active', n >= 2);
+  }}
+
   function _err(targetId, msg) {{
     var el = _$(targetId);
     el.textContent = msg;
@@ -957,7 +1012,7 @@ def render_login_portal() -> str:
     }}
     var html = '';
     districts.forEach(function(d) {{
-      html += '<button class="school-btn" onclick="bbSelectDistrict(' + d.district_id + ', ' + JSON.stringify(d.district_name) + ')">'
+      html += '<button class="school-btn" onclick="bbSelectDistrict(' + d.district_id + ', ' + JSON.stringify(d.district_name) + ', this)">'
             + '<div>'
             + '<div class="school-name">' + _esc(d.district_name) + '</div>'
             + '</div>'
@@ -1008,14 +1063,20 @@ def render_login_portal() -> str:
   }}
 
   /* ── Select district → load schools ──────────────────────────────── */
-  window.bbSelectDistrict = function(id, name) {{
+  window.bbSelectDistrict = function(id, name, btn) {{
     _selDistrict = {{id: id, name: name}};
     _saveDistrict(_selDistrict);
 
+    /* Brief selected-state flash on the clicked card */
+    if (btn) btn.classList.add('selecting');
+
     _$('district-selected-name').textContent = name;
-    _hide('step-district');
-    _show('step-school');
-    _hide('quick-access');
+    setTimeout(function() {{
+      _hide('step-district');
+      _hide('quick-access');
+      _animateIn('step-school');
+      _setStep(2);
+    }}, 120);
 
     _clearErr('school-error');
     _$('school-list').innerHTML = '';
@@ -1034,7 +1095,7 @@ def render_login_portal() -> str:
         }}
         var html = '';
         data.forEach(function(s) {{
-          html += '<button class="school-btn" onclick="bbSelectSchool(' + JSON.stringify(s.tenant_slug) + ', ' + JSON.stringify(s.tenant_name) + ')">'
+          html += '<button class="school-btn" onclick="bbSelectSchool(' + JSON.stringify(s.tenant_slug) + ', ' + JSON.stringify(s.tenant_name) + ', this)">'
                 + '<div>'
                 + '<div class="school-name">' + _esc(s.tenant_name) + '</div>'
                 + '<div class="school-slug">' + _esc(s.tenant_slug) + '</div>'
@@ -1051,15 +1112,19 @@ def render_login_portal() -> str:
   }};
 
   /* ── Select school → redirect ─────────────────────────────────────── */
-  window.bbSelectSchool = function(slug, name) {{
+  window.bbSelectSchool = function(slug, name, btn) {{
     _saveSchool({{slug: slug, name: name}});
-    window.location.href = '/' + slug + '/admin/login';
+    if (btn) btn.classList.add('selecting');
+    setTimeout(function() {{
+      window.location.href = '/' + slug + '/admin/login';
+    }}, 140);
   }};
 
   /* ── Back to districts ────────────────────────────────────────────── */
   window.bbBackToDistricts = function() {{
     _hide('step-school');
-    _show('step-district');
+    _animateIn('step-district');
+    _setStep(1);
     _selDistrict = null;
     _maybeShowQuick();
   }};
