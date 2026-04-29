@@ -55,6 +55,95 @@ def _help_tip(text: str, right: bool = False) -> str:
     return f'<span class="help-tip" tabindex="0" role="note" aria-label="{escape(text)}">?<span class="{cls}">{escape(text)}</span></span>'
 
 
+def _render_next_steps_panel(
+    *,
+    role: str,
+    user_count: int,
+    device_count: int,
+    apns_configured: bool,
+    fcm_configured: bool,
+    totp_enabled: bool,
+    access_code_count: int,
+    unread_messages: int,
+    help_requests_active: int,
+    prefix: str,
+) -> str:
+    """Context-aware 'next steps' card for the admin dashboard.
+
+    Returns empty string when nothing actionable — panel never shows if all clear.
+    Rendered hidden; inline JS checks localStorage and shows if not recently dismissed.
+    """
+    items: list[tuple[str, str, str, str]] = []  # (icon, title, desc, href)
+
+    if user_count <= 1:
+        items.append(("👤", "Add staff accounts",
+                       "Create accounts for teachers and staff so they receive alerts.",
+                       f"{prefix}/admin?section=user-management"))
+
+    if access_code_count == 0:
+        items.append(("🔑", "Generate access codes",
+                       "Create one-time codes so staff can self-register on the BlueBird app.",
+                       f"{prefix}/admin?section=user-management&tab=codes"))
+
+    if device_count == 0 and user_count > 1:
+        items.append(("📱", "Register devices",
+                       "No phones registered yet. Share access codes so staff can install the app.",
+                       f"{prefix}/admin?section=user-management&tab=codes"))
+
+    if not apns_configured and not fcm_configured:
+        items.append(("🔔", "Configure push notifications",
+                       "Push alerts require APNs (iOS) or FCM (Android) credentials in Settings.",
+                       f"{prefix}/admin?section=settings"))
+
+    if not totp_enabled and role in {"building_admin", "district_admin"}:
+        items.append(("🔒", "Enable two-factor authentication",
+                       "Protect this admin account from unauthorized access.",
+                       f"{prefix}/admin?section=settings"))
+
+    if unread_messages > 0:
+        plural = "s" if unread_messages != 1 else ""
+        items.append(("✉", f"{unread_messages} unread message{plural}",
+                       "Staff have sent messages to the admin dashboard.",
+                       f"{prefix}/admin?section=dashboard#messages"))
+
+    if help_requests_active > 0:
+        plural = "s" if help_requests_active != 1 else ""
+        items.append(("🙋", f"{help_requests_active} active help request{plural}",
+                       "Staff are requesting assistance or backup.",
+                       f"{prefix}/admin?section=dashboard#request-help"))
+
+    items = items[:5]
+    if not items:
+        return ""
+
+    rows = ""
+    for icon, title, desc, href in items:
+        rows += (
+            f'<div class="bb-nsp-item">'
+            f'<div class="bb-nsp-icon">{icon}</div>'
+            f'<div class="bb-nsp-body">'
+            f'<div class="bb-nsp-item-title">{escape(title)}</div>'
+            f'<div class="bb-nsp-item-desc">{escape(desc)}</div>'
+            f'</div>'
+            f'<div class="bb-nsp-cta">'
+            f'<a class="button button-secondary" href="{escape(href)}" '
+            f'style="font-size:0.78rem;padding:5px 12px;min-height:30px;">Go &rarr;</a>'
+            f'</div>'
+            f'</div>'
+        )
+
+    item_count = str(len(items))
+    return (
+        f'<div class="bb-nsp" id="bb-next-steps" data-item-count="{item_count}">'
+        f'<div class="bb-nsp-header">'
+        f'<span class="bb-nsp-title">&#9654; Suggested next steps ({item_count})</span>'
+        f'<button class="bb-nsp-dismiss" onclick="bbNspDismiss()" type="button">Got it &times;</button>'
+        f'</div>'
+        f'<div class="bb-nsp-items">{rows}</div>'
+        f'</div>'
+    )
+
+
 def _super_admin_header_html(
     logout_url: str = "/super-admin/logout",
     license_summary: Optional[Mapping[str, object]] = None,
@@ -97,6 +186,7 @@ def _super_admin_header_html(
       </div>
       <div class="hdr-actions">
         {lic_badge}
+        <button class="hdr-btn" onclick="bbOpenSaCmdBar()" type="button" title="Search pages and districts (/ or Ctrl+K)" style="display:none;" id="bb-sa-cmdbar-btn">&#128269; Search</button>
         <button class="hdr-btn" onclick="bbToggleTheme()" id="bb-theme-btn" type="button">&#9790; Dark</button>
         <form method="post" action="{logout_url}" style="margin:0;">
           <button class="hdr-btn" type="submit">Log out</button>
@@ -132,6 +222,7 @@ def _admin_header_html(
         {viewing_indicator}
         <span class="hdr-user">&#128100; {escape(user_display)}</span>
         {extra_action_html}
+        <button class="hdr-btn" onclick="bbOpenCmdBar()" type="button" title="Search pages and actions (/ or Ctrl+K)" style="display:none;" id="bb-cmdbar-btn">&#128269; Search</button>
         <button class="hdr-btn" onclick="startBluebirdTour()" type="button" title="Take a guided tour of the admin console" style="display:none;" id="bb-tour-btn">&#9654; Tour</button>
         <button class="hdr-btn" onclick="bbToggleTheme()" id="bb-theme-btn" type="button">&#9790; Dark</button>
         <form method="post" action="{logout_url}">
@@ -1083,9 +1174,144 @@ def _base_styles() -> str:
     }
     .tip-text--right { left: auto; right: 0; transform: none; }
     .tip-text--right::after { left: auto; right: 12px; transform: none; }
+    html[data-theme="dark"] .help-tip { background: rgba(77,139,255,0.18); border-color: rgba(77,139,255,0.35); }
     html[data-theme="dark"] .tip-text { background: #e8f0fe; color: #10203f; }
     html[data-theme="dark"] .tip-text::after { border-top-color: #e8f0fe; }
     html[data-theme="dark"] .tip-text--right::after { border-top-color: #e8f0fe; }
+
+    /* ── Next Steps Panel ───────────────────────────────────────────────── */
+    .bb-nsp {
+      background: linear-gradient(135deg, rgba(27,95,228,0.05), rgba(47,132,255,0.02));
+      border: 1px solid var(--accent-soft-strong);
+      border-radius: 18px; padding: 16px 20px; margin-bottom: 20px; display: none;
+    }
+    .bb-nsp-header {
+      display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;
+    }
+    .bb-nsp-title { font-size: 0.78rem; font-weight: 700; text-transform: uppercase;
+      letter-spacing: 0.08em; color: var(--accent); }
+    .bb-nsp-dismiss { background: none; border: none; cursor: pointer;
+      font-size: 0.75rem; color: var(--muted); padding: 2px 6px; border-radius: 4px; }
+    .bb-nsp-dismiss:hover { background: var(--accent-soft); color: var(--accent); }
+    .bb-nsp-items { display: flex; flex-direction: column; gap: 8px; }
+    .bb-nsp-item {
+      display: flex; align-items: center; gap: 12px; padding: 10px 14px;
+      border-radius: 10px; background: var(--panel-strong); border: 1px solid var(--border);
+    }
+    .bb-nsp-icon { font-size: 1.1rem; flex-shrink: 0; width: 26px; text-align: center; }
+    .bb-nsp-body { flex: 1; min-width: 0; }
+    .bb-nsp-item-title { font-size: 0.86rem; font-weight: 600; color: var(--text); }
+    .bb-nsp-item-desc { font-size: 0.75rem; color: var(--muted); margin-top: 1px; }
+    .bb-nsp-cta { flex-shrink: 0; }
+    html[data-theme="dark"] .bb-nsp {
+      background: linear-gradient(135deg, rgba(77,139,255,0.08), rgba(27,95,228,0.04));
+    }
+
+    /* ── Command Bar ────────────────────────────────────────────────────── */
+    .bb-cmdbar-overlay {
+      position: fixed; inset: 0; background: rgba(0,0,0,0.52);
+      backdrop-filter: blur(3px); -webkit-backdrop-filter: blur(3px);
+      z-index: 9100; display: none; align-items: flex-start;
+      justify-content: center; padding-top: 11vh;
+    }
+    .bb-cmdbar-overlay.open { display: flex; }
+    .bb-cmdbar {
+      background: var(--panel-strong); border: 1px solid var(--border);
+      border-radius: 18px; width: 100%; max-width: 580px;
+      box-shadow: 0 28px 72px rgba(0,0,0,0.30); overflow: hidden;
+      animation: bb-cmd-in 0.14s ease;
+    }
+    @keyframes bb-cmd-in {
+      from { opacity: 0; transform: translateY(-12px) scale(0.98); }
+      to   { opacity: 1; transform: translateY(0) scale(1); }
+    }
+    .bb-cmdbar-top {
+      display: flex; align-items: center; gap: 10px;
+      padding: 14px 18px; border-bottom: 1px solid var(--border);
+    }
+    .bb-cmdbar-search-icon { color: var(--muted); font-size: 1rem; flex-shrink: 0; }
+    .bb-cmdbar-input {
+      flex: 1; border: none; outline: none; background: transparent;
+      font-size: 1rem; color: var(--text); font-family: var(--body);
+    }
+    .bb-cmdbar-input::placeholder { color: var(--muted); }
+    .bb-cmdbar-kbd {
+      font-size: 0.68rem; color: var(--muted); border: 1px solid var(--border);
+      border-radius: 4px; padding: 2px 6px; flex-shrink: 0; background: var(--surface);
+    }
+    .bb-cmdbar-results { max-height: 380px; overflow-y: auto; padding: 6px 6px 4px; }
+    .bb-cmdbar-item {
+      display: flex; align-items: center; gap: 10px;
+      padding: 9px 12px; border-radius: 9px; cursor: pointer;
+      transition: background 0.08s;
+    }
+    .bb-cmdbar-item:hover, .bb-cmdbar-item.bb-cmd-sel { background: var(--accent-soft); }
+    .bb-cmdbar-item-icon {
+      font-size: 0.9rem; flex-shrink: 0; width: 26px; text-align: center;
+      color: var(--muted);
+    }
+    .bb-cmdbar-item-info { flex: 1; min-width: 0; }
+    .bb-cmdbar-item-label { font-size: 0.88rem; font-weight: 600; color: var(--text); }
+    .bb-cmdbar-item-desc { font-size: 0.74rem; color: var(--muted); }
+    .bb-cmdbar-item-badge {
+      font-size: 0.63rem; color: var(--muted); border: 1px solid var(--border);
+      border-radius: 4px; padding: 1px 5px; flex-shrink: 0; text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .bb-cmdbar-empty { text-align: center; padding: 28px; color: var(--muted);
+      font-size: 0.88rem; }
+    .bb-cmdbar-footer {
+      padding: 8px 16px; border-top: 1px solid var(--border);
+      display: flex; gap: 16px; font-size: 0.7rem; color: var(--muted);
+    }
+    .bb-cmdbar-footer kbd {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 3px; padding: 1px 5px; font-family: monospace;
+    }
+    .bb-cmdbar-section-label {
+      font-size: 0.67rem; font-weight: 700; text-transform: uppercase;
+      letter-spacing: 0.08em; color: var(--muted); padding: 10px 12px 4px;
+    }
+
+    /* ── Smart Confirm Dialog ───────────────────────────────────────────── */
+    .bb-sconfirm-overlay {
+      position: fixed; inset: 0; background: rgba(0,0,0,0.55);
+      backdrop-filter: blur(2px); -webkit-backdrop-filter: blur(2px);
+      z-index: 9200; display: none; align-items: center; justify-content: center;
+    }
+    .bb-sconfirm-overlay.open { display: flex; }
+    .bb-sconfirm {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 20px; padding: 28px 30px;
+      max-width: 440px; width: calc(100% - 48px);
+      box-shadow: 0 20px 64px rgba(0,0,0,0.30);
+      animation: bb-sconfirm-in 0.16s ease;
+    }
+    @keyframes bb-sconfirm-in {
+      from { opacity: 0; transform: scale(0.95); }
+      to   { opacity: 1; transform: scale(1); }
+    }
+    .bb-sconfirm-icon { font-size: 2rem; margin-bottom: 10px; }
+    .bb-sconfirm h3 { margin: 0 0 8px; font-size: 1.1rem; color: var(--text); }
+    .bb-sconfirm-body {
+      font-size: 0.9rem; color: var(--muted); line-height: 1.55; margin-bottom: 20px;
+    }
+    .bb-sconfirm-consequence {
+      background: rgba(220,38,38,0.07); border: 1px solid rgba(220,38,38,0.18);
+      border-radius: 8px; padding: 10px 14px; font-size: 0.82rem; color: #b91c1c;
+      margin-bottom: 18px; line-height: 1.45;
+    }
+    html[data-theme="dark"] .bb-sconfirm-consequence {
+      background: rgba(220,38,38,0.12); color: #fca5a5;
+    }
+    .bb-sconfirm-type-label { font-size: 0.78rem; color: var(--muted); margin-bottom: 6px; }
+    .bb-sconfirm-type-input {
+      width: 100%; padding: 9px 12px; border-radius: 8px;
+      border: 1px solid var(--border); font-size: 0.9rem; font-family: monospace;
+      outline: none; background: var(--input-bg); color: var(--text); margin-bottom: 16px;
+    }
+    .bb-sconfirm-type-input:focus { border-color: var(--accent); }
+    .bb-sconfirm-actions { display: flex; gap: 10px; justify-content: flex-end; }
 
     /* ── Guided Tour ────────────────────────────────────────────────────── */
     @keyframes bb-tour-pulse {
@@ -1931,7 +2157,10 @@ def _render_district_billing_card(item: Mapping[str, object], plan_opts: str, st
             f'<span style="display:inline-flex;align-items:center;gap:4px;">'
             + _help_tip('Permanently removes this license record. Cannot be undone. Only allowed after archiving.')
             + f'<form method="post" action="{delete_action}" style="display:inline;margin:0;" '
-            f'onsubmit="return confirm(\'Permanently delete the license record for {name}? This cannot be undone.\');">'
+            f'onsubmit="bbConfirmSubmit(this,{{title:\'Delete district license?\','
+            f'body:\'Permanently removes the license record for <strong>{name}</strong>.\','
+            f'consequence:\'This cannot be undone. The district will need a new license to regain access.\','
+            f'requireType:\'DELETE\',confirmLabel:\'Delete permanently\',danger:true}});return false;">'
             f'<button class="button button-danger-outline" type="submit" style="font-size:0.73rem;padding:4px 10px;">Delete</button>'
             f'</form>'
             f'</span>'
@@ -2067,7 +2296,10 @@ def _render_district_billing_card(item: Mapping[str, object], plan_opts: str, st
         f'<p style="font-size:0.75rem;font-weight:600;margin-bottom:8px;color:var(--muted);">Archive License</p>'
         f'<p style="font-size:0.72rem;color:var(--muted);margin-bottom:8px;">Archived licenses are hidden from active enforcement. Restoring re-activates them. Active licenses cannot be deleted.</p>'
         f'<form method="post" action="{archive_action}" '
-        f'onsubmit="return confirm(\'Archive the district license for {name}? Enforcement will fall back to tenant billing until restored.\');">'
+        f'onsubmit="bbConfirmSubmit(this,{{title:\'Archive district license?\','
+        f'body:\'The license for <strong>{name}</strong> will be archived and removed from enforcement.\','
+        f'consequence:\'School access falls back to tenant-level billing until the license is restored.\','
+        f'confirmLabel:\'Archive license\',danger:true}});return false;">'
         f'<button class="button button-danger-outline" type="submit" style="width:100%;">Archive License</button>'
         f'</form></div>'
         f'</div></details>'
@@ -2710,9 +2942,15 @@ def render_super_admin_page(
         # Archive button (only for real districts with an id)
         archive_btn = ""
         if did and is_district:
+            archive_cfg = (
+                "{{title:'Archive district?',"
+                "body:'Archiving <strong>" + str(name) + "</strong> disables all its schools and moves it to the archived list. Schools and data are preserved.',"
+                "consequence:'Staff at member schools will lose admin console access until this district is restored.',"
+                "confirmLabel:'Archive district',danger:true}}"
+            )
             archive_btn = (
                 f'<form method="post" action="/super-admin/districts/{did}/archive"'
-                f' onsubmit="return confirm(\'Archive district {name}? This will disable it and move it to the archived section.\');" style="margin:0;">'
+                f' onsubmit="bbConfirmSubmit(this,{archive_cfg});return false;" style="margin:0;">'
                 f'<button class="button button-danger-outline" type="submit" style="font-size:0.75rem;padding:5px 12px;">Archive</button>'
                 f'</form>'
             )
@@ -3972,6 +4210,151 @@ def render_super_admin_page(
     applyTheme(saved === 'dark');
     window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', function(e) {{
       if (!localStorage.getItem(K)) applyTheme(e.matches);
+    }});
+  }})();
+  </script>
+  <script>
+  /* ── Smart Confirm (Super Admin) ──────────────────────────────────── */
+  (function() {{
+    var _ov = null, _bx = null, _res = null;
+    function _init() {{
+      _ov = document.createElement('div'); _ov.className = 'bb-sconfirm-overlay';
+      _ov.addEventListener('click', function(e) {{ if(e.target===_ov) _close(false); }});
+      _bx = document.createElement('div'); _bx.className = 'bb-sconfirm';
+      _ov.appendChild(_bx); document.body.appendChild(_ov);
+    }}
+    function _close(r) {{
+      if(_ov) _ov.classList.remove('open');
+      if(_res) {{ _res(r); _res = null; }}
+    }}
+    window.bbSmartConfirm = function(cfg) {{
+      if(!_ov) _init();
+      return new Promise(function(resolve) {{
+        _res = resolve;
+        var typeRow = cfg.requireType
+          ? '<p class="bb-sconfirm-type-label">Type <strong>'+cfg.requireType+'</strong> to confirm:</p>'
+            + '<input class="bb-sconfirm-type-input" id="bb-sc-ti" autocomplete="off" />' : '';
+        var cq = cfg.consequence ? '<div class="bb-sconfirm-consequence">'+cfg.consequence+'</div>' : '';
+        _bx.innerHTML = '<div class="bb-sconfirm-icon">'+(cfg.icon||(cfg.danger?'⚠️':'ℹ️'))+'</div>'
+          + '<h3>'+(cfg.title||'Confirm')+'</h3>'
+          + '<div class="bb-sconfirm-body">'+(cfg.body||'')+'</div>'
+          + cq + typeRow
+          + '<div class="bb-sconfirm-actions">'
+          + '<button class="button button-secondary" style="min-height:36px;" onclick="window._saScCancel()">Cancel</button>'
+          + '<button class="button '+(cfg.danger?'button-danger':'button-primary')+'" style="min-height:36px;" id="bb-sc-ok">'+(cfg.confirmLabel||'Confirm')+'</button>'
+          + '</div>';
+        var ok = document.getElementById('bb-sc-ok');
+        if(cfg.requireType) {{
+          ok.disabled = true;
+          var ti = document.getElementById('bb-sc-ti');
+          ti.addEventListener('input', function() {{ ok.disabled = ti.value.trim() !== cfg.requireType; }});
+          ti.focus();
+        }}
+        ok.addEventListener('click', function() {{ _close(true); }});
+        _ov.classList.add('open');
+        if(!cfg.requireType && ok) ok.focus();
+      }});
+    }};
+    window._saScCancel = function() {{ _close(false); }};
+    window.bbConfirmSubmit = function(form, cfg) {{
+      window.bbSmartConfirm(cfg).then(function(ok) {{ if(ok) form.submit(); }});
+    }};
+
+    /* ── Super Admin Command Bar ───────────────────────────────────── */
+    var _cbOv=null, _cbIn=null, _cbRes=null, _cbItems=[], _cbSel=-1;
+    var _SA_NAV = [
+      {{t:'nav',i:'🏛',l:'Districts',d:'Manage districts and member schools',u:'/super-admin?section=districts#districts'}},
+      {{t:'nav',i:'🏫',l:'Schools',d:'All provisioned school tenants',u:'/super-admin?section=schools#schools'}},
+      {{t:'nav',i:'💳',l:'Licensing',d:'District license management',u:'/super-admin?section=billing#billing'}},
+      {{t:'nav',i:'📡',l:'Operations / NOC',d:'Real-time network monitoring',u:'/super-admin?section=noc#noc'}},
+      {{t:'nav',i:'📊',l:'MSP Dashboard',d:'Managed service overview',u:'/super-admin?section=msp#msp'}},
+      {{t:'nav',i:'⚙',l:'Configuration',d:'Platform and email settings',u:'/super-admin?section=configuration#configuration'}},
+      {{t:'nav',i:'❤',l:'System Health',d:'Service uptime and status',u:'/super-admin?section=health#health'}},
+      {{t:'nav',i:'📧',l:'Email Tool',d:'Send test emails',u:'/super-admin?section=email-tool#email-tool'}},
+      {{t:'nav',i:'🔐',l:'Platform Control',d:'Brand and theme settings',u:'/super-admin?section=platform-control#platform-control'}},
+      {{t:'nav',i:'🔧',l:'Server Tools',d:'Git pull, restart, debug',u:'/super-admin?section=server-tools#server-tools'}},
+      {{t:'nav',i:'🏖',l:'Sandbox',d:'Test and demo environments',u:'/super-admin?section=sandbox#sandbox'}},
+      {{t:'nav',i:'🔑',l:'Setup Codes',d:'First-admin handoff codes',u:'/super-admin?section=setup-codes#setup-codes'}},
+      {{t:'nav',i:'🔒',l:'Security',d:'Super admin 2FA and password',u:'/super-admin?section=security#security'}},
+    ];
+    var _SA_ENTITIES = [{', '.join(
+        '{t:' + repr('entity') + ',i:' + repr('🏛') + ',l:' + json.dumps(str(d.get('name', ''))) + ',d:' + repr('District') + ',u:' + repr('/super-admin?section=districts#districts') + '}'
+        for d in list(msp_districts)[:20] if d.get('name')
+    )},{', '.join(
+        '{t:' + repr('entity') + ',i:' + repr('🏫') + ',l:' + json.dumps(str(r.get('name', ''))) + ',d:' + repr('School') + ',u:' + repr('/super-admin?section=schools#schools') + '}'
+        for r in list(school_rows)[:20] if r.get('name')
+    )}];
+    function _saFilter(q) {{
+      var all = _SA_NAV.concat(_SA_ENTITIES);
+      if(!q) return all.slice(0,9);
+      q = q.toLowerCase();
+      return all.filter(function(x){{ return (x.l+' '+x.d).toLowerCase().indexOf(q)>=0; }}).slice(0,10);
+    }}
+    function _saRender(q) {{
+      var m = _saFilter(q); _cbSel = m.length?0:-1; _cbItems = m;
+      if(!m.length) {{ _cbRes.innerHTML='<div class="bb-cmdbar-empty">No results</div>'; return; }}
+      var tl={{nav:'Page',entity:'Entity',action:'Action'}};
+      var html='', last='';
+      m.forEach(function(x,i){{
+        if(x.t!==last){{ html+='<div class="bb-cmdbar-section-label">'+(tl[x.t]||x.t)+'</div>'; last=x.t; }}
+        html+='<div class="bb-cmdbar-item'+(i===0?' bb-cmd-sel':'')+'" data-idx="'+i+'">'
+          +'<div class="bb-cmdbar-item-icon">'+x.i+'</div>'
+          +'<div class="bb-cmdbar-item-info"><div class="bb-cmdbar-item-label">'+x.l+'</div>'
+          +(x.d?'<div class="bb-cmdbar-item-desc">'+x.d+'</div>':'')+'</div>'
+          +'<div class="bb-cmdbar-item-badge">'+(tl[x.t]||x.t)+'</div></div>';
+      }});
+      _cbRes.innerHTML=html;
+      _cbRes.querySelectorAll('.bb-cmdbar-item').forEach(function(el){{
+        el.addEventListener('mouseenter',function(){{ _saSelect(+el.getAttribute('data-idx')); }});
+        el.addEventListener('click',function(){{ _saExec(+el.getAttribute('data-idx')); }});
+      }});
+    }}
+    function _saSelect(i){{
+      _cbSel=i;
+      _cbRes.querySelectorAll('.bb-cmdbar-item').forEach(function(el){{
+        el.classList.toggle('bb-cmd-sel',+el.getAttribute('data-idx')===i);
+      }});
+    }}
+    function _saExec(i){{
+      var x=_cbItems[i]; if(!x) return;
+      window.bbCloseSaCmdBar();
+      if(x.fn) x.fn(); else if(x.u) window.location.href=x.u;
+    }}
+    function _saInitCb(){{
+      _cbOv=document.createElement('div'); _cbOv.className='bb-cmdbar-overlay';
+      _cbOv.addEventListener('click',function(e){{ if(e.target===_cbOv) window.bbCloseSaCmdBar(); }});
+      var box=document.createElement('div'); box.className='bb-cmdbar';
+      box.innerHTML='<div class="bb-cmdbar-top">'
+        +'<span class="bb-cmdbar-search-icon">&#128269;</span>'
+        +'<input class="bb-cmdbar-input" id="bb-sa-cmdbar-input" placeholder="Search pages and districts&hellip;" autocomplete="off" />'
+        +'<span class="bb-cmdbar-kbd">Esc</span></div>'
+        +'<div class="bb-cmdbar-results" id="bb-sa-cmdbar-results"></div>'
+        +'<div class="bb-cmdbar-footer"><span><kbd>&uarr;&darr;</kbd> navigate</span><span><kbd>Enter</kbd> open</span><span><kbd>Esc</kbd> close</span></div>';
+      _cbOv.appendChild(box); document.body.appendChild(_cbOv);
+      _cbIn=document.getElementById('bb-sa-cmdbar-input');
+      _cbRes=document.getElementById('bb-sa-cmdbar-results');
+      _cbIn.addEventListener('input',function(){{ _saRender(_cbIn.value.trim()); }});
+      _cbIn.addEventListener('keydown',function(e){{
+        if(e.key==='ArrowDown'){{ e.preventDefault(); _saSelect(Math.min(_cbSel+1,_cbItems.length-1)); }}
+        else if(e.key==='ArrowUp'){{ e.preventDefault(); _saSelect(Math.max(_cbSel-1,0)); }}
+        else if(e.key==='Enter'){{ e.preventDefault(); _saExec(_cbSel); }}
+        else if(e.key==='Escape'){{ window.bbCloseSaCmdBar(); }}
+      }});
+    }}
+    window.bbOpenSaCmdBar=function(){{
+      if(!_cbOv) _saInitCb();
+      _cbIn.value=''; _saRender(''); _cbOv.classList.add('open'); _cbIn.focus();
+    }};
+    window.bbCloseSaCmdBar=function(){{ if(_cbOv) _cbOv.classList.remove('open'); }};
+
+    document.addEventListener('keydown',function(e){{
+      if((e.ctrlKey||e.metaKey)&&e.key==='k'){{ e.preventDefault(); window.bbOpenSaCmdBar(); }}
+      if(e.key==='/'&&!['INPUT','TEXTAREA','SELECT'].includes(document.activeElement.tagName)){{ e.preventDefault(); window.bbOpenSaCmdBar(); }}
+      if(e.key==='Escape'){{ window.bbCloseSaCmdBar(); if(window._saScCancel) window._saScCancel(); }}
+    }});
+    document.addEventListener('DOMContentLoaded',function(){{
+      var btn=document.getElementById('bb-sa-cmdbar-btn');
+      if(btn) btn.style.display='';
     }});
   }})();
   </script>
@@ -5479,7 +5862,7 @@ def render_admin_page(
         _rd_prov_cls = "rb-law_enforcement" if _rd.push_provider == "apns" else ("rb-admin" if _rd.push_provider == "fcm" else "rb-teacher")
         _rd_last = escape(_fmt_dt(str(getattr(_rd, "last_seen_at", "") or ""))) or "—"
         _rd_action = (
-            f'<form method="post" action="{prefix}/admin/devices/delete" onsubmit="return confirm(\'Remove this registered device?\');" style="margin:0;">'
+            f'<form method="post" action="{prefix}/admin/devices/delete" onsubmit="bbConfirmSubmit(this,{{title:\'Remove device?\',body:\'This un-registers the device. The user will need to re-open the app to re-register.\',confirmLabel:\'Remove\',danger:true}});return false;" style="margin:0;">'
             f'<input type="hidden" name="token" value="{escape(_rd.token)}" />'
             f'<input type="hidden" name="push_provider" value="{escape(_rd.push_provider)}" />'
             f'<button class="button button-danger-outline" type="submit" style="font-size:11px;padding:4px 10px;min-height:auto;">Remove</button>'
@@ -6441,6 +6824,19 @@ def render_admin_page(
           </div>
         </section>
 
+        {_render_next_steps_panel(
+            role=str(getattr(current_user, "role", "")),
+            user_count=len(users),
+            device_count=len(devices),
+            apns_configured=apns_configured,
+            fcm_configured=fcm_configured,
+            totp_enabled=totp_enabled,
+            access_code_count=len(access_code_records),
+            unread_messages=unread_admin_messages,
+            help_requests_active=len(request_help_active),
+            prefix=prefix,
+        ) if section == "dashboard" else ""}
+
         {_render_settings_panels(prefix, school_name, school_slug, settings_history, _section_style, effective_settings=effective_settings, can_edit=can_edit_tenant_settings)}
 
         <section class="panel command-section" id="security"{_section_style("settings")}>
@@ -7264,6 +7660,282 @@ def render_admin_page(
     applyTheme(saved === 'dark');
     window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', function(e) {{
       if (!localStorage.getItem(THEME_KEY)) applyTheme(e.matches);
+    }});
+  }})();
+  </script>
+
+  <!-- ── Smart Confirm + Next Steps + Command Bar ──────────────────────── -->
+  <script>
+  (function() {{
+    /* ── Smart Confirm ─────────────────────────────────────────────────── */
+    var _scOverlay = null, _scBox = null, _scResolve = null;
+
+    function _scInit() {{
+      _scOverlay = document.createElement('div');
+      _scOverlay.className = 'bb-sconfirm-overlay';
+      _scOverlay.addEventListener('click', function(e) {{ if (e.target === _scOverlay) _scClose(false); }});
+      document.body.appendChild(_scOverlay);
+      _scBox = document.createElement('div');
+      _scBox.className = 'bb-sconfirm';
+      _scOverlay.appendChild(_scBox);
+    }}
+
+    function _scClose(result) {{
+      if (_scOverlay) _scOverlay.classList.remove('open');
+      if (_scResolve) {{ _scResolve(result); _scResolve = null; }}
+    }}
+
+    window.bbSmartConfirm = function(cfg) {{
+      if (!_scOverlay) _scInit();
+      return new Promise(function(resolve) {{
+        _scResolve = resolve;
+        var icon = cfg.icon || (cfg.danger ? '⚠️' : 'ℹ️');
+        var typeRow = '';
+        if (cfg.requireType) {{
+          typeRow = '<p class="bb-sconfirm-type-label">Type <strong>' + cfg.requireType + '</strong> to confirm:</p>'
+            + '<input class="bb-sconfirm-type-input" id="bb-sc-typeinput" autocomplete="off" />';
+        }}
+        var consequence = cfg.consequence
+          ? '<div class="bb-sconfirm-consequence">' + cfg.consequence + '</div>'
+          : '';
+        _scBox.innerHTML = (
+          '<div class="bb-sconfirm-icon">' + icon + '</div>'
+          + '<h3>' + (cfg.title || 'Confirm action') + '</h3>'
+          + '<div class="bb-sconfirm-body">' + (cfg.body || '') + '</div>'
+          + consequence + typeRow
+          + '<div class="bb-sconfirm-actions">'
+          + '<button class="button button-secondary" style="min-height:36px;" onclick="window._bbScCancel()">Cancel</button>'
+          + '<button class="button ' + (cfg.danger ? 'button-danger' : 'button-primary') + '" style="min-height:36px;" id="bb-sc-ok">'
+          + (cfg.confirmLabel || 'Confirm') + '</button>'
+          + '</div>'
+        );
+        var okBtn = document.getElementById('bb-sc-ok');
+        if (cfg.requireType) {{
+          okBtn.disabled = true;
+          var ti = document.getElementById('bb-sc-typeinput');
+          ti.addEventListener('input', function() {{
+            okBtn.disabled = ti.value.trim() !== cfg.requireType;
+          }});
+          ti.focus();
+        }}
+        okBtn.addEventListener('click', function() {{ _scClose(true); }});
+        _scOverlay.classList.add('open');
+        if (!cfg.requireType && okBtn) okBtn.focus();
+      }});
+    }};
+
+    window._bbScCancel = function() {{ _scClose(false); }};
+
+    /* Convenience wrapper for form submissions */
+    window.bbConfirmSubmit = function(form, cfg) {{
+      window.bbSmartConfirm(cfg).then(function(ok) {{ if (ok) form.submit(); }});
+    }};
+
+    /* ── Next Steps Panel ──────────────────────────────────────────────── */
+    window.bbNspDismiss = function() {{
+      var el = document.getElementById('bb-next-steps');
+      if (el) el.style.display = 'none';
+      localStorage.setItem('bb_nsp_dismissed', String(Date.now()));
+    }};
+
+    /* ── Command Bar ───────────────────────────────────────────────────── */
+    var _cbOverlay = null, _cbInput = null, _cbResults = null;
+    var _cbItems = [], _cbSel = -1;
+    var _PREFIX = {json.dumps(prefix)};
+    var _ROLE = {json.dumps(str(getattr(current_user, "role", "")))};
+    var _SHOW_DISTRICT = {json.dumps(show_district_nav)};
+
+    var _NAV = [
+      {{t:'nav', i:'📊', l:'Dashboard', d:'Main overview', u:_PREFIX+'/admin?section=dashboard'}},
+      {{t:'nav', i:'👤', l:'User Management', d:'Accounts and roles', u:_PREFIX+'/admin?section=user-management'}},
+      {{t:'nav', i:'🔑', l:'Access Codes', d:'Staff self-registration codes', u:_PREFIX+'/admin?section=user-management&tab=codes'}},
+      {{t:'nav', i:'📱', l:'Active Devices', d:'Registered devices and sessions', u:_PREFIX+'/admin?section=devices'}},
+      {{t:'nav', i:'⚙', l:'Settings', d:'Alert and notification settings', u:_PREFIX+'/admin?section=settings'}},
+      {{t:'nav', i:'🔇', l:'Quiet Periods', d:'Sound suppression requests', u:_PREFIX+'/admin?section=quiet-periods'}},
+      {{t:'nav', i:'📋', l:'Audit Logs', d:'System activity history', u:_PREFIX+'/admin?section=audit-logs'}},
+      {{t:'nav', i:'📈', l:'Drill Reports', d:'Training drill history', u:_PREFIX+'/admin?section=drill-reports'}},
+      {{t:'nav', i:'📊', l:'Analytics', d:'Alert and device analytics', u:_PREFIX+'/admin?section=analytics'}},
+    ].concat(_SHOW_DISTRICT ? [
+      {{t:'nav', i:'🏛', l:'District Overview', d:'Cross-school district view', u:_PREFIX+'/admin?section=district'}},
+    ] : []);
+
+    var _ACTIONS = [
+      {{t:'action', i:'➕', l:'Add User', d:'Create a new staff account',
+        fn:function(){{ window.location.href=_PREFIX+'/admin?section=user-management'; setTimeout(function(){{if(window.umToggleCreate)umToggleCreate();}},350); }}}},
+      {{t:'action', i:'▶', l:'Guided Tour', d:'Walkthrough of the admin console',
+        fn:function(){{ if(window.startBluebirdTour) startBluebirdTour(); }}}},
+      {{t:'action', i:'🚨', l:'Alarm Control', d:'Activate or end emergency alert',
+        fn:function(){{ window.location.href=_PREFIX+'/admin?section=dashboard'; }}}},
+      {{t:'action', i:'❓', l:'Help Tour', d:'Restart the guided onboarding tour',
+        fn:function(){{ localStorage.removeItem('bb_tour_seen'); if(window.startBluebirdTour)startBluebirdTour(); }}}},
+    ];
+
+    /* Server-rendered entity index (user names) */
+    var _ENTITIES = [{', '.join(
+        '{t:' + repr('entity') + ', i:' + repr('👤') + ', l:' + json.dumps(str(getattr(u, 'name', '') or '')) + ', d:' + json.dumps(str(getattr(u, 'role', '') or '')) + ', u:_PREFIX+' + repr('/admin?section=user-management') + '}'
+        for u in list(users)[:25] if getattr(u, 'name', '')
+    )}];
+
+    function _cbAllItems() {{
+      return _NAV.concat(_ACTIONS).concat(_ENTITIES);
+    }}
+
+    function _cbFilter(q) {{
+      if (!q) return _cbAllItems().slice(0, 8);
+      q = q.toLowerCase();
+      return _cbAllItems().filter(function(x) {{
+        return (x.l + ' ' + x.d).toLowerCase().indexOf(q) >= 0;
+      }}).slice(0, 10);
+    }}
+
+    function _cbRender(q) {{
+      var matches = _cbFilter(q);
+      _cbSel = matches.length ? 0 : -1;
+      if (!matches.length) {{
+        _cbResults.innerHTML = '<div class="bb-cmdbar-empty">No results for &ldquo;' + q + '&rdquo;</div>';
+        return;
+      }}
+      var typeLabels = {{nav:'Page', action:'Action', entity:'User'}};
+      var html = '';
+      var lastType = '';
+      for (var idx = 0; idx < matches.length; idx++) {{
+        var x = matches[idx];
+        if (x.t !== lastType) {{
+          html += '<div class="bb-cmdbar-section-label">' + (typeLabels[x.t] || x.t) + '</div>';
+          lastType = x.t;
+        }}
+        html += '<div class="bb-cmdbar-item' + (idx === 0 ? ' bb-cmd-sel' : '') + '" data-idx="' + idx + '">'
+          + '<div class="bb-cmdbar-item-icon">' + x.i + '</div>'
+          + '<div class="bb-cmdbar-item-info">'
+          + '<div class="bb-cmdbar-item-label">' + x.l + '</div>'
+          + (x.d ? '<div class="bb-cmdbar-item-desc">' + x.d + '</div>' : '')
+          + '</div>'
+          + '<div class="bb-cmdbar-item-badge">' + (typeLabels[x.t] || x.t) + '</div>'
+          + '</div>';
+      }}
+      _cbResults.innerHTML = html;
+      _cbItems = matches;
+      _cbResults.querySelectorAll('.bb-cmdbar-item').forEach(function(el) {{
+        el.addEventListener('mouseenter', function() {{
+          _cbSelect(+el.getAttribute('data-idx'));
+        }});
+        el.addEventListener('click', function() {{
+          _cbExecute(+el.getAttribute('data-idx'));
+        }});
+      }});
+    }}
+
+    function _cbSelect(idx) {{
+      _cbSel = idx;
+      _cbResults.querySelectorAll('.bb-cmdbar-item').forEach(function(el) {{
+        el.classList.toggle('bb-cmd-sel', +el.getAttribute('data-idx') === idx);
+      }});
+    }}
+
+    function _cbExecute(idx) {{
+      var x = _cbItems[idx];
+      if (!x) return;
+      bbCloseCmdBar();
+      if (x.fn) {{ x.fn(); }}
+      else if (x.u) {{ window.location.href = x.u; }}
+    }}
+
+    function _cbInit() {{
+      _cbOverlay = document.createElement('div');
+      _cbOverlay.className = 'bb-cmdbar-overlay';
+      _cbOverlay.addEventListener('click', function(e) {{
+        if (e.target === _cbOverlay) bbCloseCmdBar();
+      }});
+      var box = document.createElement('div');
+      box.className = 'bb-cmdbar';
+      var top = '<div class="bb-cmdbar-top">'
+        + '<span class="bb-cmdbar-search-icon">&#128269;</span>'
+        + '<input class="bb-cmdbar-input" id="bb-cmdbar-input" placeholder="Search pages and actions&hellip;" autocomplete="off" spellcheck="false" />'
+        + '<span class="bb-cmdbar-kbd">Esc</span>'
+        + '</div>';
+      var footer = '<div class="bb-cmdbar-footer">'
+        + '<span><kbd>&uarr;&darr;</kbd> navigate</span>'
+        + '<span><kbd>Enter</kbd> open</span>'
+        + '<span><kbd>Esc</kbd> close</span>'
+        + '</div>';
+      box.innerHTML = top + '<div class="bb-cmdbar-results" id="bb-cmdbar-results"></div>' + footer;
+      _cbOverlay.appendChild(box);
+      document.body.appendChild(_cbOverlay);
+      _cbInput = document.getElementById('bb-cmdbar-input');
+      _cbResults = document.getElementById('bb-cmdbar-results');
+      _cbInput.addEventListener('input', function() {{ _cbRender(_cbInput.value.trim()); }});
+      _cbInput.addEventListener('keydown', function(e) {{
+        if (e.key === 'ArrowDown') {{ e.preventDefault(); _cbSelect(Math.min(_cbSel + 1, _cbItems.length - 1)); }}
+        else if (e.key === 'ArrowUp') {{ e.preventDefault(); _cbSelect(Math.max(_cbSel - 1, 0)); }}
+        else if (e.key === 'Enter') {{ e.preventDefault(); _cbExecute(_cbSel); }}
+        else if (e.key === 'Escape') {{ bbCloseCmdBar(); }}
+      }});
+    }}
+
+    window.bbOpenCmdBar = function() {{
+      if (!_cbOverlay) _cbInit();
+      _cbInput.value = '';
+      _cbRender('');
+      _cbOverlay.classList.add('open');
+      _cbInput.focus();
+    }};
+
+    window.bbCloseCmdBar = function() {{
+      if (_cbOverlay) _cbOverlay.classList.remove('open');
+    }};
+
+    /* Global keyboard shortcuts */
+    document.addEventListener('keydown', function(e) {{
+      /* Ctrl+K or Cmd+K → command bar */
+      if ((e.ctrlKey || e.metaKey) && e.key === 'k') {{
+        e.preventDefault(); window.bbOpenCmdBar();
+      }}
+      /* / → command bar (when not in input) */
+      if (e.key === '/' && !['INPUT','TEXTAREA','SELECT'].includes(document.activeElement.tagName)) {{
+        e.preventDefault(); window.bbOpenCmdBar();
+      }}
+      /* Esc → close command bar or confirm dialog */
+      if (e.key === 'Escape') {{
+        window.bbCloseCmdBar();
+        if (window._bbScCancel) window._bbScCancel();
+      }}
+    }});
+
+    /* ── Alarm activation interceptor ──────────────────────────────────── */
+    document.addEventListener('DOMContentLoaded', function() {{
+      /* Next Steps Panel: show if not recently dismissed */
+      var nsp = document.getElementById('bb-next-steps');
+      if (nsp) {{
+        var dismissed = parseInt(localStorage.getItem('bb_nsp_dismissed') || '0', 10);
+        var week = 7 * 24 * 60 * 60 * 1000;
+        if (Date.now() - dismissed > week) nsp.style.display = 'block';
+      }}
+
+      /* Upgrade alarm activation form for live (non-training) alerts */
+      var alarmForm = document.getElementById('alarm_activate_form');
+      if (alarmForm) {{
+        alarmForm.addEventListener('submit', function(e) {{
+          var training = document.getElementById('is_training');
+          if (training && !training.checked) {{
+            e.preventDefault();
+            var devCount = {json.dumps(len(devices))};
+            window.bbSmartConfirm({{
+              icon: '🚨',
+              title: 'Send live emergency alert?',
+              body: 'Training mode is OFF. This will immediately send real push notifications'
+                + ' and SMS messages to all registered devices.',
+              consequence: 'Affects <strong>' + devCount + ' registered device'
+                + (devCount === 1 ? '' : 's') + '</strong>. Cannot be cancelled once sent.',
+              confirmLabel: 'Send live alert',
+              danger: true
+            }}).then(function(ok) {{ if (ok) alarmForm.submit(); }});
+          }}
+        }});
+      }}
+
+      /* Show command bar button in header once JS is ready */
+      var cb = document.getElementById('bb-cmdbar-btn');
+      if (cb) cb.style.display = '';
     }});
   }})();
   </script>
