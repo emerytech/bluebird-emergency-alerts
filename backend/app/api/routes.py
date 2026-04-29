@@ -1731,6 +1731,40 @@ async def public_list_all_schools(request: Request) -> JSONResponse:
     return JSONResponse(sorted(payload, key=lambda x: x["tenant_name"]))
 
 
+@router.get("/api/public/search", include_in_schema=False)
+async def public_search(request: Request, q: str = "") -> JSONResponse:
+    """Typeahead search across school and district names. Returns up to 20 matches."""
+    q = q.strip()
+    if len(q) < 2:
+        return JSONResponse([])
+    registry: object = request.app.state.school_registry
+    schools, districts = await asyncio.gather(
+        registry.list_schools(),
+        registry.list_districts(),
+    )
+    district_map: dict = {d.id: d.name for d in districts if d.id is not None}
+    q_low = q.lower()
+    payload = []
+    for s in schools:
+        if (
+            not s.is_active
+            or getattr(s, "is_archived", False)
+            or getattr(s, "is_test", False)
+        ):
+            continue
+        district_name = district_map.get(getattr(s, "district_id", None), "")
+        if q_low in s.name.lower() or (district_name and q_low in district_name.lower()):
+            payload.append(
+                {
+                    "tenant_slug": s.slug,
+                    "tenant_name": s.name,
+                    "district_name": district_name,
+                }
+            )
+    payload.sort(key=lambda x: x["tenant_name"])
+    return JSONResponse(payload[:20])
+
+
 @router.get("/health")
 async def health(request: Request) -> JSONResponse:
     checks = await HealthMonitor.run_checks(request.app.state)

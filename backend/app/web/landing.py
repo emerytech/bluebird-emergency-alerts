@@ -656,24 +656,22 @@ def render_landing_page() -> str:
 
 def render_login_portal() -> str:
     """
-    District → School login portal at GET /login.
+    Unified typeahead login portal at GET /login.
 
-    Step 1: User selects (or searches) their district from a dropdown.
-    Step 2: Schools for that district load via /api/public/districts/{id}/schools.
-    Step 3: Clicking a school redirects to /{slug}/admin/login.
+    User types a school or district name → results appear instantly →
+    clicking redirects to /{tenant_slug}/admin/login.
 
-    localStorage keys:
-      bb_login_district  – {{"id": N, "name": "..."}}
-      bb_login_school    – {{"slug": "...", "name": "..."}}
+    localStorage key:
+      bb_login_school – {{"slug": "...", "name": "...", "district": "..."}}
 
-    Public API calls only. Zero credentials exposed.
+    Backed by GET /api/public/search?q=  (no credentials exposed).
     """
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Admin Login — BlueBird Alerts</title>
+  <title>Sign In — BlueBird Alerts</title>
   <meta name="robots" content="noindex" />
   <link rel="icon" type="image/png" href="{LOGO}" />
   <style>
@@ -682,13 +680,9 @@ def render_login_portal() -> str:
       --blue:      #1b5fe4;
       --blue-dark: #1048c0;
       --blue-soft: #eff6ff;
-      --dark:      #0f172a;
       --text:      #10203f;
       --muted:     #5d7398;
       --border:    rgba(18,52,120,.12);
-      --white:     #ffffff;
-      --radius:    12px;
-      --error:     #dc2626;
     }}
     html {{ height: 100%; }}
     body {{
@@ -701,12 +695,12 @@ def render_login_portal() -> str:
       padding: 24px;
     }}
 
-    /* ── CARD ─────────────────────────────────────────────────────────── */
+    /* ── CARD ──────────────────────────────────────────────────────────── */
     .portal-card {{
       background: #fff; border-radius: 20px;
       padding: 40px 44px;
       max-width: 480px; width: 100%;
-      box-shadow: 0 32px 80px rgba(0,0,0,0.35);
+      box-shadow: 0 32px 80px rgba(0,0,0,.35);
     }}
     .portal-logo {{
       display: flex; align-items: center; gap: 10px;
@@ -715,135 +709,130 @@ def render_login_portal() -> str:
     .portal-logo img {{ width: 36px; height: 36px; object-fit: contain; }}
     .portal-logo span {{ font-weight: 800; font-size: 1.1rem; color: var(--text); }}
 
-    /* ── STEP HEADER ──────────────────────────────────────────────────── */
-    .step-label {{
-      font-size: 0.7rem; font-weight: 700;
-      text-transform: uppercase; letter-spacing: .1em;
-      color: var(--blue); margin-bottom: 6px;
-    }}
-    .step-title {{
+    /* ── HEADER ────────────────────────────────────────────────────────── */
+    .portal-title {{
       font-size: 1.3rem; font-weight: 800;
-      color: var(--text); margin-bottom: 6px;
+      color: var(--text); margin-bottom: 5px;
     }}
-    .step-sub {{ font-size: 0.87rem; color: var(--muted); margin-bottom: 24px; }}
+    .portal-sub {{ font-size: 0.87rem; color: var(--muted); margin-bottom: 22px; }}
 
-    /* ── FORM ELEMENTS ────────────────────────────────────────────────── */
-    .field {{ position: relative; margin-bottom: 16px; }}
-    .field-icon {{
-      position: absolute; left: 12px; top: 50%;
-      transform: translateY(-50%); font-size: 1rem;
-      pointer-events: none; color: var(--muted);
-    }}
-    input[type="text"], select {{
-      width: 100%; padding: 11px 14px 11px 40px;
-      border: 1.5px solid var(--border); border-radius: 10px;
-      font-size: 0.93rem; color: var(--text);
-      background: #fff; outline: none;
-      transition: border-color .15s;
-      appearance: none; -webkit-appearance: none;
-    }}
-    input[type="text"]::placeholder {{ color: var(--muted); }}
-    input[type="text"]:focus, select:focus {{ border-color: var(--blue); }}
-    .select-arrow {{
-      position: absolute; right: 12px; top: 50%;
-      transform: translateY(-50%); pointer-events: none;
-      color: var(--muted); font-size: 0.75rem;
-    }}
-
-    /* ── BUTTONS ──────────────────────────────────────────────────────── */
-    .btn {{
-      display: inline-flex; align-items: center; justify-content: center;
-      gap: 8px; font-size: 0.9rem; font-weight: 600; border-radius: 10px;
-      padding: 11px 22px; cursor: pointer; text-decoration: none;
-      transition: opacity .15s, transform .1s; border: none;
-    }}
-    .btn:hover {{ opacity: .88; transform: translateY(-1px); }}
-    .btn-primary {{ background: var(--blue); color: #fff; width: 100%; }}
-    .btn-ghost {{
-      background: none; color: var(--muted); font-size: 0.84rem;
-      padding: 0; font-weight: 600;
-    }}
-    .btn-ghost:hover {{ color: var(--blue); transform: none; opacity: 1; }}
-    .btn:disabled {{ opacity: .45; cursor: not-allowed; transform: none; }}
-
-    /* ── SCHOOL CARDS ─────────────────────────────────────────────────── */
-    .school-list {{ display: flex; flex-direction: column; gap: 10px; margin-bottom: 20px; }}
-    .school-btn {{
-      display: flex; align-items: center; justify-content: space-between;
-      padding: 14px 18px; border-radius: 10px;
-      border: 1.5px solid var(--border); background: #fff;
-      cursor: pointer; text-align: left;
-      transition: border-color .15s, background .15s, transform .1s;
-      font-family: inherit;
-    }}
-    .school-btn:hover {{
-      border-color: var(--blue); background: var(--blue-soft);
-      transform: translateX(2px);
-    }}
-    .school-btn:focus {{ outline: 2px solid var(--blue); outline-offset: 2px; }}
-    .school-name {{ font-size: 0.93rem; font-weight: 700; color: var(--text); }}
-    .school-slug {{ font-size: 0.74rem; color: var(--muted); margin-top: 2px; }}
-    .school-arrow {{ color: var(--blue); font-size: 1.1rem; flex-shrink: 0; }}
-
-    /* ── REMEMBERED SHORTCUT ──────────────────────────────────────────── */
+    /* ── QUICK ACCESS ─────────────────────────────────────────────────── */
     .quick-access {{
-      background: var(--blue-soft); border: 1px solid rgba(27,95,228,.15);
-      border-radius: 10px; padding: 14px 16px;
-      margin-bottom: 20px; display: none;
+      background: var(--blue-soft); border: 1px solid rgba(27,95,228,.18);
+      border-radius: 12px; padding: 14px 16px;
+      margin-bottom: 22px; display: none;
     }}
-    .quick-label {{ font-size: 0.72rem; font-weight: 700; color: var(--blue);
-      text-transform: uppercase; letter-spacing: .06em; margin-bottom: 6px; }}
-    .quick-name {{ font-size: 0.93rem; font-weight: 700; color: var(--text); }}
+    .quick-label {{
+      font-size: 0.7rem; font-weight: 700; color: var(--blue);
+      text-transform: uppercase; letter-spacing: .06em; margin-bottom: 6px;
+    }}
+    .quick-name {{ font-size: 0.95rem; font-weight: 700; color: var(--text); }}
+    .quick-dist {{ font-size: 0.78rem; color: var(--muted); margin-top: 2px; }}
     .quick-actions {{
       display: flex; gap: 10px; margin-top: 10px; align-items: center;
     }}
+    .btn-quick {{
+      display: inline-flex; align-items: center; justify-content: center;
+      background: var(--blue); color: #fff;
+      font-size: 0.88rem; font-weight: 600; border-radius: 8px;
+      padding: 9px 20px; cursor: pointer;
+      transition: opacity .15s; border: none;
+    }}
+    .btn-quick:hover {{ opacity: .88; }}
+    .btn-ghost {{
+      background: none; color: var(--muted); font-size: 0.84rem;
+      font-weight: 600; border: none; cursor: pointer; padding: 0;
+    }}
+    .btn-ghost:hover {{ color: var(--blue); }}
 
-    /* ── STATES ───────────────────────────────────────────────────────── */
-    .spinner {{
-      display: inline-block; width: 20px; height: 20px;
-      border: 2.5px solid rgba(27,95,228,.2);
+    /* ── SEARCH ────────────────────────────────────────────────────────── */
+    .search-wrap {{ position: relative; margin-bottom: 6px; }}
+    .search-icon {{
+      position: absolute; left: 13px; top: 50%;
+      transform: translateY(-50%);
+      font-size: 1rem; color: var(--muted);
+      pointer-events: none; line-height: 1;
+    }}
+    .search-input {{
+      width: 100%;
+      padding: 13px 44px 13px 42px;
+      border: 1.5px solid var(--border); border-radius: 12px;
+      font-size: 0.95rem; color: var(--text);
+      background: #fff; outline: none;
+      transition: border-color .15s, box-shadow .15s;
+      font-family: inherit;
+    }}
+    .search-input::placeholder {{ color: var(--muted); }}
+    .search-input:focus {{
+      border-color: var(--blue);
+      box-shadow: 0 0 0 3px rgba(27,95,228,.12);
+    }}
+    .search-spinner {{
+      position: absolute; right: 14px; top: 50%;
+      width: 18px; height: 18px;
+      border: 2px solid rgba(27,95,228,.2);
       border-top-color: var(--blue);
-      border-radius: 50%; animation: spin .7s linear infinite;
+      border-radius: 50%;
+      animation: bbSpin .6s linear infinite;
+      display: none;
+      transform: translateY(-50%);
     }}
-    @keyframes spin {{ to {{ transform: rotate(360deg); }} }}
-    .loading-row {{
-      display: flex; align-items: center; gap: 10px;
-      color: var(--muted); font-size: 0.87rem; padding: 12px 0;
+    @keyframes bbSpin {{ to {{ transform: translateY(-50%) rotate(360deg); }} }}
+    .search-hint {{
+      font-size: 0.78rem; color: var(--muted);
+      padding-left: 2px; margin-bottom: 0; margin-top: 6px;
     }}
-    .error-msg {{
-      color: var(--error); font-size: 0.85rem; padding: 10px 0;
+
+    /* ── RESULTS ───────────────────────────────────────────────────────── */
+    .results-list {{
+      display: flex; flex-direction: column; gap: 6px;
+      max-height: 320px; overflow-y: auto;
+      margin-top: 10px;
+    }}
+    .results-list::-webkit-scrollbar {{ width: 4px; }}
+    .results-list::-webkit-scrollbar-thumb {{
+      background: rgba(27,95,228,.2); border-radius: 4px;
+    }}
+    .result-item {{
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 13px 16px; border-radius: 10px;
+      border: 1.5px solid var(--border); background: #fff;
+      cursor: pointer; text-align: left; width: 100%;
+      transition: border-color .12s, background .12s, transform .1s;
+      font-family: inherit;
+    }}
+    .result-item:hover, .result-item:focus {{
+      border-color: var(--blue); background: var(--blue-soft);
+      transform: translateX(2px); outline: none;
+    }}
+    .result-item.selecting {{
+      border-color: var(--blue); background: var(--blue-soft);
+      transform: none; transition: none;
+    }}
+    .result-name {{ font-size: 0.93rem; font-weight: 700; color: var(--text); }}
+    .result-district {{ font-size: 0.76rem; color: var(--muted); margin-top: 3px; }}
+    .result-arrow {{
+      color: var(--blue); font-size: 1rem;
+      flex-shrink: 0; margin-left: 12px;
+    }}
+    mark {{
+      background: rgba(27,95,228,.14); color: var(--blue);
+      border-radius: 2px; padding: 0 1px; font-weight: 700;
+      font-style: normal;
+    }}
+
+    /* ── EMPTY ─────────────────────────────────────────────────────────── */
+    .empty-msg {{
+      text-align: center; padding: 24px 0 8px;
+      font-size: 0.87rem; color: var(--muted);
       display: none;
     }}
-    .back-row {{
-      display: flex; align-items: center; gap: 6px; margin-bottom: 20px;
+    .empty-msg strong {{
+      display: block; font-size: 0.95rem;
+      color: var(--text); margin-bottom: 5px;
     }}
 
-    /* ── STEP PROGRESS ───────────────────────────────────────────────── */
-    .progress-track {{
-      display: flex; align-items: center; gap: 8px;
-      margin-bottom: 28px;
-    }}
-    .progress-dot {{
-      width: 9px; height: 9px; border-radius: 50%;
-      background: rgba(27,95,228,.18);
-      transition: background .25s, transform .25s;
-      flex-shrink: 0;
-    }}
-    .progress-dot.active {{ background: var(--blue); transform: scale(1.2); }}
-    .progress-line {{
-      flex: 1; height: 2px; max-width: 52px;
-      background: rgba(27,95,228,.18);
-      transition: background .25s;
-    }}
-    .progress-line.active {{ background: var(--blue); }}
-    @keyframes bbFadeSlide {{
-      from {{ opacity: 0; transform: translateY(10px); }}
-      to   {{ opacity: 1; transform: translateY(0); }}
-    }}
-    .step-anim {{ animation: bbFadeSlide .22s ease both; }}
-    .selecting {{ border-color: var(--blue) !important; background: var(--blue-soft) !important; }}
-
-    /* ── FOOTER LINK ──────────────────────────────────────────────────── */
+    /* ── FOOTER ────────────────────────────────────────────────────────── */
     .portal-footer {{
       text-align: center; margin-top: 20px;
       font-size: 0.8rem; color: rgba(255,255,255,.5);
@@ -856,82 +845,71 @@ def render_login_portal() -> str:
     }}
     @media (prefers-color-scheme: dark) {{
       .portal-card {{ background: #1e293b; }}
-      .portal-logo span, .step-title, .school-name {{ color: #e2e8f0; }}
-      input[type="text"], select {{ background: #0f172a; color: #e2e8f0; border-color: rgba(255,255,255,.12); }}
-      .school-btn {{ background: #1e293b; border-color: rgba(255,255,255,.1); }}
-      .school-btn:hover {{ background: rgba(27,95,228,.15); }}
-      .quick-access {{ background: rgba(27,95,228,.12); border-color: rgba(27,95,228,.25); }}
+      .portal-logo span, .portal-title, .result-name {{ color: #e2e8f0; }}
+      .portal-sub, .result-district, .search-hint {{ color: #94a3b8; }}
+      .search-input {{
+        background: #0f172a; color: #e2e8f0;
+        border-color: rgba(255,255,255,.12);
+      }}
+      .search-input:focus {{
+        border-color: #60a5fa;
+        box-shadow: 0 0 0 3px rgba(96,165,250,.12);
+      }}
+      .result-item {{ background: #1e293b; border-color: rgba(255,255,255,.08); }}
+      .result-item:hover, .result-item:focus {{
+        background: rgba(27,95,228,.2); border-color: #60a5fa;
+      }}
+      .quick-access {{
+        background: rgba(27,95,228,.15);
+        border-color: rgba(27,95,228,.3);
+      }}
+      .quick-name {{ color: #e2e8f0; }}
     }}
   </style>
 </head>
 <body>
 
-<div class="portal-card" id="portal">
+<div class="portal-card">
 
   <div class="portal-logo">
     <img src="{LOGO}" alt="BlueBird Alerts" />
     <span>BlueBird Alerts</span>
   </div>
 
-  <!-- Step progress indicator -->
-  <div class="progress-track">
-    <div class="progress-dot active" id="pdot-1"></div>
-    <div class="progress-line" id="pdot-line"></div>
-    <div class="progress-dot" id="pdot-2"></div>
-  </div>
-
-  <!-- Quick-access shortcut (remembered school) -->
+  <!-- Quick-access banner (returning users) -->
   <div class="quick-access" id="quick-access">
     <div class="quick-label">&#9889; Quick access</div>
-    <div class="quick-name" id="quick-school-name"></div>
+    <div class="quick-name" id="quick-name"></div>
+    <div class="quick-dist" id="quick-dist"></div>
     <div class="quick-actions">
-      <button class="btn btn-primary" id="quick-go-btn" onclick="bbQuickGo()" style="width:auto;padding:8px 18px;">
+      <button class="btn-quick" id="quick-go-btn" onclick="bbQuickGo()">
         Continue &rarr;
       </button>
-      <button class="btn btn-ghost" onclick="bbClearQuick()">Use a different school</button>
+      <button class="btn-ghost" onclick="bbClearQuick()">Change school</button>
     </div>
   </div>
 
-  <!-- Step 1 — District selection -->
-  <div id="step-district">
-    <div class="step-label">Step 1 of 2</div>
-    <div class="step-title">Select your district</div>
-    <div class="step-sub">Choose the school district you belong to.</div>
+  <h2 class="portal-title">Find your school</h2>
+  <p class="portal-sub">Type your school or district name to sign in</p>
 
-    <div class="field">
-      <span class="field-icon">&#127979;</span>
-      <input type="text" id="district-search" placeholder="Search districts..." autocomplete="off"
-             oninput="bbFilterDistricts()" />
-    </div>
+  <div class="search-wrap">
+    <span class="search-icon" aria-hidden="true">&#128269;</span>
+    <input class="search-input" type="text" id="search-input"
+           placeholder="Search school or district..."
+           autocomplete="off" autocorrect="off" spellcheck="false"
+           aria-label="Search for your school or district"
+           aria-controls="results-list" aria-autocomplete="list" />
+    <div class="search-spinner" id="search-spinner" aria-hidden="true"></div>
+  </div>
+  <p class="search-hint" id="search-hint">Type at least 2 characters to search</p>
 
-    <div id="district-loading" class="loading-row" style="display:none;">
-      <div class="spinner"></div> Loading districts&hellip;
-    </div>
-    <div id="district-error" class="error-msg"></div>
-    <div id="district-list" class="school-list"></div>
+  <div class="empty-msg" id="empty-msg" aria-live="polite">
+    <strong>No schools found</strong>
+    Try a different search term or contact your administrator.
   </div>
 
-  <!-- Step 2 — School selection -->
-  <div id="step-school" style="display:none;">
-    <div class="back-row">
-      <button class="btn btn-ghost" onclick="bbBackToDistricts()">&#8592; Back</button>
-    </div>
-    <div class="step-label" id="school-step-label">Step 2 of 2</div>
-    <div class="step-title" id="district-selected-name"></div>
-    <div class="step-sub" id="school-step-sub">Select your school to continue to login.</div>
-
-    <div class="field" id="school-search-field" style="display:none;">
-      <span class="field-icon">&#127979;</span>
-      <input type="text" id="school-search" placeholder="Search schools..." autocomplete="off"
-             oninput="bbFilterSchools()" />
-    </div>
-
-    <div id="school-loading" class="loading-row" style="display:none;">
-      <div class="spinner"></div> Loading schools&hellip;
-    </div>
-    <div id="school-error" class="error-msg"></div>
-    <div id="school-list" class="school-list"></div>
-  </div>
+  <div class="results-list" id="results-list"
+       role="listbox" aria-label="Matching schools"></div>
 
 </div>
 
@@ -941,61 +919,45 @@ def render_login_portal() -> str:
 
 <script>
 (function() {{
-  var _DISTRICTS_URL  = '/api/public/districts';
-  var _SCHOOLS_URL    = '/api/public/districts/';
-  var _ALL_SCHOOLS_URL = '/api/public/schools';
-  var _LS_DISTRICT    = 'bb_login_district';
-  var _LS_SCHOOL      = 'bb_login_school';
+  var _URL    = '/api/public/search';
+  var _LS_KEY = 'bb_login_school';
+  var _timer  = null;
+  var _lastQ  = null;
+  var _results = [];
 
-  var _allDistricts   = [];
-  var _selDistrict    = null;  /* {{id, name}} */
-  var _flatMode       = false; /* true when no districts exist — show schools directly */
-
-  /* ── Utility ──────────────────────────────────────────────────────── */
-  function _$(id) {{ return document.getElementById(id); }}
-
+  /* ── Helpers ────────────────────────────────────────────────────────── */
+  function _$(id)    {{ return document.getElementById(id); }}
   function _show(id) {{ _$(id).style.display = ''; }}
   function _hide(id) {{ _$(id).style.display = 'none'; }}
 
-  function _animateIn(id) {{
-    var el = _$(id);
-    el.style.display = '';
-    el.classList.remove('step-anim');
-    void el.offsetHeight; /* force reflow so animation re-fires */
-    el.classList.add('step-anim');
+  function _esc(s) {{
+    return String(s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   }}
 
-  function _setStep(n) {{
-    _$('pdot-1').classList.toggle('active', n >= 1);
-    _$('pdot-2').classList.toggle('active', n >= 2);
-    _$('pdot-line').classList.toggle('active', n >= 2);
-  }}
-
-  function _err(targetId, msg) {{
-    var el = _$(targetId);
-    el.textContent = msg;
-    el.style.display = 'block';
-  }}
-
-  function _clearErr(targetId) {{
-    var el = _$(targetId);
-    el.textContent = '';
-    el.style.display = 'none';
+  /* Highlight the matched portion of text */
+  function _hl(text, q) {{
+    if (!q) return _esc(text);
+    var i = text.toLowerCase().indexOf(q.toLowerCase());
+    if (i === -1) return _esc(text);
+    return _esc(text.slice(0, i))
+         + '<mark>' + _esc(text.slice(i, i + q.length)) + '</mark>'
+         + _esc(text.slice(i + q.length));
   }}
 
   /* ── localStorage ─────────────────────────────────────────────────── */
-  function _saveDistrict(d)  {{ try {{ localStorage.setItem(_LS_DISTRICT, JSON.stringify(d)); }} catch(e) {{}} }}
-  function _saveSchool(s)    {{ try {{ localStorage.setItem(_LS_SCHOOL,   JSON.stringify(s)); }} catch(e) {{}} }}
-  function _loadDistrict()   {{ try {{ return JSON.parse(localStorage.getItem(_LS_DISTRICT)); }} catch(e) {{ return null; }} }}
-  function _loadSchool()     {{ try {{ return JSON.parse(localStorage.getItem(_LS_SCHOOL));   }} catch(e) {{ return null; }} }}
-  function _clearSaved()     {{ try {{ localStorage.removeItem(_LS_DISTRICT); localStorage.removeItem(_LS_SCHOOL); }} catch(e) {{}} }}
+  function _save(s) {{ try {{ localStorage.setItem(_LS_KEY, JSON.stringify(s)); }} catch(e) {{}} }}
+  function _load()  {{ try {{ return JSON.parse(localStorage.getItem(_LS_KEY)); }} catch(e) {{ return null; }} }}
+  function _clear() {{ try {{ localStorage.removeItem(_LS_KEY); }} catch(e) {{}} }}
 
-  /* ── Quick-access banner ──────────────────────────────────────────── */
+  /* ── Quick-access ─────────────────────────────────────────────────── */
   function _maybeShowQuick() {{
-    var school = _loadSchool();
-    if (!school || !school.slug || !school.name) return;
-    _$('quick-school-name').textContent = school.name;
-    _$('quick-go-btn').setAttribute('data-slug', school.slug);
+    var s = _load();
+    if (!s || !s.slug || !s.name) return;
+    _$('quick-name').textContent = s.name;
+    _$('quick-dist').textContent = s.district || '';
+    _$('quick-go-btn').setAttribute('data-slug', s.slug);
     _show('quick-access');
   }}
 
@@ -1005,210 +967,126 @@ def render_login_portal() -> str:
   }};
 
   window.bbClearQuick = function() {{
-    _clearSaved();
+    _clear();
     _hide('quick-access');
+    _$('search-input').focus();
   }};
 
-  /* ── District list ────────────────────────────────────────────────── */
-  function _renderDistrictList(districts) {{
-    var container = _$('district-list');
-    if (!districts.length) {{
-      container.innerHTML = '<p style="color:var(--muted);font-size:.87rem;">No districts available.</p>';
+  /* ── Render ───────────────────────────────────────────────────────── */
+  function _render(results, q) {{
+    var list = _$('results-list');
+    _hide('empty-msg');
+    if (!results.length) {{
+      list.innerHTML = '';
+      _show('empty-msg');
       return;
     }}
     var html = '';
-    districts.forEach(function(d) {{
-      html += '<button class="school-btn" onclick="bbSelectDistrict(' + d.district_id + ', ' + JSON.stringify(d.district_name) + ', this)">'
+    results.forEach(function(r, i) {{
+      var distHtml = r.district_name
+        ? '<div class="result-district">' + _esc(r.district_name) + '</div>'
+        : '';
+      html += '<button class="result-item" role="option" tabindex="0"'
+            + ' data-idx="' + i + '"'
+            + ' onclick="bbSelect(' + i + ')"'
+            + ' onkeydown="bbItemKey(event,' + i + ')">'
             + '<div>'
-            + '<div class="school-name">' + _esc(d.district_name) + '</div>'
+            + '<div class="result-name">' + _hl(r.tenant_name, q) + '</div>'
+            + distHtml
             + '</div>'
-            + '<span class="school-arrow">&#8594;</span>'
+            + '<span class="result-arrow" aria-hidden="true">&#8594;</span>'
             + '</button>';
     }});
-    container.innerHTML = html;
+    list.innerHTML = html;
   }}
 
-  window.bbFilterDistricts = function() {{
-    var q = (_$('district-search').value || '').toLowerCase().trim();
-    if (!q) {{
-      _renderDistrictList(_allDistricts);
-      return;
-    }}
-    _renderDistrictList(_allDistricts.filter(function(d) {{
-      return d.district_name.toLowerCase().includes(q);
-    }}));
-  }};
-
-  /* ── School search filter (flat mode) ────────────────────────────── */
-  var _allFlatSchools = [];
-  function _renderFlatSchools(list) {{
-    var html = '';
-    list.forEach(function(s) {{
-      html += '<button class="school-btn" onclick="bbSelectSchool(' + JSON.stringify(s.tenant_slug) + ', ' + JSON.stringify(s.tenant_name) + ', this)">'
-            + '<div><div class="school-name">' + _esc(s.tenant_name) + '</div></div>'
-            + '<span class="school-arrow">&#8594;</span>'
-            + '</button>';
-    }});
-    _$('school-list').innerHTML = html || '<p style="color:var(--muted);font-size:.87rem;">No matching schools.</p>';
-  }}
-  window.bbFilterSchools = function() {{
-    var q = (_$('school-search').value || '').toLowerCase().trim();
-    _renderFlatSchools(q
-      ? _allFlatSchools.filter(function(s) {{ return s.tenant_name.toLowerCase().includes(q); }})
-      : _allFlatSchools
-    );
-  }};
-
-  /* ── Flat-school fallback (no districts configured) ─────────────── */
-  function _enterFlatMode() {{
-    _flatMode = true;
-    /* Hide district step entirely; jump directly to school selection */
-    _hide('step-district');
-    _hide('quick-access');
-    /* Update step header for flat mode */
-    _$('district-selected-name').textContent = 'Select Your School';
-    _$('school-step-label').textContent = 'Sign In';
-    _$('school-step-sub').textContent = 'Choose your school to continue to your admin portal.';
-    /* Show search field, hide back button */
-    _show('school-search-field');
-    var backRow = _$('step-school').querySelector('.back-row');
-    if (backRow) backRow.style.display = 'none';
-    _animateIn('step-school');
-    _setStep(2);
-    _show('school-loading');
-
-    fetch(_ALL_SCHOOLS_URL)
-      .then(function(r) {{
-        if (!r.ok) {{ return r.json().then(function(e) {{ throw e; }}); }}
-        return r.json();
-      }})
-      .then(function(data) {{
-        _hide('school-loading');
-        if (!Array.isArray(data) || !data.length) {{
-          _err('school-error', 'No schools are currently available. Please contact your administrator.');
-          return;
-        }}
-        _allFlatSchools = data;
-        _renderFlatSchools(data);
-      }})
-      .catch(function(err) {{
-        _hide('school-loading');
-        _err('school-error', (err && err.error) || 'Failed to load schools. Please try again.');
-      }});
-  }}
-
-  function _loadDistricts() {{
-    _show('district-loading');
-    _clearErr('district-error');
-    fetch(_DISTRICTS_URL)
+  /* ── Fetch ────────────────────────────────────────────────────────── */
+  function _fetch(q) {{
+    if (q === _lastQ) return;
+    _lastQ = q;
+    _show('search-spinner');
+    _hide('empty-msg');
+    fetch(_URL + '?q=' + encodeURIComponent(q))
       .then(function(r) {{ return r.json(); }})
       .then(function(data) {{
-        _hide('district-loading');
+        _hide('search-spinner');
         if (Array.isArray(data)) {{
-          if (!data.length) {{
-            /* No districts configured — fall back to flat school list */
-            _enterFlatMode();
-            return;
-          }}
-          _allDistricts = data;
-          _renderDistrictList(data);
-          /* Auto-select remembered district if still in list */
-          var saved = _loadDistrict();
-          if (saved && saved.id) {{
-            var match = data.find(function(d) {{ return d.district_id === saved.id; }});
-            if (match) {{
-              _$('district-search').value = match.district_name;
-              _renderDistrictList([match]);
-            }}
-          }}
-        }} else {{
-          _err('district-error', (data && data.error) || 'Failed to load districts.');
+          _results = data;
+          _render(data, q);
         }}
       }})
       .catch(function() {{
-        _hide('district-loading');
-        _err('district-error', 'Network error — please check your connection and try again.');
+        _hide('search-spinner');
+        _$('results-list').innerHTML = '';
+        _show('empty-msg');
       }});
   }}
 
-  /* ── Select district → load schools ──────────────────────────────── */
-  window.bbSelectDistrict = function(id, name, btn) {{
-    _selDistrict = {{id: id, name: name}};
-    _saveDistrict(_selDistrict);
-
-    /* Brief selected-state flash on the clicked card */
+  /* ── Select → redirect ────────────────────────────────────────────── */
+  window.bbSelect = function(idx) {{
+    var r = _results[idx];
+    if (!r) return;
+    var btn = _$('results-list').querySelector('[data-idx="' + idx + '"]');
     if (btn) btn.classList.add('selecting');
-
-    _$('district-selected-name').textContent = name;
+    _save({{ slug: r.tenant_slug, name: r.tenant_name, district: r.district_name }});
     setTimeout(function() {{
-      _hide('step-district');
-      _hide('quick-access');
-      _animateIn('step-school');
-      _setStep(2);
-    }}, 120);
-
-    _clearErr('school-error');
-    _$('school-list').innerHTML = '';
-    _show('school-loading');
-
-    fetch(_SCHOOLS_URL + id + '/schools')
-      .then(function(r) {{
-        if (!r.ok) {{ return r.json().then(function(e) {{ throw e; }}); }}
-        return r.json();
-      }})
-      .then(function(data) {{
-        _hide('school-loading');
-        if (!Array.isArray(data) || !data.length) {{
-          _err('school-error', 'No schools found for this district.');
-          return;
-        }}
-        var html = '';
-        data.forEach(function(s) {{
-          html += '<button class="school-btn" onclick="bbSelectSchool(' + JSON.stringify(s.tenant_slug) + ', ' + JSON.stringify(s.tenant_name) + ', this)">'
-                + '<div>'
-                + '<div class="school-name">' + _esc(s.tenant_name) + '</div>'
-                + '<div class="school-slug">' + _esc(s.tenant_slug) + '</div>'
-                + '</div>'
-                + '<span class="school-arrow">&#8594;</span>'
-                + '</button>';
-        }});
-        _$('school-list').innerHTML = html;
-      }})
-      .catch(function(err) {{
-        _hide('school-loading');
-        _err('school-error', (err && err.error) || 'Failed to load schools. Please try again.');
-      }});
+      window.location.href = '/' + r.tenant_slug + '/admin/login';
+    }}, 130);
   }};
 
-  /* ── Select school → redirect ─────────────────────────────────────── */
-  window.bbSelectSchool = function(slug, name, btn) {{
-    _saveSchool({{slug: slug, name: name}});
-    if (btn) btn.classList.add('selecting');
-    setTimeout(function() {{
-      window.location.href = '/' + slug + '/admin/login';
-    }}, 140);
+  /* ── Keyboard: result items ───────────────────────────────────────── */
+  window.bbItemKey = function(e, idx) {{
+    var items = _$('results-list').querySelectorAll('.result-item');
+    if (e.key === 'ArrowDown') {{
+      e.preventDefault();
+      if (idx + 1 < items.length) items[idx + 1].focus();
+    }} else if (e.key === 'ArrowUp') {{
+      e.preventDefault();
+      if (idx <= 0) {{ _$('search-input').focus(); }}
+      else {{ items[idx - 1].focus(); }}
+    }} else if (e.key === 'Enter') {{
+      e.preventDefault(); bbSelect(idx);
+    }} else if (e.key === 'Escape') {{
+      _$('search-input').focus();
+    }}
   }};
 
-  /* ── Back to districts ────────────────────────────────────────────── */
-  window.bbBackToDistricts = function() {{
-    if (_flatMode) return; /* no district step to return to */
-    _hide('step-school');
-    _animateIn('step-district');
-    _setStep(1);
-    _selDistrict = null;
-    _maybeShowQuick();
-  }};
+  /* ── Input events ─────────────────────────────────────────────────── */
+  var _inp = _$('search-input');
 
-  /* ── XSS-safe text escaping for innerHTML ────────────────────────── */
-  function _esc(str) {{
-    return String(str)
-      .replace(/&/g,'&amp;').replace(/</g,'&lt;')
-      .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-  }}
+  _inp.addEventListener('input', function() {{
+    var q = this.value.trim();
+    clearTimeout(_timer);
+    _hide('search-spinner');
+    if (q.length < 2) {{
+      _results = [];
+      _lastQ = null;
+      _$('results-list').innerHTML = '';
+      _hide('empty-msg');
+      _show('search-hint');
+      return;
+    }}
+    _hide('search-hint');
+    _timer = setTimeout(function() {{ _fetch(q); }}, 250);
+  }});
+
+  _inp.addEventListener('keydown', function(e) {{
+    var items = _$('results-list').querySelectorAll('.result-item');
+    if (e.key === 'ArrowDown' && items.length) {{
+      e.preventDefault(); items[0].focus();
+    }} else if (e.key === 'Escape') {{
+      _$('results-list').innerHTML = '';
+      _results = [];
+      _lastQ = null;
+      _hide('empty-msg');
+      _show('search-hint');
+      this.value = '';
+    }}
+  }});
 
   /* ── Init ─────────────────────────────────────────────────────────── */
   _maybeShowQuick();
-  _loadDistricts();
+  _inp.focus();
 }})();
 </script>
 
