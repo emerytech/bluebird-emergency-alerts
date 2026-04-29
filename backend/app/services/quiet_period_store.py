@@ -273,7 +273,10 @@ class QuietPeriodStore:
                         start_dt = start_dt.replace(tzinfo=timezone.utc)
                     expires_at = (start_dt + timedelta(hours=24)).isoformat()
             else:
-                expires_at = (approved_at + timedelta(hours=24)).isoformat()
+                if sched_end_raw:
+                    expires_at = str(sched_end_raw)
+                else:
+                    expires_at = (approved_at + timedelta(hours=24)).isoformat()
 
             conn.execute(
                 """
