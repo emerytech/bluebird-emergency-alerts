@@ -662,6 +662,33 @@ def _base_styles() -> str:
       background: color-mix(in srgb, var(--success) 8%, #fff 92%);
       color: color-mix(in srgb, var(--success) 72%, #000 28%);
     }
+    .bb-911-notice {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 12px;
+      padding: 11px 16px;
+      border-radius: 10px;
+      border: 1px solid rgba(180,83,9,.22);
+      border-left: 4px solid #d97706;
+      background: rgba(254,243,199,.7);
+      color: #78350f;
+      font-size: 0.82rem; line-height: 1.45;
+      margin-bottom: 16px;
+    }}
+    .bb-911-notice strong {{ color: #92400e; }}
+    .bb-911-notice-close {{
+      background: none; border: none; cursor: pointer;
+      color: #92400e; font-size: 1.1rem; line-height: 1;
+      padding: 0 2px; flex-shrink: 0; opacity: .7;
+    }}
+    .bb-911-notice-close:hover {{ opacity: 1; }}
+    html[data-theme="dark"] .bb-911-notice {{
+      background: rgba(120,53,15,.18);
+      border-color: rgba(217,119,6,.25);
+      border-left-color: #d97706;
+      color: #fcd34d;
+    }}
+    html[data-theme="dark"] .bb-911-notice strong {{ color: #fde68a; }}
+    html[data-theme="dark"] .bb-911-notice-close {{ color: #fcd34d; }}
     .app-shell {
       display: grid;
       grid-template-areas: "header header" "sidebar workspace";
@@ -7048,6 +7075,13 @@ def render_admin_page(
         {_render_flash(flash_error, "error")}
         {super_admin_banner_html}
 
+        {"" if section != "dashboard" else """<div class="bb-911-notice" id="bb-911-notice" style="display:none;">
+          <span>&#9888; <strong>BlueBird is an internal communication tool.</strong>
+          It does not contact 911 or replace emergency services.
+          Always call 911 in a real emergency.</span>
+          <button class="bb-911-notice-close" onclick="bb911Dismiss()" aria-label="Dismiss">&times;</button>
+        </div>"""}
+
         <section class="panel command-section" id="overview"{_section_style("dashboard")}>
           <div class="panel-header hero-band">
             <div>
@@ -8223,6 +8257,18 @@ def render_admin_page(
         if (anyVisible) sgPanel.style.display = 'block';
       }}
 
+      /* 911 notice banner — show once, dismiss stores flag in localStorage */
+      (function() {{
+        var _KEY = 'bb_911_notice_v1';
+        var el = document.getElementById('bb-911-notice');
+        if (el && !localStorage.getItem(_KEY)) el.style.display = '';
+      }})();
+      window.bb911Dismiss = function() {{
+        try {{ localStorage.setItem('bb_911_notice_v1', '1'); }} catch(e) {{}}
+        var el = document.getElementById('bb-911-notice');
+        if (el) el.style.display = 'none';
+      }};
+
       /* Upgrade alarm activation form for live (non-training) alerts */
       var alarmForm = document.getElementById('alarm_activate_form');
       if (alarmForm) {{
@@ -8235,7 +8281,9 @@ def render_admin_page(
               icon: '🚨',
               title: 'Send live emergency alert?',
               body: 'Training mode is OFF. This will immediately send real push notifications'
-                + ' and SMS messages to all registered devices.',
+                + ' and SMS messages to all registered devices.'
+                + '<br><br><strong style="color:#b91c1c;">&#9888; This system does not contact emergency services.'
+                + ' If this is a real emergency, ensure 911 has already been called.</strong>',
               consequence: 'Affects <strong>' + devCount + ' registered device'
                 + (devCount === 1 ? '' : 's') + '</strong>. Cannot be cancelled once sent.',
               confirmLabel: 'Send live alert',

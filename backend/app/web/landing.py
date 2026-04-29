@@ -310,6 +310,12 @@ def render_landing_page() -> str:
       flex-wrap: wrap; margin: 16px 0;
     }}
     .footer-copy {{ font-size: 0.82rem; color: #475569; }}
+    .footer-disclaimer {{
+      font-size: 0.72rem; color: #374151;
+      margin-top: 12px; line-height: 1.5;
+      border-top: 1px solid rgba(255,255,255,.06);
+      padding-top: 12px;
+    }}
 
     /* ── RESPONSIVE ───────────────────────────────────────────────────── */
     @media (max-width: 768px) {{
@@ -584,7 +590,7 @@ def render_landing_page() -> str:
 </section>
 
 <!-- ── SAFETY ─────────────────────────────────────────────────────────────── -->
-<section class="section section-dark">
+<section class="section section-dark" id="safety">
   <div class="section-inner">
     <div class="section-header" style="text-align:center;">
       <span class="section-tag">Safety &amp; Accountability</span>
@@ -646,6 +652,11 @@ def render_landing_page() -> str:
     <p class="footer-copy">
       &copy; 2026 Emery Tech Solutions &nbsp;&middot;&nbsp; BlueBird Alerts &nbsp;&middot;&nbsp;
       Built for schools and districts.
+    </p>
+    <p class="footer-disclaimer">
+      BlueBird Alerts is a communication tool and is not a replacement for 911.
+      Always contact emergency services in a real emergency. &nbsp;
+      <a href="/#safety">Safety &amp; Liability</a>
     </p>
   </div>
 </footer>
@@ -860,6 +871,11 @@ def render_login_portal() -> str:
     }}
     .portal-footer a {{ color: rgba(255,255,255,.7); text-decoration: none; }}
     .portal-footer a:hover {{ color: #fff; text-decoration: underline; }}
+    .portal-disclaimer {{
+      margin-top: 10px;
+      font-size: 0.71rem; color: rgba(255,255,255,.35);
+      line-height: 1.5; max-width: 340px; margin-left: auto; margin-right: auto;
+    }}
 
     @media (max-width: 520px) {{
       .portal-card {{ padding: 28px 24px; }}
@@ -946,6 +962,10 @@ def render_login_portal() -> str:
 
 <div class="portal-footer">
   <a href="/">&larr; Back to home</a>
+  <p class="portal-disclaimer">
+    This system does not replace emergency services.
+    Always call 911 in a real emergency.
+  </p>
 </div>
 
 <script>
