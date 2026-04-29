@@ -168,6 +168,7 @@ from app.services.billing_service import (
     get_banner_info,
     get_effective_status,
     get_days_remaining,
+    get_effective_billing_for_tenant,
     is_management_allowed,
     require_management_license,
     ManagementLicenseError,
@@ -357,10 +358,18 @@ def _tenant_billing(req: Request) -> TenantBillingStore:
 async def _require_management_license(request: Request, feature: str, tenant_id: int, redirect_url: str) -> Optional["RedirectResponse"]:
     """
     Check management license for the given tenant.
+    Uses district billing when the tenant belongs to a district; falls back to
+    tenant-level billing otherwise.
     Returns a RedirectResponse (303) with a flash error if blocked, else None.
     Emergency alert endpoints must NOT call this function.
     """
-    billing = await _tenant_billing(request).ensure_tenant_billing(tenant_id=tenant_id)
+    school = getattr(request.state, "school", None)
+    district_id = int(getattr(school, "district_id", None) or 0) or None
+    billing = await get_effective_billing_for_tenant(
+        _tenant_billing(request),
+        tenant_id=tenant_id,
+        district_id=district_id,
+    )
     try:
         require_management_license(billing, feature)
     except ManagementLicenseError as exc:
@@ -2697,6 +2706,63 @@ async def super_admin_purge_district(
     return RedirectResponse(url=_super_admin_url("districts"), status_code=status.HTTP_303_SEE_OTHER)
 
 
+# ── District analytics ─────────────────────────────────────────────────────────
+
+
+@router.get("/super-admin/districts/{slug}/analytics", include_in_schema=False)
+async def super_admin_district_analytics(request: Request, slug: str) -> JSONResponse:
+    """
+    Aggregate analytics for all schools in a district.
+    Returns totals + per-school breakdown.
+    Alert counts are based on recent alert history (last 500 per school).
+    """
+    _require_super_admin(request)
+    district = await _schools(request).get_district_by_slug(slug.strip().lower())
+    if district is None:
+        return JSONResponse({"error": "District not found."}, status_code=404)
+
+    schools = await _schools(request).list_schools_by_district(district.id)
+
+    async def _school_stats(school: object) -> dict:
+        tenant_ctx = request.app.state.tenant_manager.get(school)  # type: ignore[attr-defined]
+        if tenant_ctx is None:
+            return {
+                "slug": str(getattr(school, "slug", "")),
+                "name": str(getattr(school, "name", "")),
+                "user_count": 0,
+                "device_count": 0,
+                "alert_count": 0,
+                "last_alert_at": None,
+            }
+        users, device_count, recent_alerts = await asyncio.gather(
+            tenant_ctx.user_store.list_users(),
+            tenant_ctx.device_registry.count(),
+            tenant_ctx.alert_log.list_recent(limit=500),
+        )
+        last_alert = recent_alerts[0].created_at if recent_alerts else None
+        return {
+            "slug": str(getattr(school, "slug", "")),
+            "name": str(getattr(school, "name", "")),
+            "user_count": sum(1 for u in users if u.is_active),
+            "device_count": int(device_count),
+            "alert_count": len(recent_alerts),
+            "last_alert_at": last_alert,
+        }
+
+    per_school = list(await asyncio.gather(*[_school_stats(s) for s in schools]))
+
+    return JSONResponse({
+        "district_id": district.id,
+        "district_name": district.name,
+        "district_slug": district.slug,
+        "school_count": len(schools),
+        "total_users": sum(s["user_count"] for s in per_school),
+        "total_devices": sum(s["device_count"] for s in per_school),
+        "total_alerts": sum(s["alert_count"] for s in per_school),
+        "schools": per_school,
+    })
+
+
 @router.post("/admin/settings/undo/{change_id}", include_in_schema=False)
 async def admin_settings_undo(
     request: Request,
@@ -3698,11 +3764,50 @@ async def super_admin_dashboard(
             ],
         })
     _prod_districts = [d for d in _all_districts if not getattr(d, "is_test", False)]
+    # ── District billing rows ──────────────────────────────────────────────────
+    _district_billing_rows: list[dict[str, object]] = []
+    for _d in _prod_districts:
+        _d_billing = await _tenant_billing(request).get_district_billing(district_id=_d.id)
+        if _d_billing is not None:
+            _d_schools_in_dist = _district_school_map.get(_d.id, [])
+            _d_eff = get_effective_status(_d_billing)
+            _d_days = get_days_remaining(_d_billing)
+            _d_status_class = "ok" if _d_eff in {"active", "manual_override"} else "warn" if _d_eff in {"trial", "past_due"} else "danger"
+            _district_billing_rows.append({
+                "name": _d.name,
+                "slug": _d.slug,
+                "district_id": _d.id,
+                "school_count": len(_d_schools_in_dist),
+                "customer_name": _d_billing.customer_name or "",
+                "customer_email": _d_billing.customer_email or "",
+                "plan_type": _d_billing.plan_type or "trial",
+                "billing_status": _d_billing.billing_status,
+                "effective_status": _d_eff,
+                "billing_status_class": _d_status_class,
+                "license_key": _d_billing.license_key or "",
+                "license_key_suffix": (_d_billing.license_key or "")[-9:],
+                "starts_at": (_d_billing.starts_at or "")[:10],
+                "trial_end": (_d_billing.trial_ends_at or _d_billing.trial_end or "")[:10],
+                "current_period_end": (_d_billing.current_period_end or "")[:10],
+                "renewal_date": (_d_billing.renewal_date or "")[:10],
+                "days_remaining": _d_days,
+                "override_enabled": _d_billing.override_enabled or _d_billing.is_free_override,
+                "override_reason": _d_billing.override_reason or _d_billing.free_reason or "",
+                "internal_notes": _d_billing.internal_notes or "",
+                "generate_license_action": f"/super-admin/districts/{_d.slug}/billing/generate-license",
+                "set_status_action": f"/super-admin/districts/{_d.slug}/billing/set-status",
+                "set_plan_action": f"/super-admin/districts/{_d.slug}/billing/set-plan",
+                "update_details_action": f"/super-admin/districts/{_d.slug}/billing/update-details",
+                "toggle_override_action": f"/super-admin/districts/{_d.slug}/billing/toggle-override",
+                "start_trial_action": f"/super-admin/districts/{_d.slug}/billing/start-trial",
+                "analytics_url": f"/super-admin/districts/{_d.slug}/analytics",
+            })
     return HTMLResponse(
         render_super_admin_page(
             base_domain=request.app.state.settings.BASE_DOMAIN,  # type: ignore[attr-defined]
             school_rows=school_rows,
             billing_rows=billing_rows,
+            district_billing_rows=_district_billing_rows,
             platform_activity_rows=platform_activity_rows,
             git_pull_configured=bool(request.app.state.settings.SERVER_GIT_PULL_COMMAND),  # type: ignore[attr-defined]
             server_info=_build_server_info(request),
@@ -4541,6 +4646,254 @@ async def super_admin_create_invoice(
         metadata={"invoice_number": inv_num, "amount_due": amount_f},
     )
     _set_flash(request, message=f"Invoice {inv_num} created for {school.name}.")
+    return RedirectResponse(url=_super_admin_url("billing"), status_code=status.HTTP_303_SEE_OTHER)
+
+
+# ── District billing info (JSON) ───────────────────────────────────────────────
+
+
+@router.get("/super-admin/districts/{slug}/billing/info", include_in_schema=False)
+async def super_admin_district_billing_info(request: Request, slug: str) -> JSONResponse:
+    _require_super_admin(request)
+    district = await _schools(request).get_district_by_slug(slug.strip().lower())
+    if district is None:
+        return JSONResponse({"error": "District not found."}, status_code=404)
+    billing = await _tenant_billing(request).get_district_billing(district_id=district.id)
+    if billing is None:
+        return JSONResponse({"district_id": district.id, "exists": False})
+    return JSONResponse({
+        "district_id": district.id,
+        "district_slug": district.slug,
+        "district_name": district.name,
+        "exists": True,
+        "plan_type": billing.plan_type,
+        "billing_status": billing.billing_status,
+        "effective_status": get_effective_status(billing),
+        "days_remaining": get_days_remaining(billing),
+        "license_key": billing.license_key,
+        "customer_name": billing.customer_name,
+        "customer_email": billing.customer_email,
+        "starts_at": billing.starts_at,
+        "trial_ends_at": billing.trial_ends_at,
+        "current_period_start": billing.current_period_start,
+        "current_period_end": billing.current_period_end,
+        "renewal_date": billing.renewal_date,
+        "override_enabled": billing.override_enabled,
+        "override_reason": billing.override_reason,
+        "internal_notes": billing.internal_notes,
+        "updated_at": billing.updated_at,
+    })
+
+
+# ── District billing: generate license ────────────────────────────────────────
+
+
+@router.post("/super-admin/districts/{slug}/billing/generate-license", include_in_schema=False)
+async def super_admin_district_generate_license(
+    request: Request,
+    slug: str,
+    plan_type: str = Form(default="basic"),
+    starts_at: str = Form(default=""),
+    current_period_end: str = Form(default=""),
+    trial_ends_at: str = Form(default=""),
+    customer_name: str = Form(default=""),
+    customer_email: str = Form(default=""),
+    internal_notes: str = Form(default=""),
+) -> RedirectResponse:
+    _require_super_admin(request)
+    district = await _schools(request).get_district_by_slug(slug.strip().lower())
+    if district is None:
+        _set_flash(request, error="District not found.")
+        return RedirectResponse(url=_super_admin_url("billing"), status_code=status.HTTP_303_SEE_OTHER)
+    if plan_type.strip().lower() not in VALID_PLAN_TYPES:
+        _set_flash(request, error=f"Invalid plan type '{plan_type}'.")
+        return RedirectResponse(url=_super_admin_url("billing"), status_code=status.HTTP_303_SEE_OTHER)
+    now = datetime.now(timezone.utc)
+    new_key = generate_license_key()
+    new_status = "trial" if plan_type.strip().lower() == "trial" else "active"
+    await _tenant_billing(request).update_district_billing_full(
+        district_id=int(district.id),
+        customer_name=customer_name.strip() or None,
+        customer_email=customer_email.strip() or None,
+        plan_type=plan_type.strip().lower(),
+        billing_status=new_status,
+        license_key=new_key,
+        starts_at=starts_at.strip() or now.isoformat(),
+        trial_ends_at=trial_ends_at.strip() or None,
+        current_period_start=starts_at.strip() or now.isoformat(),
+        current_period_end=current_period_end.strip() or None,
+        renewal_date=current_period_end.strip() or None,
+        internal_notes=internal_notes.strip() or None,
+    )
+    actor = _super_admin_actor_label(request)
+    _fire_audit(
+        request,
+        "district_license_generated",
+        actor_label=actor,
+        target_type="district",
+        target_id=district.slug,
+        metadata={"plan_type": plan_type, "license_key_suffix": new_key[-9:]},
+    )
+    _set_flash(request, message=f"District license generated for {district.name}: {new_key}")
+    return RedirectResponse(url=_super_admin_url("billing"), status_code=status.HTTP_303_SEE_OTHER)
+
+
+# ── District billing: set status ──────────────────────────────────────────────
+
+
+@router.post("/super-admin/districts/{slug}/billing/set-status", include_in_schema=False)
+async def super_admin_district_set_billing_status(
+    request: Request,
+    slug: str,
+    new_status: str = Form(...),
+) -> RedirectResponse:
+    _require_super_admin(request)
+    district = await _schools(request).get_district_by_slug(slug.strip().lower())
+    if district is None:
+        _set_flash(request, error="District not found.")
+        return RedirectResponse(url=_super_admin_url("billing"), status_code=status.HTTP_303_SEE_OTHER)
+    clean_status = new_status.strip().lower()
+    if clean_status not in VALID_BILLING_STATUSES:
+        _set_flash(request, error=f"Invalid billing status '{new_status}'.")
+        return RedirectResponse(url=_super_admin_url("billing"), status_code=status.HTTP_303_SEE_OTHER)
+    existing = await _tenant_billing(request).ensure_district_billing(district_id=int(district.id))
+    await _tenant_billing(request).update_district_billing_full(
+        district_id=int(district.id),
+        billing_status=clean_status,
+    )
+    actor = _super_admin_actor_label(request)
+    _fire_audit(
+        request,
+        "district_billing_status_changed",
+        actor_label=actor,
+        target_type="district",
+        target_id=district.slug,
+        metadata={"before": existing.billing_status, "after": clean_status},
+    )
+    _set_flash(request, message=f"District billing status for {district.name} set to '{clean_status}'.")
+    return RedirectResponse(url=_super_admin_url("billing"), status_code=status.HTTP_303_SEE_OTHER)
+
+
+# ── District billing: set plan ────────────────────────────────────────────────
+
+
+@router.post("/super-admin/districts/{slug}/billing/set-plan", include_in_schema=False)
+async def super_admin_district_set_billing_plan(
+    request: Request,
+    slug: str,
+    plan_type: str = Form(...),
+) -> RedirectResponse:
+    _require_super_admin(request)
+    district = await _schools(request).get_district_by_slug(slug.strip().lower())
+    if district is None:
+        _set_flash(request, error="District not found.")
+        return RedirectResponse(url=_super_admin_url("billing"), status_code=status.HTTP_303_SEE_OTHER)
+    clean_plan = plan_type.strip().lower()
+    if clean_plan not in VALID_PLAN_TYPES:
+        _set_flash(request, error=f"Invalid plan type '{plan_type}'.")
+        return RedirectResponse(url=_super_admin_url("billing"), status_code=status.HTTP_303_SEE_OTHER)
+    await _tenant_billing(request).update_district_billing_full(
+        district_id=int(district.id),
+        plan_type=clean_plan,
+    )
+    _set_flash(request, message=f"District plan for {district.name} set to '{clean_plan}'.")
+    return RedirectResponse(url=_super_admin_url("billing"), status_code=status.HTTP_303_SEE_OTHER)
+
+
+# ── District billing: update details ──────────────────────────────────────────
+
+
+@router.post("/super-admin/districts/{slug}/billing/update-details", include_in_schema=False)
+async def super_admin_district_update_billing_details(
+    request: Request,
+    slug: str,
+    customer_name: str = Form(default=""),
+    customer_email: str = Form(default=""),
+    current_period_start: str = Form(default=""),
+    current_period_end: str = Form(default=""),
+    renewal_date: str = Form(default=""),
+    internal_notes: str = Form(default=""),
+) -> RedirectResponse:
+    _require_super_admin(request)
+    district = await _schools(request).get_district_by_slug(slug.strip().lower())
+    if district is None:
+        _set_flash(request, error="District not found.")
+        return RedirectResponse(url=_super_admin_url("billing"), status_code=status.HTTP_303_SEE_OTHER)
+    await _tenant_billing(request).update_district_billing_full(
+        district_id=int(district.id),
+        customer_name=customer_name.strip() or None,
+        customer_email=customer_email.strip() or None,
+        current_period_start=current_period_start.strip() or None,
+        current_period_end=current_period_end.strip() or None,
+        renewal_date=renewal_date.strip() or None,
+        internal_notes=internal_notes.strip() or None,
+    )
+    _set_flash(request, message=f"District billing details updated for {district.name}.")
+    return RedirectResponse(url=_super_admin_url("billing"), status_code=status.HTTP_303_SEE_OTHER)
+
+
+# ── District billing: toggle override ─────────────────────────────────────────
+
+
+@router.post("/super-admin/districts/{slug}/billing/toggle-override", include_in_schema=False)
+async def super_admin_district_toggle_billing_override(
+    request: Request,
+    slug: str,
+    override_reason: str = Form(default=""),
+) -> RedirectResponse:
+    _require_super_admin(request)
+    district = await _schools(request).get_district_by_slug(slug.strip().lower())
+    if district is None:
+        _set_flash(request, error="District not found.")
+        return RedirectResponse(url=_super_admin_url("billing"), status_code=status.HTTP_303_SEE_OTHER)
+    existing = await _tenant_billing(request).ensure_district_billing(district_id=int(district.id))
+    new_override = not (existing.override_enabled or existing.is_free_override)
+    await _tenant_billing(request).update_district_billing_full(
+        district_id=int(district.id),
+        override_enabled=new_override,
+        override_reason=override_reason.strip() or ("Manual override by platform" if new_override else None),
+    )
+    actor = _super_admin_actor_label(request)
+    event = "district_manual_override_enabled" if new_override else "district_manual_override_disabled"
+    _fire_audit(
+        request,
+        event,
+        actor_label=actor,
+        target_type="district",
+        target_id=district.slug,
+        metadata={"override_reason": override_reason.strip() or ""},
+    )
+    state = "enabled" if new_override else "disabled"
+    _set_flash(request, message=f"District manual override {state} for {district.name}.")
+    return RedirectResponse(url=_super_admin_url("billing"), status_code=status.HTTP_303_SEE_OTHER)
+
+
+# ── District billing: start trial ─────────────────────────────────────────────
+
+
+@router.post("/super-admin/districts/{slug}/billing/start-trial", include_in_schema=False)
+async def super_admin_district_start_trial(
+    request: Request,
+    slug: str,
+    duration_days: int = Form(default=14),
+) -> RedirectResponse:
+    _require_super_admin(request)
+    district = await _schools(request).get_district_by_slug(slug.strip().lower())
+    if district is None:
+        _set_flash(request, error="District not found.")
+        return RedirectResponse(url=_super_admin_url("billing"), status_code=status.HTTP_303_SEE_OTHER)
+    if int(duration_days) < 1 or int(duration_days) > 365:
+        _set_flash(request, error="Trial duration must be between 1 and 365 days.")
+        return RedirectResponse(url=_super_admin_url("billing"), status_code=status.HTTP_303_SEE_OTHER)
+    now = datetime.now(timezone.utc)
+    trial_end = (now + timedelta(days=int(duration_days))).isoformat()
+    await _tenant_billing(request).update_district_billing_full(
+        district_id=int(district.id),
+        billing_status="trial",
+        starts_at=now.isoformat(),
+        trial_ends_at=trial_end,
+    )
+    _set_flash(request, message=f"Started {int(duration_days)}-day district trial for {district.name}.")
     return RedirectResponse(url=_super_admin_url("billing"), status_code=status.HTTP_303_SEE_OTHER)
 
 

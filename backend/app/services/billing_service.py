@@ -10,7 +10,7 @@ import string
 from datetime import datetime, timezone
 from typing import Optional
 
-from app.services.tenant_billing_store import TenantBillingRecord
+from app.services.tenant_billing_store import TenantBillingRecord, TenantBillingStore
 
 # Days past_due is allowed before management is fully restricted
 _GRACE_PERIOD_DAYS = 7
@@ -229,6 +229,33 @@ def get_banner_info(
         }
 
     return {"show": False}
+
+
+# ── District-aware billing resolution ─────────────────────────────────────────
+
+
+async def get_effective_billing_for_tenant(
+    billing_store: TenantBillingStore,
+    *,
+    tenant_id: int,
+    district_id: Optional[int],
+) -> TenantBillingRecord:
+    """
+    Return the billing record that governs enforcement for a tenant.
+
+    Resolution order:
+      1. If the tenant belongs to a district AND the district has a billing
+         record, use the district record (district license covers all schools).
+      2. Otherwise fall back to the tenant's own billing record.
+
+    The returned record always has the correct billing fields for enforcement.
+    Emergency alert endpoints MUST NOT call this — they bypass billing entirely.
+    """
+    if district_id is not None:
+        district_billing = await billing_store.get_district_billing(district_id=int(district_id))
+        if district_billing is not None:
+            return district_billing
+    return await billing_store.ensure_tenant_billing(tenant_id=int(tenant_id))
 
 
 # ── Invoice number generation ──────────────────────────────────────────────────

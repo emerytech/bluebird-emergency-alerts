@@ -1774,11 +1774,137 @@ def _render_billing_cards(billing_rows: Sequence[Mapping[str, object]]) -> str:
     return '<div class="tenant-grid" style="display:block;">' + "".join(cards) + "</div>"
 
 
+def _render_district_billing_section(district_billing_rows: Sequence[Mapping[str, object]]) -> str:
+    if not district_billing_rows:
+        return ""
+    plan_opts = "".join(f'<option value="{p}">{p.title()}</option>' for p in ("trial", "basic", "pro", "enterprise"))
+    status_opts = "".join(
+        f'<option value="{s}">{s.replace("_", " ").title()}</option>'
+        for s in ("trial", "active", "past_due", "expired", "suspended", "cancelled", "manual_override")
+    )
+    cards = []
+    for item in district_billing_rows:
+        name = escape(str(item.get("name", "")))
+        slug = escape(str(item.get("slug", "")))
+        school_count = int(item.get("school_count", 0))
+        eff = str(item.get("effective_status", item.get("billing_status", "trial")))
+        plan = escape(str(item.get("plan_type", "trial")))
+        days = item.get("days_remaining")
+        renewal = escape(str(item.get("renewal_date", "") or ""))
+        override_on = bool(item.get("override_enabled"))
+        override_reason = escape(str(item.get("override_reason", "") or ""))
+        license_suffix = escape(str(item.get("license_key_suffix", "") or ""))
+        customer_email = escape(str(item.get("customer_email", "") or ""))
+        internal_notes = escape(str(item.get("internal_notes", "") or ""))
+        analytics_url = escape(str(item.get("analytics_url", "#")))
+
+        days_pill = ""
+        if days is not None:
+            days_color = "#dc2626" if days < 0 else ("#d97706" if days <= 7 else "#059669")
+            days_label = f"{days}d remaining" if days >= 0 else f"Expired {abs(days)}d ago"
+            days_pill = f'<span style="font-size:0.72rem;color:{days_color};font-weight:600;">{escape(days_label)}</span>'
+
+        gen_lic = escape(str(item.get("generate_license_action", "#")))
+        set_status = escape(str(item.get("set_status_action", "#")))
+        set_plan = escape(str(item.get("set_plan_action", "#")))
+        upd_det = escape(str(item.get("update_details_action", "#")))
+        tog_ov = escape(str(item.get("toggle_override_action", "#")))
+        start_trial = escape(str(item.get("start_trial_action", "#")))
+
+        try:
+            from datetime import date as _date
+            today = str(_date.today())
+        except Exception:
+            today = ""
+
+        card = (
+            f'<div class="tenant-card" data-slug="{slug}" style="margin-bottom:16px;border-left:4px solid var(--accent);">'
+            f'<div class="tenant-card-header" style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px;">'
+            f'<div>'
+            f'<div class="tenant-card-name">{name} <span style="font-size:0.75rem;color:var(--muted);font-weight:400;">District</span></div>'
+            f'<div class="mini-copy"><code>{slug}</code> · {school_count} school{"s" if school_count != 1 else ""}'
+            f'{(" · " + escape(customer_email)) if customer_email else ""}</div>'
+            f'</div>'
+            f'<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">'
+            f'{_billing_status_badge(eff)}'
+            f'<span class="status-pill">{plan}</span>'
+            f'{days_pill}'
+            f'{"<span class=\\"status-pill ok\\" style=\\"font-size:0.7rem;\\">Override</span>" if override_on else ""}'
+            f'<a href="{analytics_url}" class="button button-secondary" style="font-size:0.72rem;padding:3px 10px;" target="_blank">Analytics</a>'
+            f'</div>'
+            f'</div>'
+            f'<div style="padding:8px 12px;font-size:0.8rem;color:var(--muted);display:flex;gap:16px;flex-wrap:wrap;">'
+            f'{"<span>Renewal: " + renewal + "</span>" if renewal else ""}'
+            f'{"<span>License: ···" + license_suffix + "</span>" if license_suffix else "<span>No district license</span>"}'
+            f'{"<span>Notes: " + internal_notes + "</span>" if internal_notes else ""}'
+            f'</div>'
+            f'<details style="padding:0 12px 12px;">'
+            f'<summary style="cursor:pointer;font-size:0.8rem;color:var(--accent);user-select:none;">District Billing Actions</summary>'
+            f'<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px;margin-top:12px;">'
+            f'<div class="card" style="padding:12px;">'
+            f'<p style="font-size:0.75rem;font-weight:600;margin-bottom:8px;">Generate / Renew District License</p>'
+            f'<form method="post" action="{gen_lic}" class="stack" style="gap:6px;">'
+            f'<select name="plan_type" style="width:100%;">{plan_opts}</select>'
+            f'<input name="starts_at" type="date" value="{today}" />'
+            f'<input name="current_period_end" type="date" placeholder="Period end date" />'
+            f'<input name="customer_name" placeholder="Customer name" />'
+            f'<input name="customer_email" type="email" placeholder="Customer email" />'
+            f'<input name="internal_notes" placeholder="Internal notes" />'
+            f'<button class="button button-primary" type="submit">Generate District License</button>'
+            f'</form></div>'
+            f'<div class="card" style="padding:12px;">'
+            f'<p style="font-size:0.75rem;font-weight:600;margin-bottom:8px;">Set Status</p>'
+            f'<form method="post" action="{set_status}" class="stack" style="gap:6px;">'
+            f'<select name="new_status" style="width:100%;">{status_opts}</select>'
+            f'<button class="button button-secondary" type="submit">Set Status</button>'
+            f'</form>'
+            f'<p style="font-size:0.75rem;font-weight:600;margin:12px 0 8px;">Set Plan</p>'
+            f'<form method="post" action="{set_plan}" class="stack" style="gap:6px;">'
+            f'<select name="plan_type" style="width:100%;">{plan_opts}</select>'
+            f'<button class="button button-secondary" type="submit">Set Plan</button>'
+            f'</form></div>'
+            f'<div class="card" style="padding:12px;">'
+            f'<p style="font-size:0.75rem;font-weight:600;margin-bottom:8px;">Manual Override</p>'
+            f'<form method="post" action="{tog_ov}" class="stack" style="gap:6px;">'
+            f'<input name="override_reason" placeholder="Override reason" value="{override_reason}" />'
+            f'<button class="button {"button-danger-outline" if override_on else "button-primary"}" type="submit">'
+            f'{"Disable Override" if override_on else "Enable Override"}</button>'
+            f'</form></div>'
+            f'<div class="card" style="padding:12px;">'
+            f'<p style="font-size:0.75rem;font-weight:600;margin-bottom:8px;">Update Period / Details</p>'
+            f'<form method="post" action="{upd_det}" class="stack" style="gap:6px;">'
+            f'<input name="current_period_start" type="date" placeholder="Period start" />'
+            f'<input name="current_period_end" type="date" placeholder="Period end / renewal" />'
+            f'<input name="customer_name" placeholder="Customer name" />'
+            f'<input name="customer_email" type="email" placeholder="Customer email" />'
+            f'<input name="internal_notes" placeholder="Internal notes" />'
+            f'<button class="button button-secondary" type="submit">Save Details</button>'
+            f'</form></div>'
+            f'<div class="card" style="padding:12px;">'
+            f'<p style="font-size:0.75rem;font-weight:600;margin-bottom:8px;">Start District Trial</p>'
+            f'<form method="post" action="{start_trial}" class="stack" style="gap:6px;">'
+            f'<input name="duration_days" type="number" min="1" max="365" value="14" />'
+            f'<button class="button button-secondary" type="submit">Start Trial</button>'
+            f'</form></div>'
+            f'</div></details>'
+            f'</div>'
+        )
+        cards.append(card)
+
+    return (
+        '<div style="margin-bottom:24px;">'
+        '<p class="eyebrow" style="margin-bottom:12px;">District Licenses</p>'
+        '<div class="tenant-grid" style="display:block;">' + "".join(cards) + "</div>"
+        '</div>'
+    )
+
+
 def render_super_admin_page(
     *,
     base_domain: str,
     school_rows: Sequence[Mapping[str, object]],
     billing_rows: Sequence[Mapping[str, object]],
+    district_billing_rows: Sequence[Mapping[str, object]] = (),
     platform_activity_rows: Sequence[Mapping[str, str]],
     git_pull_configured: bool,
     server_info: Mapping[str, str],
@@ -3050,15 +3176,17 @@ def render_super_admin_page(
         <section class="panel command-section" id="billing"{_section_style("billing")}>
           <div class="panel-header hero-band">
             <div>
-              <p class="eyebrow">Tenant Billing</p>
+              <p class="eyebrow">Billing &amp; Subscriptions</p>
               <h1>Billing &amp; Subscriptions</h1>
-              <p class="hero-copy">Manage licenses, subscription plans, billing status, payment records, and manual overrides for each tenant.</p>
+              <p class="hero-copy">Manage district and school licenses. District licenses cover all schools in the district. School licenses apply to unassigned schools.</p>
             </div>
             <div class="status-row">
-              <span class="status-pill"><strong>Tenants</strong>{len(billing_rows)}</span>
+              <span class="status-pill"><strong>Districts</strong>{len(district_billing_rows)}</span>
+              <span class="status-pill"><strong>Schools</strong>{len(billing_rows)}</span>
               <span class="status-pill ok"><strong>Stripe</strong>Not yet integrated</span>
             </div>
           </div>
+          {_render_district_billing_section(district_billing_rows)}
           {_render_billing_cards(billing_rows)}
         </section>
         <section class="panel command-section" id="platform-audit"{_section_style("platform-audit")}>

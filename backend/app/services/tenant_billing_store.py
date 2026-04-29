@@ -93,6 +93,17 @@ _PAYMENT_COLS = "id, tenant_slug, amount, currency, payment_date, payment_method
 
 _INVOICE_COLS = "id, invoice_number, tenant_slug, amount_due, due_date, status, notes, created_at, updated_at"
 
+# district_billing column list — district_id is PK; rows convert to TenantBillingRecord(tenant_id=0)
+_DISTRICT_BILLING_COLS = """
+    district_id, customer_name, customer_email,
+    plan_id, plan_type, billing_status, license_key,
+    starts_at, trial_start, trial_end, trial_ends_at,
+    current_period_start, current_period_end, renewal_date,
+    is_free_override, free_reason, override_enabled, override_reason,
+    internal_notes, created_at, updated_at,
+    stripe_customer_id, stripe_subscription_id, stripe_price_id, stripe_checkout_session_id
+"""
+
 
 # ── Store ──────────────────────────────────────────────────────────────────────
 
@@ -186,6 +197,37 @@ class TenantBillingStore:
                 """
                 CREATE INDEX IF NOT EXISTS idx_billing_invoices_slug
                     ON billing_invoices(tenant_slug);
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS district_billing (
+                    district_id            INTEGER PRIMARY KEY,
+                    customer_name          TEXT NULL,
+                    customer_email         TEXT NULL,
+                    plan_id                TEXT NULL,
+                    plan_type              TEXT NOT NULL DEFAULT 'trial',
+                    billing_status         TEXT NOT NULL DEFAULT 'trial',
+                    license_key            TEXT NULL,
+                    starts_at              TEXT NULL,
+                    trial_start            TEXT NULL,
+                    trial_end              TEXT NULL,
+                    trial_ends_at          TEXT NULL,
+                    current_period_start   TEXT NULL,
+                    current_period_end     TEXT NULL,
+                    renewal_date           TEXT NULL,
+                    is_free_override       INTEGER NOT NULL DEFAULT 0,
+                    free_reason            TEXT NULL,
+                    override_enabled       INTEGER NOT NULL DEFAULT 0,
+                    override_reason        TEXT NULL,
+                    internal_notes         TEXT NULL,
+                    created_at             TEXT NULL,
+                    updated_at             TEXT NOT NULL,
+                    stripe_customer_id     TEXT NULL,
+                    stripe_subscription_id TEXT NULL,
+                    stripe_price_id        TEXT NULL,
+                    stripe_checkout_session_id TEXT NULL
+                );
                 """
             )
 
@@ -718,3 +760,207 @@ class TenantBillingStore:
     @staticmethod
     def _row_to_record(row: tuple) -> TenantBillingRecord:
         return TenantBillingStore._billing_row_to_record(row)  # type: ignore[arg-type]
+
+    # ── District billing ───────────────────────────────────────────────────────
+    # Returns TenantBillingRecord with tenant_id=0 so all enforcement functions
+    # work without modification. Callers that need the real tenant_id must
+    # supply it themselves (e.g. wrap the result in a replace call).
+
+    @staticmethod
+    def _district_row_to_record(row: tuple) -> TenantBillingRecord:
+        (
+            district_id, customer_name, customer_email,
+            plan_id, plan_type, billing_status, license_key,
+            starts_at, trial_start, trial_end, trial_ends_at,
+            current_period_start, current_period_end, renewal_date,
+            is_free_override, free_reason, override_enabled, override_reason,
+            internal_notes, created_at, updated_at,
+            stripe_customer_id, stripe_subscription_id, stripe_price_id,
+            stripe_checkout_session_id,
+        ) = row
+        return TenantBillingRecord(
+            tenant_id=0,
+            tenant_slug=None,
+            district_id=int(district_id),
+            customer_name=str(customer_name) if customer_name is not None else None,
+            customer_email=str(customer_email) if customer_email is not None else None,
+            plan_id=str(plan_id) if plan_id is not None else None,
+            plan_type=str(plan_type or "trial"),
+            billing_status=str(billing_status or "trial"),
+            license_key=str(license_key) if license_key is not None else None,
+            starts_at=str(starts_at) if starts_at is not None else None,
+            trial_start=str(trial_start) if trial_start is not None else None,
+            trial_end=str(trial_end) if trial_end is not None else None,
+            trial_ends_at=str(trial_ends_at) if trial_ends_at is not None else None,
+            current_period_start=str(current_period_start) if current_period_start is not None else None,
+            current_period_end=str(current_period_end) if current_period_end is not None else None,
+            renewal_date=str(renewal_date) if renewal_date is not None else None,
+            is_free_override=bool(int(is_free_override or 0)),
+            free_reason=str(free_reason) if free_reason is not None else None,
+            override_enabled=bool(int(override_enabled or 0)),
+            override_reason=str(override_reason) if override_reason is not None else None,
+            internal_notes=str(internal_notes) if internal_notes is not None else None,
+            created_at=str(created_at) if created_at is not None else None,
+            updated_at=str(updated_at),
+            stripe_customer_id=str(stripe_customer_id) if stripe_customer_id is not None else None,
+            stripe_subscription_id=str(stripe_subscription_id) if stripe_subscription_id is not None else None,
+            stripe_price_id=str(stripe_price_id) if stripe_price_id is not None else None,
+            stripe_checkout_session_id=str(stripe_checkout_session_id) if stripe_checkout_session_id is not None else None,
+        )
+
+    def _ensure_district_billing_sync(self, district_id: int) -> TenantBillingRecord:
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO district_billing (district_id, billing_status, plan_type, updated_at, created_at) "
+                "VALUES (?, 'trial', 'trial', ?, ?) ON CONFLICT(district_id) DO NOTHING;",
+                (int(district_id), now, now),
+            )
+            row = conn.execute(
+                f"SELECT {_DISTRICT_BILLING_COLS} FROM district_billing WHERE district_id = ? LIMIT 1;",
+                (int(district_id),),
+            ).fetchone()
+        assert row is not None
+        return self._district_row_to_record(row)
+
+    async def ensure_district_billing(self, *, district_id: int) -> TenantBillingRecord:
+        return await anyio.to_thread.run_sync(self._ensure_district_billing_sync, int(district_id))
+
+    def _get_district_billing_sync(self, district_id: int) -> Optional[TenantBillingRecord]:
+        with self._connect() as conn:
+            row = conn.execute(
+                f"SELECT {_DISTRICT_BILLING_COLS} FROM district_billing WHERE district_id = ? LIMIT 1;",
+                (int(district_id),),
+            ).fetchone()
+        return self._district_row_to_record(row) if row is not None else None
+
+    async def get_district_billing(self, *, district_id: int) -> Optional[TenantBillingRecord]:
+        return await anyio.to_thread.run_sync(self._get_district_billing_sync, int(district_id))
+
+    def _list_all_district_billing_sync(self) -> List[TenantBillingRecord]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"SELECT {_DISTRICT_BILLING_COLS} FROM district_billing ORDER BY updated_at DESC;"
+            ).fetchall()
+        return [self._district_row_to_record(r) for r in rows]
+
+    async def list_all_district_billing(self) -> List[TenantBillingRecord]:
+        return await anyio.to_thread.run_sync(self._list_all_district_billing_sync)
+
+    def _update_district_billing_full_sync(
+        self,
+        *,
+        district_id: int,
+        customer_name: Optional[str] = None,
+        customer_email: Optional[str] = None,
+        plan_type: Optional[str] = None,
+        billing_status: Optional[str] = None,
+        license_key: Optional[str] = None,
+        starts_at: Optional[str] = None,
+        trial_ends_at: Optional[str] = None,
+        current_period_start: Optional[str] = None,
+        current_period_end: Optional[str] = None,
+        renewal_date: Optional[str] = None,
+        override_enabled: Optional[bool] = None,
+        override_reason: Optional[str] = None,
+        internal_notes: Optional[str] = None,
+    ) -> TenantBillingRecord:
+        now = datetime.now(timezone.utc).isoformat()
+        fields: list[str] = []
+        params: list[object] = []
+
+        def _set(col: str, val: object) -> None:
+            fields.append(f"{col} = ?")
+            params.append(val)
+
+        if customer_name is not None:
+            _set("customer_name", customer_name)
+        if customer_email is not None:
+            _set("customer_email", customer_email)
+        if plan_type is not None:
+            _set("plan_type", plan_type.strip().lower())
+            _set("plan_id", plan_type.strip().lower())
+        if billing_status is not None:
+            _set("billing_status", billing_status.strip().lower())
+        if license_key is not None:
+            _set("license_key", license_key)
+        if starts_at is not None:
+            _set("starts_at", starts_at)
+        if trial_ends_at is not None:
+            _set("trial_ends_at", trial_ends_at)
+            _set("trial_end", trial_ends_at)
+        if current_period_start is not None:
+            _set("current_period_start", current_period_start)
+        if current_period_end is not None:
+            _set("current_period_end", current_period_end)
+            _set("renewal_date", current_period_end)
+        if renewal_date is not None:
+            _set("renewal_date", renewal_date)
+        if override_enabled is not None:
+            v = 1 if override_enabled else 0
+            _set("override_enabled", v)
+            _set("is_free_override", v)
+        if override_reason is not None:
+            _set("override_reason", override_reason)
+            _set("free_reason", override_reason)
+        if internal_notes is not None:
+            _set("internal_notes", internal_notes)
+
+        fields.append("updated_at = ?")
+        params.append(now)
+        params.append(int(district_id))
+
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO district_billing (district_id, billing_status, plan_type, updated_at, created_at) "
+                "VALUES (?, 'trial', 'trial', ?, ?) ON CONFLICT(district_id) DO NOTHING;",
+                (int(district_id), now, now),
+            )
+            if fields:
+                conn.execute(
+                    f"UPDATE district_billing SET {', '.join(fields)} WHERE district_id = ?;",
+                    params,
+                )
+            row = conn.execute(
+                f"SELECT {_DISTRICT_BILLING_COLS} FROM district_billing WHERE district_id = ? LIMIT 1;",
+                (int(district_id),),
+            ).fetchone()
+        assert row is not None
+        return self._district_row_to_record(row)
+
+    async def update_district_billing_full(
+        self,
+        *,
+        district_id: int,
+        customer_name: Optional[str] = None,
+        customer_email: Optional[str] = None,
+        plan_type: Optional[str] = None,
+        billing_status: Optional[str] = None,
+        license_key: Optional[str] = None,
+        starts_at: Optional[str] = None,
+        trial_ends_at: Optional[str] = None,
+        current_period_start: Optional[str] = None,
+        current_period_end: Optional[str] = None,
+        renewal_date: Optional[str] = None,
+        override_enabled: Optional[bool] = None,
+        override_reason: Optional[str] = None,
+        internal_notes: Optional[str] = None,
+    ) -> TenantBillingRecord:
+        return await anyio.to_thread.run_sync(
+            lambda: self._update_district_billing_full_sync(
+                district_id=district_id,
+                customer_name=customer_name,
+                customer_email=customer_email,
+                plan_type=plan_type,
+                billing_status=billing_status,
+                license_key=license_key,
+                starts_at=starts_at,
+                trial_ends_at=trial_ends_at,
+                current_period_start=current_period_start,
+                current_period_end=current_period_end,
+                renewal_date=renewal_date,
+                override_enabled=override_enabled,
+                override_reason=override_reason,
+                internal_notes=internal_notes,
+            )
+        )
