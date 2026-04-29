@@ -916,9 +916,15 @@ def render_login_portal() -> str:
     <div class="back-row">
       <button class="btn btn-ghost" onclick="bbBackToDistricts()">&#8592; Back</button>
     </div>
-    <div class="step-label">Step 2 of 2</div>
+    <div class="step-label" id="school-step-label">Step 2 of 2</div>
     <div class="step-title" id="district-selected-name"></div>
-    <div class="step-sub">Select your school to continue to login.</div>
+    <div class="step-sub" id="school-step-sub">Select your school to continue to login.</div>
+
+    <div class="field" id="school-search-field" style="display:none;">
+      <span class="field-icon">&#127979;</span>
+      <input type="text" id="school-search" placeholder="Search schools..." autocomplete="off"
+             oninput="bbFilterSchools()" />
+    </div>
 
     <div id="school-loading" class="loading-row" style="display:none;">
       <div class="spinner"></div> Loading schools&hellip;
@@ -935,13 +941,15 @@ def render_login_portal() -> str:
 
 <script>
 (function() {{
-  var _DISTRICTS_URL = '/api/public/districts';
-  var _SCHOOLS_URL   = '/api/public/districts/';
-  var _LS_DISTRICT   = 'bb_login_district';
-  var _LS_SCHOOL     = 'bb_login_school';
+  var _DISTRICTS_URL  = '/api/public/districts';
+  var _SCHOOLS_URL    = '/api/public/districts/';
+  var _ALL_SCHOOLS_URL = '/api/public/schools';
+  var _LS_DISTRICT    = 'bb_login_district';
+  var _LS_SCHOOL      = 'bb_login_school';
 
-  var _allDistricts  = [];
-  var _selDistrict   = null;  /* {{id, name}} */
+  var _allDistricts   = [];
+  var _selDistrict    = null;  /* {{id, name}} */
+  var _flatMode       = false; /* true when no districts exist — show schools directly */
 
   /* ── Utility ──────────────────────────────────────────────────────── */
   function _$(id) {{ return document.getElementById(id); }}
@@ -1031,6 +1039,64 @@ def render_login_portal() -> str:
     }}));
   }};
 
+  /* ── School search filter (flat mode) ────────────────────────────── */
+  var _allFlatSchools = [];
+  function _renderFlatSchools(list) {{
+    var html = '';
+    list.forEach(function(s) {{
+      html += '<button class="school-btn" onclick="bbSelectSchool(' + JSON.stringify(s.tenant_slug) + ', ' + JSON.stringify(s.tenant_name) + ', this)">'
+            + '<div><div class="school-name">' + _esc(s.tenant_name) + '</div></div>'
+            + '<span class="school-arrow">&#8594;</span>'
+            + '</button>';
+    }});
+    _$('school-list').innerHTML = html || '<p style="color:var(--muted);font-size:.87rem;">No matching schools.</p>';
+  }}
+  window.bbFilterSchools = function() {{
+    var q = (_$('school-search').value || '').toLowerCase().trim();
+    _renderFlatSchools(q
+      ? _allFlatSchools.filter(function(s) {{ return s.tenant_name.toLowerCase().includes(q); }})
+      : _allFlatSchools
+    );
+  }};
+
+  /* ── Flat-school fallback (no districts configured) ─────────────── */
+  function _enterFlatMode() {{
+    _flatMode = true;
+    /* Hide district step entirely; jump directly to school selection */
+    _hide('step-district');
+    _hide('quick-access');
+    /* Update step header for flat mode */
+    _$('district-selected-name').textContent = 'Select Your School';
+    _$('school-step-label').textContent = 'Sign In';
+    _$('school-step-sub').textContent = 'Choose your school to continue to your admin portal.';
+    /* Show search field, hide back button */
+    _show('school-search-field');
+    var backRow = _$('step-school').querySelector('.back-row');
+    if (backRow) backRow.style.display = 'none';
+    _animateIn('step-school');
+    _setStep(2);
+    _show('school-loading');
+
+    fetch(_ALL_SCHOOLS_URL)
+      .then(function(r) {{
+        if (!r.ok) {{ return r.json().then(function(e) {{ throw e; }}); }}
+        return r.json();
+      }})
+      .then(function(data) {{
+        _hide('school-loading');
+        if (!Array.isArray(data) || !data.length) {{
+          _err('school-error', 'No schools are currently available. Please contact your administrator.');
+          return;
+        }}
+        _allFlatSchools = data;
+        _renderFlatSchools(data);
+      }})
+      .catch(function(err) {{
+        _hide('school-loading');
+        _err('school-error', (err && err.error) || 'Failed to load schools. Please try again.');
+      }});
+  }}
+
   function _loadDistricts() {{
     _show('district-loading');
     _clearErr('district-error');
@@ -1039,6 +1105,11 @@ def render_login_portal() -> str:
       .then(function(data) {{
         _hide('district-loading');
         if (Array.isArray(data)) {{
+          if (!data.length) {{
+            /* No districts configured — fall back to flat school list */
+            _enterFlatMode();
+            return;
+          }}
           _allDistricts = data;
           _renderDistrictList(data);
           /* Auto-select remembered district if still in list */
@@ -1120,6 +1191,7 @@ def render_login_portal() -> str:
 
   /* ── Back to districts ────────────────────────────────────────────── */
   window.bbBackToDistricts = function() {{
+    if (_flatMode) return; /* no district step to return to */
     _hide('step-school');
     _animateIn('step-district');
     _setStep(1);

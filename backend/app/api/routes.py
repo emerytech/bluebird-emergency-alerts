@@ -1714,6 +1714,23 @@ async def public_list_schools(request: Request, district_id: int) -> JSONRespons
     return JSONResponse(sorted(payload, key=lambda x: x["tenant_name"]))
 
 
+@router.get("/api/public/schools", include_in_schema=False)
+async def public_list_all_schools(request: Request) -> JSONResponse:
+    """Flat list of all active, non-test schools — fallback for portals without districts."""
+    registry: object = request.app.state.school_registry
+    schools = await registry.list_schools()
+    payload = [
+        {"tenant_slug": s.slug, "tenant_name": s.name}
+        for s in schools
+        if s.is_active
+        and not getattr(s, "is_archived", False)
+        and not getattr(s, "is_test", False)
+    ]
+    if not payload:
+        return JSONResponse({"error": "No schools found."}, status_code=404)
+    return JSONResponse(sorted(payload, key=lambda x: x["tenant_name"]))
+
+
 @router.get("/health")
 async def health(request: Request) -> JSONResponse:
     checks = await HealthMonitor.run_checks(request.app.state)
