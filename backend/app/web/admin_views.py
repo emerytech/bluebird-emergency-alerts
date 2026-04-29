@@ -2385,24 +2385,109 @@ def render_super_admin_page(
     def _district_card(d: Mapping[str, object], bills: Sequence[Mapping[str, object]]) -> str:
         did = int(d.get("id") or 0)
         name = escape(str(d.get("name", "")))
-        slug = escape(str(d.get("slug", "")))
+        slug_raw = str(d.get("slug", ""))
+        slug = escape(slug_raw)
         school_count = int(d.get("school_count") or 0)
         is_district = bool(d.get("is_district"))
         dstatus = str(d.get("status", "healthy"))
         status_pill_cls = {"alarm": "danger", "healthy": "ok", "empty": "", "offline": ""}.get(dstatus, "")
         status_label = {"alarm": "Alarm Active", "healthy": "Healthy", "empty": "No Schools", "offline": "Offline"}.get(dstatus, dstatus.title())
         schools_list = d.get("schools", [])
-        # Aggregate billing across schools in this district
-        d_bills = [b for b in bills if any(str(s.get("slug", "")) == b.get("slug", "") for s in (schools_list if isinstance(schools_list, list) else []))]
-        billing_pill = ""
-        if d_bills:
-            worst = "trial"
-            for b in d_bills:
-                bs = str(b.get("billing_status", "trial"))
-                if bs not in {"active", "trial", "free"}:
-                    worst = bs
-                    break
-            billing_pill = _billing_status_pill(worst)
+
+        # Look up district-level license from district_billing_rows (closure)
+        d_lic = next((b for b in district_billing_rows if str(b.get("slug", "")) == slug_raw), None)
+
+        # District license status metadata + manage license expand
+        lic_meta_html = ""
+        manage_license_details = ""
+        if d_lic:
+            lic_eff = str(d_lic.get("effective_status", d_lic.get("billing_status", "trial")))
+            lic_plan = escape(str(d_lic.get("plan_type", "trial")))
+            lic_days = d_lic.get("days_remaining")
+            lic_override = bool(d_lic.get("override_enabled"))
+            lic_pill_cls = "ok" if lic_eff in {"active", "trial", "free", "manual_override"} else "danger"
+
+            days_str = ""
+            if lic_days is not None:
+                if int(lic_days) < 0:
+                    days_str = "Exp " + str(abs(int(lic_days))) + "d ago"
+                else:
+                    days_str = str(int(lic_days)) + "d left"
+            days_color = "#dc2626" if (lic_days is not None and int(lic_days) < 0) else ("#d97706" if (lic_days is not None and int(lic_days) <= 7) else "#059669")
+            days_html = f'<span style="font-size:0.72rem;color:{days_color};font-weight:600;">{escape(days_str)}</span>' if days_str else ""
+            override_html = '<span class="status-pill ok" style="font-size:0.68rem;">Override</span>' if lic_override else ""
+
+            lic_meta_html = (
+                f'<span><span class="status-pill {lic_pill_cls}" style="font-size:0.68rem;">{escape(lic_eff)}</span></span>'
+                f'<span style="font-size:0.78rem;color:var(--muted);">{lic_plan} plan</span>'
+                f'{days_html}'
+                f'{override_html}'
+            )
+
+            plan_opts = "".join(f'<option value="{p}">{p.title()}</option>' for p in ("trial", "basic", "pro", "enterprise"))
+            status_opts = "".join(
+                f'<option value="{s}">{s.replace("_", " ").title()}</option>'
+                for s in ("trial", "active", "past_due", "expired", "suspended", "cancelled", "manual_override")
+            )
+            gen_lic = escape(str(d_lic.get("generate_license_action", "/super-admin/districts/" + slug_raw + "/billing/generate-license")))
+            set_status_url = escape(str(d_lic.get("set_status_action", "/super-admin/districts/" + slug_raw + "/billing/set-status")))
+            set_plan_url = escape(str(d_lic.get("set_plan_action", "/super-admin/districts/" + slug_raw + "/billing/set-plan")))
+            tog_ov = escape(str(d_lic.get("toggle_override_action", "/super-admin/districts/" + slug_raw + "/billing/toggle-override")))
+            start_trial_url = escape(str(d_lic.get("start_trial_action", "/super-admin/districts/" + slug_raw + "/billing/start-trial")))
+            override_reason = escape(str(d_lic.get("override_reason", "") or ""))
+            try:
+                from datetime import date as _date
+                today = str(_date.today())
+            except Exception:
+                today = ""
+            override_btn_cls = "button-danger-outline" if lic_override else "button-primary"
+            override_btn_lbl = "Disable Override" if lic_override else "Enable Override"
+            manage_license_details = (
+                f'<details class="district-billing-expand">'
+                f'<summary>Manage District License</summary>'
+                f'<div class="district-billing-form" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:10px;">'
+                f'<div style="padding:10px;background:var(--card);border:1px solid var(--border);border-radius:8px;">'
+                f'<p style="font-size:0.73rem;font-weight:600;margin-bottom:6px;">Generate / Renew</p>'
+                f'<form method="post" action="{gen_lic}" class="stack" style="gap:5px;">'
+                f'<select name="plan_type" style="width:100%;font-size:0.78rem;">{plan_opts}</select>'
+                f'<input name="starts_at" type="date" value="{today}" style="font-size:0.78rem;" />'
+                f'<input name="current_period_end" type="date" placeholder="Period end" style="font-size:0.78rem;" />'
+                f'<input name="customer_name" placeholder="Customer name" style="font-size:0.78rem;" />'
+                f'<input name="customer_email" type="email" placeholder="Email" style="font-size:0.78rem;" />'
+                f'<button class="button button-primary" type="submit" style="font-size:0.73rem;">Generate License</button>'
+                f'</form></div>'
+                f'<div style="padding:10px;background:var(--card);border:1px solid var(--border);border-radius:8px;">'
+                f'<p style="font-size:0.73rem;font-weight:600;margin-bottom:6px;">Status / Plan</p>'
+                f'<form method="post" action="{set_status_url}" style="display:flex;gap:4px;margin-bottom:8px;">'
+                f'<select name="new_status" style="flex:1;font-size:0.78rem;">{status_opts}</select>'
+                f'<button class="button button-secondary" type="submit" style="font-size:0.73rem;">Set</button>'
+                f'</form>'
+                f'<form method="post" action="{set_plan_url}" style="display:flex;gap:4px;">'
+                f'<select name="plan_type" style="flex:1;font-size:0.78rem;">{plan_opts}</select>'
+                f'<button class="button button-secondary" type="submit" style="font-size:0.73rem;">Set</button>'
+                f'</form>'
+                f'<p style="font-size:0.73rem;font-weight:600;margin:10px 0 6px;">Trial</p>'
+                f'<form method="post" action="{start_trial_url}" style="display:flex;gap:4px;">'
+                f'<input name="duration_days" type="number" min="1" max="365" value="14" style="max-width:70px;font-size:0.78rem;" />'
+                f'<button class="button button-secondary" type="submit" style="font-size:0.73rem;">Start Trial</button>'
+                f'</form></div>'
+                f'<div style="padding:10px;background:var(--card);border:1px solid var(--border);border-radius:8px;">'
+                f'<p style="font-size:0.73rem;font-weight:600;margin-bottom:6px;">Override</p>'
+                f'<form method="post" action="{tog_ov}" class="stack" style="gap:5px;">'
+                f'<input name="override_reason" placeholder="Reason" value="{override_reason}" style="font-size:0.78rem;" />'
+                f'<button class="button {override_btn_cls}" type="submit" style="font-size:0.73rem;">{override_btn_lbl}</button>'
+                f'</form></div>'
+                f'</div></details>'
+            )
+        elif is_district:
+            manage_license_details = (
+                f'<details class="district-billing-expand">'
+                f'<summary>Manage District License</summary>'
+                f'<div class="district-billing-form" style="padding:8px 0;">'
+                f'<p style="font-size:0.78rem;color:var(--muted);">No district license record yet. <a href="/super-admin?section=billing#billing">Open Licensing</a> to set one up.</p>'
+                f'</div></details>'
+            )
+
         # School enter buttons
         enter_buttons = ""
         for s in (schools_list if isinstance(schools_list, list) else [])[:3]:
@@ -2413,34 +2498,7 @@ def render_super_admin_page(
                 f'<button class="button button-primary" type="submit" style="font-size:0.75rem;padding:5px 12px;">Enter {s_name}</button>'
                 f'</form>'
             )
-        # Billing expand for each school in district
-        billing_forms = ""
-        for b in d_bills:
-            b_name = escape(str(b.get("name", "")))
-            b_slug_raw = str(b.get("slug", ""))
-            b_slug = escape(b_slug_raw)
-            b_bstatus = str(b.get("billing_status", "trial"))
-            billing_forms += f"""
-            <div style="margin-bottom:12px;">
-              <p style="font-size:0.78rem;font-weight:600;margin-bottom:6px;">{b_name} — {_billing_status_pill(b_bstatus)}</p>
-              <div style="display:flex;gap:8px;flex-wrap:wrap;">
-                <form method="post" action="/super-admin/schools/{b_slug}/billing/start-trial" style="display:flex;gap:4px;align-items:center;">
-                  <input name="duration_days" type="number" min="1" max="365" value="14" style="max-width:70px;font-size:0.78rem;padding:3px 6px;" />
-                  <button class="button button-secondary" type="submit" style="font-size:0.73rem;padding:4px 10px;">Start Trial</button>
-                </form>
-                <form method="post" action="/super-admin/schools/{b_slug}/billing/grant-free" style="display:flex;gap:4px;align-items:center;">
-                  <input name="free_reason" placeholder="Reason" style="max-width:120px;font-size:0.78rem;padding:3px 6px;" />
-                  <button class="button button-primary" type="submit" style="font-size:0.73rem;padding:4px 10px;">Grant Free</button>
-                </form>
-                <form method="post" action="/super-admin/schools/{b_slug}/billing/remove-free" onsubmit="return confirm('Remove free access?');">
-                  <button class="button button-danger-outline" type="submit" style="font-size:0.73rem;padding:4px 10px;">Remove Free</button>
-                </form>
-              </div>
-            </div>"""
-        billing_details = (
-            f'<details class="district-billing-expand"><summary>Billing &amp; Access</summary>'
-            f'<div class="district-billing-form">{billing_forms}</div></details>'
-        ) if billing_forms else ""
+
         # Archive button (only for real districts with an id)
         archive_btn = ""
         if did and is_district:
@@ -2450,24 +2508,27 @@ def render_super_admin_page(
                 f'<button class="button button-danger-outline" type="submit" style="font-size:0.75rem;padding:5px 12px;">Archive</button>'
                 f'</form>'
             )
+
+        school_label = "schools" if school_count != 1 else "school"
+        district_or_school = "District" if is_district else "School"
         return (
             f'<div class="district-card">'
             f'<div class="district-card-header">'
             f'<div>'
             f'<p class="district-card-name">{name}</p>'
-            f'<p class="district-card-slug">{slug} &nbsp;·&nbsp; {"District" if is_district else "School"}</p>'
+            f'<p class="district-card-slug">{slug} &nbsp;·&nbsp; {district_or_school}</p>'
             f'</div>'
             f'<span class="status-pill {status_pill_cls}" style="font-size:0.7rem;padding:2px 10px;white-space:nowrap;">{status_label}</span>'
             f'</div>'
             f'<div class="district-card-meta">'
-            f'<span><strong>{school_count}</strong> school{"s" if school_count != 1 else ""}</span>'
-            f'{("<span>" + billing_pill + "</span>") if billing_pill else ""}'
+            f'<span><strong>{school_count}</strong> {school_label}</span>'
+            f'{lic_meta_html}'
             f'</div>'
             f'<div class="district-card-actions">'
             f'{enter_buttons}'
             f'{archive_btn}'
             f'</div>'
-            f'{billing_details}'
+            f'{manage_license_details}'
             f'</div>'
         )
 
@@ -2534,6 +2595,7 @@ def render_super_admin_page(
             {_nav_item("msp", "MSP Dashboard", "!" if any(str(d.get("status","")) == "alarm" for d in msp_districts) else (str(len(msp_districts)) if msp_districts else None))}
             {_nav_item("noc", "Operations", "!" if (health_status and health_status.overall != "ok") or any(bool(t.get("alarm_active")) for t in noc_tenant_data) else None)}
             {_nav_item("districts", "Districts", str(len(msp_districts)) if msp_districts else None)}
+            {_nav_item("billing", "Licensing")}
             {_nav_item("create-school", "Create School")}
             {_nav_item("platform-audit", "Platform Audit")}
             {_nav_item("health", "System Health", None if (not health_status or health_status.overall == 'ok') else "!")}
@@ -2583,6 +2645,20 @@ def render_super_admin_page(
               <p class="pctrl-card-hdr">Email Service</p>
               <p class="pctrl-kpi" style="font-size:1.6rem;">{"Active" if email_configured else "Off"}</p>
               <p class="pctrl-sub"><span class="pctrl-pill {"ok" if email_configured else "warn"}">{"configured" if email_configured else "not configured"}</span></p>
+            </div>
+          </div>
+
+          <p class="eyebrow" style="margin-bottom:12px;margin-top:20px;">Quick Actions</p>
+          <div class="pctrl-grid">
+            <div class="pctrl-card">
+              <p class="pctrl-card-hdr">Manage Licenses</p>
+              <p class="pctrl-sub">District &amp; school license management, plan changes, and override controls.</p>
+              <p style="margin-top:10px;"><a class="button button-secondary" href="/super-admin?section=billing#billing" style="font-size:0.78rem;padding:5px 14px;">Open Licensing &rarr;</a></p>
+            </div>
+            <div class="pctrl-card">
+              <p class="pctrl-card-hdr">Districts &amp; Schools</p>
+              <p class="pctrl-sub">View all districts, school health, and enrollment counts.</p>
+              <p style="margin-top:10px;"><a class="button button-secondary" href="/super-admin?section=districts#districts" style="font-size:0.78rem;padding:5px 14px;">Open Districts &rarr;</a></p>
             </div>
           </div>
 
@@ -3181,8 +3257,8 @@ def render_super_admin_page(
         <section class="panel command-section" id="billing"{_section_style("billing")}>
           <div class="panel-header hero-band">
             <div>
-              <p class="eyebrow">Billing &amp; Subscriptions</p>
-              <h1>Billing &amp; Subscriptions</h1>
+              <p class="eyebrow">Licensing</p>
+              <h1>Licensing</h1>
               <p class="hero-copy">Manage district and school licenses. District licenses cover all schools in the district. School licenses apply to unassigned schools.</p>
             </div>
             <div class="status-row">
