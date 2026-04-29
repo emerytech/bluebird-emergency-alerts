@@ -1409,12 +1409,15 @@ async def _send_basic_push(
     message: str,
     target_user_ids: Optional[set[int]] = None,
     extra_data: Optional[dict] = None,
+    sound_config=None,
 ) -> None:
+    from app.services.push_classification import SoundConfig
     apns_tokens, fcm_tokens = await _push_tokens_for_scope(request, target_user_ids=target_user_ids)
+    cfg = sound_config or SoundConfig.default()
     if apns_tokens:
-        await _apns(request).send_bulk(apns_tokens, message, extra_data=extra_data)
+        await _apns(request).send_bulk(apns_tokens, message, extra_data=extra_data, sound_config=cfg)
     if fcm_tokens:
-        await _fcm(request).send_bulk(fcm_tokens, message, extra_data=extra_data)
+        await _fcm(request).send_bulk(fcm_tokens, message, extra_data=extra_data, sound_config=cfg)
 
 
 async def _send_help_request_push(
@@ -1498,18 +1501,31 @@ async def _send_quiet_period_push_bg(
     title: str,
     message: str,
     extra_data: Optional[dict] = None,
+    sound_config=None,
 ) -> None:
     """Fire-and-forget push with custom title for quiet period status changes."""
+    from app.services.push_classification import SoundConfig
+    cfg = sound_config or SoundConfig.default()
     try:
         coros = []
         if apns_tokens:
-            coros.append(apns.send_with_data(apns_tokens, title, message, extra_data=extra_data))  # type: ignore[union-attr]
+            coros.append(apns.send_with_data(apns_tokens, title, message, extra_data=extra_data, sound_config=cfg))  # type: ignore[union-attr]
         if fcm_tokens:
-            coros.append(fcm.send_with_data(fcm_tokens, title, message, extra_data=extra_data or {}))  # type: ignore[union-attr]
+            coros.append(fcm.send_with_data(fcm_tokens, title, message, extra_data=extra_data or {}, sound_config=cfg))  # type: ignore[union-attr]
         if coros:
             await asyncio.gather(*coros)
     except Exception:
         logger.debug("quiet_period_push_bg failed title=%s", title, exc_info=True)
+
+
+async def _get_sound_config(request: Request):
+    """Load per-tenant notification sound config. Falls back to defaults on error."""
+    from app.services.push_classification import SoundConfig
+    try:
+        tenant_settings = await _settings_store(request).get_effective_settings()
+        return SoundConfig.from_notification_settings(tenant_settings.notifications)
+    except Exception:
+        return SoundConfig.default()
 
 
 async def _dispatch_alert_push(
@@ -1521,8 +1537,9 @@ async def _dispatch_alert_push(
     target_user_ids: Optional[set[int]] = None,
 ) -> None:
     """Route an alert push through Celery (if enabled) or FastAPI BackgroundTasks."""
-    settings = request.app.state.settings  # type: ignore[attr-defined]
-    if getattr(settings, "ENABLE_PUSH_QUEUE", False):
+    app_settings = request.app.state.settings  # type: ignore[attr-defined]
+    sound_config = await _get_sound_config(request)
+    if getattr(app_settings, "ENABLE_PUSH_QUEUE", False):
         apns_tokens, fcm_tokens = await _push_tokens_for_scope(request, target_user_ids=target_user_ids)
         if apns_tokens or fcm_tokens:
             from app.tasks.push_tasks import send_push_task
@@ -1532,6 +1549,8 @@ async def _dispatch_alert_push(
                 message=message,
                 extra_data=extra_data,
                 db_path=_tenant(request).db_path,
+                non_critical_sound_enabled=sound_config.non_critical_sound_enabled,
+                non_critical_sound_name=sound_config.non_critical_sound_name,
             )
     else:
         background_tasks.add_task(
@@ -1540,6 +1559,7 @@ async def _dispatch_alert_push(
             message=message,
             extra_data=extra_data,
             target_user_ids=target_user_ids,
+            sound_config=sound_config,
         )
 
 
@@ -1553,8 +1573,9 @@ async def _dispatch_quiet_period_push(
     extra_data: Optional[dict] = None,
 ) -> None:
     """Route a quiet period push through Celery (if enabled) or direct async send."""
-    settings = request.app.state.settings  # type: ignore[attr-defined]
-    if getattr(settings, "ENABLE_PUSH_QUEUE", False) and (apns_tokens or fcm_tokens):
+    app_settings = request.app.state.settings  # type: ignore[attr-defined]
+    sound_config = await _get_sound_config(request)
+    if getattr(app_settings, "ENABLE_PUSH_QUEUE", False) and (apns_tokens or fcm_tokens):
         from app.tasks.push_tasks import send_push_task
         send_push_task.delay(
             apns_tokens=apns_tokens,
@@ -1563,6 +1584,8 @@ async def _dispatch_quiet_period_push(
             message=message,
             extra_data=extra_data,
             db_path=_tenant(request).db_path,
+            non_critical_sound_enabled=sound_config.non_critical_sound_enabled,
+            non_critical_sound_name=sound_config.non_critical_sound_name,
         )
     else:
         await _send_quiet_period_push_bg(
@@ -1570,6 +1593,7 @@ async def _dispatch_quiet_period_push(
             title=title,
             message=message,
             extra_data=extra_data,
+            sound_config=sound_config,
         )
 
 

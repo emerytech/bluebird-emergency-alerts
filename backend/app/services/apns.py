@@ -12,6 +12,7 @@ import httpx
 import jwt
 
 from app.core.config import Settings
+from app.services.push_classification import SoundConfig, classify_alert_type
 
 
 @dataclass(frozen=True)
@@ -89,7 +90,13 @@ class APNsClient:
         self._jwt_cached_at = now
         return token
 
-    async def send_bulk(self, tokens: List[str], message: str, extra_data: Optional[dict] = None) -> List[APNsSendResult]:
+    async def send_bulk(
+        self,
+        tokens: List[str],
+        message: str,
+        extra_data: Optional[dict] = None,
+        sound_config: Optional[SoundConfig] = None,
+    ) -> List[APNsSendResult]:
         if not tokens:
             return []
 
@@ -97,14 +104,21 @@ class APNsClient:
             return [APNsSendResult(token=t, ok=False, reason="apns_not_configured") for t in tokens]
 
         sem = asyncio.Semaphore(max(1, int(self._settings.APNS_CONCURRENCY)))
+        cfg = sound_config or SoundConfig.default()
 
         async def _guarded_send(t: str) -> APNsSendResult:
             async with sem:
-                return await self._send_one_with_retries(t, message, extra_data)
+                return await self._send_one_with_retries(t, message, extra_data, cfg)
 
         return await asyncio.gather(*(_guarded_send(t) for t in tokens))
 
-    async def _send_one_with_retries(self, token: str, message: str, extra_data: Optional[dict] = None) -> APNsSendResult:
+    async def _send_one_with_retries(
+        self,
+        token: str,
+        message: str,
+        extra_data: Optional[dict] = None,
+        sound_config: Optional[SoundConfig] = None,
+    ) -> APNsSendResult:
         max_retries = max(0, int(self._settings.APNS_MAX_RETRIES))
         last_error: Optional[APNsSendResult] = None
 
@@ -115,7 +129,7 @@ class APNsClient:
                 await asyncio.sleep(delay)
 
             try:
-                result = await self._send_one(token, message, extra_data)
+                result = await self._send_one(token, message, extra_data, sound_config)
                 if result.ok:
                     return result
 
@@ -199,16 +213,18 @@ class APNsClient:
         title: str,
         body: str,
         extra_data: Optional[dict] = None,
+        sound_config: Optional[SoundConfig] = None,
     ) -> List[APNsSendResult]:
         if not tokens:
             return []
         if not self.is_configured():
             return [APNsSendResult(token=t, ok=False, reason="apns_not_configured") for t in tokens]
         sem = asyncio.Semaphore(max(1, int(self._settings.APNS_CONCURRENCY)))
+        cfg = sound_config or SoundConfig.default()
 
         async def _guarded(t: str) -> APNsSendResult:
             async with sem:
-                return await self._send_one_custom(t, title, body, extra_data)
+                return await self._send_one_custom(t, title, body, extra_data, cfg)
 
         return list(await asyncio.gather(*(_guarded(t) for t in tokens)))
 
@@ -218,22 +234,27 @@ class APNsClient:
         title: str,
         body: str,
         extra_data: Optional[dict] = None,
+        sound_config: Optional[SoundConfig] = None,
     ) -> APNsSendResult:
         if not self._client:
             raise RuntimeError("APNs client not started")
         jwt_token = self._get_or_create_jwt()
         url = f"https://{self._settings.apns_host}/3/device/{token}"
+        cfg = sound_config or SoundConfig.default()
+        classification = classify_alert_type(extra_data)
+        priority = cfg.apns_priority(classification)
         headers = {
             "authorization": f"bearer {jwt_token}",
             "apns-topic": self._settings.APNS_BUNDLE_ID or "",
             "apns-push-type": "alert",
-            "apns-priority": "10",
+            "apns-priority": priority,
         }
         payload: dict = {
             "aps": {
                 "alert": {"title": title, "body": body},
-                "sound": "default",
+                "sound": cfg.apns_sound(classification),
                 "badge": 1,
+                "interruption-level": cfg.apns_interruption_level(classification),
             }
         }
         if extra_data:
@@ -250,45 +271,34 @@ class APNsClient:
         self._logger.warning("APNs custom failed token=%s status=%s reason=%s", token[-8:], resp.status_code, reason)
         return APNsSendResult(token=token, ok=False, status_code=resp.status_code, reason=reason)
 
-    async def _send_one(self, token: str, message: str, extra_data: Optional[dict] = None) -> APNsSendResult:
+    async def _send_one(
+        self,
+        token: str,
+        message: str,
+        extra_data: Optional[dict] = None,
+        sound_config: Optional[SoundConfig] = None,
+    ) -> APNsSendResult:
         if not self._client:
             raise RuntimeError("APNs client not started")
 
         jwt_token = self._get_or_create_jwt()
+        cfg = sound_config or SoundConfig.default()
+        classification = classify_alert_type(extra_data)
+        priority = cfg.apns_priority(classification)
 
         url = f"https://{self._settings.apns_host}/3/device/{token}"
         headers = {
             "authorization": f"bearer {jwt_token}",
             "apns-topic": self._settings.APNS_BUNDLE_ID or "",
             "apns-push-type": "alert",
-            "apns-priority": "10",
+            "apns-priority": priority,
         }
-
-        _NON_CRITICAL_TYPES = {
-            "quiet_period_update", "quiet_request", "admin_message",
-            "onboarding", "info",
-        }
-        alert_type = (extra_data or {}).get("type", "")
-        is_non_critical = alert_type in _NON_CRITICAL_TYPES
-        if is_non_critical:
-            sound = "default"
-            interruption_level = "active"
-            apns_priority = "5"
-        elif alert_type == "help_request":
-            sound = "help_request_alert.caf"
-            interruption_level = "time-sensitive"
-            apns_priority = "10"
-        else:
-            sound = "bluebird_alarm.caf"
-            interruption_level = "time-sensitive"
-            apns_priority = "10"
-        headers["apns-priority"] = apns_priority
         payload: dict = {
             "aps": {
                 "alert": {"title": "BlueBird Alert", "body": message},
-                "sound": sound,
+                "sound": cfg.apns_sound(classification),
                 "badge": 1,
-                "interruption-level": interruption_level,
+                "interruption-level": cfg.apns_interruption_level(classification),
             }
         }
         if extra_data:

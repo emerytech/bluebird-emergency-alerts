@@ -88,6 +88,9 @@ def send_push_task(
     extra_data: Optional[dict[str, Any]] = None,
     # Pass tenant DB path so the worker can archive invalid tokens.
     db_path: Optional[str] = None,
+    # Per-tenant non-critical sound preferences (from NotificationSettings).
+    non_critical_sound_enabled: bool = True,
+    non_critical_sound_name: str = "notification_soft",
 ) -> dict:
     """
     Send push notifications to the provided token lists.
@@ -97,8 +100,13 @@ def send_push_task(
     Invalid tokens reported by the provider are archived immediately.
     """
     import asyncio
+    from app.services.push_classification import SoundConfig
 
     extra = extra_data or {}
+    sound_cfg = SoundConfig(
+        non_critical_sound_enabled=non_critical_sound_enabled,
+        non_critical_sound_name=non_critical_sound_name,
+    )
     results: dict[str, Any] = {
         "apns_sent": 0, "apns_failed": 0,
         "fcm_sent": 0, "fcm_failed": 0,
@@ -119,15 +127,15 @@ def send_push_task(
 
         if apns and apns_tokens:
             if title:
-                coros.append(_send_apns_with_data(apns, apns_tokens, title, message, extra, db_path, results))
+                coros.append(_send_apns_with_data(apns, apns_tokens, title, message, extra, db_path, results, sound_cfg))
             else:
-                coros.append(_send_apns_bulk(apns, apns_tokens, message, extra, db_path, results))
+                coros.append(_send_apns_bulk(apns, apns_tokens, message, extra, db_path, results, sound_cfg))
 
         if fcm and fcm_tokens:
             if title:
-                coros.append(_send_fcm_with_data(fcm, fcm_tokens, title, message, extra, db_path, results))
+                coros.append(_send_fcm_with_data(fcm, fcm_tokens, title, message, extra, db_path, results, sound_cfg))
             else:
-                coros.append(_send_fcm_bulk(fcm, fcm_tokens, message, extra, db_path, results))
+                coros.append(_send_fcm_bulk(fcm, fcm_tokens, message, extra, db_path, results, sound_cfg))
 
         if coros:
             await _asyncio.gather(*coros, return_exceptions=True)
@@ -146,36 +154,36 @@ def send_push_task(
     return results
 
 
-async def _send_apns_bulk(apns, tokens, message, extra, db_path, results):
+async def _send_apns_bulk(apns, tokens, message, extra, db_path, results, sound_config=None):
     try:
-        send_results = await apns.send_bulk(tokens, message, extra_data=extra)
+        send_results = await apns.send_bulk(tokens, message, extra_data=extra, sound_config=sound_config)
         _process_apns_results(send_results, tokens, db_path, results)
     except Exception:
         logger.warning("apns_bulk_error", exc_info=True)
         results["apns_failed"] += len(tokens)
 
 
-async def _send_apns_with_data(apns, tokens, title, message, extra, db_path, results):
+async def _send_apns_with_data(apns, tokens, title, message, extra, db_path, results, sound_config=None):
     try:
-        send_results = await apns.send_with_data(tokens, title, message, extra_data=extra)
+        send_results = await apns.send_with_data(tokens, title, message, extra_data=extra, sound_config=sound_config)
         _process_apns_results(send_results, tokens, db_path, results)
     except Exception:
         logger.warning("apns_with_data_error", exc_info=True)
         results["apns_failed"] += len(tokens)
 
 
-async def _send_fcm_bulk(fcm, tokens, message, extra, db_path, results):
+async def _send_fcm_bulk(fcm, tokens, message, extra, db_path, results, sound_config=None):
     try:
-        send_results = await fcm.send_bulk(tokens, message, extra_data=extra)
+        send_results = await fcm.send_bulk(tokens, message, extra_data=extra, sound_config=sound_config)
         _process_fcm_results(send_results, tokens, db_path, results)
     except Exception:
         logger.warning("fcm_bulk_error", exc_info=True)
         results["fcm_failed"] += len(tokens)
 
 
-async def _send_fcm_with_data(fcm, tokens, title, message, extra, db_path, results):
+async def _send_fcm_with_data(fcm, tokens, title, message, extra, db_path, results, sound_config=None):
     try:
-        send_results = await fcm.send_with_data(tokens, title, message, extra_data=extra)
+        send_results = await fcm.send_with_data(tokens, title, message, extra_data=extra, sound_config=sound_config)
         _process_fcm_results(send_results, tokens, db_path, results)
     except Exception:
         logger.warning("fcm_with_data_error", exc_info=True)

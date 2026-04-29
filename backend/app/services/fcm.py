@@ -9,6 +9,7 @@ import firebase_admin
 from firebase_admin import credentials, exceptions as firebase_exceptions, messaging
 
 from app.core.config import Settings
+from app.services.push_classification import SoundConfig, classify_alert_type
 
 
 @dataclass(frozen=True)
@@ -55,12 +56,19 @@ class FCMClient:
     def is_configured(self) -> bool:
         return self._settings.fcm_is_configured()
 
-    async def send_bulk(self, tokens: List[str], message: str, extra_data: Optional[dict] = None) -> List[FCMSendResult]:
+    async def send_bulk(
+        self,
+        tokens: List[str],
+        message: str,
+        extra_data: Optional[dict] = None,
+        sound_config: Optional[SoundConfig] = None,
+    ) -> List[FCMSendResult]:
         if not tokens:
             return []
         if not self._app:
             return [FCMSendResult(token=t, ok=False, status_code=None, reason="fcm_not_configured") for t in tokens]
-        return await anyio.to_thread.run_sync(self._send_bulk_sync, tokens, message, extra_data or {})
+        cfg = sound_config or SoundConfig.default()
+        return await anyio.to_thread.run_sync(self._send_bulk_sync, tokens, message, extra_data or {}, cfg)
 
     async def send_with_data(
         self,
@@ -68,13 +76,15 @@ class FCMClient:
         title: str,
         body: str,
         extra_data: Optional[dict] = None,
+        sound_config: Optional[SoundConfig] = None,
     ) -> List[FCMSendResult]:
         if not tokens:
             return []
         if not self._app:
             return [FCMSendResult(token=t, ok=False, status_code=None, reason="fcm_not_configured") for t in tokens]
+        cfg = sound_config or SoundConfig.default()
         return await anyio.to_thread.run_sync(
-            self._send_with_data_sync, tokens, title, body, extra_data or {}
+            self._send_with_data_sync, tokens, title, body, extra_data or {}, cfg
         )
 
     def _send_with_data_sync(
@@ -83,14 +93,22 @@ class FCMClient:
         title: str,
         body: str,
         extra_data: dict,
+        sound_config: Optional[SoundConfig] = None,
     ) -> List[FCMSendResult]:
         assert self._app is not None
+        cfg = sound_config or SoundConfig.default()
+        classification = classify_alert_type(extra_data)
+        channel_id = cfg.fcm_channel_id(classification)
+        fcm_sound = cfg.fcm_sound(classification)
         data: dict = {
             "title": title,
             "body": body,
             "message": body,
-            "channel_id": "bluebird_alerts",
+            "channel_id": channel_id,
+            "sound_profile": classification,
         }
+        if fcm_sound:
+            data["sound"] = fcm_sound
         data.update({str(k): str(v) for k, v in extra_data.items()})
         messages = [
             messaging.Message(
@@ -124,18 +142,32 @@ class FCMClient:
             )
         return results
 
-    def _send_bulk_sync(self, tokens: List[str], message: str, extra_data: dict = {}) -> List[FCMSendResult]:
+    def _send_bulk_sync(
+        self,
+        tokens: List[str],
+        message: str,
+        extra_data: dict = {},
+        sound_config: Optional[SoundConfig] = None,
+    ) -> List[FCMSendResult]:
         assert self._app is not None
+        cfg = sound_config or SoundConfig.default()
+        classification = classify_alert_type(extra_data)
+        channel_id = cfg.fcm_channel_id(classification)
+        fcm_sound = cfg.fcm_sound(classification)
         data: dict = {
             "title": "BlueBird Alert",
             "body": message,
             "message": message,
-            "sound": "bluebird_alarm",
-            "channel_id": "bluebird_alerts",
-            "full_screen": "1",
-            "open_alarm": "1",
-            "category": "alarm",
+            "channel_id": channel_id,
+            "sound_profile": classification,
         }
+        if fcm_sound:
+            data["sound"] = fcm_sound
+        # Critical and help_request alerts activate the full-screen alarm UI.
+        if classification != "non_critical":
+            data["full_screen"] = "1"
+            data["open_alarm"] = "1"
+            data["category"] = "alarm"
         data.update({str(k): str(v) for k, v in extra_data.items()})
         messages = [
             messaging.Message(
