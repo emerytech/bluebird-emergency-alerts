@@ -149,7 +149,9 @@ from app.services.permissions import (
     can_trigger_alarm,
     can_deactivate_alarm as _can_deactivate_alarm,
     can_archive_user,
+    can_edit_settings,
     can_generate_codes,
+    can_view_settings,
     is_dashboard_role,
     role_display_label,
     valid_tenant_roles,
@@ -8704,3 +8706,140 @@ async def super_admin_delete_test_district(district_id: int, request: Request) -
     else:
         _set_flash(request, error="District delete failed (may already be removed).")
     return RedirectResponse(url=_super_admin_url("sandbox"), status_code=status.HTTP_303_SEE_OTHER)
+
+
+# =============================================================================
+# Phase 6 — Tenant Settings API
+# =============================================================================
+
+def _admin_role(request: Request) -> str:
+    """Return the role string for the currently authenticated admin user."""
+    return str(getattr(getattr(request.state, "admin_user", None), "role", "")).strip().lower()
+
+
+@router.get("/admin/settings/effective", include_in_schema=False)
+async def admin_get_effective_settings(request: Request) -> JSONResponse:
+    """Return the full effective settings dict for the current tenant."""
+    await _require_dashboard_admin(request)
+    if not can_view_settings(_admin_role(request)):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions.")
+    from app.services.tenant_settings import effective_settings_dict
+    settings = await _settings_store(request).get_effective_settings()
+    return JSONResponse(effective_settings_dict(settings))
+
+
+@router.get("/admin/settings/history", include_in_schema=False)
+async def admin_get_settings_history(request: Request, limit: int = Query(default=50, ge=1, le=200)) -> JSONResponse:
+    """Return the last N settings change records for the current tenant."""
+    await _require_dashboard_admin(request)
+    if not can_view_settings(_admin_role(request)):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions.")
+    records = await _settings_store(request).get_history(limit=limit)
+    return JSONResponse([
+        {
+            "id": r.id,
+            "field": r.field,
+            "old_value": r.old_value,
+            "new_value": r.new_value,
+            "changed_at": r.changed_at,
+            "changed_by_label": r.changed_by_label,
+            "is_undone": r.is_undone,
+        }
+        for r in records
+    ])
+
+
+async def _update_settings_category(request: Request, category: str) -> JSONResponse:
+    """Shared implementation for all per-category settings PATCH endpoints."""
+    from app.services.tenant_settings import effective_settings_dict
+    await _require_dashboard_admin(request)
+    role = _admin_role(request)
+    if not can_edit_settings(role, category):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions.")
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid JSON body.")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Request body must be a JSON object.")
+    patch = {category: body}
+    actor_label = _current_school_actor_label(request)
+    new_settings, errors = await _settings_store(request).update_settings(patch, actor_label=actor_label)
+    if errors:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail={"errors": errors})
+    _fire_audit(
+        request,
+        "settings_updated",
+        actor_user_id=_session_user_id(request),
+        actor_label=actor_label,
+        target_type="settings",
+        target_id=category,
+        metadata={"category": category, "patch": body},
+    )
+    return JSONResponse(effective_settings_dict(new_settings))
+
+
+@router.post("/admin/settings/notifications", include_in_schema=False)
+async def admin_update_notification_settings(request: Request) -> JSONResponse:
+    """Update notification settings for the current tenant. District admin or higher only."""
+    return await _update_settings_category(request, "notifications")
+
+
+@router.post("/admin/settings/quiet_periods", include_in_schema=False)
+async def admin_update_quiet_period_settings(request: Request) -> JSONResponse:
+    """Update quiet period settings for the current tenant. District admin or higher only."""
+    return await _update_settings_category(request, "quiet_periods")
+
+
+@router.post("/admin/settings/alerts", include_in_schema=False)
+async def admin_update_alert_settings(request: Request) -> JSONResponse:
+    """Update alert settings for the current tenant. District admin or higher only."""
+    return await _update_settings_category(request, "alerts")
+
+
+@router.post("/admin/settings/devices", include_in_schema=False)
+async def admin_update_device_settings(request: Request) -> JSONResponse:
+    """Update device settings for the current tenant. District admin or higher only."""
+    return await _update_settings_category(request, "devices")
+
+
+@router.post("/admin/settings/access_codes", include_in_schema=False)
+async def admin_update_access_code_settings(request: Request) -> JSONResponse:
+    """Update access code settings for the current tenant. District admin or higher only."""
+    return await _update_settings_category(request, "access_codes")
+
+
+@router.post("/admin/settings/reset", include_in_schema=False)
+async def admin_reset_settings(request: Request) -> JSONResponse:
+    """Reset all tenant settings to factory defaults. District admin or higher only."""
+    from app.services.tenant_settings import effective_settings_dict
+    from app.services.permissions import (
+        PERM_SETTINGS_EDIT_NOTIFICATIONS,
+        PERM_SETTINGS_EDIT_QUIET_PERIODS,
+        PERM_SETTINGS_EDIT_ALERTS,
+        PERM_SETTINGS_EDIT_DEVICES,
+        PERM_SETTINGS_EDIT_ACCESS_CODES,
+    )
+    await _require_dashboard_admin(request)
+    role = _admin_role(request)
+    all_settings_perms = {
+        PERM_SETTINGS_EDIT_NOTIFICATIONS,
+        PERM_SETTINGS_EDIT_QUIET_PERIODS,
+        PERM_SETTINGS_EDIT_ALERTS,
+        PERM_SETTINGS_EDIT_DEVICES,
+        PERM_SETTINGS_EDIT_ACCESS_CODES,
+    }
+    if not can_any(role, all_settings_perms):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions.")
+    actor_label = _current_school_actor_label(request)
+    new_settings = await _settings_store(request).reset_to_defaults(actor_label=actor_label)
+    _fire_audit(
+        request,
+        "settings_reset_to_defaults",
+        actor_user_id=_session_user_id(request),
+        actor_label=actor_label,
+        target_type="settings",
+        target_id="all",
+        metadata={"action": "reset_to_defaults"},
+    )
+    return JSONResponse(effective_settings_dict(new_settings))
