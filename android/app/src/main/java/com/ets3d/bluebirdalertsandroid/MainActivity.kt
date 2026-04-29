@@ -45,6 +45,7 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -419,7 +420,7 @@ internal fun ensureNotificationChannel(context: Context) {
     }
 }
 
-private data class AuthUser(
+internal data class AuthUser(
     val userId: Int,
     val name: String,
     val role: String,
@@ -428,7 +429,7 @@ private data class AuthUser(
     val canDeactivateAlarm: Boolean,
 )
 
-private data class SchoolOption(
+internal data class SchoolOption(
     val name: String,
     val slug: String,
     val path: String,
@@ -591,7 +592,7 @@ data class TenantOverviewItem(
     val acknowledgementRate: Double,
 )
 
-private data class MeData(
+internal data class MeData(
     val userId: Int,
     val name: String,
     val role: String,
@@ -991,7 +992,7 @@ class MainViewModel : ViewModel() {
         }
     }
 
-    fun getClient(): BackendClient? = client
+    internal fun getClient(): BackendClient? = client
 
     fun refreshAuditLog(ctx: Context) {
         val userId = getUserId(ctx).toIntOrNull() ?: return
@@ -2166,6 +2167,7 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
     var trainingModeEnabled by remember { mutableStateOf(false) }
     var trainingLabel by remember { mutableStateOf("This is a drill") }
     var pendingAlertAction by remember { mutableStateOf<SafetyAction?>(null) }
+    var showEmergencyModal by remember { mutableStateOf(false) }
     var showDistrictView by remember { mutableStateOf(false) }
     var quietActionPendingId by remember { mutableStateOf<Int?>(null) }
     var quietActionPendingIsApprove by remember { mutableStateOf(true) }
@@ -2524,9 +2526,7 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                 )
             } else {
                 Column(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .verticalScroll(rememberScrollState()),
+                    modifier = Modifier.fillMaxSize(),
                 ) {
                     Surface(
                         modifier = Modifier
@@ -2582,6 +2582,40 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                         )
                     }
 
+                    // ── Alarm status / activate button ───────────────────────
+                    AlarmBanner(
+                        alarm = state.alarm,
+                        schoolName = effectiveSchoolName,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 20.dp, vertical = 8.dp),
+                    )
+                    if (!state.alarm.isActive) {
+                        Button(
+                            onClick = { showEmergencyModal = true },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 20.dp, vertical = 4.dp)
+                                .height(56.dp),
+                            shape = RoundedCornerShape(14.dp),
+                            enabled = !state.isBusy,
+                            colors = ButtonDefaults.buttonColors(containerColor = AlarmRed),
+                        ) {
+                            Text(
+                                "🚨 Activate Emergency",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 18.sp,
+                            )
+                        }
+                    }
+
+                    // ── Scrollable content ────────────────────────────────────
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .verticalScroll(rememberScrollState()),
+                    ) {
+
                     ActiveSafetyFeedCard(
                         selectedTab = feedTab,
                         onSelectTab = { feedTab = it },
@@ -2619,15 +2653,6 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                             .padding(horizontal = 20.dp, vertical = 8.dp),
                     )
 
-                    // ── Alarm banner ─────────────────────────────────────────
-                    AlarmBanner(
-                        alarm = state.alarm,
-                        schoolName = effectiveSchoolName,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 20.dp, vertical = 8.dp),
-                    )
-
                     if (state.alarm.broadcasts.isNotEmpty()) {
                         BroadcastsCard(
                             broadcasts = state.alarm.broadcasts,
@@ -2636,24 +2661,6 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                                 .padding(horizontal = 20.dp, vertical = 8.dp),
                         )
                     }
-                    SafetyActionGrid(
-                        actions = safetyActions,
-                        enabled = !state.isBusy && !state.alarm.isActive,
-                        onActivate = { action ->
-                            if (activationInFlight || state.isBusy || state.alarm.isActive) return@SafetyActionGrid
-                            activationInFlight = true
-                            pendingAlertAction = action
-                        },
-                        onHoldVisual = { active, progress, color ->
-                            holdFlashActive = active
-                            holdFlashProgress = progress.coerceIn(0f, 1f)
-                            holdFlashColor = color
-                        },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 20.dp, vertical = 8.dp),
-                    )
-
                     DashboardPanelTabsCard(
                         activePanel = activePanel,
                         onSelectPanel = { activePanel = it },
@@ -2751,8 +2758,6 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                         }
                     }
 
-                    Spacer(Modifier.weight(1f))
-
                     // ── Action buttons ───────────────────────────────────────
                     Column(
                         modifier = Modifier
@@ -2832,6 +2837,7 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                             textAlign = TextAlign.Center,
                             modifier = Modifier.fillMaxWidth(),
                         )
+                    }
                     }
                 }
             }
@@ -3105,6 +3111,18 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
         )
     }
 
+    if (showEmergencyModal) {
+        EmergencyTypeModal(
+            actions = safetyActions,
+            onSelect = { action ->
+                showEmergencyModal = false
+                activationInFlight = true
+                pendingAlertAction = action
+            },
+            onDismiss = { showEmergencyModal = false },
+        )
+    }
+
     pendingAlertAction?.let { action ->
         AlertDialog(
             onDismissRequest = {
@@ -3156,6 +3174,51 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
 }
 
 // ── Composable components ──────────────────────────────────────────────────────
+
+@Composable
+private fun EmergencyTypeModal(
+    actions: List<SafetyAction>,
+    onSelect: (SafetyAction) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = SurfaceMain,
+        title = { Text("Select Emergency Type", color = TextPri, fontWeight = FontWeight.Bold) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                actions.forEach { action ->
+                    Surface(
+                        onClick = { onSelect(action) },
+                        color = action.color.copy(alpha = 0.12f),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(14.dp),
+                        ) {
+                            Text(action.symbol, fontSize = 24.sp)
+                            Text(
+                                action.title,
+                                color = TextPri,
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 15.sp,
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel", color = TextMuted)
+            }
+        },
+    )
+}
 
 @Composable
 private fun ConnectionDot(connected: Boolean?) {
@@ -6192,7 +6255,7 @@ data class TenantSettings(
 )
 
 // ── Backend client ─────────────────────────────────────────────────────────────
-private class BackendClient(baseUrl: String, private val apiKey: String) {
+internal class BackendClient(baseUrl: String, private val apiKey: String) {
     private val http = OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)
         .readTimeout(10, TimeUnit.SECONDS)
@@ -7155,7 +7218,7 @@ private class BackendClient(baseUrl: String, private val apiKey: String) {
     }
 }
 
-private data class MessageInboxResponse(
+internal data class MessageInboxResponse(
     val unreadCount: Int,
     val messages: List<AdminInboxMessage>,
 )

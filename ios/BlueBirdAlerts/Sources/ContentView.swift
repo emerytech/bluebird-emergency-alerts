@@ -1,8 +1,45 @@
 import SwiftUI
 
+private enum EmergencyType: String, CaseIterable, Identifiable {
+    case secure, lockdown, evacuate, shelter, hold
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .secure:   return "Secure"
+        case .lockdown: return "Lockdown"
+        case .evacuate: return "Evacuate"
+        case .shelter:  return "Shelter in Place"
+        case .hold:     return "Hold"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .secure:   return "🔐"
+        case .lockdown: return "🔒"
+        case .evacuate: return "🚶"
+        case .shelter:  return "🏠"
+        case .hold:     return "⏸"
+        }
+    }
+
+    var message: String {
+        switch self {
+        case .secure:   return "SECURE emergency initiated. Follow school secure procedures."
+        case .lockdown: return "LOCKDOWN emergency initiated. Follow lockdown procedures immediately."
+        case .evacuate: return "EVACUATE emergency initiated. Move to evacuation locations now."
+        case .shelter:  return "SHELTER emergency initiated. Move into shelter protocol."
+        case .hold:     return "HOLD emergency initiated. Keep current position until cleared."
+        }
+    }
+}
+
 struct ContentView: View {
     @EnvironmentObject private var appState: AppState
-    @State private var message: String = "Emergency alert. Please follow school procedures."
+    @State private var showEmergencyTypeSheet: Bool = false
+    @State private var pendingEmergencyMessage: String = ""
     @State private var showConfirm: Bool = false
     @State private var isSending: Bool = false
     @State private var showSettings: Bool = false
@@ -28,16 +65,12 @@ struct ContentView: View {
                     }
                 }
 
-                TextField("Alert message", text: $message, axis: .vertical)
-                    .textFieldStyle(.roundedBorder)
-                    .lineLimit(2...4)
-
                 Button {
-                    showConfirm = true
+                    showEmergencyTypeSheet = true
                 } label: {
-                    Text(isSending ? "Sending…" : "PANIC")
-                        .font(.system(size: 32, weight: .heavy))
-                        .frame(maxWidth: .infinity, minHeight: 120)
+                    Label(isSending ? "Sending…" : "Activate Emergency", systemImage: "exclamationmark.triangle.fill")
+                        .font(.system(size: 22, weight: .heavy))
+                        .frame(maxWidth: .infinity, minHeight: 100)
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(.red)
@@ -45,10 +78,10 @@ struct ContentView: View {
                 .alert("Send emergency alert?", isPresented: $showConfirm) {
                     Button("Cancel", role: .cancel) {}
                     Button("Send", role: .destructive) {
-                        Task { await sendPanic() }
+                        Task { await sendEmergency() }
                     }
                 } message: {
-                    Text(message)
+                    Text(pendingEmergencyMessage)
                 }
 
                 Button {
@@ -82,6 +115,42 @@ struct ContentView: View {
             }
             .navigationDestination(isPresented: $showSettings) {
                 SettingsView()
+            }
+            .sheet(isPresented: $showEmergencyTypeSheet) {
+                NavigationStack {
+                    List {
+                        Section {
+                            ForEach(EmergencyType.allCases) { type in
+                                Button {
+                                    pendingEmergencyMessage = type.message
+                                    showEmergencyTypeSheet = false
+                                    showConfirm = true
+                                } label: {
+                                    HStack(spacing: 16) {
+                                        Text(type.symbol)
+                                            .font(.title2)
+                                        Text(type.title)
+                                            .font(.headline)
+                                            .foregroundStyle(.primary)
+                                    }
+                                    .padding(.vertical, 4)
+                                }
+                                .tint(.primary)
+                            }
+                        } header: {
+                            Text("Select Emergency Type")
+                        }
+                    }
+                    .navigationTitle("Activate Emergency")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .topBarLeading) {
+                            Button("Cancel") {
+                                showEmergencyTypeSheet = false
+                            }
+                        }
+                    }
+                }
             }
             .sheet(isPresented: $showMessageAdminSheet) {
                 NavigationStack {
@@ -171,17 +240,17 @@ struct ContentView: View {
         }
     }
 
-    private func sendPanic() async {
-        guard !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+    private func sendEmergency() async {
+        guard !pendingEmergencyMessage.isEmpty else { return }
         isSending = true
         defer { isSending = false }
 
         do {
-            let resp = try await api.panic(message: message)
+            let resp = try await api.panic(message: pendingEmergencyMessage)
             appState.lastStatus = "Alert #\(resp.alertId) sent. ok=\(resp.succeeded) failed=\(resp.failed)"
             appState.lastError = nil
         } catch {
-            appState.lastError = "Panic failed: \(error.localizedDescription)"
+            appState.lastError = "Alert failed: \(error.localizedDescription)"
         }
     }
 

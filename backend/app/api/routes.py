@@ -162,6 +162,15 @@ from app.services.platform_admin_store import PlatformAdminStore
 from app.services.quiet_state_store import QuietStateStore
 from app.services.school_registry import SchoolRegistry
 from app.services.tenant_billing_store import TenantBillingStore
+from app.services.billing_service import (
+    generate_license_key,
+    generate_invoice_number,
+    get_banner_info,
+    get_effective_status,
+    get_days_remaining,
+    VALID_PLAN_TYPES,
+    VALID_BILLING_STATUSES,
+)
 from app.services.totp import generate_secret as generate_totp_secret, otpauth_uri, verify_code as verify_totp_code
 from app.services.user_store import UserStore
 from app.services.user_tenant_store import UserTenantStore
@@ -503,6 +512,7 @@ async def _resolve_admin_tenant_scope(
 
     available_by_slug: dict[str, object] = {str(current_school.slug): current_school}
     if str(getattr(admin_user, "role", "")).strip().lower() == "district_admin":
+        # Explicit assignment-based grants (manual / legacy)
         assignments = await _user_tenants(request).list_assignments(
             user_id=int(admin_user.id),
             home_tenant_id=int(current_school.id),
@@ -513,6 +523,14 @@ async def _resolve_admin_tenant_scope(
             for school in all_schools:
                 if int(school.id) in assigned_ids:
                     available_by_slug[str(school.slug)] = school
+
+        # District-id-based resolution: all buildings in the same district are automatically visible,
+        # including schools added after the district_admin account was created.
+        district_id = getattr(current_school, "district_id", None)
+        if district_id is not None:
+            district_schools = await _schools(request).list_schools_by_district(int(district_id))
+            for school in district_schools:
+                available_by_slug[str(school.slug)] = school
 
     available_schools = sorted(
         available_by_slug.values(),
@@ -2372,6 +2390,11 @@ async def admin_dashboard(
         if can_view_settings(_admin_role):
             _effective_settings = await _settings_store(request).get_effective_settings()
             _can_edit_tenant_settings = can_edit_settings(_admin_role, "notifications")
+    # Load billing banner for admin console (always; cheap single-row read)
+    _billing_record = await _tenant_billing(request).ensure_tenant_billing(
+        tenant_id=int(request.state.school.id)
+    )
+    _billing_banner = get_banner_info(_billing_record)
     _access_code_records: list = []
     if can_generate_codes(_admin_role) and selected_section in {"access-codes", "user-management"}:
         _access_code_records = await _access_codes(request).list_codes(str(request.state.school.slug), limit=500, include_archived=True)
@@ -2441,6 +2464,7 @@ async def admin_dashboard(
         is_demo_mode=bool(getattr(request.state.school, "is_test", False)),
         effective_settings=_effective_settings,
         can_edit_tenant_settings=_can_edit_tenant_settings,
+        billing_banner=_billing_banner,
     )
     return HTMLResponse(content=html)
 
@@ -3496,25 +3520,53 @@ async def super_admin_dashboard(
                 "user_count": admin_count,
             }
         )
-        billing_status_class = "ok" if billing_status in {"active", "trial", "free"} else "danger"
-        free_override_class = "ok" if billing.is_free_override else "danger"
+        _eff_status = get_effective_status(billing)
+        _days_left = get_days_remaining(billing)
+        billing_status_class = (
+            "ok" if _eff_status in {"active", "manual_override"}
+            else "warn" if _eff_status in {"trial", "past_due"}
+            else "danger"
+        )
+        override_class = "ok" if (billing.override_enabled or billing.is_free_override) else ""
         billing_rows.append(
             {
                 "name": school.name,
                 "slug": school.slug,
-                "plan_id": billing.plan_id or "—",
+                "district_id": billing.district_id,
+                "customer_name": billing.customer_name or "",
+                "customer_email": billing.customer_email or "",
+                "plan_type": billing.plan_type or billing.plan_id or "trial",
+                "plan_id": billing.plan_id or billing.plan_type or "trial",
                 "billing_status": billing_status,
+                "effective_status": _eff_status,
                 "billing_status_class": billing_status_class,
-                "trial_end": billing.trial_end or "—",
-                "renewal_date": billing.renewal_date or "—",
-                "free_override_label": "Enabled" if billing.is_free_override else "Disabled",
-                "free_override_class": free_override_class,
-                "free_reason": billing.free_reason or "—",
-                "stripe_customer_id": billing.stripe_customer_id or "—",
-                "stripe_subscription_id": billing.stripe_subscription_id or "—",
+                "license_key": billing.license_key or "",
+                "license_key_suffix": (billing.license_key or "")[-9:],
+                "starts_at": (billing.starts_at or "")[:10],
+                "trial_end": (billing.trial_ends_at or billing.trial_end or "")[:10],
+                "current_period_start": (billing.current_period_start or "")[:10],
+                "current_period_end": (billing.current_period_end or "")[:10],
+                "renewal_date": (billing.renewal_date or "")[:10],
+                "days_remaining": _days_left,
+                "override_enabled": billing.override_enabled or billing.is_free_override,
+                "override_reason": billing.override_reason or billing.free_reason or "",
+                "override_class": override_class,
+                "internal_notes": billing.internal_notes or "",
+                "free_override_label": "Override Active" if (billing.override_enabled or billing.is_free_override) else "No Override",
+                "free_override_class": override_class,
+                "free_reason": billing.override_reason or billing.free_reason or "—",
+                "stripe_customer_id": billing.stripe_customer_id or "",
+                "stripe_subscription_id": billing.stripe_subscription_id or "",
                 "start_trial_action": f"/super-admin/schools/{school.slug}/billing/start-trial",
                 "grant_free_action": f"/super-admin/schools/{school.slug}/billing/grant-free",
                 "remove_free_action": f"/super-admin/schools/{school.slug}/billing/remove-free",
+                "generate_license_action": f"/super-admin/schools/{school.slug}/billing/generate-license",
+                "set_status_action": f"/super-admin/schools/{school.slug}/billing/set-status",
+                "set_plan_action": f"/super-admin/schools/{school.slug}/billing/set-plan",
+                "update_details_action": f"/super-admin/schools/{school.slug}/billing/update-details",
+                "toggle_override_action": f"/super-admin/schools/{school.slug}/billing/toggle-override",
+                "add_payment_action": f"/super-admin/schools/{school.slug}/billing/add-payment",
+                "create_invoice_action": f"/super-admin/schools/{school.slug}/billing/create-invoice",
             }
         )
     hm = _health_monitor(request)
@@ -4137,6 +4189,328 @@ async def super_admin_remove_tenant_free_access(
         renewal_date=existing.renewal_date,
     )
     _set_flash(request, message=f"Removed free-access override for {school.name}.")
+    return RedirectResponse(url=_super_admin_url("billing"), status_code=status.HTTP_303_SEE_OTHER)
+
+
+# ── Billing: generate / renew license ─────────────────────────────────────────
+
+
+@router.post("/super-admin/schools/{slug}/billing/generate-license", include_in_schema=False)
+async def super_admin_generate_license(
+    request: Request,
+    slug: str,
+    plan_type: str = Form(default="basic"),
+    starts_at: str = Form(default=""),
+    current_period_end: str = Form(default=""),
+    trial_ends_at: str = Form(default=""),
+    customer_name: str = Form(default=""),
+    customer_email: str = Form(default=""),
+    internal_notes: str = Form(default=""),
+) -> RedirectResponse:
+    _require_super_admin(request)
+    from app.services.tenant_manager import normalize_school_slug
+
+    normalized_slug = normalize_school_slug(slug)
+    school = await _schools(request).get_by_slug(normalized_slug)
+    if school is None:
+        _set_flash(request, error="School not found.")
+        return RedirectResponse(url=_super_admin_url("billing"), status_code=status.HTTP_303_SEE_OTHER)
+    if plan_type.strip().lower() not in VALID_PLAN_TYPES:
+        _set_flash(request, error=f"Invalid plan type '{plan_type}'.")
+        return RedirectResponse(url=_super_admin_url("billing"), status_code=status.HTTP_303_SEE_OTHER)
+
+    now = datetime.now(timezone.utc)
+    new_key = generate_license_key()
+    new_status = "trial" if plan_type.strip().lower() == "trial" else "active"
+    await _tenant_billing(request).update_billing_full(
+        tenant_id=int(school.id),
+        tenant_slug=school.slug,
+        district_id=int(getattr(school, "district_id", None) or 0) or None,
+        customer_name=customer_name.strip() or None,
+        customer_email=customer_email.strip() or None,
+        plan_type=plan_type.strip().lower(),
+        billing_status=new_status,
+        license_key=new_key,
+        starts_at=starts_at.strip() or now.isoformat(),
+        trial_ends_at=trial_ends_at.strip() or None,
+        current_period_start=starts_at.strip() or now.isoformat(),
+        current_period_end=current_period_end.strip() or None,
+        renewal_date=current_period_end.strip() or None,
+        internal_notes=internal_notes.strip() or None,
+    )
+    actor = _super_admin_actor_label(request)
+    _fire_audit(
+        request,
+        "license_generated",
+        actor_label=actor,
+        target_type="tenant",
+        target_id=school.slug,
+        metadata={"plan_type": plan_type, "license_key_suffix": new_key[-9:]},
+    )
+    _set_flash(request, message=f"License generated for {school.name}: {new_key}")
+    return RedirectResponse(url=_super_admin_url("billing"), status_code=status.HTTP_303_SEE_OTHER)
+
+
+# ── Billing: set status ────────────────────────────────────────────────────────
+
+
+@router.post("/super-admin/schools/{slug}/billing/set-status", include_in_schema=False)
+async def super_admin_set_billing_status(
+    request: Request,
+    slug: str,
+    new_status: str = Form(...),
+) -> RedirectResponse:
+    _require_super_admin(request)
+    from app.services.tenant_manager import normalize_school_slug
+
+    normalized_slug = normalize_school_slug(slug)
+    school = await _schools(request).get_by_slug(normalized_slug)
+    if school is None:
+        _set_flash(request, error="School not found.")
+        return RedirectResponse(url=_super_admin_url("billing"), status_code=status.HTTP_303_SEE_OTHER)
+    clean_status = new_status.strip().lower()
+    if clean_status not in VALID_BILLING_STATUSES:
+        _set_flash(request, error=f"Invalid billing status '{new_status}'.")
+        return RedirectResponse(url=_super_admin_url("billing"), status_code=status.HTTP_303_SEE_OTHER)
+    existing = await _tenant_billing(request).ensure_tenant_billing(tenant_id=int(school.id))
+    await _tenant_billing(request).update_billing_full(
+        tenant_id=int(school.id),
+        tenant_slug=school.slug,
+        billing_status=clean_status,
+    )
+    actor = _super_admin_actor_label(request)
+    _fire_audit(
+        request,
+        "billing_status_changed",
+        actor_label=actor,
+        target_type="tenant",
+        target_id=school.slug,
+        metadata={"before": existing.billing_status, "after": clean_status},
+    )
+    _set_flash(request, message=f"Billing status for {school.name} set to '{clean_status}'.")
+    return RedirectResponse(url=_super_admin_url("billing"), status_code=status.HTTP_303_SEE_OTHER)
+
+
+# ── Billing: set plan ─────────────────────────────────────────────────────────
+
+
+@router.post("/super-admin/schools/{slug}/billing/set-plan", include_in_schema=False)
+async def super_admin_set_billing_plan(
+    request: Request,
+    slug: str,
+    plan_type: str = Form(...),
+) -> RedirectResponse:
+    _require_super_admin(request)
+    from app.services.tenant_manager import normalize_school_slug
+
+    normalized_slug = normalize_school_slug(slug)
+    school = await _schools(request).get_by_slug(normalized_slug)
+    if school is None:
+        _set_flash(request, error="School not found.")
+        return RedirectResponse(url=_super_admin_url("billing"), status_code=status.HTTP_303_SEE_OTHER)
+    clean_plan = plan_type.strip().lower()
+    if clean_plan not in VALID_PLAN_TYPES:
+        _set_flash(request, error=f"Invalid plan type '{plan_type}'.")
+        return RedirectResponse(url=_super_admin_url("billing"), status_code=status.HTTP_303_SEE_OTHER)
+    await _tenant_billing(request).update_billing_full(
+        tenant_id=int(school.id),
+        tenant_slug=school.slug,
+        plan_type=clean_plan,
+    )
+    _set_flash(request, message=f"Plan for {school.name} set to '{clean_plan}'.")
+    return RedirectResponse(url=_super_admin_url("billing"), status_code=status.HTTP_303_SEE_OTHER)
+
+
+# ── Billing: update details ────────────────────────────────────────────────────
+
+
+@router.post("/super-admin/schools/{slug}/billing/update-details", include_in_schema=False)
+async def super_admin_update_billing_details(
+    request: Request,
+    slug: str,
+    customer_name: str = Form(default=""),
+    customer_email: str = Form(default=""),
+    current_period_start: str = Form(default=""),
+    current_period_end: str = Form(default=""),
+    renewal_date: str = Form(default=""),
+    internal_notes: str = Form(default=""),
+) -> RedirectResponse:
+    _require_super_admin(request)
+    from app.services.tenant_manager import normalize_school_slug
+
+    normalized_slug = normalize_school_slug(slug)
+    school = await _schools(request).get_by_slug(normalized_slug)
+    if school is None:
+        _set_flash(request, error="School not found.")
+        return RedirectResponse(url=_super_admin_url("billing"), status_code=status.HTTP_303_SEE_OTHER)
+    await _tenant_billing(request).update_billing_full(
+        tenant_id=int(school.id),
+        tenant_slug=school.slug,
+        customer_name=customer_name.strip() or None,
+        customer_email=customer_email.strip() or None,
+        current_period_start=current_period_start.strip() or None,
+        current_period_end=current_period_end.strip() or None,
+        renewal_date=renewal_date.strip() or None,
+        internal_notes=internal_notes.strip() or None,
+    )
+    _set_flash(request, message=f"Billing details updated for {school.name}.")
+    return RedirectResponse(url=_super_admin_url("billing"), status_code=status.HTTP_303_SEE_OTHER)
+
+
+# ── Billing: toggle override ───────────────────────────────────────────────────
+
+
+@router.post("/super-admin/schools/{slug}/billing/toggle-override", include_in_schema=False)
+async def super_admin_toggle_billing_override(
+    request: Request,
+    slug: str,
+    override_reason: str = Form(default=""),
+) -> RedirectResponse:
+    _require_super_admin(request)
+    from app.services.tenant_manager import normalize_school_slug
+
+    normalized_slug = normalize_school_slug(slug)
+    school = await _schools(request).get_by_slug(normalized_slug)
+    if school is None:
+        _set_flash(request, error="School not found.")
+        return RedirectResponse(url=_super_admin_url("billing"), status_code=status.HTTP_303_SEE_OTHER)
+    existing = await _tenant_billing(request).ensure_tenant_billing(tenant_id=int(school.id))
+    new_override = not (existing.override_enabled or existing.is_free_override)
+    await _tenant_billing(request).update_billing_full(
+        tenant_id=int(school.id),
+        tenant_slug=school.slug,
+        override_enabled=new_override,
+        override_reason=override_reason.strip() or ("Manual override by platform" if new_override else None),
+    )
+    actor = _super_admin_actor_label(request)
+    event = "manual_override_enabled" if new_override else "manual_override_disabled"
+    _fire_audit(
+        request,
+        event,
+        actor_label=actor,
+        target_type="tenant",
+        target_id=school.slug,
+        metadata={"override_reason": override_reason.strip() or ""},
+    )
+    state = "enabled" if new_override else "disabled"
+    _set_flash(request, message=f"Manual override {state} for {school.name}.")
+    return RedirectResponse(url=_super_admin_url("billing"), status_code=status.HTTP_303_SEE_OTHER)
+
+
+# ── Billing: add payment ───────────────────────────────────────────────────────
+
+
+@router.post("/super-admin/schools/{slug}/billing/add-payment", include_in_schema=False)
+async def super_admin_add_payment(
+    request: Request,
+    slug: str,
+    amount: str = Form(...),
+    currency: str = Form(default="USD"),
+    payment_date: str = Form(...),
+    payment_method: str = Form(default="manual"),
+    reference_number: str = Form(default=""),
+    notes: str = Form(default=""),
+    extend_days: int = Form(default=0),
+) -> RedirectResponse:
+    _require_super_admin(request)
+    from app.services.tenant_manager import normalize_school_slug
+
+    normalized_slug = normalize_school_slug(slug)
+    school = await _schools(request).get_by_slug(normalized_slug)
+    if school is None:
+        _set_flash(request, error="School not found.")
+        return RedirectResponse(url=_super_admin_url("billing"), status_code=status.HTTP_303_SEE_OTHER)
+    try:
+        amount_f = float(amount)
+    except (ValueError, TypeError):
+        _set_flash(request, error="Invalid payment amount.")
+        return RedirectResponse(url=_super_admin_url("billing"), status_code=status.HTTP_303_SEE_OTHER)
+
+    actor = _super_admin_actor_label(request)
+    await _tenant_billing(request).add_payment(
+        tenant_slug=school.slug,
+        amount=amount_f,
+        currency=currency.strip().upper() or "USD",
+        payment_date=payment_date.strip(),
+        payment_method=payment_method.strip().lower(),
+        reference_number=reference_number.strip() or None,
+        notes=notes.strip() or None,
+        recorded_by=actor,
+    )
+    # Optionally extend period and activate
+    if extend_days > 0:
+        existing = await _tenant_billing(request).ensure_tenant_billing(tenant_id=int(school.id))
+        from datetime import timedelta
+        now = datetime.now(timezone.utc)
+        base = (
+            datetime.fromisoformat(existing.current_period_end).replace(tzinfo=timezone.utc)
+            if existing.current_period_end else now
+        )
+        new_end = (base + timedelta(days=int(extend_days))).isoformat()
+        await _tenant_billing(request).update_billing_full(
+            tenant_id=int(school.id),
+            tenant_slug=school.slug,
+            billing_status="active",
+            current_period_start=existing.current_period_start or now.isoformat(),
+            current_period_end=new_end,
+            renewal_date=new_end,
+        )
+    _fire_audit(
+        request,
+        "payment_recorded",
+        actor_label=actor,
+        target_type="tenant",
+        target_id=school.slug,
+        metadata={"amount": amount_f, "currency": currency, "method": payment_method},
+    )
+    _set_flash(request, message=f"Payment of {currency} {amount_f:.2f} recorded for {school.name}.")
+    return RedirectResponse(url=_super_admin_url("billing"), status_code=status.HTTP_303_SEE_OTHER)
+
+
+# ── Billing: create invoice ────────────────────────────────────────────────────
+
+
+@router.post("/super-admin/schools/{slug}/billing/create-invoice", include_in_schema=False)
+async def super_admin_create_invoice(
+    request: Request,
+    slug: str,
+    amount_due: str = Form(...),
+    due_date: str = Form(...),
+    notes: str = Form(default=""),
+) -> RedirectResponse:
+    _require_super_admin(request)
+    from app.services.tenant_manager import normalize_school_slug
+
+    normalized_slug = normalize_school_slug(slug)
+    school = await _schools(request).get_by_slug(normalized_slug)
+    if school is None:
+        _set_flash(request, error="School not found.")
+        return RedirectResponse(url=_super_admin_url("billing"), status_code=status.HTTP_303_SEE_OTHER)
+    try:
+        amount_f = float(amount_due)
+    except (ValueError, TypeError):
+        _set_flash(request, error="Invalid invoice amount.")
+        return RedirectResponse(url=_super_admin_url("billing"), status_code=status.HTTP_303_SEE_OTHER)
+
+    existing_invoices = await _tenant_billing(request).list_invoices(tenant_slug=school.slug)
+    inv_num = generate_invoice_number(tenant_slug=school.slug, sequence=len(existing_invoices) + 1)
+    await _tenant_billing(request).create_invoice(
+        invoice_number=inv_num,
+        tenant_slug=school.slug,
+        amount_due=amount_f,
+        due_date=due_date.strip(),
+        notes=notes.strip() or None,
+    )
+    actor = _super_admin_actor_label(request)
+    _fire_audit(
+        request,
+        "invoice_created",
+        actor_label=actor,
+        target_type="tenant",
+        target_id=school.slug,
+        metadata={"invoice_number": inv_num, "amount_due": amount_f},
+    )
+    _set_flash(request, message=f"Invoice {inv_num} created for {school.name}.")
     return RedirectResponse(url=_super_admin_url("billing"), status_code=status.HTTP_303_SEE_OTHER)
 
 
