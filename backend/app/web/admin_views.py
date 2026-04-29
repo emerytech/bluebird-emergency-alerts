@@ -20,6 +20,7 @@ from app.services.tenant_settings import TenantSettings
 from app.services.tenant_settings_store import SettingsChangeRecord
 from app.services.user_store import UserRecord
 from app.services.permissions import can_archive_user, can_generate_codes
+from app.services.suggestion_engine import Suggestion, SuggestionContext, SuggestionEngine
 
 
 LOGO_PATH = "/static/bluebird-alert-logo.png"
@@ -140,6 +141,54 @@ def _render_next_steps_panel(
         f'<button class="bb-nsp-dismiss" onclick="bbNspDismiss()" type="button">Got it &times;</button>'
         f'</div>'
         f'<div class="bb-nsp-items">{rows}</div>'
+        f'</div>'
+    )
+
+
+def _render_suggestion_panel(suggestions: list[Suggestion], prefix: str) -> str:
+    """Renders the AI-style smart suggestions card.
+
+    Each item has an icon, title, description, optional action button, and dismiss X.
+    The panel is rendered hidden; JS filters already-dismissed items and shows the panel
+    if any remain visible. Items write dismiss TTLs to localStorage on click.
+    """
+    if not suggestions:
+        return ""
+
+    rows = ""
+    for sg in suggestions:
+        action_btn = ""
+        if sg.action_label and sg.action_url:
+            action_btn = (
+                f'<a class="button button-secondary" href="{escape(sg.action_url)}" '
+                f'style="font-size:0.78rem;padding:5px 12px;min-height:30px;white-space:nowrap;">'
+                f'{escape(sg.action_label)}</a>'
+            )
+        dismiss_btn = ""
+        if sg.dismissible:
+            dismiss_btn = (
+                f'<button class="bb-sg-dismiss" type="button" '
+                f'onclick="bbSgDismiss(this)" '
+                f'data-sid="{escape(sg.id)}" data-ttl="{sg.dismiss_ttl_hours}" '
+                f'title="Dismiss" aria-label="Dismiss suggestion">&times;</button>'
+            )
+        rows += (
+            f'<div class="bb-sg-item" data-prio="{escape(sg.priority)}" data-sid="{escape(sg.id)}">'
+            f'<div class="bb-sg-icon">{sg.icon}</div>'
+            f'<div class="bb-sg-body">'
+            f'<div class="bb-sg-item-title">{escape(sg.title)}</div>'
+            f'<div class="bb-sg-item-desc">{escape(sg.description)}</div>'
+            f'</div>'
+            f'<div class="bb-sg-actions">{action_btn}{dismiss_btn}</div>'
+            f'</div>'
+        )
+
+    return (
+        f'<div class="bb-sg" id="bb-suggestions" style="display:none;">'
+        f'<div class="bb-sg-header">'
+        f'<span class="bb-sg-title">&#128161; Suggestions</span>'
+        f'</div>'
+        f'<div class="bb-sg-items" id="bb-sg-items">{rows}</div>'
         f'</div>'
     )
 
@@ -1325,6 +1374,39 @@ def _base_styles() -> str:
       animation: bb-tour-pulse 1.6s ease-in-out 2;
       position: relative; z-index: 9002 !important;
     }
+    .bb-sg {
+      background: var(--card); border: 1px solid var(--border);
+      border-left: 4px solid var(--accent); border-radius: var(--radius);
+      padding: 14px 16px; margin-bottom: 16px;
+    }
+    .bb-sg-header {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 10px;
+    }
+    .bb-sg-title { font-size: 0.78rem; font-weight: 700; text-transform: uppercase;
+      letter-spacing: 0.04em; color: var(--accent); }
+    .bb-sg-items { display: flex; flex-direction: column; gap: 10px; }
+    .bb-sg-item {
+      display: flex; align-items: flex-start; gap: 10px;
+      padding: 10px 12px; border-radius: calc(var(--radius) - 2px);
+      background: var(--bg); border: 1px solid var(--border);
+      transition: opacity 0.3s;
+    }
+    .bb-sg-item[data-prio="high"] { border-left: 3px solid #ef4444; }
+    .bb-sg-item[data-prio="medium"] { border-left: 3px solid #f59e0b; }
+    .bb-sg-item[data-prio="low"] { border-left: 3px solid var(--accent); }
+    .bb-sg-icon { font-size: 1.2rem; flex-shrink: 0; width: 26px; text-align: center; margin-top: 1px; }
+    .bb-sg-body { flex: 1; min-width: 0; }
+    .bb-sg-item-title { font-size: 0.86rem; font-weight: 600; color: var(--text); margin-bottom: 2px; }
+    .bb-sg-item-desc { font-size: 0.75rem; color: var(--muted); }
+    .bb-sg-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+    .bb-sg-dismiss {
+      background: none; border: none; cursor: pointer; color: var(--muted);
+      font-size: 0.9rem; padding: 2px 6px; border-radius: 4px; line-height: 1;
+    }
+    .bb-sg-dismiss:hover { background: var(--accent-soft); color: var(--accent); }
+    html[data-theme="dark"] .bb-sg { border-color: rgba(255,255,255,0.08); border-left-color: var(--accent); }
+    html[data-theme="dark"] .bb-sg-item { background: rgba(255,255,255,0.04); border-color: rgba(255,255,255,0.08); }
     """
 
 
@@ -5646,6 +5728,30 @@ def render_admin_page(
         f'<strong>Acknowledged</strong>{acknowledgement_count} user{_ack_plural}</span>'
     )
 
+    # Smart suggestions
+    _sg_ack_rate: Optional[float] = (
+        acknowledgement_count / max(active_users, 1)
+        if alarm_state.is_active and active_users > 0 else None
+    )
+    _sg_ctx = SuggestionContext(
+        role=str(getattr(current_user, "role", "")),
+        prefix=school_path_prefix,
+        user_count=len(users),
+        active_user_count=active_users,
+        device_count=len(devices),
+        apns_configured=apns_configured,
+        fcm_configured=fcm_configured,
+        totp_enabled=totp_enabled,
+        access_code_count=len(access_code_records),
+        unread_messages=unread_admin_messages,
+        help_requests_active=len(request_help_active),
+        alert_count_7d=len(alerts),
+        district_admin_count=sum(1 for u in users if getattr(u, "role", "") == "district_admin"),
+        acknowledgement_rate=_sg_ack_rate,
+    )
+    _sg_suggestions = SuggestionEngine().evaluate(_sg_ctx)
+    _sg_panel_html = _render_suggestion_panel(_sg_suggestions, school_path_prefix)
+
     # Phase 2 panel computed values
     _ds = delivery_stats or {}
     _ds_total = int(_ds.get("total", 0))
@@ -6837,6 +6943,8 @@ def render_admin_page(
             prefix=prefix,
         ) if section == "dashboard" else ""}
 
+        {_sg_panel_html if section == "dashboard" else ""}
+
         {_render_settings_panels(prefix, school_name, school_slug, settings_history, _section_style, effective_settings=effective_settings, can_edit=can_edit_tenant_settings)}
 
         <section class="panel command-section" id="security"{_section_style("settings")}>
@@ -7738,6 +7846,28 @@ def render_admin_page(
       localStorage.setItem('bb_nsp_dismissed', String(Date.now()));
     }};
 
+    /* ── Smart Suggestions Panel ───────────────────────────────────────── */
+    window.bbSgDismiss = function(btn) {{
+      var sid = btn.getAttribute('data-sid');
+      var ttlHours = parseInt(btn.getAttribute('data-ttl') || '72', 10);
+      if (sid) {{
+        var expiresAt = ttlHours > 0 ? String(Date.now() + ttlHours * 3600000) : '0';
+        localStorage.setItem('bb_sg_d_' + sid, expiresAt);
+      }}
+      var item = btn.closest('.bb-sg-item');
+      if (item) {{
+        item.style.opacity = '0';
+        item.style.transition = 'opacity 0.25s';
+        setTimeout(function() {{
+          item.style.display = 'none';
+          var panel = document.getElementById('bb-suggestions');
+          var items = panel && panel.querySelectorAll('.bb-sg-item[style*="display: none"], .bb-sg-item[style*="display:none"]');
+          var visible = panel && panel.querySelectorAll('.bb-sg-item:not([style*="display: none"]):not([style*="display:none"])');
+          if (panel && visible && visible.length === 0) panel.style.display = 'none';
+        }}, 280);
+      }}
+    }};
+
     /* ── Command Bar ───────────────────────────────────────────────────── */
     var _cbOverlay = null, _cbInput = null, _cbResults = null;
     var _cbItems = [], _cbSel = -1;
@@ -7909,6 +8039,29 @@ def render_admin_page(
         var dismissed = parseInt(localStorage.getItem('bb_nsp_dismissed') || '0', 10);
         var week = 7 * 24 * 60 * 60 * 1000;
         if (Date.now() - dismissed > week) nsp.style.display = 'block';
+      }}
+
+      /* Smart Suggestions Panel: hide individually dismissed items, show panel if any remain */
+      var sgPanel = document.getElementById('bb-suggestions');
+      if (sgPanel) {{
+        var sgItems = sgPanel.querySelectorAll('.bb-sg-item[data-sid]');
+        var anyVisible = false;
+        sgItems.forEach(function(item) {{
+          var sid = item.getAttribute('data-sid');
+          var storedVal = localStorage.getItem('bb_sg_d_' + sid);
+          if (storedVal !== null) {{
+            var expiresAt = parseInt(storedVal, 10);
+            /* expiresAt === 0 means permanent dismiss; otherwise check expiry */
+            if (expiresAt === 0 || Date.now() < expiresAt) {{
+              item.style.display = 'none';
+              return;
+            }}
+            /* TTL elapsed — clear and show again */
+            localStorage.removeItem('bb_sg_d_' + sid);
+          }}
+          anyVisible = true;
+        }});
+        if (anyVisible) sgPanel.style.display = 'block';
       }}
 
       /* Upgrade alarm activation form for live (non-training) alerts */
