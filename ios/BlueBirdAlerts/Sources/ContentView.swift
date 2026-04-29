@@ -48,8 +48,12 @@ struct ContentView: View {
     @State private var isSendingAdminMessage: Bool = false
 
     private let api = APIClient(baseURL: Config.backendBaseURL)
-    // TODO(iOS parity): Add "Request Quiet Period" flow matching Android:
-    // large button -> dark slide-to-confirm overlay -> reason/context text input below slider.
+
+    private var holdSeconds: Double {
+        Double(appState.tenantSettings.alerts.holdSeconds).clamped(to: 1...30)
+    }
+
+    // TODO(iOS parity): Add "Request Quiet Period" flow matching Android.
 
     var body: some View {
         NavigationStack {
@@ -65,24 +69,11 @@ struct ContentView: View {
                     }
                 }
 
-                Button {
-                    showEmergencyTypeSheet = true
-                } label: {
-                    Label(isSending ? "Sending…" : "Activate Emergency", systemImage: "exclamationmark.triangle.fill")
-                        .font(.system(size: 22, weight: .heavy))
-                        .frame(maxWidth: .infinity, minHeight: 100)
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(.red)
-                .disabled(isSending)
-                .alert("Send emergency alert?", isPresented: $showConfirm) {
-                    Button("Cancel", role: .cancel) {}
-                    Button("Send", role: .destructive) {
-                        Task { await sendEmergency() }
-                    }
-                } message: {
-                    Text(pendingEmergencyMessage)
-                }
+                CircularEmergencyButton(
+                    holdSeconds: holdSeconds,
+                    enabled: !isSending,
+                    onHoldComplete: { showEmergencyTypeSheet = true }
+                )
 
                 Button {
                     showMessageAdminSheet = true
@@ -108,13 +99,19 @@ struct ContentView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("Settings") {
-                        showSettings = true
-                    }
+                    Button("Settings") { showSettings = true }
                 }
             }
             .navigationDestination(isPresented: $showSettings) {
                 SettingsView()
+            }
+            .alert("Send emergency alert?", isPresented: $showConfirm) {
+                Button("Cancel", role: .cancel) {}
+                Button("Send", role: .destructive) {
+                    Task { await sendEmergency() }
+                }
+            } message: {
+                Text(pendingEmergencyMessage)
             }
             .sheet(isPresented: $showEmergencyTypeSheet) {
                 NavigationStack {
@@ -145,9 +142,7 @@ struct ContentView: View {
                     .navigationBarTitleDisplayMode(.inline)
                     .toolbar {
                         ToolbarItem(placement: .topBarLeading) {
-                            Button("Cancel") {
-                                showEmergencyTypeSheet = false
-                            }
+                            Button("Cancel") { showEmergencyTypeSheet = false }
                         }
                     }
                 }
@@ -180,9 +175,7 @@ struct ContentView: View {
                     .navigationBarTitleDisplayMode(.inline)
                     .toolbar {
                         ToolbarItem(placement: .topBarLeading) {
-                            Button("Cancel") {
-                                showMessageAdminSheet = false
-                            }
+                            Button("Cancel") { showMessageAdminSheet = false }
                         }
                     }
                 }
@@ -217,7 +210,6 @@ struct ContentView: View {
             Text("Device token: …\(token.suffix(8))")
                 .font(.subheadline)
                 .frame(maxWidth: .infinity, alignment: .leading)
-
             Text(appState.deviceRegistered ? "Backend: registered" : "Backend: not registered yet")
                 .font(.subheadline)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -244,7 +236,6 @@ struct ContentView: View {
         guard !pendingEmergencyMessage.isEmpty else { return }
         isSending = true
         defer { isSending = false }
-
         do {
             let resp = try await api.panic(message: pendingEmergencyMessage)
             appState.lastStatus = "Alert #\(resp.alertId) sent. ok=\(resp.succeeded) failed=\(resp.failed)"
@@ -259,7 +250,6 @@ struct ContentView: View {
         guard !trimmed.isEmpty else { return }
         isSendingAdminMessage = true
         defer { isSendingAdminMessage = false }
-
         do {
             let response = try await api.messageAdmin(message: trimmed)
             appState.lastStatus = "Message sent to admins at \(response.createdAt)"
@@ -271,6 +261,113 @@ struct ContentView: View {
         }
     }
 }
+
+// MARK: - Circular Hold Button
+
+private struct CircularEmergencyButton: View {
+    let holdSeconds: Double
+    let enabled: Bool
+    let onHoldComplete: () -> Void
+
+    @State private var holdProgress: Double = 0
+    @State private var holdTask: Task<Void, Never>? = nil
+    @State private var buttonScale: CGFloat = 1.0
+    @State private var isPressed: Bool = false
+
+    private var ringColor: Color {
+        holdProgress >= 0.8 ? .red : .white.opacity(0.9)
+    }
+
+    private var holdLabel: String {
+        if holdProgress <= 0 || !isPressed { return "Hold to Activate" }
+        if holdProgress >= 1.0 { return "Activating…" }
+        if holdProgress >= 0.8 { return "Almost There…" }
+        return "Keep Holding…"
+    }
+
+    var body: some View {
+        VStack(spacing: 8) {
+            ZStack {
+                // Track ring
+                Circle()
+                    .stroke(Color.red.opacity(0.18), lineWidth: 8)
+                    .frame(width: 144, height: 144)
+
+                // Progress ring
+                Circle()
+                    .trim(from: 0, to: holdProgress)
+                    .stroke(
+                        ringColor,
+                        style: StrokeStyle(lineWidth: 8, lineCap: .round)
+                    )
+                    .frame(width: 144, height: 144)
+                    .rotationEffect(.degrees(-90))
+
+                // Core button
+                Circle()
+                    .fill(Color.red)
+                    .frame(width: 126, height: 126)
+                    .shadow(color: .red.opacity(0.5), radius: 8 + holdProgress * 16)
+                    .scaleEffect(buttonScale)
+                    .overlay(
+                        Text("🚨").font(.system(size: 44))
+                    )
+            }
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { _ in
+                        guard enabled else { return }
+                        if holdTask == nil { startHold() }
+                    }
+                    .onEnded { _ in
+                        cancelHold()
+                    }
+            )
+            .opacity(enabled ? 1.0 : 0.5)
+            .allowsHitTesting(enabled)
+
+            Text(holdLabel)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func startHold() {
+        isPressed = true
+        withAnimation(.spring(duration: 0.15)) { buttonScale = 0.97 }
+        holdTask = Task { @MainActor in
+            let startTime = Date()
+            while !Task.isCancelled {
+                let elapsed = Date().timeIntervalSince(startTime)
+                let progress = min(elapsed / holdSeconds, 1.0)
+                holdProgress = progress
+                if progress >= 1.0 {
+                    withAnimation(.spring(duration: 0.2)) { buttonScale = 1.10 }
+                    onHoldComplete()
+                    return
+                }
+                try? await Task.sleep(nanoseconds: 16_000_000)
+            }
+            resetState()
+        }
+    }
+
+    private func cancelHold() {
+        holdTask?.cancel()
+        holdTask = nil
+        resetState()
+    }
+
+    private func resetState() {
+        isPressed = false
+        withAnimation(.spring(duration: 0.2)) {
+            holdProgress = 0
+            buttonScale = 1.0
+        }
+    }
+}
+
+// MARK: - Settings View
 
 private struct SettingsView: View {
     var body: some View {
@@ -284,5 +381,13 @@ private struct SettingsView: View {
         }
         .navigationTitle("Settings")
         .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+// MARK: - Comparable clamped helper
+
+private extension Comparable {
+    func clamped(to range: ClosedRange<Self>) -> Self {
+        min(max(self, range.lowerBound), range.upperBound)
     }
 }

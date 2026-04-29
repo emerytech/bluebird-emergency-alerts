@@ -2194,6 +2194,7 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
     var flashlightAlertsOn by remember { mutableStateOf(flashlightAlertsEnabled(ctx)) }
     var screenFlashAlertsOn by remember { mutableStateOf(screenFlashAlertsEnabled(ctx)) }
     val safetyActions = remember(state.featureLabels) { buildSafetyActions(state.featureLabels) }
+    val holdDurationMs = (state.tenantSettings.alerts.holdSeconds.toLong() * 1000L).coerceAtLeast(1000L)
     val requestHelpLabel = AppLabels.labelForFeatureKey(AppLabels.KEY_REQUEST_HELP, state.featureLabels)
     val launchEvent by AlarmLaunchCoordinator.event.collectAsState()
 
@@ -2591,22 +2592,17 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                             .padding(horizontal = 20.dp, vertical = 8.dp),
                     )
                     if (!state.alarm.isActive) {
-                        Button(
-                            onClick = { showEmergencyModal = true },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 20.dp, vertical = 4.dp)
-                                .height(56.dp),
-                            shape = RoundedCornerShape(14.dp),
-                            enabled = !state.isBusy,
-                            colors = ButtonDefaults.buttonColors(containerColor = AlarmRed),
-                        ) {
-                            Text(
-                                "🚨 Activate Emergency",
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 18.sp,
-                            )
-                        }
+                        CircularEmergencyButton(
+                            enabled = !state.isBusy && !activationInFlight,
+                            holdDurationMs = holdDurationMs,
+                            onHoldComplete = { showEmergencyModal = true },
+                            onHoldVisual = { active, progress, color ->
+                                holdFlashActive = active
+                                holdFlashProgress = progress.coerceIn(0f, 1f)
+                                holdFlashColor = color
+                            },
+                            modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
+                        )
                     }
 
                     // ── Scrollable content ────────────────────────────────────
@@ -2854,7 +2850,7 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                     label = "flashPulse",
                 )
                 val flashAlpha = (0.035f + holdFlashProgress * 0.09f) + ((0.03f + holdFlashProgress * 0.07f) * pulse)
-                val countdown = maxOf(1, kotlin.math.ceil((1f - holdFlashProgress).coerceIn(0f, 1f) * 3f).toInt())
+                val countdown = maxOf(1, kotlin.math.ceil((1f - holdFlashProgress).coerceIn(0f, 1f) * (holdDurationMs / 1000f)).toInt())
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
@@ -3174,6 +3170,158 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
 }
 
 // ── Composable components ──────────────────────────────────────────────────────
+
+@Composable
+private fun CircularEmergencyButton(
+    enabled: Boolean,
+    holdDurationMs: Long,
+    onHoldComplete: () -> Unit,
+    onHoldVisual: (Boolean, Float, Color) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val scope = rememberCoroutineScope()
+    val context = LocalContext.current
+    val haptics = remember { AndroidHoldHaptics(context) }
+    val holdProgress = remember { Animatable(0f) }
+    var holdState by remember { mutableStateOf(HoldActivationUiState.Idle) }
+    var holdJob by remember { mutableStateOf<Job?>(null) }
+    var triggered by remember { mutableStateOf(false) }
+    val tickIntervalMs = (holdDurationMs / 4L).coerceAtLeast(500L)
+
+    val ringColor by animateColorAsState(
+        targetValue = when {
+            holdProgress.value >= 0.8f -> AlarmRed
+            holdProgress.value >= 0.55f -> DSColor.Warning
+            else -> Color.White.copy(alpha = 0.85f)
+        },
+        animationSpec = tween(durationMillis = 150),
+        label = "circRingColor",
+    )
+    val buttonScale by animateFloatAsState(
+        targetValue = when (holdState) {
+            HoldActivationUiState.Idle, HoldActivationUiState.Canceled -> 1f
+            HoldActivationUiState.Triggered -> 1.10f
+            else -> 0.97f + (holdProgress.value * 0.10f)
+        },
+        animationSpec = spring(dampingRatio = 0.82f, stiffness = Spring.StiffnessMediumLow),
+        label = "circScale",
+    )
+
+    fun cancelHold(userCancelled: Boolean) {
+        holdJob?.cancel()
+        holdJob = null
+        if (userCancelled && !triggered && holdProgress.value > 0.01f) {
+            haptics.cancel()
+            holdState = HoldActivationUiState.Canceled
+        }
+        scope.launch {
+            holdProgress.animateTo(0f, tween(durationMillis = 200, easing = FastOutSlowInEasing))
+            if (holdState != HoldActivationUiState.Triggered) holdState = HoldActivationUiState.Idle
+            triggered = false
+            onHoldVisual(false, 0f, AlarmRed)
+        }
+    }
+
+    Column(
+        modifier = modifier,
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Box(
+            contentAlignment = Alignment.Center,
+            modifier = Modifier
+                .size(148.dp)
+                .pointerInput(enabled, holdDurationMs) {
+                    detectTapGestures(
+                        onPress = {
+                            if (!enabled || holdJob?.isActive == true) return@detectTapGestures
+                            holdState = HoldActivationUiState.Pressing
+                            haptics.touchDown()
+                            holdJob = scope.launch {
+                                val start = withFrameNanos { it }
+                                var nextTickMs = tickIntervalMs
+                                holdProgress.snapTo(0f)
+                                onHoldVisual(true, 0f, AlarmRed)
+                                while (isActive) {
+                                    val now = withFrameNanos { it }
+                                    val elapsedMs = ((now - start) / 1_000_000L).coerceAtLeast(0L)
+                                    val progress = (elapsedMs.toFloat() / holdDurationMs.toFloat()).coerceIn(0f, 1f)
+                                    holdProgress.snapTo(progress)
+                                    onHoldVisual(true, progress, AlarmRed)
+                                    holdState = when {
+                                        progress >= 1f -> HoldActivationUiState.Triggered
+                                        progress >= 0.8f -> HoldActivationUiState.NearComplete
+                                        progress > 0.02f -> HoldActivationUiState.Holding
+                                        else -> HoldActivationUiState.Pressing
+                                    }
+                                    if (elapsedMs >= nextTickMs) {
+                                        haptics.progressTick(strong = progress >= 0.8f)
+                                        nextTickMs += tickIntervalMs
+                                    }
+                                    if (progress >= 1f && !triggered) {
+                                        triggered = true
+                                        haptics.success()
+                                        onHoldVisual(false, 0f, AlarmRed)
+                                        onHoldComplete()
+                                        return@launch
+                                    }
+                                }
+                            }
+                            val released = tryAwaitRelease()
+                            if (!triggered) cancelHold(userCancelled = released)
+                        },
+                    )
+                }
+                .alpha(if (enabled) 1f else 0.5f),
+        ) {
+            CircularProgressIndicator(
+                progress = { 1f },
+                color = AlarmRed.copy(alpha = 0.20f),
+                strokeWidth = 8.dp,
+                modifier = Modifier.fillMaxSize(),
+            )
+            CircularProgressIndicator(
+                progress = { holdProgress.value },
+                color = ringColor,
+                strokeWidth = 8.dp,
+                modifier = Modifier.fillMaxSize(),
+            )
+            Surface(
+                shape = CircleShape,
+                color = AlarmRed,
+                modifier = Modifier
+                    .size(130.dp)
+                    .graphicsLayer {
+                        scaleX = buttonScale
+                        scaleY = buttonScale
+                    },
+                shadowElevation = (8f + holdProgress.value * 18f).dp,
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Text("🚨", fontSize = 46.sp)
+                }
+            }
+        }
+        Text(
+            when (holdState) {
+                HoldActivationUiState.Idle, HoldActivationUiState.Pressing -> "Hold to Activate"
+                HoldActivationUiState.Holding -> "Keep Holding…"
+                HoldActivationUiState.NearComplete -> "Almost There…"
+                HoldActivationUiState.Triggered -> "Activating…"
+                HoldActivationUiState.Canceled -> "Hold to Activate"
+            },
+            color = TextMuted,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.SemiBold,
+        )
+    }
+    DisposableEffect(Unit) {
+        onDispose {
+            holdJob?.cancel()
+            onHoldVisual(false, 0f, AlarmRed)
+        }
+    }
+}
 
 @Composable
 private fun EmergencyTypeModal(
