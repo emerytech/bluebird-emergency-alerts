@@ -1460,7 +1460,14 @@ def render_login_portal() -> str:
   }});
 
   /* ── Init ─────────────────────────────────────────────────────────── */
-  _maybeShowQuick();
+  var _params     = new URLSearchParams(window.location.search);
+  var _isSwitching = _params.get('switch') === 'true';
+  if (_isSwitching) {{
+    /* User clicked "Change school" — skip the auto-redirect and clean the URL. */
+    window.history.replaceState({{}}, document.title, '/login');
+  }} else {{
+    _maybeShowQuick();
+  }}
   _inp.focus();
 }})();
 </script>

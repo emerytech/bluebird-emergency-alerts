@@ -22,6 +22,8 @@ class RegisteredDevice:
     is_valid: bool = True
     is_active: bool = True
     archived_at: str | None = None
+    ws_connected: bool = False
+    ws_last_seen_at: str | None = None
 
 
 class DeviceRegistry:
@@ -84,6 +86,10 @@ class DeviceRegistry:
                 conn.execute("ALTER TABLE registered_devices ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1;")
             if "archived_at" not in cols:
                 conn.execute("ALTER TABLE registered_devices ADD COLUMN archived_at TEXT NULL;")
+            if "ws_connected" not in cols:
+                conn.execute("ALTER TABLE registered_devices ADD COLUMN ws_connected INTEGER NOT NULL DEFAULT 0;")
+            if "ws_last_seen_at" not in cols:
+                conn.execute("ALTER TABLE registered_devices ADD COLUMN ws_last_seen_at TEXT NULL;")
 
     def _register_sync(
         self,
@@ -187,7 +193,8 @@ class DeviceRegistry:
                 rows = conn.execute(
                     """
                     SELECT token, platform, push_provider, device_name, device_id,
-                           user_id, first_user_id, last_seen_at, is_valid, is_active, archived_at
+                           user_id, first_user_id, last_seen_at, is_valid, is_active, archived_at,
+                           ws_connected, ws_last_seen_at
                     FROM registered_devices
                     WHERE push_provider = ?
                       AND is_valid = 1
@@ -207,7 +214,8 @@ class DeviceRegistry:
             with self._connect() as conn:
                 query = """
                     SELECT token, platform, push_provider, device_name, device_id,
-                           user_id, first_user_id, last_seen_at, is_valid, is_active, archived_at
+                           user_id, first_user_id, last_seen_at, is_valid, is_active, archived_at,
+                           ws_connected, ws_last_seen_at
                     FROM registered_devices
                 """
                 if not include_archived:
@@ -365,9 +373,111 @@ class DeviceRegistry:
             functools.partial(self._archive_by_device_id_sync, device_id, user_id)
         )
 
+    # ── WebSocket presence ─────────────────────────────────────────────────────
+
+    def _set_ws_presence_sync(
+        self, *, device_id: Optional[str], user_id: Optional[int], connected: bool
+    ) -> None:
+        flag = 1 if connected else 0
+        with self._lock:
+            with self._connect() as conn:
+                if device_id is not None:
+                    conn.execute(
+                        """
+                        UPDATE registered_devices
+                        SET ws_connected = ?,
+                            ws_last_seen_at = CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE ws_last_seen_at END
+                        WHERE device_id = ? AND is_active = 1 AND archived_at IS NULL;
+                        """,
+                        (flag, flag, device_id),
+                    )
+                elif user_id is not None:
+                    conn.execute(
+                        """
+                        UPDATE registered_devices
+                        SET ws_connected = ?,
+                            ws_last_seen_at = CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE ws_last_seen_at END
+                        WHERE user_id = ? AND is_active = 1 AND archived_at IS NULL;
+                        """,
+                        (flag, flag, user_id),
+                    )
+
+    async def set_ws_presence(
+        self, *, device_id: Optional[str], user_id: Optional[int], connected: bool
+    ) -> None:
+        """Set ws_connected flag and optionally update ws_last_seen_at on connect."""
+        import functools
+        await anyio.to_thread.run_sync(
+            functools.partial(
+                self._set_ws_presence_sync,
+                device_id=device_id,
+                user_id=user_id,
+                connected=connected,
+            )
+        )
+
+    def _touch_ws_sync(self, *, device_id: Optional[str], user_id: Optional[int]) -> None:
+        with self._lock:
+            with self._connect() as conn:
+                if device_id is not None:
+                    conn.execute(
+                        "UPDATE registered_devices SET ws_last_seen_at = CURRENT_TIMESTAMP "
+                        "WHERE device_id = ? AND is_active = 1 AND archived_at IS NULL;",
+                        (device_id,),
+                    )
+                elif user_id is not None:
+                    conn.execute(
+                        "UPDATE registered_devices SET ws_last_seen_at = CURRENT_TIMESTAMP "
+                        "WHERE user_id = ? AND is_active = 1 AND archived_at IS NULL;",
+                        (user_id,),
+                    )
+
+    async def touch_ws(self, *, device_id: Optional[str], user_id: Optional[int]) -> None:
+        """Refresh ws_last_seen_at on incoming WS message/ping."""
+        import functools
+        await anyio.to_thread.run_sync(
+            functools.partial(self._touch_ws_sync, device_id=device_id, user_id=user_id)
+        )
+
+
+def compute_device_status(device: RegisteredDevice) -> str:
+    """
+    Return 'online', 'idle', or 'offline' based on hybrid WS + heartbeat thresholds.
+
+    Thresholds:
+      - WS connected + ws_last_seen_at within 60 s  → online
+      - last_seen_at (heartbeat) within  5 min       → online
+      - last_seen_at (heartbeat) within 15 min       → idle
+      - otherwise                                    → offline
+    """
+    from datetime import datetime, timedelta
+
+    now = datetime.utcnow()
+
+    if device.ws_connected and device.ws_last_seen_at:
+        try:
+            ws_ts = datetime.fromisoformat(device.ws_last_seen_at.replace("Z", ""))
+            if (now - ws_ts).total_seconds() < 60:
+                return "online"
+        except ValueError:
+            pass
+
+    if device.last_seen_at:
+        try:
+            hb_ts = datetime.fromisoformat(device.last_seen_at.replace("Z", ""))
+            age = (now - hb_ts).total_seconds()
+            if age < 300:
+                return "online"
+            if age < 900:
+                return "idle"
+        except ValueError:
+            pass
+
+    return "offline"
+
 
 def _row_to_device(row: tuple) -> RegisteredDevice:
-    """Convert a DB row (11 columns) to RegisteredDevice."""
+    """Convert a DB row (11 or 13 columns) to RegisteredDevice."""
     return RegisteredDevice(
         token=str(row[0]),
         platform=str(row[1]),
@@ -380,4 +490,6 @@ def _row_to_device(row: tuple) -> RegisteredDevice:
         is_valid=bool(row[8]),
         is_active=bool(row[9]),
         archived_at=str(row[10]) if row[10] is not None else None,
+        ws_connected=bool(row[11]) if len(row) > 11 else False,
+        ws_last_seen_at=str(row[12]) if len(row) > 12 and row[12] is not None else None,
     )

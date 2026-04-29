@@ -95,6 +95,16 @@ class DeregisterDeviceRequest(BaseModel):
         return v.strip()
 
 
+class DeviceHeartbeatRequest(BaseModel):
+    device_token: str = Field(..., min_length=1, max_length=4096)
+    push_provider: PushProvider = Field(default=PushProvider.apns)
+
+    @field_validator("device_token")
+    @classmethod
+    def _strip_token(cls, v: str) -> str:
+        return v.strip()
+
+
 class DeviceSummary(BaseModel):
     platform: str
     push_provider: str
@@ -105,6 +115,7 @@ class DeviceSummary(BaseModel):
     token_suffix: str
     is_active: bool = True
     archived_at: Optional[str] = None
+    presence_status: str = "offline"
 
 
 class DevicesResponse(BaseModel):

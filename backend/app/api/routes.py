@@ -79,6 +79,7 @@ from app.models.schemas import (
     QuietPeriodStatusResponse,
     QuietPeriodSummary,
     DeregisterDeviceRequest,
+    DeviceHeartbeatRequest,
     RegisterDeviceRequest,
     RegisterDeviceResponse,
     ReportRequest,
@@ -124,7 +125,7 @@ from app.services.onboarding_pdf import (
     generate_badge_pdf,
     generate_bulk_badges_pdf,
 )
-from app.services.device_registry import DeviceRegistry
+from app.services.device_registry import DeviceRegistry, compute_device_status
 from app.services.fcm import FCMClient
 from app.services.incident_store import IncidentStore
 from app.services.permissions import (
@@ -1882,6 +1883,7 @@ async def alerts_websocket(websocket: WebSocket, tenant_slug: str) -> None:
         return
 
     # Optional user identity — if provided, validate that the user exists and is active in this tenant.
+    ws_user_id: Optional[int] = None
     raw_user_id = websocket.query_params.get("user_id")
     if raw_user_id is not None:
         try:
@@ -1897,15 +1899,41 @@ async def alerts_websocket(websocket: WebSocket, tenant_slug: str) -> None:
             await websocket.close(code=4403)
             return
 
+    # Optional stable device identifier for presence tracking.
+    ws_device_id: Optional[str] = websocket.query_params.get("device_id") or None
+
     hub = websocket.app.state.alert_hub  # type: ignore[attr-defined]
     await hub.connect(school.slug, websocket)
+
+    # Mark device(s) online — best-effort, never blocks the connection.
+    if ws_device_id is not None or ws_user_id is not None:
+        try:
+            _ws_registry: DeviceRegistry = websocket.app.state.tenant_manager.get(school).device_registry  # type: ignore[attr-defined]
+            await _ws_registry.set_ws_presence(
+                device_id=ws_device_id, user_id=ws_user_id, connected=True
+            )
+        except Exception:
+            pass
+
     try:
         while True:
             await websocket.receive_text()
+            if ws_device_id is not None or ws_user_id is not None:
+                try:
+                    await _ws_registry.touch_ws(device_id=ws_device_id, user_id=ws_user_id)
+                except Exception:
+                    pass
     except WebSocketDisconnect:
         pass
     finally:
         await hub.disconnect(school.slug, websocket)
+        if ws_device_id is not None or ws_user_id is not None:
+            try:
+                await _ws_registry.set_ws_presence(
+                    device_id=ws_device_id, user_id=ws_user_id, connected=False
+                )
+            except Exception:
+                pass
 
 
 @router.get("/schools", response_model=SchoolsCatalogResponse)
@@ -6641,6 +6669,7 @@ async def devices(request: Request, _: None = Depends(require_api_key)) -> Devic
                 token_suffix=device.token[-8:],
                 is_active=device.is_active,
                 archived_at=device.archived_at,
+                presence_status=compute_device_status(device),
             )
             for device in all_devices
         ],
@@ -7570,6 +7599,24 @@ async def deregister_device(
         },
     )
     return {"archived": archived}
+
+
+@router.post("/devices/heartbeat", status_code=status.HTTP_200_OK)
+async def device_heartbeat(
+    body: DeviceHeartbeatRequest,
+    request: Request,
+    _: None = Depends(require_api_key),
+) -> JSONResponse:
+    """
+    Lightweight heartbeat from a mobile device.
+    Updates last_seen_at so the admin console can show presence even when
+    the WebSocket is not open (e.g. app in background).
+    """
+    await _registry(request).touch(
+        token=body.device_token,
+        push_provider=body.push_provider.value,
+    )
+    return JSONResponse({"ok": True, "ts": datetime.utcnow().isoformat() + "Z"})
 
 
 @router.post("/reports", response_model=ReportResponse)

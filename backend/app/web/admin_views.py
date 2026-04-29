@@ -1807,7 +1807,7 @@ def render_login_page(
         '<div class="school-context-label">Signing in to</div>'
         f'<div class="school-context-name">{escape(school_name)}</div>'
         '</div>'
-        '<a class="school-context-change" href="/login">← Change school</a>'
+        '<a class="school-context-change" href="/login?switch=true">← Change school</a>'
         '</div>'
     ) if not setup_mode else (
         '<div class="school-context setup">'
