@@ -968,7 +968,7 @@ class MainViewModel : ViewModel() {
         viewModelScope.launch(Dispatchers.IO) {
             runCatching { client!!.listAdminQuietPeriodRequests(adminUserId = adminUserId) }
                 .onSuccess { requests ->
-                    _state.update { it.copy(adminQuietPeriodRequests = requests) }
+                    _state.update { it.copy(adminQuietPeriodRequests = requests.filter { req -> req.userId != adminUserId }) }
                 }
         }
     }

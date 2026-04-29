@@ -2530,7 +2530,7 @@ struct ContentView: View {
         guard isAdminSession, let adminUserID = appState.userID else { return }
         do {
             let response = try await api.adminQuietPeriodRequests(adminUserID: adminUserID)
-            adminQuietPeriodRequests = response.requests
+            adminQuietPeriodRequests = response.requests.filter { $0.userID != appState.userID }
         } catch {
             if adminQuietPeriodRequests.isEmpty {
                 appState.lastError = "Could not load quiet period requests."

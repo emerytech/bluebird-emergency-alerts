@@ -6496,7 +6496,7 @@ async def admin_quiet_period_requests(
         permissions={PERM_APPROVE_OWN_TENANT_QUIET_REQUESTS, PERM_APPROVE_ASSIGNED_TENANT_QUIET_REQUESTS},
     )
     records = await _quiet_periods(request).list_recent(limit=limit)
-    visible = [item for item in records if item.status in {"pending", "approved", "scheduled"}]
+    visible = [item for item in records if item.status in {"pending", "approved", "scheduled"} and int(item.user_id) != admin_user_id]
     all_users = await _users(request).list_users()
     users_by_id = {int(u.id): u for u in all_users}
     return QuietPeriodAdminListResponse(
