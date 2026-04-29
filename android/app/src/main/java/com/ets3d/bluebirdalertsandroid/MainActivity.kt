@@ -2583,7 +2583,12 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                         )
                     }
 
-                    // ── Alarm status / activate button ───────────────────────
+                    // ── Scrollable content ────────────────────────────────────
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .verticalScroll(rememberScrollState()),
+                    ) {
                     AlarmBanner(
                         alarm = state.alarm,
                         schoolName = effectiveSchoolName,
@@ -2604,13 +2609,6 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                             modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
                         )
                     }
-
-                    // ── Scrollable content ────────────────────────────────────
-                    Column(
-                        modifier = Modifier
-                            .weight(1f)
-                            .verticalScroll(rememberScrollState()),
-                    ) {
 
                     ActiveSafetyFeedCard(
                         selectedTab = feedTab,
@@ -3180,8 +3178,7 @@ private fun CircularEmergencyButton(
     modifier: Modifier = Modifier,
 ) {
     val scope = rememberCoroutineScope()
-    val context = LocalContext.current
-    val haptics = remember { AndroidHoldHaptics(context) }
+    val haptic = LocalHapticFeedback.current
     val holdProgress = remember { Animatable(0f) }
     var holdState by remember { mutableStateOf(HoldActivationUiState.Idle) }
     var holdJob by remember { mutableStateOf<Job?>(null) }
@@ -3211,7 +3208,7 @@ private fun CircularEmergencyButton(
         holdJob?.cancel()
         holdJob = null
         if (userCancelled && !triggered && holdProgress.value > 0.01f) {
-            haptics.cancel()
+            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
             holdState = HoldActivationUiState.Canceled
         }
         scope.launch {
@@ -3236,7 +3233,7 @@ private fun CircularEmergencyButton(
                         onPress = {
                             if (!enabled || holdJob?.isActive == true) return@detectTapGestures
                             holdState = HoldActivationUiState.Pressing
-                            haptics.touchDown()
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                             holdJob = scope.launch {
                                 val start = withFrameNanos { it }
                                 var nextTickMs = tickIntervalMs
@@ -3255,12 +3252,12 @@ private fun CircularEmergencyButton(
                                         else -> HoldActivationUiState.Pressing
                                     }
                                     if (elapsedMs >= nextTickMs) {
-                                        haptics.progressTick(strong = progress >= 0.8f)
+                                        haptic.performHapticFeedback(if (progress >= 0.8f) HapticFeedbackType.LongPress else HapticFeedbackType.TextHandleMove)
                                         nextTickMs += tickIntervalMs
                                     }
                                     if (progress >= 1f && !triggered) {
                                         triggered = true
-                                        haptics.success()
+                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                         onHoldVisual(false, 0f, AlarmRed)
                                         onHoldComplete()
                                         return@launch
