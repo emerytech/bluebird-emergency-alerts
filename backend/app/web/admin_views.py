@@ -1804,6 +1804,11 @@ def _render_district_billing_section(district_billing_rows: Sequence[Mapping[str
             days_label = f"{days}d remaining" if days >= 0 else f"Expired {abs(days)}d ago"
             days_pill = f'<span style="font-size:0.72rem;color:{days_color};font-weight:600;">{escape(days_label)}</span>'
 
+        override_badge_html = (
+            '<span class="status-pill ok" style="font-size:0.7rem;">Override</span>'
+            if override_on else ""
+        )
+
         gen_lic = escape(str(item.get("generate_license_action", "#")))
         set_status = escape(str(item.get("set_status_action", "#")))
         set_plan = escape(str(item.get("set_plan_action", "#")))
@@ -1829,7 +1834,7 @@ def _render_district_billing_section(district_billing_rows: Sequence[Mapping[str
             f'{_billing_status_badge(eff)}'
             f'<span class="status-pill">{plan}</span>'
             f'{days_pill}'
-            f'{"<span class=\\"status-pill ok\\" style=\\"font-size:0.7rem;\\">Override</span>" if override_on else ""}'
+            f'{override_badge_html}'
             f'<a href="{analytics_url}" class="button button-secondary" style="font-size:0.72rem;padding:3px 10px;" target="_blank">Analytics</a>'
             f'</div>'
             f'</div>'
