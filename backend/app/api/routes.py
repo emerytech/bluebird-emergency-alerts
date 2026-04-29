@@ -26,6 +26,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Query, Requ
 from fastapi import HTTPException, status
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse, JSONResponse
 
+from app.web.landing import render_landing_page
 from app.api.deps import require_api_key
 from app.constants.labels import FEATURE_LABELS, get_feature_label
 from app.models.schemas import (
@@ -1669,11 +1670,8 @@ def _to_admin_inbox_item(item: AdminMessageRecord) -> AdminMessageInboxItem:
 
 
 @router.get("/", include_in_schema=False)
-async def root(request: Request) -> RedirectResponse:
-    school_prefix = _school_prefix(request)
-    if school_prefix:
-        return RedirectResponse(url=_school_url(request, "/admin/login"), status_code=status.HTTP_303_SEE_OTHER)
-    return RedirectResponse(url="/super-admin/login", status_code=status.HTTP_303_SEE_OTHER)
+async def root(request: Request) -> HTMLResponse:
+    return HTMLResponse(content=render_landing_page())
 
 
 @router.get("/health")
