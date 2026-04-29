@@ -1109,7 +1109,18 @@ def _render_quiet_period_rows(
                 <button class="button button-danger-outline" type="submit">Remove</button>
               </form>
               <form method="post" action="{prefix}/admin/quiet-periods/{item.id}/hide">
-                <button class="button button-secondary" type="submit">Hide from main view</button>
+                <button class="button button-secondary" type="submit">Hide</button>
+              </form>
+            </div>
+            """
+        elif include_actions and item.status == "scheduled":
+            action_html = f"""
+            <div class="button-row">
+              <form method="post" action="{prefix}/admin/quiet-periods/{item.id}/clear" onsubmit="return confirm('Cancel this scheduled quiet period?');">
+                <button class="button button-danger-outline" type="submit">Cancel</button>
+              </form>
+              <form method="post" action="{prefix}/admin/quiet-periods/{item.id}/hide">
+                <button class="button button-secondary" type="submit">Hide</button>
               </form>
             </div>
             """
@@ -1123,15 +1134,16 @@ def _render_quiet_period_rows(
                 <button class="button button-danger-outline" type="submit">Deny</button>
               </form>
               <form method="post" action="{prefix}/admin/quiet-periods/{item.id}/hide">
-                <button class="button button-secondary" type="submit">Hide from main view</button>
+                <button class="button button-secondary" type="submit">Hide</button>
               </form>
             </div>
             """
         elif not include_actions:
             action_html = '<span class="mini-copy">History</span>'
         tenant_note = f'<div class="mini-copy">Tenant: {escape(tenant_label)}</div>' if tenant_label else ""
+        sched_note = f'<div class="mini-copy">Starts: {escape(str(item.scheduled_start_at))}</div>' if getattr(item, "scheduled_start_at", None) else ""
         rows.append(
-            f"<tr><td>{escape(user_names.get(item.user_id, f'User #{item.user_id}'))}{tenant_note}</td><td>{escape(item.status)}</td><td>{escape(item.reason or '—')}</td><td>{escape(approver)}</td><td>{escape(item.requested_at)}</td><td>{escape(item.expires_at or '—')}</td><td>{action_html}</td></tr>"
+            f"<tr><td>{escape(user_names.get(item.user_id, f'User #{item.user_id}'))}{tenant_note}</td><td>{escape(item.status)}{sched_note}</td><td>{escape(item.reason or '—')}</td><td>{escape(approver)}</td><td>{escape(item.requested_at)}</td><td>{escape(item.expires_at or '—')}</td><td>{action_html}</td></tr>"
         )
     return "".join(rows)
 

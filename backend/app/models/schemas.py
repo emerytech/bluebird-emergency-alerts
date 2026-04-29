@@ -378,9 +378,13 @@ class QuietPeriodSummary(BaseModel):
     approved_at: Optional[str] = None
     approved_by_user_id: Optional[int] = None
     approved_by_label: Optional[str] = None
+    denied_at: Optional[str] = None
+    cancelled_at: Optional[str] = None
     expires_at: Optional[str] = None
     scheduled_start_at: Optional[str] = None
     scheduled_end_at: Optional[str] = None
+    countdown_target_at: Optional[str] = None
+    countdown_mode: Optional[str] = None
 
 
 class QuietPeriodStatusResponse(BaseModel):
@@ -391,10 +395,14 @@ class QuietPeriodStatusResponse(BaseModel):
     requested_at: Optional[str] = None
     approved_at: Optional[str] = None
     approved_by_label: Optional[str] = None
+    denied_at: Optional[str] = None
+    cancelled_at: Optional[str] = None
     expires_at: Optional[str] = None
     quiet_mode_active: bool = False
     scheduled_start_at: Optional[str] = None
     scheduled_end_at: Optional[str] = None
+    countdown_target_at: Optional[str] = None
+    countdown_mode: Optional[str] = None
 
 
 class QuietPeriodDeleteRequest(BaseModel):
@@ -417,9 +425,13 @@ class QuietPeriodAdminItem(BaseModel):
     approved_at: Optional[str] = None
     approved_by_user_id: Optional[int] = None
     approved_by_label: Optional[str] = None
+    denied_at: Optional[str] = None
+    cancelled_at: Optional[str] = None
     expires_at: Optional[str] = None
     scheduled_start_at: Optional[str] = None
     scheduled_end_at: Optional[str] = None
+    countdown_target_at: Optional[str] = None
+    countdown_mode: Optional[str] = None
 
 
 class QuietPeriodAdminListResponse(BaseModel):

@@ -1324,6 +1324,8 @@ def _to_team_assist_summary(item) -> TeamAssistSummary:
 
 
 def _to_quiet_period_summary(record) -> QuietPeriodSummary:
+    from app.services.quiet_period_store import compute_countdown
+    countdown_target_at, countdown_mode = compute_countdown(record)
     return QuietPeriodSummary(
         request_id=record.id,
         user_id=record.user_id,
@@ -1333,9 +1335,13 @@ def _to_quiet_period_summary(record) -> QuietPeriodSummary:
         approved_at=record.approved_at,
         approved_by_user_id=record.approved_by_user_id,
         approved_by_label=record.approved_by_label,
+        denied_at=getattr(record, "denied_at", None),
+        cancelled_at=getattr(record, "cancelled_at", None),
         expires_at=record.expires_at,
         scheduled_start_at=getattr(record, "scheduled_start_at", None),
         scheduled_end_at=getattr(record, "scheduled_end_at", None),
+        countdown_target_at=countdown_target_at,
+        countdown_mode=countdown_mode,
     )
 
 
@@ -6182,6 +6188,7 @@ async def district_quiet_periods(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Active user not found")
     if not can_any(user.role, {PERM_MANAGE_ASSIGNED_TENANTS, PERM_FULL_ACCESS}):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
+    from app.services.quiet_period_store import compute_countdown
     accessible_schools = await _district_accessible_schools(request, user)
     items: list[DistrictQuietPeriodItem] = []
     for school in accessible_schools:
@@ -6189,11 +6196,17 @@ async def district_quiet_periods(
         if tenant is None:
             continue
         records = await tenant.quiet_period_store.list_recent(limit=100)
-        pending = [r for r in records if r.status == "pending"]
+        # Show pending + scheduled for district review; exclude own requests.
+        reviewable = [
+            r for r in records
+            if r.status in {"pending", "scheduled"}
+            and int(r.user_id) != int(user_id)
+        ]
         all_users = await tenant.user_store.list_users()
         users_by_id = {int(u.id): u for u in all_users}
-        for r in pending:
+        for r in reviewable:
             u = users_by_id.get(int(r.user_id))
+            countdown_target_at, countdown_mode = compute_countdown(r)
             items.append(DistrictQuietPeriodItem(
                 request_id=r.id,
                 user_id=r.user_id,
@@ -6205,7 +6218,13 @@ async def district_quiet_periods(
                 approved_at=r.approved_at,
                 approved_by_user_id=r.approved_by_user_id,
                 approved_by_label=r.approved_by_label,
+                denied_at=getattr(r, "denied_at", None),
+                cancelled_at=getattr(r, "cancelled_at", None),
                 expires_at=r.expires_at,
+                scheduled_start_at=getattr(r, "scheduled_start_at", None),
+                scheduled_end_at=getattr(r, "scheduled_end_at", None),
+                countdown_target_at=countdown_target_at,
+                countdown_mode=countdown_mode,
                 tenant_slug=str(school.slug),
                 tenant_name=str(school.name),
             ))
@@ -6495,6 +6514,7 @@ async def admin_quiet_period_requests(
         admin_user_id,
         permissions={PERM_APPROVE_OWN_TENANT_QUIET_REQUESTS, PERM_APPROVE_ASSIGNED_TENANT_QUIET_REQUESTS},
     )
+    from app.services.quiet_period_store import compute_countdown
     records = await _quiet_periods(request).list_recent(limit=limit)
     visible = [item for item in records if item.status in {"pending", "approved", "scheduled"} and int(item.user_id) != admin_user_id]
     all_users = await _users(request).list_users()
@@ -6512,9 +6532,13 @@ async def admin_quiet_period_requests(
                 approved_at=item.approved_at,
                 approved_by_user_id=item.approved_by_user_id,
                 approved_by_label=item.approved_by_label,
+                denied_at=getattr(item, "denied_at", None),
+                cancelled_at=getattr(item, "cancelled_at", None),
                 expires_at=item.expires_at,
                 scheduled_start_at=getattr(item, "scheduled_start_at", None),
                 scheduled_end_at=getattr(item, "scheduled_end_at", None),
+                countdown_target_at=compute_countdown(item)[0],
+                countdown_mode=compute_countdown(item)[1],
             )
             for item in visible
         ]
@@ -6662,6 +6686,8 @@ async def quiet_period_status(
             user_id=user_id,
             quiet_mode_active=await _is_effective_quiet_user(request, user_id=user_id),
         )
+    from app.services.quiet_period_store import compute_countdown
+    countdown_target_at, countdown_mode = compute_countdown(record)
     return QuietPeriodStatusResponse(
         request_id=record.id,
         user_id=user_id,
@@ -6670,10 +6696,14 @@ async def quiet_period_status(
         requested_at=record.requested_at,
         approved_at=record.approved_at,
         approved_by_label=record.approved_by_label,
+        denied_at=getattr(record, "denied_at", None),
+        cancelled_at=getattr(record, "cancelled_at", None),
         expires_at=record.expires_at,
         quiet_mode_active=await _is_effective_quiet_user(request, user_id=user_id),
         scheduled_start_at=getattr(record, "scheduled_start_at", None),
         scheduled_end_at=getattr(record, "scheduled_end_at", None),
+        countdown_target_at=countdown_target_at,
+        countdown_mode=countdown_mode,
     )
 
 

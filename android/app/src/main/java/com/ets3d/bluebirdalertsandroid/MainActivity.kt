@@ -505,6 +505,15 @@ data class DistrictQuietPeriodItem(
     val reason: String?,
     val status: String,
     val requestedAt: String,
+    val approvedAt: String? = null,
+    val approvedByLabel: String? = null,
+    val deniedAt: String? = null,
+    val cancelledAt: String? = null,
+    val expiresAt: String? = null,
+    val scheduledStartAt: String? = null,
+    val scheduledEndAt: String? = null,
+    val countdownTargetAt: String? = null,
+    val countdownMode: String? = null,
     val tenantSlug: String,
     val tenantName: String,
 )
@@ -1288,7 +1297,9 @@ class MainViewModel : ViewModel() {
         val userId = getUserId(ctx).toIntOrNull() ?: return
         viewModelScope.launch(Dispatchers.IO) {
             runCatching { client!!.listDistrictQuietPeriods(userId) }
-                .onSuccess { requests -> _state.update { it.copy(districtQuietRequests = requests) } }
+                .onSuccess { requests ->
+                    _state.update { it.copy(districtQuietRequests = requests.filter { req -> req.userId != userId }) }
+                }
         }
     }
 
@@ -6902,6 +6913,15 @@ private class BackendClient(baseUrl: String, private val apiKey: String) {
                             reason = item.optNullableString("reason"),
                             status = item.optString("status"),
                             requestedAt = item.optString("requested_at"),
+                            approvedAt = item.optNullableString("approved_at"),
+                            approvedByLabel = item.optNullableString("approved_by_label"),
+                            deniedAt = item.optNullableString("denied_at"),
+                            cancelledAt = item.optNullableString("cancelled_at"),
+                            expiresAt = item.optNullableString("expires_at"),
+                            scheduledStartAt = item.optNullableString("scheduled_start_at"),
+                            scheduledEndAt = item.optNullableString("scheduled_end_at"),
+                            countdownTargetAt = item.optNullableString("countdown_target_at"),
+                            countdownMode = item.optNullableString("countdown_mode"),
                             tenantSlug = item.optString("tenant_slug"),
                             tenantName = item.optString("tenant_name"),
                         ))
