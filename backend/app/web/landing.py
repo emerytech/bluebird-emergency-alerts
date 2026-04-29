@@ -931,8 +931,6 @@ def render_login_portal() -> str:
 
 <div class="portal-footer">
   <a href="/">&larr; Back to home</a>
-  &nbsp;&middot;&nbsp;
-  <a href="/super-admin/login">Super admin login</a>
 </div>
 
 <script>
