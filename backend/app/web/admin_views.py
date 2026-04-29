@@ -28,8 +28,10 @@ LOGO_PATH = "/static/bluebird-alert-logo.png"
 
 def _favicon_tags() -> str:
     return (
-        f'<link rel="icon" type="image/png" href="{LOGO_PATH}" />'
-        f'<link rel="apple-touch-icon" href="{LOGO_PATH}" />'
+        '<link rel="icon" href="/favicon.ico?v=1" />'
+        '<link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32x32.png?v=1" />'
+        '<link rel="icon" type="image/png" sizes="16x16" href="/static/favicon-16x16.png?v=1" />'
+        '<link rel="apple-touch-icon" href="/static/apple-touch-icon.png?v=1" />'
     )
 
 

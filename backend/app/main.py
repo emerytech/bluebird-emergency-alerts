@@ -486,7 +486,7 @@ app.mount("/static", StaticFiles(directory="app/static"), name="static")
 async def school_context_middleware(request, call_next):
     path = request.scope.get("path", "") or "/"
     if (
-        path in {"/", "/login", "/safety", "/health", "/schools", "/docs", "/redoc", "/openapi.json"}
+        path in {"/", "/login", "/safety", "/favicon.ico", "/health", "/schools", "/docs", "/redoc", "/openapi.json"}
         or path.startswith("/super-admin")
         or path.startswith("/static/")
         or path.startswith("/onboarding")

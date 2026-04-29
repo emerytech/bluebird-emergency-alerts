@@ -24,7 +24,7 @@ from typing import Optional, cast
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi import HTTPException, status
-from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, StreamingResponse, JSONResponse
 
 from app.web.landing import render_landing_page, render_login_portal, render_safety_page
 from app.api.deps import require_api_key
@@ -1682,6 +1682,11 @@ async def login_portal(request: Request) -> HTMLResponse:
 @router.get("/safety", include_in_schema=False)
 async def safety_page(request: Request) -> HTMLResponse:
     return HTMLResponse(content=render_safety_page())
+
+
+@router.get("/favicon.ico", include_in_schema=False)
+async def favicon() -> FileResponse:
+    return FileResponse("app/static/favicon.ico", media_type="image/x-icon")
 
 
 # ── Public district/school listing (no auth, safe metadata only) ─────────────

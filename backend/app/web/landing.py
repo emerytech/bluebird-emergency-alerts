@@ -23,7 +23,10 @@ def render_landing_page() -> str:
   <meta property="og:title" content="BlueBird Alerts" />
   <meta property="og:description" content="Fast, simple emergency alerts for schools and districts." />
   <meta property="og:image" content="{LOGO}" />
-  <link rel="icon" type="image/png" href="{LOGO}" />
+  <link rel="icon" href="/favicon.ico?v=1" />
+  <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32x32.png?v=1" />
+  <link rel="icon" type="image/png" sizes="16x16" href="/static/favicon-16x16.png?v=1" />
+  <link rel="apple-touch-icon" href="/static/apple-touch-icon.png?v=1" />
   <style>
     *, *::before, *::after {{ box-sizing: border-box; margin: 0; padding: 0; }}
     :root {{
@@ -317,6 +320,126 @@ def render_landing_page() -> str:
       padding-top: 12px;
     }}
 
+    /* ── MOBILE DEMO ──────────────────────────────────────────────────── */
+    .demo-layout {{
+      display: grid;
+      grid-template-columns: 240px 1fr;
+      gap: 56px;
+      align-items: center;
+    }}
+    .demo-phone-col {{ display: flex; flex-direction: column; align-items: center; gap: 16px; }}
+    .demo-phone {{
+      width: 210px; height: 430px;
+      background: #0f172a;
+      border-radius: 38px;
+      border: 6px solid #1e293b;
+      overflow: hidden;
+      position: relative;
+      box-shadow: 0 0 0 1px rgba(255,255,255,.07), 0 24px 64px rgba(0,0,0,.35);
+    }}
+    .demo-phone::before {{
+      content: '';
+      position: absolute; top: 0; left: 50%;
+      transform: translateX(-50%);
+      width: 70px; height: 20px;
+      background: #0f172a;
+      border-radius: 0 0 14px 14px;
+      z-index: 10;
+    }}
+    .demo-statusbar {{
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 5px 14px 0;
+      font-size: 0.52rem; font-weight: 700; color: #94a3b8;
+      position: relative; z-index: 5;
+    }}
+    .demo-screen {{
+      display: none; height: calc(100% - 24px);
+      flex-direction: column; overflow: hidden;
+    }}
+    .demo-screen.active {{ display: flex; }}
+    /* Home screen */
+    .ds-home {{ background: linear-gradient(160deg,#0f172a 0%,#1e293b 100%); color:#fff; }}
+    .ds-home-header {{ padding: 8px 12px 7px; border-bottom: 1px solid rgba(255,255,255,.07); }}
+    .ds-home-logo {{ display:flex; align-items:center; gap:6px; font-weight:800; font-size:0.62rem; color:#60a5fa; text-transform:uppercase; letter-spacing:.06em; }}
+    .ds-home-logo img {{ width:16px; height:16px; border-radius:4px; }}
+    .ds-home-school {{ font-size:0.65rem; color:#e2e8f0; margin-top:2px; font-weight:600; }}
+    .ds-home-status {{ display:inline-flex; align-items:center; gap:4px; background:rgba(22,163,74,.2); color:#4ade80; border-radius:20px; padding:2px 7px; font-size:0.52rem; font-weight:700; margin-top:4px; }}
+    .ds-home-status::before {{ content:''; width:5px; height:5px; background:#4ade80; border-radius:50%; }}
+    .ds-home-body {{ padding:8px 12px; flex:1; }}
+    .ds-stat-grid {{ display:grid; grid-template-columns:1fr 1fr; gap:6px; margin-top:4px; }}
+    .ds-stat-card {{ background:rgba(255,255,255,.05); border-radius:9px; padding:8px 9px; text-align:center; }}
+    .ds-stat-num {{ font-size:1.05rem; font-weight:800; color:#60a5fa; }}
+    .ds-stat-lbl {{ font-size:0.47rem; color:#94a3b8; margin-top:2px; }}
+    .ds-hold-btn {{
+      display:flex; align-items:center; justify-content:center;
+      width:68px; height:68px;
+      background: radial-gradient(circle,#dc2626 0%,#991b1b 100%);
+      border-radius:50%; margin:10px auto 0;
+      font-size:0.52rem; font-weight:800; color:#fff;
+      text-transform:uppercase; letter-spacing:.04em;
+      box-shadow:0 0 0 5px rgba(220,38,38,.18),0 0 0 10px rgba(220,38,38,.08);
+      text-align:center; line-height:1.3; cursor:pointer;
+    }}
+    /* Alert screen */
+    .ds-alert {{ background: linear-gradient(160deg,#7f1d1d 0%,#991b1b 100%); color:#fff; }}
+    .ds-alert-header {{ padding:10px 12px; text-align:center; border-bottom:1px solid rgba(255,255,255,.1); }}
+    .ds-alert-pulse {{ width:12px; height:12px; border-radius:50%; background:#fca5a5; margin:0 auto 5px; animation:ds-pulse 1s ease-in-out infinite; }}
+    @keyframes ds-pulse {{ 0%,100% {{ box-shadow:0 0 0 0 rgba(252,165,165,.7); }} 50% {{ box-shadow:0 0 0 7px rgba(252,165,165,0); }} }}
+    .ds-alert-title {{ font-size:0.72rem; font-weight:900; text-transform:uppercase; letter-spacing:.05em; }}
+    .ds-alert-sub {{ font-size:0.5rem; color:rgba(255,255,255,.65); margin-top:2px; }}
+    .ds-alert-body {{ padding:10px 12px; flex:1; }}
+    .ds-alert-msg {{ font-size:0.58rem; color:#fca5a5; line-height:1.5; margin-bottom:10px; }}
+    .ds-alert-ack {{ background:#fff; color:#991b1b; border:none; border-radius:20px; padding:6px 14px; font-size:0.55rem; font-weight:800; cursor:pointer; display:block; margin:0 auto; text-transform:uppercase; letter-spacing:.04em; }}
+    .ds-alert-by {{ font-size:0.46rem; color:rgba(255,255,255,.4); text-align:center; margin-top:7px; }}
+    /* Ack screen */
+    .ds-ack {{ background: linear-gradient(160deg,#14532d 0%,#166534 100%); color:#fff; }}
+    .ds-ack-header {{ padding:10px 12px; text-align:center; }}
+    .ds-ack-count {{ font-size:1.35rem; font-weight:900; color:#4ade80; }}
+    .ds-ack-lbl {{ font-size:0.52rem; color:rgba(255,255,255,.7); margin-top:2px; }}
+    .ds-ack-bar-wrap {{ margin:7px 12px; background:rgba(255,255,255,.1); border-radius:20px; height:7px; }}
+    .ds-ack-bar {{ width:67%; height:100%; background:#4ade80; border-radius:20px; }}
+    .ds-ack-list {{ padding:0 12px; flex:1; overflow:hidden; }}
+    .ds-ack-item {{ display:flex; align-items:center; gap:5px; padding:4px 0; border-bottom:1px solid rgba(255,255,255,.05); font-size:0.52rem; color:#d1fae5; }}
+    .ds-ack-item::before {{ content:'✓'; color:#4ade80; font-weight:800; }}
+    .ds-ack-item.pending {{ color:rgba(255,255,255,.3); }}
+    .ds-ack-item.pending::before {{ content:'○'; color:rgba(255,255,255,.25); }}
+    /* Quiet screen */
+    .ds-quiet {{ background: linear-gradient(160deg,#0c4a6e 0%,#075985 100%); color:#fff; }}
+    .ds-quiet-header {{ padding:10px 12px; text-align:center; border-bottom:1px solid rgba(255,255,255,.1); }}
+    .ds-quiet-title {{ font-size:0.68rem; font-weight:800; }}
+    .ds-quiet-sub {{ font-size:0.5rem; color:rgba(255,255,255,.6); margin-top:2px; }}
+    .ds-quiet-body {{ padding:10px 12px; flex:1; }}
+    .ds-quiet-field {{ margin-bottom:9px; }}
+    .ds-quiet-label {{ font-size:0.47rem; font-weight:700; color:rgba(255,255,255,.55); text-transform:uppercase; letter-spacing:.06em; margin-bottom:3px; }}
+    .ds-quiet-value {{ font-size:0.56rem; color:#bae6fd; background:rgba(255,255,255,.08); border-radius:6px; padding:4px 7px; }}
+    .ds-quiet-submit {{ background:#0ea5e9; color:#fff; border:none; border-radius:20px; padding:6px 14px; font-size:0.56rem; font-weight:700; cursor:pointer; display:block; margin:8px auto 0; text-transform:uppercase; letter-spacing:.04em; }}
+    /* Devices screen */
+    .ds-devices {{ background:#0f172a; color:#fff; }}
+    .ds-devices-header {{ padding:10px 12px; border-bottom:1px solid rgba(255,255,255,.07); }}
+    .ds-devices-title {{ font-size:0.68rem; font-weight:800; color:#e2e8f0; }}
+    .ds-devices-sub {{ font-size:0.48rem; color:#64748b; margin-top:2px; }}
+    .ds-devices-body {{ padding:8px 12px; flex:1; }}
+    .ds-dev-row {{ display:flex; justify-content:space-between; align-items:center; padding:4px 0; border-bottom:1px solid rgba(255,255,255,.04); }}
+    .ds-dev-name {{ font-size:0.53rem; color:#cbd5e1; }}
+    .ds-dev-pill {{ font-size:0.44rem; font-weight:700; padding:2px 6px; border-radius:10px; background:rgba(22,163,74,.2); color:#4ade80; }}
+    .ds-dev-pill.warn {{ background:rgba(234,179,8,.2); color:#facc15; }}
+    /* Demo controls */
+    .demo-controls {{ display:flex; flex-wrap:wrap; gap:7px; justify-content:center; }}
+    .demo-btn {{ padding:6px 13px; border-radius:20px; font-size:0.76rem; font-weight:600; cursor:pointer; border:none; transition:opacity .15s; }}
+    .demo-btn:hover {{ opacity:.8; }}
+    .demo-btn-alert {{ background:#dc2626; color:#fff; }}
+    .demo-btn-ack {{ background:#16a34a; color:#fff; }}
+    .demo-btn-quiet {{ background:#0284c7; color:#fff; }}
+    .demo-btn-devices {{ background:#7c3aed; color:#fff; }}
+    .demo-btn-reset {{ background:rgba(0,0,0,.07); color:#1e293b; border:1px solid rgba(0,0,0,.1); }}
+    .demo-disclaimer {{ font-size:0.68rem; color:var(--muted); text-align:center; margin-top:2px; }}
+    /* Right column bullets */
+    .demo-bullets {{ list-style:none; padding:0; display:flex; flex-direction:column; gap:16px; margin-bottom:28px; }}
+    .demo-bullets li {{ display:flex; gap:12px; align-items:flex-start; }}
+    .demo-bullet-icon {{ width:38px; height:38px; border-radius:10px; background:var(--blue-soft); display:grid; place-items:center; font-size:1.15rem; flex-shrink:0; }}
+    .demo-bullet-title {{ font-size:0.93rem; font-weight:700; margin-bottom:3px; }}
+    .demo-bullet-desc {{ font-size:0.83rem; color:var(--muted); line-height:1.5; }}
+
     /* ── RESPONSIVE ───────────────────────────────────────────────────── */
     @media (max-width: 768px) {{
       .district-layout {{ grid-template-columns: 1fr; gap: 32px; }}
@@ -325,6 +448,7 @@ def render_landing_page() -> str:
       .hero {{ padding: 64px 20px 56px; }}
       .hero-stats {{ gap: 24px; }}
       .section {{ padding: 56px 20px; }}
+      .demo-layout {{ grid-template-columns: 1fr; gap: 36px; }}
     }}
 
     @media (prefers-color-scheme: dark) {{
@@ -521,6 +645,149 @@ def render_landing_page() -> str:
   </div>
 </section>
 
+<!-- ── MOBILE DEMO ─────────────────────────────────────────────────────── -->
+<section class="section" id="demo">
+  <div class="section-inner">
+    <div class="section-header" style="text-align:center;margin-bottom:48px;">
+      <span class="section-tag">Interactive Demo</span>
+      <h2 class="section-h" style="max-width:540px;margin:0 auto 14px;">See BlueBird Alerts in action.</h2>
+      <p class="section-sub" style="margin:0 auto;">Explore how staff receive alerts, acknowledge emergencies, and manage their status — all from the mobile app.</p>
+    </div>
+    <div class="demo-layout">
+      <!-- Phone mockup -->
+      <div class="demo-phone-col">
+        <div class="demo-phone">
+          <div class="demo-statusbar"><span>9:41</span><span>&#9679;&#9679;&#9679; 100%</span></div>
+          <!-- Home screen -->
+          <div class="demo-screen ds-home active" id="ds-home">
+            <div class="ds-home-header">
+              <div class="ds-home-logo"><img src="{LOGO}" alt="" />BlueBird Alerts</div>
+              <div class="ds-home-school">Lincoln Elementary</div>
+              <div class="ds-home-status">Alert clear</div>
+            </div>
+            <div class="ds-home-body">
+              <div style="font-size:0.5rem;color:#64748b;text-transform:uppercase;letter-spacing:.06em;font-weight:700;margin-bottom:5px;">System Status</div>
+              <div class="ds-stat-grid">
+                <div class="ds-stat-card"><div class="ds-stat-num">18</div><div class="ds-stat-lbl">Devices</div></div>
+                <div class="ds-stat-card"><div class="ds-stat-num">24</div><div class="ds-stat-lbl">Staff</div></div>
+                <div class="ds-stat-card"><div class="ds-stat-num">3</div><div class="ds-stat-lbl">Drills (30d)</div></div>
+                <div class="ds-stat-card"><div class="ds-stat-num">94%</div><div class="ds-stat-lbl">Ack Rate</div></div>
+              </div>
+              <div class="ds-hold-btn" onclick="bbDemo('alert')">HOLD<br>TO<br>ALERT</div>
+            </div>
+          </div>
+          <!-- Alert screen -->
+          <div class="demo-screen ds-alert" id="ds-alert">
+            <div class="ds-alert-header">
+              <div class="ds-alert-pulse"></div>
+              <div class="ds-alert-title">Emergency Alert</div>
+              <div class="ds-alert-sub">Lincoln Elementary &mdash; 9:42 AM</div>
+            </div>
+            <div class="ds-alert-body">
+              <div class="ds-alert-msg">Emergency alert. Please follow school procedures. Secure all students. Do not use hallways until cleared.</div>
+              <div style="font-size:0.48rem;color:rgba(255,255,255,.45);margin-bottom:10px;">&#128100; Activated by Principal Harris</div>
+              <button class="ds-alert-ack" onclick="bbDemo('ack')">Acknowledge</button>
+              <div class="ds-alert-by">Tap to confirm you received this alert</div>
+            </div>
+          </div>
+          <!-- Acknowledgement screen -->
+          <div class="demo-screen ds-ack" id="ds-ack">
+            <div class="ds-ack-header">
+              <div class="ds-ack-count">12 / 18</div>
+              <div class="ds-ack-lbl">Staff acknowledged</div>
+            </div>
+            <div class="ds-ack-bar-wrap"><div class="ds-ack-bar"></div></div>
+            <div class="ds-ack-list">
+              <div class="ds-ack-item">J. Martinez &mdash; 9:42 AM</div>
+              <div class="ds-ack-item">L. Chen &mdash; 9:42 AM</div>
+              <div class="ds-ack-item">M. Thompson &mdash; 9:43 AM</div>
+              <div class="ds-ack-item">S. Williams &mdash; 9:43 AM</div>
+              <div class="ds-ack-item pending">K. Davis</div>
+              <div class="ds-ack-item pending">R. Johnson</div>
+            </div>
+          </div>
+          <!-- Quiet period screen -->
+          <div class="demo-screen ds-quiet" id="ds-quiet">
+            <div class="ds-quiet-header">
+              <div class="ds-quiet-title">Request Quiet Period</div>
+              <div class="ds-quiet-sub">Temporarily pause push notifications</div>
+            </div>
+            <div class="ds-quiet-body">
+              <div class="ds-quiet-field"><div class="ds-quiet-label">Reason</div><div class="ds-quiet-value">IEP Meeting</div></div>
+              <div class="ds-quiet-field"><div class="ds-quiet-label">Duration</div><div class="ds-quiet-value">60 minutes</div></div>
+              <div class="ds-quiet-field"><div class="ds-quiet-label">Note</div><div class="ds-quiet-value">Room 12 &mdash; confidential session</div></div>
+              <button class="ds-quiet-submit">Submit Request</button>
+            </div>
+          </div>
+          <!-- Devices screen -->
+          <div class="demo-screen ds-devices" id="ds-devices">
+            <div class="ds-devices-header">
+              <div class="ds-devices-title">Device Readiness</div>
+              <div class="ds-devices-sub">Lincoln Elementary &mdash; 18 registered</div>
+            </div>
+            <div class="ds-devices-body">
+              <div class="ds-dev-row"><span class="ds-dev-name">J. Martinez (iOS)</span><span class="ds-dev-pill">Active</span></div>
+              <div class="ds-dev-row"><span class="ds-dev-name">L. Chen (Android)</span><span class="ds-dev-pill">Active</span></div>
+              <div class="ds-dev-row"><span class="ds-dev-name">M. Thompson (iOS)</span><span class="ds-dev-pill">Active</span></div>
+              <div class="ds-dev-row"><span class="ds-dev-name">K. Davis (Android)</span><span class="ds-dev-pill warn">30d ago</span></div>
+              <div class="ds-dev-row"><span class="ds-dev-name">P. Brown (iOS)</span><span class="ds-dev-pill warn">45d ago</span></div>
+              <div style="font-size:0.48rem;color:#475569;margin-top:9px;text-align:center;">+ 13 more devices</div>
+            </div>
+          </div>
+        </div>
+        <!-- Controls -->
+        <div class="demo-controls">
+          <button class="demo-btn demo-btn-alert" onclick="bbDemo('alert')">&#128680; Alert</button>
+          <button class="demo-btn demo-btn-ack" onclick="bbDemo('ack')">&#10003; Ack</button>
+          <button class="demo-btn demo-btn-quiet" onclick="bbDemo('quiet')">&#128263; Quiet</button>
+          <button class="demo-btn demo-btn-devices" onclick="bbDemo('devices')">&#128241; Devices</button>
+          <button class="demo-btn demo-btn-reset" onclick="bbDemo('home')">&#8635; Reset</button>
+        </div>
+        <p class="demo-disclaimer">&#9888; Simulated demo &mdash; no real alerts are sent.</p>
+      </div>
+      <!-- Right column -->
+      <div>
+        <span class="section-tag">Mobile App Experience</span>
+        <h2 class="section-h" style="margin-bottom:24px;">Every role.<br>Every device.<br>One clear interface.</h2>
+        <ul class="demo-bullets">
+          <li>
+            <div class="demo-bullet-icon">&#128680;</div>
+            <div>
+              <div class="demo-bullet-title">One-tap emergency activation</div>
+              <div class="demo-bullet-desc">A single hold gesture sends push notifications to every registered device in under two seconds. No menus. No delays.</div>
+            </div>
+          </li>
+          <li>
+            <div class="demo-bullet-icon">&#10003;</div>
+            <div>
+              <div class="demo-bullet-title">Live acknowledgement counter</div>
+              <div class="demo-bullet-desc">See exactly who confirmed receipt — and who hasn't — in real time from the admin dashboard or your phone.</div>
+            </div>
+          </li>
+          <li>
+            <div class="demo-bullet-icon">&#128263;</div>
+            <div>
+              <div class="demo-bullet-title">Quiet period requests</div>
+              <div class="demo-bullet-desc">Staff in a meeting can request a timed notification pause. Admins approve or deny instantly from their dashboard.</div>
+            </div>
+          </li>
+          <li>
+            <div class="demo-bullet-icon">&#128241;</div>
+            <div>
+              <div class="demo-bullet-title">Device health visibility</div>
+              <div class="demo-bullet-desc">Admins see every registered device and its last-seen date — no surprises about coverage when a real alert is needed.</div>
+            </div>
+          </li>
+        </ul>
+        <div style="display:flex;gap:12px;flex-wrap:wrap;">
+          <a class="btn btn-primary" href="/login">Get started</a>
+          <a class="btn btn-secondary" href="mailto:{DEMO_EMAIL}">Request a demo</a>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
 <!-- ── DISTRICT ───────────────────────────────────────────────────────────── -->
 <section class="section section-alt">
   <div class="section-inner">
@@ -661,6 +928,18 @@ def render_landing_page() -> str:
   </div>
 </footer>
 
+<script>
+(function() {{
+  function bbDemo(screen) {{
+    var screens = document.querySelectorAll('.demo-screen');
+    screens.forEach(function(s) {{ s.classList.remove('active'); }});
+    var target = document.getElementById('ds-' + screen);
+    if (target) target.classList.add('active');
+  }}
+  window.bbDemo = bbDemo;
+}})();
+</script>
+
 </body>
 </html>"""
 
@@ -684,7 +963,10 @@ def render_login_portal() -> str:
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Sign In — BlueBird Alerts</title>
   <meta name="robots" content="noindex" />
-  <link rel="icon" type="image/png" href="{LOGO}" />
+  <link rel="icon" href="/favicon.ico?v=1" />
+  <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32x32.png?v=1" />
+  <link rel="icon" type="image/png" sizes="16x16" href="/static/favicon-16x16.png?v=1" />
+  <link rel="apple-touch-icon" href="/static/apple-touch-icon.png?v=1" />
   <style>
     *, *::before, *::after {{ box-sizing: border-box; margin: 0; padding: 0; }}
     :root {{
@@ -1196,7 +1478,10 @@ def render_safety_page() -> str:
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Safety &amp; Compliance — BlueBird Alerts</title>
   <meta name="description" content="How BlueBird Alerts approaches safety, emergency protocols, data privacy, and system reliability for schools." />
-  <link rel="icon" type="image/png" href="{LOGO}" />
+  <link rel="icon" href="/favicon.ico?v=1" />
+  <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32x32.png?v=1" />
+  <link rel="icon" type="image/png" sizes="16x16" href="/static/favicon-16x16.png?v=1" />
+  <link rel="apple-touch-icon" href="/static/apple-touch-icon.png?v=1" />
   <style>
     *, *::before, *::after {{ box-sizing: border-box; margin: 0; padding: 0; }}
     :root {{
