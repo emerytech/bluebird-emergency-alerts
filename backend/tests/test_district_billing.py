@@ -30,7 +30,7 @@ from app.services.billing_service import (
     require_management_license,
     ManagementLicenseError,
 )
-from app.services.tenant_billing_store import TenantBillingRecord, TenantBillingStore
+from app.services.tenant_billing_store import BillingAuditRecord, TenantBillingRecord, TenantBillingStore
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -319,3 +319,221 @@ def test_tenant_billing_record_all_fields_present() -> None:
     )
     for field in required:
         assert hasattr(record, field), f"TenantBillingRecord missing field: {field}"
+
+
+# ── Phase 12: Archive fields present on TenantBillingRecord ───────────────────
+
+
+def test_tenant_billing_record_has_archive_fields() -> None:
+    """New archive fields must exist with correct defaults."""
+    now = _now()
+    record = TenantBillingRecord(
+        tenant_id=1, tenant_slug="test", district_id=None,
+        customer_name=None, customer_email=None, plan_id="trial", plan_type="trial",
+        billing_status="trial", license_key=None, starts_at=None, trial_start=None,
+        trial_end=None, trial_ends_at=None, current_period_start=None,
+        current_period_end=None, renewal_date=None, is_free_override=False,
+        free_reason=None, override_enabled=False, override_reason=None,
+        internal_notes=None, created_at=now, updated_at=now,
+        stripe_customer_id=None, stripe_subscription_id=None,
+        stripe_price_id=None, stripe_checkout_session_id=None,
+    )
+    assert record.is_archived is False
+    assert record.archived_at is None
+    assert record.archived_by is None
+
+
+# ── Phase 12: Archive / Restore ───────────────────────────────────────────────
+
+
+def test_archive_district_billing(store: TenantBillingStore) -> None:
+    _sync(store.ensure_district_billing(district_id=50))
+    result = _sync(store.archive_district_billing(district_id=50, archived_by="super_admin:alice"))
+    assert result.is_archived is True
+    assert result.archived_by == "super_admin:alice"
+    assert result.archived_at is not None
+
+
+def test_archived_excluded_from_default_get(store: TenantBillingStore) -> None:
+    """get_district_billing(include_archived=False) must return None for an archived record."""
+    _sync(store.ensure_district_billing(district_id=51))
+    _sync(store.archive_district_billing(district_id=51, archived_by="super_admin:alice"))
+
+    result = _sync(store.get_district_billing(district_id=51))
+    assert result is None
+
+
+def test_archived_visible_when_include_archived(store: TenantBillingStore) -> None:
+    """get_district_billing(include_archived=True) returns the archived record."""
+    _sync(store.ensure_district_billing(district_id=52))
+    _sync(store.archive_district_billing(district_id=52, archived_by="super_admin:alice"))
+
+    result = _sync(store.get_district_billing(district_id=52, include_archived=True))
+    assert result is not None
+    assert result.is_archived is True
+
+
+def test_archived_excluded_from_list_by_default(store: TenantBillingStore) -> None:
+    """list_all_district_billing() excludes archived records by default."""
+    _sync(store.ensure_district_billing(district_id=53))
+    _sync(store.ensure_district_billing(district_id=54))
+    _sync(store.archive_district_billing(district_id=54, archived_by="super_admin:alice"))
+
+    active_records = _sync(store.list_all_district_billing())
+    active_ids = {r.district_id for r in active_records}
+    assert 53 in active_ids
+    assert 54 not in active_ids
+
+
+def test_archived_excluded_from_enforcement(store: TenantBillingStore) -> None:
+    """Archived district billing is invisible to get_effective_billing_for_tenant (falls back to tenant billing)."""
+    _sync(store.update_district_billing_full(
+        district_id=55,
+        billing_status="active",
+        current_period_end=_future(90),
+    ))
+    _sync(store.archive_district_billing(district_id=55, archived_by="super_admin:alice"))
+    _sync(store.update_billing_full(
+        tenant_id=7,
+        billing_status="active",
+        current_period_end=_future(30),
+    ))
+
+    effective = _sync(get_effective_billing_for_tenant(store, tenant_id=7, district_id=55))
+    assert effective.tenant_id == 7
+
+
+def test_restore_district_billing(store: TenantBillingStore) -> None:
+    _sync(store.ensure_district_billing(district_id=56))
+    _sync(store.archive_district_billing(district_id=56, archived_by="super_admin:alice"))
+    result = _sync(store.restore_district_billing(district_id=56))
+
+    assert result.is_archived is False
+    assert result.archived_at is None
+    assert result.archived_by is None
+
+
+def test_restore_makes_record_visible_again(store: TenantBillingStore) -> None:
+    _sync(store.ensure_district_billing(district_id=57))
+    _sync(store.archive_district_billing(district_id=57, archived_by="super_admin:alice"))
+    _sync(store.restore_district_billing(district_id=57))
+
+    result = _sync(store.get_district_billing(district_id=57))
+    assert result is not None
+    assert result.is_archived is False
+
+
+# ── Phase 12: Delete ──────────────────────────────────────────────────────────
+
+
+def test_delete_archived_district_billing(store: TenantBillingStore) -> None:
+    _sync(store.ensure_district_billing(district_id=60))
+    _sync(store.archive_district_billing(district_id=60, archived_by="super_admin:alice"))
+    _sync(store.delete_district_billing(district_id=60))
+
+    result = _sync(store.get_district_billing(district_id=60, include_archived=True))
+    assert result is None
+
+
+def test_delete_expired_district_billing_without_archive(store: TenantBillingStore) -> None:
+    """Expired/cancelled licenses can be deleted without archiving first."""
+    _sync(store.update_district_billing_full(
+        district_id=61,
+        billing_status="expired",
+        current_period_end=_past(10),
+    ))
+    _sync(store.delete_district_billing(district_id=61))
+
+    result = _sync(store.get_district_billing(district_id=61, include_archived=True))
+    assert result is None
+
+
+def test_delete_cancelled_district_billing_without_archive(store: TenantBillingStore) -> None:
+    _sync(store.update_district_billing_full(district_id=62, billing_status="cancelled"))
+    _sync(store.delete_district_billing(district_id=62))
+    result = _sync(store.get_district_billing(district_id=62, include_archived=True))
+    assert result is None
+
+
+def test_delete_active_district_billing_raises(store: TenantBillingStore) -> None:
+    """Deleting an active license without archiving must raise ValueError."""
+    _sync(store.update_district_billing_full(
+        district_id=63,
+        billing_status="active",
+        current_period_end=_future(30),
+    ))
+    with pytest.raises(ValueError, match="Cannot delete an active district license"):
+        _sync(store.delete_district_billing(district_id=63))
+
+
+def test_delete_trial_district_billing_raises(store: TenantBillingStore) -> None:
+    _sync(store.ensure_district_billing(district_id=64))  # default status="trial"
+    with pytest.raises(ValueError, match="Cannot delete an active district license"):
+        _sync(store.delete_district_billing(district_id=64))
+
+
+def test_delete_past_due_district_billing_raises(store: TenantBillingStore) -> None:
+    _sync(store.update_district_billing_full(district_id=65, billing_status="past_due"))
+    with pytest.raises(ValueError, match="Cannot delete an active district license"):
+        _sync(store.delete_district_billing(district_id=65))
+
+
+def test_delete_nonexistent_district_billing_is_noop(store: TenantBillingStore) -> None:
+    _sync(store.delete_district_billing(district_id=9999))  # must not raise
+
+
+# ── Phase 12: Billing Audit Log ───────────────────────────────────────────────
+
+
+def test_log_billing_audit_returns_record(store: TenantBillingStore) -> None:
+    record = _sync(store.log_billing_audit(
+        district_id=70,
+        event_type="license_created",
+        actor="super_admin:bob",
+        detail="Plan: enterprise",
+    ))
+    assert isinstance(record, BillingAuditRecord)
+    assert record.district_id == 70
+    assert record.event_type == "license_created"
+    assert record.actor == "super_admin:bob"
+    assert record.detail == "Plan: enterprise"
+    assert record.id > 0
+    assert record.created_at
+
+
+def test_list_billing_audit_returns_entries(store: TenantBillingStore) -> None:
+    _sync(store.log_billing_audit(district_id=71, event_type="license_archived", actor="super_admin:carol"))
+    _sync(store.log_billing_audit(district_id=71, event_type="license_restored", actor="super_admin:carol"))
+
+    entries = _sync(store.list_billing_audit(district_id=71))
+    assert len(entries) == 2
+    event_types = {e.event_type for e in entries}
+    assert "license_archived" in event_types
+    assert "license_restored" in event_types
+
+
+def test_list_billing_audit_filters_by_district(store: TenantBillingStore) -> None:
+    _sync(store.log_billing_audit(district_id=72, event_type="license_created", actor="super_admin:dave"))
+    _sync(store.log_billing_audit(district_id=73, event_type="license_created", actor="super_admin:dave"))
+
+    entries_72 = _sync(store.list_billing_audit(district_id=72))
+    assert all(e.district_id == 72 for e in entries_72)
+    assert len(entries_72) == 1
+
+
+def test_list_billing_audit_all_districts(store: TenantBillingStore) -> None:
+    _sync(store.log_billing_audit(district_id=74, event_type="status_changed", actor="super_admin:eve"))
+    _sync(store.log_billing_audit(district_id=75, event_type="status_changed", actor="super_admin:eve"))
+
+    all_entries = _sync(store.list_billing_audit())
+    district_ids = {e.district_id for e in all_entries}
+    assert 74 in district_ids
+    assert 75 in district_ids
+
+
+def test_list_billing_audit_respects_limit(store: TenantBillingStore) -> None:
+    for i in range(10):
+        _sync(store.log_billing_audit(district_id=76, event_type="status_changed", actor="super_admin:test"))
+
+    entries = _sync(store.list_billing_audit(district_id=76, limit=3))
+    assert len(entries) == 3

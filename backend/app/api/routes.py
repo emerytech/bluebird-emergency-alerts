@@ -3764,50 +3764,82 @@ async def super_admin_dashboard(
             ],
         })
     _prod_districts = [d for d in _all_districts if not getattr(d, "is_test", False)]
-    # ── District billing rows ──────────────────────────────────────────────────
+    # ── District billing rows (active + archived) ─────────────────────────────
     _district_billing_rows: list[dict[str, object]] = []
+    _archived_district_billing_rows: list[dict[str, object]] = []
+
+    def _build_district_billing_row(d: object, d_billing: object, schools_in_dist: list) -> dict:
+        d_eff = get_effective_status(d_billing)  # type: ignore[arg-type]
+        d_days = get_days_remaining(d_billing)  # type: ignore[arg-type]
+        d_status_class = "ok" if d_eff in {"active", "manual_override"} else "warn" if d_eff in {"trial", "past_due"} else "danger"
+        slug = str(getattr(d, "slug", ""))
+        return {
+            "name": getattr(d, "name", ""),
+            "slug": slug,
+            "district_id": getattr(d, "id", 0),
+            "school_count": len(schools_in_dist),
+            "customer_name": getattr(d_billing, "customer_name", "") or "",
+            "customer_email": getattr(d_billing, "customer_email", "") or "",
+            "plan_type": getattr(d_billing, "plan_type", "trial") or "trial",
+            "billing_status": getattr(d_billing, "billing_status", "trial"),
+            "effective_status": d_eff,
+            "billing_status_class": d_status_class,
+            "license_key": getattr(d_billing, "license_key", "") or "",
+            "license_key_suffix": (getattr(d_billing, "license_key", "") or "")[-9:],
+            "starts_at": (getattr(d_billing, "starts_at", "") or "")[:10],
+            "trial_end": (getattr(d_billing, "trial_ends_at", "") or getattr(d_billing, "trial_end", "") or "")[:10],
+            "current_period_end": (getattr(d_billing, "current_period_end", "") or "")[:10],
+            "renewal_date": (getattr(d_billing, "renewal_date", "") or "")[:10],
+            "days_remaining": d_days,
+            "override_enabled": bool(getattr(d_billing, "override_enabled", False)) or bool(getattr(d_billing, "is_free_override", False)),
+            "override_reason": getattr(d_billing, "override_reason", "") or getattr(d_billing, "free_reason", "") or "",
+            "internal_notes": getattr(d_billing, "internal_notes", "") or "",
+            "is_archived": bool(getattr(d_billing, "is_archived", False)),
+            "archived_at": (getattr(d_billing, "archived_at", "") or "")[:10],
+            "archived_by": getattr(d_billing, "archived_by", "") or "",
+            "generate_license_action": f"/super-admin/districts/{slug}/billing/generate-license",
+            "set_status_action": f"/super-admin/districts/{slug}/billing/set-status",
+            "set_plan_action": f"/super-admin/districts/{slug}/billing/set-plan",
+            "update_details_action": f"/super-admin/districts/{slug}/billing/update-details",
+            "toggle_override_action": f"/super-admin/districts/{slug}/billing/toggle-override",
+            "start_trial_action": f"/super-admin/districts/{slug}/billing/start-trial",
+            "archive_action": f"/super-admin/districts/{slug}/billing/archive",
+            "restore_action": f"/super-admin/districts/{slug}/billing/restore",
+            "delete_action": f"/super-admin/districts/{slug}/billing/delete",
+            "analytics_url": f"/super-admin/districts/{slug}/analytics",
+        }
+
     for _d in _prod_districts:
-        _d_billing = await _tenant_billing(request).get_district_billing(district_id=_d.id)
+        _d_billing = await _tenant_billing(request).get_district_billing(district_id=_d.id, include_archived=True)
         if _d_billing is not None:
             _d_schools_in_dist = _district_school_map.get(_d.id, [])
-            _d_eff = get_effective_status(_d_billing)
-            _d_days = get_days_remaining(_d_billing)
-            _d_status_class = "ok" if _d_eff in {"active", "manual_override"} else "warn" if _d_eff in {"trial", "past_due"} else "danger"
-            _district_billing_rows.append({
-                "name": _d.name,
-                "slug": _d.slug,
-                "district_id": _d.id,
-                "school_count": len(_d_schools_in_dist),
-                "customer_name": _d_billing.customer_name or "",
-                "customer_email": _d_billing.customer_email or "",
-                "plan_type": _d_billing.plan_type or "trial",
-                "billing_status": _d_billing.billing_status,
-                "effective_status": _d_eff,
-                "billing_status_class": _d_status_class,
-                "license_key": _d_billing.license_key or "",
-                "license_key_suffix": (_d_billing.license_key or "")[-9:],
-                "starts_at": (_d_billing.starts_at or "")[:10],
-                "trial_end": (_d_billing.trial_ends_at or _d_billing.trial_end or "")[:10],
-                "current_period_end": (_d_billing.current_period_end or "")[:10],
-                "renewal_date": (_d_billing.renewal_date or "")[:10],
-                "days_remaining": _d_days,
-                "override_enabled": _d_billing.override_enabled or _d_billing.is_free_override,
-                "override_reason": _d_billing.override_reason or _d_billing.free_reason or "",
-                "internal_notes": _d_billing.internal_notes or "",
-                "generate_license_action": f"/super-admin/districts/{_d.slug}/billing/generate-license",
-                "set_status_action": f"/super-admin/districts/{_d.slug}/billing/set-status",
-                "set_plan_action": f"/super-admin/districts/{_d.slug}/billing/set-plan",
-                "update_details_action": f"/super-admin/districts/{_d.slug}/billing/update-details",
-                "toggle_override_action": f"/super-admin/districts/{_d.slug}/billing/toggle-override",
-                "start_trial_action": f"/super-admin/districts/{_d.slug}/billing/start-trial",
-                "analytics_url": f"/super-admin/districts/{_d.slug}/analytics",
-            })
+            _row = _build_district_billing_row(_d, _d_billing, _d_schools_in_dist)
+            if _d_billing.is_archived:
+                _archived_district_billing_rows.append(_row)
+            else:
+                _district_billing_rows.append(_row)
+
+    # Recent billing audit events (last 50 across all districts)
+    _billing_audit_events = await _tenant_billing(request).list_billing_audit(limit=50)
+    _billing_audit_rows = [
+        {
+            "district_id": e.district_id,
+            "event_type": e.event_type,
+            "actor": e.actor,
+            "detail": e.detail or "",
+            "created_at": e.created_at[:19].replace("T", " "),
+        }
+        for e in _billing_audit_events
+    ]
+
     return HTMLResponse(
         render_super_admin_page(
             base_domain=request.app.state.settings.BASE_DOMAIN,  # type: ignore[attr-defined]
             school_rows=school_rows,
             billing_rows=billing_rows,
             district_billing_rows=_district_billing_rows,
+            archived_district_billing_rows=_archived_district_billing_rows,
+            billing_audit_rows=_billing_audit_rows,
             platform_activity_rows=platform_activity_rows,
             git_pull_configured=bool(request.app.state.settings.SERVER_GIT_PULL_COMMAND),  # type: ignore[attr-defined]
             server_info=_build_server_info(request),
@@ -4649,6 +4681,43 @@ async def super_admin_create_invoice(
     return RedirectResponse(url=_super_admin_url("billing"), status_code=status.HTTP_303_SEE_OTHER)
 
 
+# ── District billing helpers ───────────────────────────────────────────────────
+
+
+def _super_admin_actor_label(request: Request) -> str:
+    actor = getattr(request.state, "super_admin_actor", None)
+    login_name = getattr(actor, "login_name", None)
+    return f"super_admin:{login_name}" if login_name else "super_admin"
+
+
+def _fire_billing_audit(
+    request: Request,
+    *,
+    district_id: int,
+    event_type: str,
+    actor: str,
+    detail: Optional[str] = None,
+) -> None:
+    """Fire-and-forget billing audit log write. Never raises."""
+    store = _tenant_billing(request)
+
+    async def _task() -> None:
+        try:
+            await store.log_billing_audit(
+                district_id=district_id,
+                event_type=event_type,
+                actor=actor,
+                detail=detail,
+            )
+        except Exception:
+            logger.debug("Billing audit log write failed district_id=%s event=%s", district_id, event_type, exc_info=True)
+
+    try:
+        asyncio.create_task(_task())
+    except RuntimeError:
+        pass
+
+
 # ── District billing info (JSON) ───────────────────────────────────────────────
 
 
@@ -4726,13 +4795,12 @@ async def super_admin_district_generate_license(
         internal_notes=internal_notes.strip() or None,
     )
     actor = _super_admin_actor_label(request)
-    _fire_audit(
+    _fire_billing_audit(
         request,
-        "district_license_generated",
-        actor_label=actor,
-        target_type="district",
-        target_id=district.slug,
-        metadata={"plan_type": plan_type, "license_key_suffix": new_key[-9:]},
+        district_id=int(district.id),
+        event_type="license_created",
+        actor=actor,
+        detail="plan=" + plan_type.strip().lower() + " key=..." + new_key[-9:],
     )
     _set_flash(request, message=f"District license generated for {district.name}: {new_key}")
     return RedirectResponse(url=_super_admin_url("billing"), status_code=status.HTTP_303_SEE_OTHER)
@@ -4762,13 +4830,12 @@ async def super_admin_district_set_billing_status(
         billing_status=clean_status,
     )
     actor = _super_admin_actor_label(request)
-    _fire_audit(
+    _fire_billing_audit(
         request,
-        "district_billing_status_changed",
-        actor_label=actor,
-        target_type="district",
-        target_id=district.slug,
-        metadata={"before": existing.billing_status, "after": clean_status},
+        district_id=int(district.id),
+        event_type="status_changed",
+        actor=actor,
+        detail=existing.billing_status + " → " + clean_status,
     )
     _set_flash(request, message=f"District billing status for {district.name} set to '{clean_status}'.")
     return RedirectResponse(url=_super_admin_url("billing"), status_code=status.HTTP_303_SEE_OTHER)
@@ -4854,14 +4921,13 @@ async def super_admin_district_toggle_billing_override(
         override_reason=override_reason.strip() or ("Manual override by platform" if new_override else None),
     )
     actor = _super_admin_actor_label(request)
-    event = "district_manual_override_enabled" if new_override else "district_manual_override_disabled"
-    _fire_audit(
+    event_type = "override_enabled" if new_override else "override_disabled"
+    _fire_billing_audit(
         request,
-        event,
-        actor_label=actor,
-        target_type="district",
-        target_id=district.slug,
-        metadata={"override_reason": override_reason.strip() or ""},
+        district_id=int(district.id),
+        event_type=event_type,
+        actor=actor,
+        detail=override_reason.strip() or None,
     )
     state = "enabled" if new_override else "disabled"
     _set_flash(request, message=f"District manual override {state} for {district.name}.")
@@ -4893,7 +4959,102 @@ async def super_admin_district_start_trial(
         starts_at=now.isoformat(),
         trial_ends_at=trial_end,
     )
+    actor = _super_admin_actor_label(request)
+    _fire_billing_audit(
+        request,
+        district_id=int(district.id),
+        event_type="trial_started",
+        actor=actor,
+        detail=str(int(duration_days)) + " days",
+    )
     _set_flash(request, message=f"Started {int(duration_days)}-day district trial for {district.name}.")
+    return RedirectResponse(url=_super_admin_url("billing"), status_code=status.HTTP_303_SEE_OTHER)
+
+
+# ── District billing: archive ─────────────────────────────────────────────────
+
+
+@router.post("/super-admin/districts/{slug}/billing/archive", include_in_schema=False)
+async def super_admin_district_archive_billing(request: Request, slug: str) -> RedirectResponse:
+    _require_super_admin(request)
+    district = await _schools(request).get_district_by_slug(slug.strip().lower())
+    if district is None:
+        _set_flash(request, error="District not found.")
+        return RedirectResponse(url=_super_admin_url("billing"), status_code=status.HTTP_303_SEE_OTHER)
+    existing = await _tenant_billing(request).get_district_billing(district_id=int(district.id), include_archived=True)
+    if existing is None:
+        _set_flash(request, error="No billing record for this district.")
+        return RedirectResponse(url=_super_admin_url("billing"), status_code=status.HTTP_303_SEE_OTHER)
+    if existing.is_archived:
+        _set_flash(request, error="License is already archived.")
+        return RedirectResponse(url=_super_admin_url("billing"), status_code=status.HTTP_303_SEE_OTHER)
+    actor = _super_admin_actor_label(request)
+    await _tenant_billing(request).archive_district_billing(district_id=int(district.id), archived_by=actor)
+    _fire_billing_audit(
+        request,
+        district_id=int(district.id),
+        event_type="license_archived",
+        actor=actor,
+        detail="status_at_archive=" + existing.billing_status,
+    )
+    _set_flash(request, message=f"District license for {district.name} archived.")
+    return RedirectResponse(url=_super_admin_url("billing"), status_code=status.HTTP_303_SEE_OTHER)
+
+
+# ── District billing: restore ─────────────────────────────────────────────────
+
+
+@router.post("/super-admin/districts/{slug}/billing/restore", include_in_schema=False)
+async def super_admin_district_restore_billing(request: Request, slug: str) -> RedirectResponse:
+    _require_super_admin(request)
+    district = await _schools(request).get_district_by_slug(slug.strip().lower())
+    if district is None:
+        _set_flash(request, error="District not found.")
+        return RedirectResponse(url=_super_admin_url("billing"), status_code=status.HTTP_303_SEE_OTHER)
+    existing = await _tenant_billing(request).get_district_billing(district_id=int(district.id), include_archived=True)
+    if existing is None or not existing.is_archived:
+        _set_flash(request, error="No archived license found for this district.")
+        return RedirectResponse(url=_super_admin_url("billing"), status_code=status.HTTP_303_SEE_OTHER)
+    actor = _super_admin_actor_label(request)
+    await _tenant_billing(request).restore_district_billing(district_id=int(district.id))
+    _fire_billing_audit(
+        request,
+        district_id=int(district.id),
+        event_type="license_restored",
+        actor=actor,
+    )
+    _set_flash(request, message=f"District license for {district.name} restored.")
+    return RedirectResponse(url=_super_admin_url("billing"), status_code=status.HTTP_303_SEE_OTHER)
+
+
+# ── District billing: delete ──────────────────────────────────────────────────
+
+
+@router.post("/super-admin/districts/{slug}/billing/delete", include_in_schema=False)
+async def super_admin_district_delete_billing(request: Request, slug: str) -> RedirectResponse:
+    _require_super_admin(request)
+    district = await _schools(request).get_district_by_slug(slug.strip().lower())
+    if district is None:
+        _set_flash(request, error="District not found.")
+        return RedirectResponse(url=_super_admin_url("billing"), status_code=status.HTTP_303_SEE_OTHER)
+    existing = await _tenant_billing(request).get_district_billing(district_id=int(district.id), include_archived=True)
+    if existing is None:
+        _set_flash(request, error="No billing record found for this district.")
+        return RedirectResponse(url=_super_admin_url("billing"), status_code=status.HTTP_303_SEE_OTHER)
+    actor = _super_admin_actor_label(request)
+    try:
+        await _tenant_billing(request).delete_district_billing(district_id=int(district.id))
+    except ValueError as exc:
+        _set_flash(request, error=str(exc))
+        return RedirectResponse(url=_super_admin_url("billing"), status_code=status.HTTP_303_SEE_OTHER)
+    _fire_billing_audit(
+        request,
+        district_id=int(district.id),
+        event_type="license_deleted",
+        actor=actor,
+        detail="final_status=" + existing.billing_status,
+    )
+    _set_flash(request, message=f"District license for {district.name} permanently deleted.")
     return RedirectResponse(url=_super_admin_url("billing"), status_code=status.HTTP_303_SEE_OTHER)
 
 

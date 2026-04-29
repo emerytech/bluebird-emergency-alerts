@@ -48,6 +48,20 @@ class TenantBillingRecord:
     stripe_subscription_id: Optional[str]
     stripe_price_id: Optional[str]
     stripe_checkout_session_id: Optional[str]
+    # Archive (district billing only; defaults keep all existing code working)
+    is_archived: bool = False
+    archived_at: Optional[str] = None
+    archived_by: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class BillingAuditRecord:
+    id: int
+    district_id: int
+    event_type: str   # license_created | license_archived | license_restored | license_deleted | status_changed | ...
+    actor: str
+    detail: Optional[str]
+    created_at: str
 
 
 @dataclass(frozen=True)
@@ -101,8 +115,11 @@ _DISTRICT_BILLING_COLS = """
     current_period_start, current_period_end, renewal_date,
     is_free_override, free_reason, override_enabled, override_reason,
     internal_notes, created_at, updated_at,
-    stripe_customer_id, stripe_subscription_id, stripe_price_id, stripe_checkout_session_id
+    stripe_customer_id, stripe_subscription_id, stripe_price_id, stripe_checkout_session_id,
+    is_archived, archived_at, archived_by
 """
+
+_BILLING_AUDIT_COLS = "id, district_id, event_type, actor, detail, created_at"
 
 
 # ── Store ──────────────────────────────────────────────────────────────────────
@@ -226,8 +243,30 @@ class TenantBillingStore:
                     stripe_customer_id     TEXT NULL,
                     stripe_subscription_id TEXT NULL,
                     stripe_price_id        TEXT NULL,
-                    stripe_checkout_session_id TEXT NULL
+                    stripe_checkout_session_id TEXT NULL,
+                    is_archived            INTEGER NOT NULL DEFAULT 0,
+                    archived_at            TEXT NULL,
+                    archived_by            TEXT NULL
                 );
+                """
+            )
+            self._migrate_district_billing_table(conn)
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS district_billing_audit_log (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    district_id INTEGER NOT NULL,
+                    event_type  TEXT NOT NULL,
+                    actor       TEXT NOT NULL DEFAULT '',
+                    detail      TEXT NULL,
+                    created_at  TEXT NOT NULL
+                );
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_district_billing_audit_district
+                    ON district_billing_audit_log(district_id);
                 """
             )
 
@@ -254,6 +293,17 @@ class TenantBillingStore:
         for col, defn in migrations:
             if col not in existing:
                 conn.execute(f"ALTER TABLE tenant_billing ADD COLUMN {col} {defn};")
+
+    def _migrate_district_billing_table(self, conn: sqlite3.Connection) -> None:
+        existing = {row[1] for row in conn.execute("PRAGMA table_info(district_billing);").fetchall()}
+        migrations = [
+            ("is_archived", "INTEGER NOT NULL DEFAULT 0"),
+            ("archived_at", "TEXT NULL"),
+            ("archived_by", "TEXT NULL"),
+        ]
+        for col, defn in migrations:
+            if col not in existing:
+                conn.execute(f"ALTER TABLE district_billing ADD COLUMN {col} {defn};")
 
     # ── Row → record helpers ───────────────────────────────────────────────────
 
@@ -777,6 +827,7 @@ class TenantBillingStore:
             internal_notes, created_at, updated_at,
             stripe_customer_id, stripe_subscription_id, stripe_price_id,
             stripe_checkout_session_id,
+            is_archived, archived_at, archived_by,
         ) = row
         return TenantBillingRecord(
             tenant_id=0,
@@ -806,6 +857,21 @@ class TenantBillingStore:
             stripe_subscription_id=str(stripe_subscription_id) if stripe_subscription_id is not None else None,
             stripe_price_id=str(stripe_price_id) if stripe_price_id is not None else None,
             stripe_checkout_session_id=str(stripe_checkout_session_id) if stripe_checkout_session_id is not None else None,
+            is_archived=bool(int(is_archived or 0)),
+            archived_at=str(archived_at) if archived_at is not None else None,
+            archived_by=str(archived_by) if archived_by is not None else None,
+        )
+
+    @staticmethod
+    def _billing_audit_row_to_record(row: tuple) -> "BillingAuditRecord":
+        id_, district_id, event_type, actor, detail, created_at = row
+        return BillingAuditRecord(
+            id=int(id_),
+            district_id=int(district_id),
+            event_type=str(event_type),
+            actor=str(actor),
+            detail=str(detail) if detail is not None else None,
+            created_at=str(created_at),
         )
 
     def _ensure_district_billing_sync(self, district_id: int) -> TenantBillingRecord:
@@ -826,26 +892,148 @@ class TenantBillingStore:
     async def ensure_district_billing(self, *, district_id: int) -> TenantBillingRecord:
         return await anyio.to_thread.run_sync(self._ensure_district_billing_sync, int(district_id))
 
-    def _get_district_billing_sync(self, district_id: int) -> Optional[TenantBillingRecord]:
+    def _get_district_billing_sync(self, district_id: int, include_archived: bool) -> Optional[TenantBillingRecord]:
+        where = "district_id = ?" if include_archived else "district_id = ? AND is_archived = 0"
         with self._connect() as conn:
             row = conn.execute(
-                f"SELECT {_DISTRICT_BILLING_COLS} FROM district_billing WHERE district_id = ? LIMIT 1;",
+                f"SELECT {_DISTRICT_BILLING_COLS} FROM district_billing WHERE {where} LIMIT 1;",
                 (int(district_id),),
             ).fetchone()
         return self._district_row_to_record(row) if row is not None else None
 
-    async def get_district_billing(self, *, district_id: int) -> Optional[TenantBillingRecord]:
-        return await anyio.to_thread.run_sync(self._get_district_billing_sync, int(district_id))
+    async def get_district_billing(self, *, district_id: int, include_archived: bool = False) -> Optional[TenantBillingRecord]:
+        return await anyio.to_thread.run_sync(
+            lambda: self._get_district_billing_sync(int(district_id), include_archived)
+        )
 
-    def _list_all_district_billing_sync(self) -> List[TenantBillingRecord]:
+    def _list_all_district_billing_sync(self, include_archived: bool) -> List[TenantBillingRecord]:
+        where = "" if include_archived else "WHERE is_archived = 0"
         with self._connect() as conn:
             rows = conn.execute(
-                f"SELECT {_DISTRICT_BILLING_COLS} FROM district_billing ORDER BY updated_at DESC;"
+                f"SELECT {_DISTRICT_BILLING_COLS} FROM district_billing {where} ORDER BY updated_at DESC;"
             ).fetchall()
         return [self._district_row_to_record(r) for r in rows]
 
-    async def list_all_district_billing(self) -> List[TenantBillingRecord]:
-        return await anyio.to_thread.run_sync(self._list_all_district_billing_sync)
+    async def list_all_district_billing(self, *, include_archived: bool = False) -> List[TenantBillingRecord]:
+        return await anyio.to_thread.run_sync(lambda: self._list_all_district_billing_sync(include_archived))
+
+    # ── Archive / Restore / Delete ──────────────────────────────────────────────
+
+    def _archive_district_billing_sync(self, district_id: int, archived_by: str) -> TenantBillingRecord:
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE district_billing SET is_archived = 1, archived_at = ?, archived_by = ?, updated_at = ? "
+                "WHERE district_id = ?;",
+                (now, archived_by, now, int(district_id)),
+            )
+            row = conn.execute(
+                f"SELECT {_DISTRICT_BILLING_COLS} FROM district_billing WHERE district_id = ? LIMIT 1;",
+                (int(district_id),),
+            ).fetchone()
+        assert row is not None, f"district_billing row not found for district_id={district_id}"
+        return self._district_row_to_record(row)
+
+    async def archive_district_billing(self, *, district_id: int, archived_by: str) -> TenantBillingRecord:
+        return await anyio.to_thread.run_sync(
+            lambda: self._archive_district_billing_sync(int(district_id), archived_by)
+        )
+
+    def _restore_district_billing_sync(self, district_id: int) -> TenantBillingRecord:
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE district_billing SET is_archived = 0, archived_at = NULL, archived_by = NULL, updated_at = ? "
+                "WHERE district_id = ?;",
+                (now, int(district_id)),
+            )
+            row = conn.execute(
+                f"SELECT {_DISTRICT_BILLING_COLS} FROM district_billing WHERE district_id = ? LIMIT 1;",
+                (int(district_id),),
+            ).fetchone()
+        assert row is not None, f"district_billing row not found for district_id={district_id}"
+        return self._district_row_to_record(row)
+
+    async def restore_district_billing(self, *, district_id: int) -> TenantBillingRecord:
+        return await anyio.to_thread.run_sync(
+            lambda: self._restore_district_billing_sync(int(district_id))
+        )
+
+    def _delete_district_billing_sync(self, district_id: int) -> None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT billing_status, is_archived FROM district_billing WHERE district_id = ? LIMIT 1;",
+                (int(district_id),),
+            ).fetchone()
+            if row is None:
+                return
+            billing_status, is_archived = str(row[0] or "trial"), bool(int(row[1] or 0))
+            active_statuses = {"active", "manual_override", "trial", "past_due"}
+            if not is_archived and billing_status in active_statuses:
+                raise ValueError(
+                    f"Cannot delete an active district license (status={billing_status}). "
+                    "Archive or let the license expire first."
+                )
+            conn.execute("DELETE FROM district_billing WHERE district_id = ?;", (int(district_id),))
+
+    async def delete_district_billing(self, *, district_id: int) -> None:
+        """Hard-delete the district billing record. Only allowed if archived OR status is expired/cancelled/suspended."""
+        await anyio.to_thread.run_sync(lambda: self._delete_district_billing_sync(int(district_id)))
+
+    # ── Billing Audit Log ──────────────────────────────────────────────────────
+
+    def _log_billing_audit_sync(self, district_id: int, event_type: str, actor: str, detail: Optional[str]) -> BillingAuditRecord:
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            cur = conn.execute(
+                "INSERT INTO district_billing_audit_log (district_id, event_type, actor, detail, created_at) "
+                "VALUES (?, ?, ?, ?, ?);",
+                (int(district_id), str(event_type), str(actor), detail, now),
+            )
+            row = conn.execute(
+                f"SELECT {_BILLING_AUDIT_COLS} FROM district_billing_audit_log WHERE id = ?;",
+                (cur.lastrowid,),
+            ).fetchone()
+        assert row is not None
+        return self._billing_audit_row_to_record(row)
+
+    async def log_billing_audit(
+        self,
+        *,
+        district_id: int,
+        event_type: str,
+        actor: str,
+        detail: Optional[str] = None,
+    ) -> BillingAuditRecord:
+        return await anyio.to_thread.run_sync(
+            lambda: self._log_billing_audit_sync(int(district_id), event_type, actor, detail)
+        )
+
+    def _list_billing_audit_sync(self, district_id: Optional[int], limit: int) -> List[BillingAuditRecord]:
+        with self._connect() as conn:
+            if district_id is not None:
+                rows = conn.execute(
+                    f"SELECT {_BILLING_AUDIT_COLS} FROM district_billing_audit_log "
+                    f"WHERE district_id = ? ORDER BY created_at DESC LIMIT ?;",
+                    (int(district_id), int(limit)),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    f"SELECT {_BILLING_AUDIT_COLS} FROM district_billing_audit_log "
+                    f"ORDER BY created_at DESC LIMIT ?;",
+                    (int(limit),),
+                ).fetchall()
+        return [self._billing_audit_row_to_record(r) for r in rows]
+
+    async def list_billing_audit(
+        self,
+        *,
+        district_id: Optional[int] = None,
+        limit: int = 100,
+    ) -> List[BillingAuditRecord]:
+        return await anyio.to_thread.run_sync(
+            lambda: self._list_billing_audit_sync(district_id, limit)
+        )
 
     def _update_district_billing_full_sync(
         self,
