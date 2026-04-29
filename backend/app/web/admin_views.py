@@ -193,6 +193,88 @@ def _render_suggestion_panel(suggestions: list[Suggestion], prefix: str) -> str:
     )
 
 
+def _render_da_checklist(
+    *,
+    user_count: int,
+    device_count: int,
+    apns_configured: bool,
+    fcm_configured: bool,
+    alert_count_7d: int,
+    totp_enabled: bool,
+    prefix: str,
+) -> str:
+    """Setup checklist for district_admin users — shown on dashboard until dismissed or all done."""
+    items: list[tuple[bool, str, str, str, str]] = [
+        (user_count > 0, "👤", "Add at least one staff account",
+         "Add Users", f"{prefix}/admin?section=user-management"),
+        (device_count > 0, "📱", "Register at least one device",
+         "Manage Devices", f"{prefix}/admin?section=devices"),
+        (apns_configured or fcm_configured, "🔔", "Configure push notifications",
+         "Open Settings", f"{prefix}/admin?section=settings"),
+        (alert_count_7d > 0, "🚨", "Run a training drill",
+         "Dashboard", f"{prefix}/admin?section=dashboard"),
+        (totp_enabled, "🔒", "Enable two-factor authentication",
+         "Security", f"{prefix}/admin?section=settings"),
+    ]
+    done_count = sum(1 for done, *_ in items if done)
+    rows = ""
+    for done, icon, label, action, href in items:
+        done_cls = " done" if done else ""
+        check_mark = "✓" if done else ""
+        action_btn = "" if done else (
+            f'<a class="button button-secondary" href="{escape(href)}" '
+            f'style="font-size:0.75rem;padding:4px 10px;min-height:28px;white-space:nowrap;">'
+            f'{escape(action)}</a>'
+        )
+        rows += (
+            f'<div class="bb-da-cl-item{done_cls}">'
+            f'<div class="bb-da-cl-check">{check_mark}</div>'
+            f'<span class="bb-da-cl-item-label">{icon} {escape(label)}</span>'
+            f'{action_btn}'
+            f'</div>'
+        )
+    done_count_str = str(done_count)
+    total_str = str(len(items))
+    return (
+        f'<div class="bb-da-cl" id="bb-da-checklist" style="display:none;" '
+        f'data-done="{done_count_str}" data-total="{total_str}">'
+        f'<div class="bb-da-cl-header">'
+        f'<span class="bb-da-cl-title">&#9989; District Setup Checklist</span>'
+        f'<button class="bb-da-cl-dismiss" type="button" onclick="bbDaClDismiss()"'
+        f' title="Dismiss">Hide &times;</button>'
+        f'</div>'
+        f'<div class="bb-da-cl-items">{rows}</div>'
+        f'<p class="bb-da-cl-progress">{done_count_str} of {total_str} complete — '
+        f'checklist hides automatically once all items are done.</p>'
+        f'</div>'
+    )
+
+
+def _render_da_welcome_modal(school_name: str) -> str:
+    """First-login welcome overlay for district_admin users. Hidden by default; JS reveals it."""
+    return (
+        f'<div id="bb-da-wb-ov" class="bb-da-wb-ov" role="dialog" '
+        f'aria-modal="true" aria-labelledby="bb-da-wb-title">'
+        f'<div class="bb-da-wb">'
+        f'<div class="bb-da-wb-bird">🦋</div>'
+        f'<h2 id="bb-da-wb-title">Welcome to BlueBird Alerts</h2>'
+        f'<p class="bb-da-wb-sub">'
+        f"You're set up as a <strong>District Admin</strong> for "
+        f'<strong>{escape(school_name)}</strong>. '
+        f"This console gives you real-time control over emergency alerts and full visibility "
+        f"across all buildings in your district."
+        f'</p>'
+        f'<div class="bb-da-wb-actions">'
+        f'<button class="button" type="button" onclick="bbDaStartOnboarding()">'
+        f'&#9654; Start Tour</button>'
+        f'<button class="button button-secondary" type="button" onclick="bbDaSkipOnboarding()">'
+        f'Skip for now</button>'
+        f'</div>'
+        f'</div>'
+        f'</div>'
+    )
+
+
 def _super_admin_header_html(
     logout_url: str = "/super-admin/logout",
     license_summary: Optional[Mapping[str, object]] = None,
@@ -1407,6 +1489,58 @@ def _base_styles() -> str:
     .bb-sg-dismiss:hover { background: var(--accent-soft); color: var(--accent); }
     html[data-theme="dark"] .bb-sg { border-color: rgba(255,255,255,0.08); border-left-color: var(--accent); }
     html[data-theme="dark"] .bb-sg-item { background: rgba(255,255,255,0.04); border-color: rgba(255,255,255,0.08); }
+    /* ── District Admin Welcome Modal ───────────────────────────────────────── */
+    .bb-da-wb-ov {
+      position: fixed; inset: 0; background: rgba(0,0,0,0.62);
+      z-index: 9500; display: none;
+      align-items: center; justify-content: center;
+    }
+    .bb-da-wb-ov.open { display: flex; }
+    .bb-da-wb {
+      background: var(--surface, #fff); border-radius: 22px;
+      padding: 36px 40px; max-width: 520px; width: calc(100% - 40px);
+      box-shadow: 0 28px 80px rgba(0,0,0,0.32); text-align: center;
+      animation: bb-sconfirm-in 0.18s ease;
+    }
+    .bb-da-wb-bird { font-size: 3rem; margin-bottom: 12px; }
+    .bb-da-wb h2 { margin: 0 0 10px; font-size: 1.35rem; color: var(--text); }
+    .bb-da-wb-sub { color: var(--muted); font-size: 0.9rem; line-height: 1.6; margin: 0 0 24px; }
+    .bb-da-wb-actions { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+    /* ── District Admin Setup Checklist ─────────────────────────────────────── */
+    .bb-da-cl {
+      background: var(--card); border: 1px solid var(--border);
+      border-left: 4px solid #10b981; border-radius: var(--radius);
+      padding: 14px 16px; margin-bottom: 16px;
+    }
+    .bb-da-cl-header {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 10px;
+    }
+    .bb-da-cl-title { font-size: 0.78rem; font-weight: 700; text-transform: uppercase;
+      letter-spacing: 0.04em; color: #10b981; }
+    .bb-da-cl-dismiss { background: none; border: none; cursor: pointer;
+      color: var(--muted); font-size: 0.9rem; padding: 2px 6px; border-radius: 4px; }
+    .bb-da-cl-dismiss:hover { background: var(--accent-soft); color: var(--accent); }
+    .bb-da-cl-items { display: flex; flex-direction: column; gap: 8px; }
+    .bb-da-cl-item {
+      display: flex; align-items: center; gap: 10px;
+      padding: 8px 10px; border-radius: calc(var(--radius) - 2px);
+      background: var(--bg); border: 1px solid var(--border);
+    }
+    .bb-da-cl-item.done { opacity: 0.5; }
+    .bb-da-cl-check {
+      width: 20px; height: 20px; border-radius: 50%; flex-shrink: 0;
+      display: grid; place-items: center; font-size: 0.8rem;
+      border: 2px solid var(--border); color: transparent;
+    }
+    .bb-da-cl-item.done .bb-da-cl-check {
+      background: #10b981; border-color: #10b981; color: #fff;
+    }
+    .bb-da-cl-item-label { flex: 1; font-size: 0.86rem; color: var(--text); }
+    .bb-da-cl-item.done .bb-da-cl-item-label { text-decoration: line-through; color: var(--muted); }
+    .bb-da-cl-progress { font-size: 0.75rem; color: var(--muted); margin-top: 10px; margin-bottom: 0; }
+    html[data-theme="dark"] .bb-da-cl { border-color: rgba(255,255,255,0.08); border-left-color: #10b981; }
+    html[data-theme="dark"] .bb-da-cl-item { background: rgba(255,255,255,0.04); border-color: rgba(255,255,255,0.08); }
     """
 
 
@@ -5728,6 +5862,9 @@ def render_admin_page(
         f'<strong>Acknowledged</strong>{acknowledgement_count} user{_ack_plural}</span>'
     )
 
+    # District admin flag (used by onboarding system)
+    is_district_admin = str(getattr(current_user, "role", "")).strip().lower() == "district_admin"
+
     # Smart suggestions
     _sg_ack_rate: Optional[float] = (
         acknowledgement_count / max(active_users, 1)
@@ -5751,6 +5888,18 @@ def render_admin_page(
     )
     _sg_suggestions = SuggestionEngine().evaluate(_sg_ctx)
     _sg_panel_html = _render_suggestion_panel(_sg_suggestions, school_path_prefix)
+
+    # District admin onboarding
+    _da_cl_html = _render_da_checklist(
+        user_count=len(users),
+        device_count=len(devices),
+        apns_configured=apns_configured,
+        fcm_configured=fcm_configured,
+        alert_count_7d=len(alerts),
+        totp_enabled=totp_enabled,
+        prefix=school_path_prefix,
+    ) if is_district_admin else ""
+    _da_welcome_html = _render_da_welcome_modal(selected_tenant_name) if is_district_admin else ""
 
     # Phase 2 panel computed values
     _ds = delivery_stats or {}
@@ -6945,6 +7094,8 @@ def render_admin_page(
 
         {_sg_panel_html if section == "dashboard" else ""}
 
+        {_da_cl_html if section == "dashboard" else ""}
+
         {_render_settings_panels(prefix, school_name, school_slug, settings_history, _section_style, effective_settings=effective_settings, can_edit=can_edit_tenant_settings)}
 
         <section class="panel command-section" id="security"{_section_style("settings")}>
@@ -6970,6 +7121,13 @@ def render_admin_page(
             </article>
           </div>
           {admin_security_html}
+          {'''
+          <div style="margin-top:24px;padding-top:20px;border-top:1px solid var(--border);">
+            <p class="eyebrow">Onboarding</p>
+            <h3 style="margin:0 0 6px;font-size:1rem;">Admin Console Tour</h3>
+            <p class="card-copy" style="margin-bottom:14px;">Reset the guided tour so it shows again on your next visit. Also resets the district setup checklist.</p>
+            <button class="button button-secondary" type="button" onclick="bbDaResetOnboarding()">&#8635; Reset Tour &amp; Checklist</button>
+          </div>''' if is_district_admin else ''}
         </section>
 
         <section class="grid">
@@ -7874,6 +8032,7 @@ def render_admin_page(
     var _PREFIX = {json.dumps(prefix)};
     var _ROLE = {json.dumps(str(getattr(current_user, "role", "")))};
     var _SHOW_DISTRICT = {json.dumps(show_district_nav)};
+    var _IS_DA = {json.dumps(is_district_admin)};
 
     var _NAV = [
       {{t:'nav', i:'📊', l:'Dashboard', d:'Main overview', u:_PREFIX+'/admin?section=dashboard'}},
@@ -8093,10 +8252,13 @@ def render_admin_page(
   }})();
   </script>
 
+  {_da_welcome_html}
+
   <!-- ── Guided Tour ─────────────────────────────────────────────────────── -->
   <script>
   (function() {{
     var PREFIX = '{prefix}';
+    /* Generic 5-step tour (all roles except district_admin). */
     var STEPS = [
       {{
         nav: 'dashboard', el: '#overview',
@@ -8124,6 +8286,38 @@ def render_admin_page(
         text: 'Configure alert hold duration, quiet periods, notification sounds, and access code behavior. Changes take effect immediately across all devices.'
       }}
     ];
+    /* District-admin-specific 9-step tour — replaces the generic tour for this role. */
+    var _DA_STEPS = [
+      {{ nav: 'dashboard', el: '#overview',
+        title: 'Welcome to BlueBird Alerts',
+        text: 'This dashboard gives you real-time visibility into your district\'s emergency alert system. Track users, devices, and alert readiness at a glance.' }},
+      {{ nav: 'dashboard', el: '#alarm',
+        title: 'Trigger Emergency Alerts',
+        text: 'Press and hold the Activate Alarm button to send an emergency alert across your district. Leave Training Mode on for safe drills — no real notifications are sent.' }},
+      {{ nav: 'dashboard', el: '#overview',
+        title: 'Track Staff Response',
+        text: 'During an active alarm, the acknowledgement counter shows how many staff members have confirmed they received the alert in real time.' }},
+      {{ nav: 'user-management', el: '#user-management',
+        title: 'Manage Staff Accounts',
+        text: 'Add teachers and staff here so they can receive push alerts. Use the Codes tab to generate self-registration links — staff install the app and register themselves.' }},
+      {{ nav: 'devices', el: '#devices',
+        title: 'Device Readiness',
+        text: 'Every registered phone appears here. Staff must install the BlueBird app and register to receive push notifications during an alarm.' }},
+      {{ nav: 'district', el: '#district-overview',
+        title: 'Multi-School Management',
+        text: 'View and manage all buildings in your district from one place. Click any school card to switch to that school\'s dashboard.' }},
+      {{ nav: 'district-reports', el: '#district-reports',
+        title: 'District Reports',
+        text: 'Review drill history and alert activity across all buildings. Use this to verify that training exercises reach every school in your district.' }},
+      {{ nav: 'audit-logs', el: '#audit-events',
+        title: 'Audit & Accountability',
+        text: 'Every alert activation, user change, and system event is logged here with timestamps and actor names — full transparency for compliance.' }},
+      {{ nav: null, el: null,
+        title: 'You\'re All Set!',
+        text: 'Setup complete. We recommend running a training drill next to verify push notifications reach all registered devices. Your setup checklist on the dashboard tracks progress.' }}
+    ];
+    /* Use the DA tour for district_admin, generic tour for everyone else. */
+    if ({json.dumps(is_district_admin)}) {{ STEPS = _DA_STEPS; }}
 
     var _step = 0;
     var _overlay = null;
@@ -8144,6 +8338,8 @@ def render_admin_page(
     }}
 
     function _navigateTo(nav) {{
+      /* null nav means "stay in place" (e.g. final completion step). */
+      if (!nav) return;
       /* Skip navigation (and the page reload it triggers) if already on this section. */
       var currentSection = new URLSearchParams(window.location.search).get('section') || 'dashboard';
       if (currentSection === nav) return;
@@ -8233,9 +8429,70 @@ def render_admin_page(
         return;
       }}
 
-      /* Auto-start for first-time visitors (not in demo mode). */
-      if (!localStorage.getItem('bb_tour_seen') && !document.querySelector('[data-demo]')) {{
+      /* Auto-start for first-time non-DA visitors (not in demo mode).
+         DA users get their own welcome prompt from the onboarding IIFE instead. */
+      if (!{json.dumps(is_district_admin)} && !localStorage.getItem('bb_tour_seen') && !document.querySelector('[data-demo]')) {{
         setTimeout(window.startBluebirdTour, 1400);
+      }}
+    }});
+  }})();
+  </script>
+
+  <!-- ── District Admin Onboarding (welcome prompt + checklist) ──────────── -->
+  <script>
+  (function() {{
+    if (!{json.dumps(is_district_admin)}) return;
+
+    var _OB_KEY = 'bb_da_ob_v';
+    var _CL_KEY = 'bb_da_cl_dismissed';
+
+    function _showWelcome() {{
+      var ov = document.getElementById('bb-da-wb-ov');
+      if (ov) ov.classList.add('open');
+    }}
+
+    function _hideWelcome() {{
+      var ov = document.getElementById('bb-da-wb-ov');
+      if (ov) ov.classList.remove('open');
+    }}
+
+    window.bbDaStartOnboarding = function() {{
+      localStorage.setItem(_OB_KEY, '1');
+      _hideWelcome();
+      if (window.startBluebirdTour) window.startBluebirdTour();
+    }};
+
+    window.bbDaSkipOnboarding = function() {{
+      localStorage.setItem(_OB_KEY, '1');
+      _hideWelcome();
+    }};
+
+    window.bbDaResetOnboarding = function() {{
+      localStorage.removeItem(_OB_KEY);
+      localStorage.removeItem('bb_tour_seen');
+      localStorage.removeItem(_CL_KEY);
+      _showWelcome();
+    }};
+
+    window.bbDaClDismiss = function() {{
+      localStorage.setItem(_CL_KEY, String(Date.now()));
+      var el = document.getElementById('bb-da-checklist');
+      if (el) el.style.display = 'none';
+    }};
+
+    document.addEventListener('DOMContentLoaded', function() {{
+      if (!localStorage.getItem(_OB_KEY) && !document.querySelector('[data-demo]')) {{
+        setTimeout(_showWelcome, 900);
+      }}
+      var cl = document.getElementById('bb-da-checklist');
+      if (cl) {{
+        var done  = parseInt(cl.getAttribute('data-done')  || '0', 10);
+        var total = parseInt(cl.getAttribute('data-total') || '1', 10);
+        var dismissed = parseInt(localStorage.getItem(_CL_KEY) || '0', 10);
+        var week = 7 * 24 * 60 * 60 * 1000;
+        if (done < total && !(dismissed > 0 && Date.now() - dismissed < week)) {{
+          cl.style.display = 'block';
+        }}
       }}
     }});
   }})();
