@@ -168,6 +168,9 @@ from app.services.billing_service import (
     get_banner_info,
     get_effective_status,
     get_days_remaining,
+    is_management_allowed,
+    require_management_license,
+    ManagementLicenseError,
     VALID_PLAN_TYPES,
     VALID_BILLING_STATUSES,
 )
@@ -349,6 +352,21 @@ def _platform_admins(req: Request) -> PlatformAdminStore:
 
 def _tenant_billing(req: Request) -> TenantBillingStore:
     return req.app.state.tenant_billing_store  # type: ignore[attr-defined]
+
+
+async def _require_management_license(request: Request, feature: str, tenant_id: int, redirect_url: str) -> Optional["RedirectResponse"]:
+    """
+    Check management license for the given tenant.
+    Returns a RedirectResponse (303) with a flash error if blocked, else None.
+    Emergency alert endpoints must NOT call this function.
+    """
+    billing = await _tenant_billing(request).ensure_tenant_billing(tenant_id=tenant_id)
+    try:
+        require_management_license(billing, feature)
+    except ManagementLicenseError as exc:
+        _set_flash(request, error=f"License required: {exc.effective_status} — management features are restricted. Contact support to renew.")
+        return RedirectResponse(url=redirect_url, status_code=status.HTTP_303_SEE_OTHER)
+    return None
 
 
 def _quiet_states(req: Request) -> QuietStateStore:
@@ -2484,6 +2502,9 @@ async def admin_settings_update_name(
     name: str = Form(...),
 ) -> RedirectResponse:
     await _require_dashboard_admin(request)
+    _billing_block = await _require_management_license(request, "update_settings", _tenant_school_id(request), _school_url(request, "/admin?section=settings"))
+    if _billing_block is not None:
+        return _billing_block
     name = name.strip()
     if not name:
         _set_flash(request, error="School name cannot be empty.")
@@ -4938,6 +4959,9 @@ async def admin_create_user(
     title: str = Form(default=""),
 ) -> RedirectResponse:
     await _require_dashboard_admin(request)
+    _billing_block = await _require_management_license(request, "create_user", _tenant_school_id(request), "/admin?section=user-management#users")
+    if _billing_block is not None:
+        return _billing_block
     actor = request.state.admin_user
     actor_role = str(getattr(actor, "role", "")).strip().lower()
     normalized_name = name.strip()
@@ -7759,6 +7783,9 @@ async def admin_generate_access_code_form(
     expires_hours: int = Form(default=48),
 ) -> RedirectResponse:
     users = await _require_dashboard_admin(request)
+    _billing_block = await _require_management_license(request, "generate_access_code", _tenant_school_id(request), "/admin?section=user-management&tab=codes")
+    if _billing_block is not None:
+        return _billing_block
     user_id = _session_user_id(request) or 0
     user = await users.get_user(user_id)
     if user is None or not can_generate_codes(user.role):

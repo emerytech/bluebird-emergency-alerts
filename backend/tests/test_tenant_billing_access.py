@@ -15,16 +15,32 @@ def _record(
     now = datetime.now(timezone.utc).isoformat()
     return TenantBillingRecord(
         tenant_id=1,
+        tenant_slug="test-school",
+        district_id=None,
+        customer_name=None,
+        customer_email=None,
         plan_id="starter",
+        plan_type="trial",
         billing_status=billing_status,
+        license_key=None,
+        starts_at=None,
         trial_start=None,
         trial_end=trial_end,
+        trial_ends_at=trial_end,
+        current_period_start=None,
+        current_period_end=None,
+        renewal_date=None,
         is_free_override=is_free_override,
         free_reason="manual override" if is_free_override else None,
+        override_enabled=is_free_override,
+        override_reason="manual override" if is_free_override else None,
+        internal_notes=None,
+        created_at=now,
+        updated_at=now,
         stripe_customer_id="cus_123",
         stripe_subscription_id="sub_123",
-        renewal_date=None,
-        updated_at=now,
+        stripe_price_id=None,
+        stripe_checkout_session_id=None,
     )
 
 
@@ -53,4 +69,3 @@ def test_free_override_always_allowed() -> None:
         trial_end=trial_end,
     )
     assert has_tenant_access(record)
-
