@@ -731,6 +731,27 @@ def render_login_portal() -> str:
     .quick-actions {{
       display: flex; gap: 10px; margin-top: 10px; align-items: center;
     }}
+    .countdown-wrap {{
+      margin-top: 10px;
+    }}
+    .countdown-bar-track {{
+      height: 3px; background: rgba(27,95,228,.15);
+      border-radius: 2px; overflow: hidden; margin-bottom: 6px;
+    }}
+    .countdown-bar {{
+      height: 100%; background: var(--blue); border-radius: 2px;
+      width: 100%; transition: width 1s linear;
+    }}
+    .countdown-text {{
+      font-size: 0.76rem; color: var(--muted);
+      display: flex; align-items: center; gap: 6px;
+    }}
+    .countdown-cancel {{
+      background: none; border: none; cursor: pointer;
+      color: var(--muted); font-size: 0.76rem; font-weight: 600;
+      text-decoration: underline; padding: 0;
+    }}
+    .countdown-cancel:hover {{ color: var(--blue); }}
     .btn-quick {{
       display: inline-flex; align-items: center; justify-content: center;
       background: var(--blue); color: #fff;
@@ -878,14 +899,24 @@ def render_login_portal() -> str:
 
   <!-- Quick-access banner (returning users) -->
   <div class="quick-access" id="quick-access">
-    <div class="quick-label">&#9889; Quick access</div>
+    <div class="quick-label">&#9889; Welcome back</div>
     <div class="quick-name" id="quick-name"></div>
     <div class="quick-dist" id="quick-dist"></div>
+    <div class="countdown-wrap" id="countdown-wrap">
+      <div class="countdown-bar-track">
+        <div class="countdown-bar" id="countdown-bar"></div>
+      </div>
+      <div class="countdown-text">
+        Redirecting in <strong id="countdown-num">3</strong>s
+        &nbsp;&middot;&nbsp;
+        <button class="countdown-cancel" onclick="bbCancelCountdown()">Cancel</button>
+      </div>
+    </div>
     <div class="quick-actions">
       <button class="btn-quick" id="quick-go-btn" onclick="bbQuickGo()">
         Continue &rarr;
       </button>
-      <button class="btn-ghost" onclick="bbClearQuick()">Change school</button>
+      <button class="btn-ghost" onclick="bbClearQuick()">Choose different school</button>
     </div>
   </div>
 
@@ -925,6 +956,10 @@ def render_login_portal() -> str:
   var _lastQ  = null;
   var _results = [];
 
+  /* Countdown state */
+  var _cdTimer = null;
+  var _cdN     = 3;
+
   /* ── Helpers ────────────────────────────────────────────────────────── */
   function _$(id)    {{ return document.getElementById(id); }}
   function _show(id) {{ _$(id).style.display = ''; }}
@@ -951,22 +986,60 @@ def render_login_portal() -> str:
   function _load()  {{ try {{ return JSON.parse(localStorage.getItem(_LS_KEY)); }} catch(e) {{ return null; }} }}
   function _clear() {{ try {{ localStorage.removeItem(_LS_KEY); }} catch(e) {{}} }}
 
+  /* ── Countdown helpers ────────────────────────────────────────────── */
+  function _stopCountdown() {{
+    if (_cdTimer) {{ clearInterval(_cdTimer); _cdTimer = null; }}
+  }}
+
+  function _startCountdown(slug) {{
+    _cdN = 3;
+    var numEl = _$('countdown-num');
+    var bar   = _$('countdown-bar');
+    if (numEl) numEl.textContent = _cdN;
+    /* Animate bar from 100% → 0% over 3 s */
+    if (bar) {{
+      bar.style.transition = 'none';
+      bar.style.width = '100%';
+      void bar.offsetHeight;
+      bar.style.transition = 'width 3s linear';
+      bar.style.width = '0%';
+    }}
+    _cdTimer = setInterval(function() {{
+      _cdN--;
+      if (numEl) numEl.textContent = _cdN;
+      if (_cdN <= 0) {{
+        _stopCountdown();
+        window.location.href = '/' + slug + '/admin/login';
+      }}
+    }}, 1000);
+  }}
+
+  window.bbCancelCountdown = function() {{
+    _stopCountdown();
+    _hide('countdown-wrap');
+    var bar = _$('countdown-bar');
+    if (bar) {{ bar.style.transition = 'none'; bar.style.width = '100%'; }}
+  }};
+
   /* ── Quick-access ─────────────────────────────────────────────────── */
   function _maybeShowQuick() {{
     var s = _load();
     if (!s || !s.slug || !s.name) return;
-    _$('quick-name').textContent = s.name;
+    _$('quick-name').textContent = 'Continue to ' + s.name;
     _$('quick-dist').textContent = s.district || '';
     _$('quick-go-btn').setAttribute('data-slug', s.slug);
     _show('quick-access');
+    _startCountdown(s.slug);
   }}
 
   window.bbQuickGo = function() {{
+    _stopCountdown();
     var slug = _$('quick-go-btn').getAttribute('data-slug') || '';
     if (slug) window.location.href = '/' + slug + '/admin/login';
   }};
 
   window.bbClearQuick = function() {{
+    _stopCountdown();
     _clear();
     _hide('quick-access');
     _$('search-input').focus();
