@@ -2345,8 +2345,8 @@ async def admin_dashboard(
     quiet_periods_history = [item for item in quiet_periods_all if item.status not in {"pending", "approved", "scheduled"}]
     selected_section = _admin_section(section)
     _admin_role = str(getattr(request.state.admin_user, "role", "")).strip().lower()
-    # Gate district and devices sections to district_admin and super_admin
-    if selected_section in {"district", "devices"}:
+    # Gate district section to district_admin and super_admin only
+    if selected_section == "district":
         if _admin_role not in {"district_admin", "super_admin"}:
             selected_section = "dashboard"
     flash_message, flash_error = _pop_flash(request)

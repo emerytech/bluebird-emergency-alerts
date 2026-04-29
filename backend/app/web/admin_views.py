@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import Counter
 from html import escape
 import json
+from datetime import datetime, timezone
 from typing import Mapping, Optional, Sequence
 
 from app.services.alert_log import AlertRecord
@@ -4818,7 +4819,7 @@ def render_admin_page(
     ) if is_demo_mode else ""
     _um_badge_count = len(quiet_periods_active)
     quiet_period_total = len(quiet_periods_active) + len(quiet_periods_history)
-    refresh_meta = '<meta http-equiv="refresh" content="30">' if section in {"dashboard", "district"} else ""
+    refresh_meta = '<meta http-equiv="refresh" content="30">' if section in {"dashboard", "district", "devices"} else ""
     show_district_nav = str(getattr(current_user, "role", "")).strip().lower() in {"district_admin", "super_admin"}
     user_title = str(getattr(current_user, "title", "") or "").strip()
     user_display_name = f"{escape(current_user.name)} ({escape(user_title)})" if user_title else escape(current_user.name)
@@ -4976,33 +4977,101 @@ def render_admin_page(
     def _fmt_dt(raw: str) -> str:
         return str(raw or "")[:16].replace("T", " ")
 
-    _session_rows = "".join(
-        (
+    def _session_status_info(last_seen_at: str) -> tuple[str, str]:
+        """Returns (label, css_class) based on how recently the session was seen."""
+        if not last_seen_at:
+            return ("Unknown", "warn")
+        try:
+            last = datetime.fromisoformat(str(last_seen_at).replace("Z", "+00:00"))
+            if last.tzinfo is None:
+                last = last.replace(tzinfo=timezone.utc)
+            mins = (datetime.now(timezone.utc) - last).total_seconds() / 60
+            if mins < 5:
+                return ("Active", "ok")
+            elif mins < 30:
+                return ("Delayed", "warn")
+            else:
+                return ("Offline", "danger")
+        except Exception:
+            return ("Unknown", "warn")
+
+    _session_row_parts = []
+    for _sess in active_sessions:
+        _su = sessions_users_by_id.get(int(getattr(_sess, "user_id", 0)))
+        _slast = str(getattr(_sess, "last_seen_at", ""))
+        _slabel, _scls = _session_status_info(_slast)
+        _savatar = (
+            f'<span class="um-avatar ua-{escape(str(getattr(_su, "role", ""))[:20])}" style="width:28px;height:28px;font-size:11px;margin-right:8px;flex-shrink:0;">'
+            + escape("".join(w[0].upper() for w in str(getattr(_su, "name", "?")).split()[:2]))
+            + "</span>"
+            + escape(str(getattr(_su, "name", f"user #{getattr(_sess, 'user_id', '?')}")))
+        ) if _su else escape(f"user #{getattr(_sess, 'user_id', '?')}")
+        _session_row_parts.append(
             "<tr>"
-            "<td>"
-            + (
-                lambda u, s: (
-                    f'<span class="um-avatar ua-{escape(str(getattr(u, "role", ""))[:20])}" style="width:28px;height:28px;font-size:11px;margin-right:8px;">'
-                    + escape("".join(w[0].upper() for w in str(getattr(u, "name", "?")).split()[:2]))
-                    + "</span>"
-                    + escape(str(getattr(u, "name", f"user #{s.user_id}")))
-                )
-            )(sessions_users_by_id.get(int(getattr(s, "user_id", 0))), s)
-            + "</td>"
-            + f'<td><span class="role-badge {_client_type_class.get(str(getattr(s, "client_type", "mobile")), "rb-teacher")}">'
-            + escape(_client_type_label.get(str(getattr(s, "client_type", "mobile")), str(getattr(s, "client_type", ""))))
+            f"<td style='overflow:hidden;'>{_savatar}</td>"
+            f'<td><span class="role-badge {_client_type_class.get(str(getattr(_sess, "client_type", "mobile")), "rb-teacher")}">'
+            + escape(_client_type_label.get(str(getattr(_sess, "client_type", "mobile")), str(getattr(_sess, "client_type", ""))))
             + "</span></td>"
-            + f'<td class="mini-copy">{escape(str(getattr(sessions_users_by_id.get(int(getattr(s, "user_id", 0))), "role", "—")))}</td>'
-            + f'<td class="mini-copy">{escape(_fmt_dt(str(getattr(s, "last_seen_at", ""))))}</td>'
-            + f'<td class="mini-copy">{escape(_fmt_dt(str(getattr(s, "created_at", ""))))}</td>'
-            + f'<td><form method="post" action="{prefix}/admin/devices/{int(getattr(s, "id", 0))}/revoke"'
-            + ' onsubmit="return confirm(\'Force logout this device session?\');">'
-            + '<button class="button button-danger-outline" type="submit" style="font-size:12px;padding:4px 14px;min-height:auto;">Force Logout</button>'
-            + "</form></td>"
-            + "</tr>"
+            f'<td class="mini-copy">{escape(str(getattr(_su, "role", "—") if _su else "—"))}</td>'
+            f'<td><span class="status-pill {_scls}" style="font-size:12px;">{_slabel}</span></td>'
+            f'<td class="mini-copy">{escape(_fmt_dt(_slast))}</td>'
+            f'<td class="mini-copy">{escape(_fmt_dt(str(getattr(_sess, "created_at", ""))))}</td>'
+            f'<td><form method="post" action="{prefix}/admin/devices/{int(getattr(_sess, "id", 0))}/revoke"'
+            f' onsubmit="return confirm(\'Force logout this device session?\');" style="margin:0;">'
+            f'<button class="button button-danger-outline" type="submit" style="font-size:12px;padding:4px 12px;min-height:auto;">Force Logout</button>'
+            f"</form></td>"
+            "</tr>"
         )
-        for s in active_sessions
-    ) or '<tr><td colspan="6" class="empty-state">No active device sessions.</td></tr>'
+    _session_rows = "".join(_session_row_parts) or '<tr><td colspan="7" class="empty-state">No active device sessions.</td></tr>'
+
+    _reg_device_row_parts = []
+    _reg_user_lookup = {u.id: u for u in users}
+    for _rd in devices:
+        _rdu = _reg_user_lookup.get(_rd.user_id) if _rd.user_id is not None else None
+        _rd_owner = (
+            escape(_rdu.login_name or _rdu.name) if _rdu
+            else (escape("Unassigned") if _rd.user_id is None else escape(f"User #{_rd.user_id}"))
+        )
+        _rd_archived = bool(getattr(_rd, "archived_at", None))
+        _rd_status = (
+            '<span class="status-pill" style="background:var(--surface-alt,#f3f4f6);color:var(--text-muted);font-size:11px;">Archived</span>'
+            if _rd_archived
+            else '<span class="status-pill ok" style="font-size:11px;">Active</span>'
+        )
+        _rd_row_style = ' style="opacity:0.6;"' if _rd_archived else ""
+        _rd_platform = escape(str(_rd.platform or "—"))
+        _rd_provider = escape(str(_rd.push_provider or "—"))
+        _rd_token_short = escape(_rd.token[-12:]) if _rd.token else "—"
+        _rd_name = escape(_rd.device_name or "Unnamed device")
+        _rd_plat_cls = "rb-law_enforcement" if _rd.platform == "ios" else ("rb-admin" if _rd.platform == "android" else "rb-teacher")
+        _rd_prov_cls = "rb-law_enforcement" if _rd.push_provider == "apns" else ("rb-admin" if _rd.push_provider == "fcm" else "rb-teacher")
+        _rd_last = escape(_fmt_dt(str(getattr(_rd, "last_seen_at", "") or ""))) or "—"
+        _rd_action = (
+            f'<form method="post" action="{prefix}/admin/devices/delete" onsubmit="return confirm(\'Remove this registered device?\');" style="margin:0;">'
+            f'<input type="hidden" name="token" value="{escape(_rd.token)}" />'
+            f'<input type="hidden" name="push_provider" value="{escape(_rd.push_provider)}" />'
+            f'<button class="button button-danger-outline" type="submit" style="font-size:11px;padding:4px 10px;min-height:auto;">Remove</button>'
+            f'</form>'
+            if not _rd_archived
+            else '<span class="mini-copy" style="color:var(--text-muted);">Archived</span>'
+        )
+        _rd_initials = "".join(w[0].upper() for w in str(getattr(_rdu, "name", "?")).split()[:2]) if _rdu else "?"
+        _rd_av_role = escape(str(getattr(_rdu, "role", ""))[:20]) if _rdu else ""
+        _reg_device_row_parts.append(
+            f'<tr{_rd_row_style}>'
+            f'<td style="overflow:hidden;">'
+            f'<span class="um-avatar ua-{_rd_av_role}" style="width:26px;height:26px;font-size:10px;margin-right:6px;flex-shrink:0;">{_rd_initials}</span>'
+            f'{_rd_owner}</td>'
+            f'<td><div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;">{_rd_name}</div>'
+            f'<span class="role-badge {_rd_plat_cls}" style="font-size:10px;margin-top:2px;">{_rd_platform}</span></td>'
+            f'<td><span class="role-badge {_rd_prov_cls}" style="font-size:10px;">{_rd_provider}</span>'
+            f'<br><code style="font-size:10px;color:var(--text-muted);">…{_rd_token_short}</code></td>'
+            f'<td>{_rd_status}</td>'
+            f'<td class="mini-copy">{_rd_last}</td>'
+            f'<td>{_rd_action}</td>'
+            f'</tr>'
+        )
+    _reg_device_rows = "".join(_reg_device_row_parts) or '<tr><td colspan="6" class="empty-state">No registered devices.</td></tr>'
 
     def _section_style(name: str) -> str:
         return "" if section == name else ' style="display:none;"'
@@ -5896,7 +5965,7 @@ def render_admin_page(
             {_nav_item("demo-analytics", "📊 Demo Analytics") if is_demo_mode else ""}
             {_nav_item("settings", "Settings")}
             {_nav_item("district", "District Overview") if show_district_nav else ""}
-            {_nav_item("devices", "Active Devices") if show_district_nav else ""}
+            {_nav_item("devices", "Active Devices")}
           </nav>
         </div>
       </section>
@@ -5937,8 +6006,6 @@ def render_admin_page(
           </div>
           <div class="status-row" style="margin-top:16px;">
             {_count_list(role_counts)}
-            {_count_list(platform_counts)}
-            {_count_list(provider_counts)}
           </div>
         </section>
 
@@ -6054,38 +6121,6 @@ def render_admin_page(
                 <tr><td><strong>Last alarm deactivated</strong></td><td>{escape(alarm_state.deactivated_at or "Never")}</td></tr>
               </tbody>
             </table>
-          </section>
-
-          <section class="panel span-5" id="device-status"{_section_style("dashboard")}>
-            <div class="panel-header">
-              <div>
-                <p class="eyebrow">Device &amp; Notification Status</p>
-                <h2>Registered devices</h2>
-              </div>
-            </div>
-            <table class="data-table" style="margin-bottom:12px;">
-              <tbody>
-                <tr><td><strong>iOS</strong></td><td>{_ios_count}</td></tr>
-                <tr><td><strong>Android</strong></td><td>{_android_count}</td></tr>
-                <tr><td><strong>APNs tokens</strong></td><td>{_apns_token_count}</td></tr>
-                <tr><td><strong>FCM tokens</strong></td><td>{_fcm_token_count}</td></tr>
-              </tbody>
-            </table>
-            <p class="eyebrow" style="margin-bottom:6px;">Most recent alert deliveries</p>
-            {f'''
-            <table class="data-table">
-              <thead><tr><th>Provider</th><th>Sent</th><th>OK</th><th>Failed</th></tr></thead>
-              <tbody>
-                <tr>
-                  <td><strong>Total</strong></td>
-                  <td>{_ds_total}</td>
-                  <td><span class="status-pill ok">{_ds_ok}</span></td>
-                  <td><span class="status-pill {"danger" if _ds_failed > 0 else "ok"}">{_ds_failed}</span></td>
-                </tr>
-                {_provider_rows()}
-              </tbody>
-            </table>
-            ''' if _ds_total > 0 else '<p class="mini-copy">No delivery records for the most recent alert.</p>'}
           </section>
 
           <section class="panel span-7" id="recent-activity"{_section_style("dashboard")}>
@@ -6508,24 +6543,6 @@ def render_admin_page(
             </table>
           </section>
 
-          <section class="panel span-5" id="devices"{_section_style("dashboard")}>
-            <div class="panel-header">
-              <div>
-                <p class="eyebrow">Devices</p>
-                <h2>Registered devices</h2>
-              </div>
-            </div>
-            <div class="table-search"><input type="search" id="device-search" placeholder="Filter devices..." /></div>
-            <div class="table-wrap"><table class="data-table">
-              <thead>
-                <tr><th>#</th><th>Device</th><th>Platform</th><th>Provider</th><th>Current user</th><th>First user</th><th>Token</th><th>Device ID</th><th>Status</th><th>Action</th></tr>
-              </thead>
-              <tbody>
-                {_render_device_rows(devices, users, school_path_prefix)}
-              </tbody>
-            </table></div>
-          </section>
-
           <section class="panel span-12" id="audit-events"{_section_style("audit-logs")}>
             <div class="panel-header">
               <div>
@@ -6699,29 +6716,96 @@ def render_admin_page(
               <div>
                 <p class="eyebrow">Device Management</p>
                 <h2>Active Devices</h2>
-                <p class="card-copy">All active login sessions for <strong>{escape(selected_tenant_name)}</strong>. Force logout revokes the session immediately — the device must re-authenticate on next use.</p>
+                <p class="card-copy">All devices and active sessions for <strong>{escape(selected_tenant_name)}</strong>.</p>
               </div>
               <div class="status-row">
-                <span class="status-pill ok"><strong>{len(active_sessions)}</strong> active session{"s" if len(active_sessions) != 1 else ""}</span>
+                <span class="status-pill ok"><strong>{_total_device_count}</strong> registered</span>
+                <span class="status-pill ok"><strong>{len(active_sessions)}</strong> session{"s" if len(active_sessions) != 1 else ""}</span>
+                <span class="status-pill"><strong>iOS</strong>&nbsp;{_ios_count}</span>
+                <span class="status-pill"><strong>Android</strong>&nbsp;{_android_count}</span>
               </div>
             </div>
-            <div class="table-wrap" style="overflow-x:auto;margin-top:16px;">
-              <table class="um-table" style="width:100%;border-collapse:collapse;">
+
+            <div class="metrics-grid" style="margin-bottom:20px;">
+              <article class="metric-card"><div class="meta">Registered Devices</div><div class="metric-value">{_total_device_count}</div></article>
+              <article class="metric-card"><div class="meta">Active Sessions</div><div class="metric-value">{len(active_sessions)}</div></article>
+              <article class="metric-card"><div class="meta">iOS</div><div class="metric-value">{_ios_count}</div></article>
+              <article class="metric-card"><div class="meta">Android</div><div class="metric-value">{_android_count}</div></article>
+            </div>
+
+            <div style="display:flex;gap:0;border-bottom:2px solid var(--border);margin-bottom:20px;">
+              <button id="dm-tab-sessions" onclick="bbDmTab('sessions')"
+                style="background:none;border:none;border-bottom:3px solid var(--accent,#3b82f6);margin-bottom:-2px;padding:8px 20px;font-size:14px;font-weight:600;color:var(--accent,#3b82f6);cursor:pointer;outline:none;">
+                Active Sessions
+              </button>
+              <button id="dm-tab-registered" onclick="bbDmTab('registered')"
+                style="background:none;border:none;border-bottom:3px solid transparent;margin-bottom:-2px;padding:8px 20px;font-size:14px;font-weight:600;color:var(--text-muted);cursor:pointer;outline:none;">
+                Registered Devices
+              </button>
+            </div>
+
+            <div id="dm-pane-sessions">
+              <p class="mini-copy" style="margin-bottom:10px;">Active login sessions. Force logout revokes immediately — device must re-authenticate on next use.</p>
+              <table class="data-table" style="width:100%;border-collapse:collapse;table-layout:fixed;">
+                <colgroup>
+                  <col style="width:24%"><col style="width:11%"><col style="width:13%">
+                  <col style="width:12%"><col style="width:15%"><col style="width:15%"><col style="width:10%">
+                </colgroup>
                 <thead>
-                  <tr style="text-align:left;border-bottom:2px solid var(--border);">
-                    <th style="padding:8px 12px;font-size:13px;font-weight:600;">User</th>
-                    <th style="padding:8px 12px;font-size:13px;font-weight:600;">Client</th>
-                    <th style="padding:8px 12px;font-size:13px;font-weight:600;">Role</th>
-                    <th style="padding:8px 12px;font-size:13px;font-weight:600;">Last Seen</th>
-                    <th style="padding:8px 12px;font-size:13px;font-weight:600;">Session Created</th>
-                    <th style="padding:8px 12px;font-size:13px;font-weight:600;">Action</th>
+                  <tr>
+                    <th>User</th><th>Client</th><th>Role</th>
+                    <th>Status</th><th>Last Seen</th><th>Session Created</th><th>Action</th>
                   </tr>
                 </thead>
-                <tbody>
-                  {_session_rows}
-                </tbody>
+                <tbody>{_session_rows}</tbody>
               </table>
             </div>
+
+            <div id="dm-pane-registered" style="display:none;">
+              <div class="table-search"><input type="search" id="reg-device-search" placeholder="Filter registered devices..." /></div>
+              <table class="data-table" style="width:100%;border-collapse:collapse;table-layout:fixed;" id="reg-device-table">
+                <colgroup>
+                  <col style="width:22%"><col style="width:22%"><col style="width:18%">
+                  <col style="width:11%"><col style="width:14%"><col style="width:13%">
+                </colgroup>
+                <thead>
+                  <tr>
+                    <th>User</th><th>Device / Platform</th><th>Push Token</th>
+                    <th>Status</th><th>Last Seen</th><th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>{_reg_device_rows}</tbody>
+              </table>
+            </div>
+
+            <script>
+            (function() {{
+              function bbDmTab(name) {{
+                ['sessions', 'registered'].forEach(function(p) {{
+                  var pane = document.getElementById('dm-pane-' + p);
+                  var tab = document.getElementById('dm-tab-' + p);
+                  if (!pane || !tab) return;
+                  var active = p === name;
+                  pane.style.display = active ? '' : 'none';
+                  tab.style.borderBottomColor = active ? 'var(--accent,#3b82f6)' : 'transparent';
+                  tab.style.color = active ? 'var(--accent,#3b82f6)' : 'var(--text-muted)';
+                  tab.style.fontWeight = active ? '700' : '600';
+                }});
+              }}
+              window.bbDmTab = bbDmTab;
+              if (window.location.hash === '#registered') bbDmTab('registered');
+              var rSearch = document.getElementById('reg-device-search');
+              if (rSearch) {{
+                rSearch.addEventListener('input', function() {{
+                  var q = this.value.toLowerCase();
+                  var rows = document.querySelectorAll('#reg-device-table tbody tr');
+                  rows.forEach(function(r) {{
+                    r.style.display = r.textContent.toLowerCase().includes(q) ? '' : 'none';
+                  }});
+                }});
+              }}
+            }})();
+            </script>
           </section>
 
         </section>
