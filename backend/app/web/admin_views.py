@@ -1780,91 +1780,251 @@ def render_login_page(
     school_path_prefix: str = "/nen",
     setup_pin_required: bool = False,
 ) -> str:
-    heading = "Create the first BlueBird admin" if setup_mode else "Sign in to BlueBird Admin"
+    heading = "Create the first admin account" if setup_mode else "Sign in to continue"
     button = "Create admin account" if setup_mode else "Sign in"
     action = f"{school_path_prefix}/admin/setup" if setup_mode else f"{school_path_prefix}/admin/login"
     helper = (
         (
-            "This first account becomes the dashboard operator account. Enter the setup PIN from the platform admin, then create the first dashboard admin."
+            "Enter the setup PIN from the platform admin, then create the first dashboard admin account."
             if setup_pin_required
-            else "This first account becomes the dashboard operator account. After that, you can create and edit the rest of the school users from inside the portal."
+            else "This becomes the operator account. You can add more users from inside the portal."
         )
         if setup_mode
         else "Use your admin credentials to manage users, alarms, devices, and the audit trail."
     )
-    setup_tip = (
-        f'<div class="flash success">First-time setup for <strong>{escape(school_name)}</strong>. Create the first admin for this school at <code>{escape(school_path_prefix)}/admin</code>.{" A school setup PIN is required for this step." if setup_pin_required else ""}</div>'
-        if setup_mode
-        else ""
+    _school_ctx_html = (
+        '<div class="school-context">'
+        '<div class="school-context-inner">'
+        '<div class="school-context-label">Signing in to</div>'
+        f'<div class="school-context-name">{escape(school_name)}</div>'
+        '</div>'
+        '<a class="school-context-change" href="/login">← Change school</a>'
+        '</div>'
+    ) if not setup_mode else (
+        '<div class="school-context setup">'
+        '<div class="school-context-inner">'
+        '<div class="school-context-label">First-time setup</div>'
+        f'<div class="school-context-name">{escape(school_name)}</div>'
+        '</div>'
+        '</div>'
     )
-    pin_field = """
-      <div class="field">
-        <label for="setup_pin">School setup PIN</label>
-        <input id="setup_pin" name="setup_pin" type="password" autocomplete="one-time-code" />
-      </div>
-    """ if setup_mode and setup_pin_required else ""
-    extra_fields = """
-      <div class="field">
-        <label for="name">Full name</label>
-        <input id="name" name="name" autocomplete="name" />
-      </div>
-    """ if setup_mode else ""
+    _setup_notice_html = (
+        f'<div class="notice-box">'
+        f'Setting up <strong>{escape(school_name)}</strong>.'
+        f'{" A setup PIN is required." if setup_pin_required else ""}'
+        f' After this, add more users from inside the portal.'
+        f'</div>'
+    ) if setup_mode else ""
+    _msg_html = f'<div class="flash-msg success">{escape(message)}</div>' if message else ""
+    _err_html = f'<div class="flash-msg error">{escape(error)}</div>' if error else ""
+    _pin_field_html = (
+        '<div class="field">'
+        '<label for="setup_pin">School setup PIN</label>'
+        '<input id="setup_pin" name="setup_pin" type="password" autocomplete="one-time-code" placeholder="Enter setup PIN" />'
+        '</div>'
+    ) if setup_mode and setup_pin_required else ""
+    _extra_fields_html = (
+        '<div class="field">'
+        '<label for="name">Full name</label>'
+        '<input id="name" name="name" autocomplete="name" placeholder="Your full name" />'
+        '</div>'
+    ) if setup_mode else ""
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>BlueBird Admin Login</title>
+  <title>Sign in &mdash; {escape(school_name)}</title>
   {_favicon_tags()}
-  <style>{_base_styles()}</style>
+  <style>
+    *, *::before, *::after {{ box-sizing: border-box; margin: 0; padding: 0; }}
+    :root {{
+      --blue:      #1b5fe4;
+      --blue-dark: #1048c0;
+      --blue-soft: #eff6ff;
+      --text:      #10203f;
+      --muted:     #5d7398;
+      --border:    rgba(18,52,120,.12);
+    }}
+    html {{ height: 100%; }}
+    body {{
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+      color: var(--text);
+      background: linear-gradient(150deg, #0f172a 0%, #1b3a7a 55%, #1b5fe4 100%);
+      min-height: 100vh;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      padding: 24px;
+    }}
+    .portal-card {{
+      background: #fff; border-radius: 20px;
+      padding: 40px 44px;
+      max-width: 460px; width: 100%;
+      box-shadow: 0 32px 80px rgba(0,0,0,.35);
+      animation: bbFadeUp .35s ease both;
+    }}
+    @keyframes bbFadeUp {{
+      from {{ opacity: 0; transform: translateY(14px); }}
+      to   {{ opacity: 1; transform: translateY(0); }}
+    }}
+    .portal-logo {{
+      display: flex; align-items: center; gap: 10px;
+      margin-bottom: 24px;
+    }}
+    .portal-logo img {{
+      width: 36px; height: 36px; object-fit: contain; border-radius: 8px;
+    }}
+    .portal-logo span {{ font-weight: 800; font-size: 1.1rem; color: var(--text); }}
+    .school-context {{
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 12px;
+      background: var(--blue-soft); border: 1px solid rgba(27,95,228,.18);
+      border-radius: 12px; padding: 12px 16px;
+      margin-bottom: 22px;
+    }}
+    .school-context.setup {{
+      background: rgba(27,95,228,.06); border-color: rgba(27,95,228,.15);
+    }}
+    .school-context-inner {{ display: flex; flex-direction: column; gap: 2px; min-width: 0; }}
+    .school-context-label {{
+      font-size: 0.68rem; font-weight: 700; color: var(--blue);
+      text-transform: uppercase; letter-spacing: .07em;
+    }}
+    .school-context-name {{
+      font-size: 0.95rem; font-weight: 700; color: var(--text);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }}
+    .school-context-change {{
+      font-size: 0.78rem; color: var(--muted); font-weight: 600;
+      text-decoration: none; white-space: nowrap; flex-shrink: 0;
+    }}
+    .school-context-change:hover {{ color: var(--blue); text-decoration: underline; }}
+    .portal-heading {{
+      font-size: 1.28rem; font-weight: 800; color: var(--text); margin-bottom: 5px;
+    }}
+    .portal-sub {{
+      font-size: 0.87rem; color: var(--muted); margin-bottom: 22px; line-height: 1.5;
+    }}
+    .notice-box {{
+      background: rgba(27,95,228,.07); border: 1px solid rgba(27,95,228,.18);
+      border-radius: 10px; padding: 10px 14px;
+      font-size: 0.84rem; color: #1e3a6e; line-height: 1.5;
+      margin-bottom: 16px;
+    }}
+    .flash-msg {{
+      padding: 10px 14px; border-radius: 10px;
+      font-size: 0.84rem; line-height: 1.5; margin-bottom: 16px;
+    }}
+    .flash-msg.error {{
+      background: rgba(220,38,38,.07); border: 1px solid rgba(220,38,38,.18);
+      color: #991b1b;
+    }}
+    .flash-msg.success {{
+      background: rgba(22,163,74,.07); border: 1px solid rgba(22,163,74,.18);
+      color: #166534;
+    }}
+    .field {{ display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }}
+    .field label {{ font-size: 0.82rem; font-weight: 600; color: var(--text); }}
+    .field input {{
+      width: 100%; padding: 12px 14px;
+      border: 1.5px solid var(--border); border-radius: 12px;
+      font-size: 0.95rem; color: var(--text);
+      background: #fff; outline: none;
+      transition: border-color .15s, box-shadow .15s;
+      font-family: inherit;
+    }}
+    .field input::placeholder {{ color: var(--muted); opacity: 1; }}
+    .field input:focus {{
+      border-color: var(--blue);
+      box-shadow: 0 0 0 3px rgba(27,95,228,.12);
+    }}
+    .btn-signin {{
+      display: flex; align-items: center; justify-content: center;
+      width: 100%; padding: 13px 20px; margin-top: 6px;
+      background: var(--blue); color: #fff;
+      font-size: 0.97rem; font-weight: 700; border-radius: 12px;
+      border: none; cursor: pointer; font-family: inherit;
+      transition: background .15s, transform .1s, box-shadow .15s;
+      box-shadow: 0 4px 14px rgba(27,95,228,.3);
+    }}
+    .btn-signin:hover {{
+      background: var(--blue-dark);
+      transform: translateY(-1px);
+      box-shadow: 0 6px 20px rgba(27,95,228,.42);
+    }}
+    .btn-signin:active {{ transform: translateY(0); box-shadow: 0 2px 8px rgba(27,95,228,.25); }}
+    .portal-footer {{
+      text-align: center; margin-top: 20px;
+      font-size: 0.8rem; color: rgba(255,255,255,.5);
+    }}
+    .portal-footer a {{ color: rgba(255,255,255,.7); text-decoration: none; }}
+    .portal-footer a:hover {{ color: #fff; text-decoration: underline; }}
+    .portal-disclaimer {{
+      margin-top: 10px; font-size: 0.71rem; color: rgba(255,255,255,.32);
+      line-height: 1.5; max-width: 380px; margin-left: auto; margin-right: auto;
+    }}
+    @media (max-width: 520px) {{
+      .portal-card {{ padding: 28px 22px; border-radius: 16px; }}
+    }}
+    @media (prefers-color-scheme: dark) {{
+      .portal-card {{ background: #1e293b; }}
+      .portal-logo span, .portal-heading {{ color: #e2e8f0; }}
+      .portal-sub {{ color: #94a3b8; }}
+      .school-context {{ background: rgba(27,95,228,.15); border-color: rgba(27,95,228,.28); }}
+      .school-context-name {{ color: #e2e8f0; }}
+      .school-context-change {{ color: #94a3b8; }}
+      .field label {{ color: #cbd5e1; }}
+      .field input {{
+        background: #0f172a; color: #e2e8f0;
+        border-color: rgba(255,255,255,.1);
+      }}
+      .field input:focus {{
+        border-color: #60a5fa;
+        box-shadow: 0 0 0 3px rgba(96,165,250,.12);
+      }}
+    }}
+  </style>
 </head>
 <body>
-  <main class="login-shell">
-    <section class="hero-card">
-      <div class="brand-block">
-        {_brand_mark()}
-        <div class="stack brand-text">
-        <p class="eyebrow">School Safety Command Deck</p>
-        <h1>BlueBird Alerts admin portal</h1>
-        <p class="hero-copy">
-          A calm command surface for alarm activation, account management, recent alert review, and device readiness.
-          The visual system is intentionally neutral so it can be tuned later to match a school's mascot, colors, or district identity.
-        </p>
-        <p class="mini-copy">School: <strong>{escape(school_name)}</strong> ({escape(school_slug)})</p>
-        </div>
-      </div>
-      <div class="hero-metrics">
-        <span class="metric-pill"><strong>Admin login</strong> session-based</span>
-        <span class="metric-pill"><strong>User roles</strong> admin + standard</span>
-        <span class="metric-pill"><strong>Alarm control</strong> tracked + auditable</span>
-      </div>
-    </section>
-    <section class="login-panel">
-      <div class="stack">
-        <p class="eyebrow">Operator Access</p>
-        <h2>{escape(heading)}</h2>
-        <p class="card-copy">{escape(helper)}</p>
-      </div>
-      {setup_tip}
-      {_render_flash(message, "success")}
-      {_render_flash(error, "error")}
-      <form method="post" action="{action}" class="stack">
-        {extra_fields}
-        {pin_field}
-        <div class="field">
-          <label for="login_name">Username</label>
-          <input id="login_name" name="login_name" autocomplete="username" />
-        </div>
-        <div class="field">
-          <label for="password">Password</label>
-          <input id="password" name="password" type="password" autocomplete="current-password" />
-        </div>
-        <div class="button-row">
-          <button class="button button-primary" type="submit">{escape(button)}</button>
-        </div>
-      </form>
-    </section>
-  </main>
+
+<div class="portal-card">
+  <div class="portal-logo">
+    <img src="{LOGO_PATH}" alt="BlueBird Alerts" />
+    <span>BlueBird Alerts</span>
+  </div>
+
+  {_school_ctx_html}
+
+  <h2 class="portal-heading">{escape(heading)}</h2>
+  <p class="portal-sub">{escape(helper)}</p>
+
+  {_setup_notice_html}
+  {_msg_html}
+  {_err_html}
+
+  <form method="post" action="{action}">
+    {_extra_fields_html}
+    {_pin_field_html}
+    <div class="field">
+      <label for="login_name">Username</label>
+      <input id="login_name" name="login_name" autocomplete="username" placeholder="Enter your username" />
+    </div>
+    <div class="field">
+      <label for="password">Password</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" placeholder="Enter your password" />
+    </div>
+    <button class="btn-signin" type="submit">{escape(button)}</button>
+  </form>
+</div>
+
+<div class="portal-footer">
+  <a href="/">&larr; Back to home</a>
+  <p class="portal-disclaimer">
+    This system does not replace emergency services.
+    Always call 911 in a real emergency.
+  </p>
+</div>
+
 </body>
 </html>"""
 
