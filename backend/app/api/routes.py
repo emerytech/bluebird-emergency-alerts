@@ -1512,6 +1512,67 @@ async def _send_quiet_period_push_bg(
         logger.debug("quiet_period_push_bg failed title=%s", title, exc_info=True)
 
 
+async def _dispatch_alert_push(
+    background_tasks: BackgroundTasks,
+    request: Request,
+    *,
+    message: str,
+    extra_data: Optional[dict] = None,
+    target_user_ids: Optional[set[int]] = None,
+) -> None:
+    """Route an alert push through Celery (if enabled) or FastAPI BackgroundTasks."""
+    settings = request.app.state.settings  # type: ignore[attr-defined]
+    if getattr(settings, "ENABLE_PUSH_QUEUE", False):
+        apns_tokens, fcm_tokens = await _push_tokens_for_scope(request, target_user_ids=target_user_ids)
+        if apns_tokens or fcm_tokens:
+            from app.tasks.push_tasks import send_push_task
+            send_push_task.delay(
+                apns_tokens=apns_tokens,
+                fcm_tokens=fcm_tokens,
+                message=message,
+                extra_data=extra_data,
+                db_path=_tenant(request).db_path,
+            )
+    else:
+        background_tasks.add_task(
+            _send_basic_push,
+            request,
+            message=message,
+            extra_data=extra_data,
+            target_user_ids=target_user_ids,
+        )
+
+
+async def _dispatch_quiet_period_push(
+    request: Request,
+    *,
+    apns_tokens: list[str],
+    fcm_tokens: list[str],
+    title: str,
+    message: str,
+    extra_data: Optional[dict] = None,
+) -> None:
+    """Route a quiet period push through Celery (if enabled) or direct async send."""
+    settings = request.app.state.settings  # type: ignore[attr-defined]
+    if getattr(settings, "ENABLE_PUSH_QUEUE", False) and (apns_tokens or fcm_tokens):
+        from app.tasks.push_tasks import send_push_task
+        send_push_task.delay(
+            apns_tokens=apns_tokens,
+            fcm_tokens=fcm_tokens,
+            title=title,
+            message=message,
+            extra_data=extra_data,
+            db_path=_tenant(request).db_path,
+        )
+    else:
+        await _send_quiet_period_push_bg(
+            _apns(request), _fcm(request), apns_tokens, fcm_tokens,
+            title=title,
+            message=message,
+            extra_data=extra_data,
+        )
+
+
 def _to_admin_inbox_item(item: AdminMessageRecord) -> AdminMessageInboxItem:
     return AdminMessageInboxItem(
         message_id=item.id,
@@ -5637,8 +5698,8 @@ async def create_incident(
         payload={"incident_id": incident.id, "type": incident.type, "target_scope": incident.target_scope},
     )
     if not is_sim:
-        background_tasks.add_task(
-            _send_basic_push,
+        await _dispatch_alert_push(
+            background_tasks,
             request,
             message=f"Incident active: {incident.type}",
             extra_data={
@@ -6598,8 +6659,10 @@ async def approve_quiet_period_request_api(
         else:
             _push_msg = "Your quiet period request has been approved."
             _push_title = "Quiet Period Approved"
-        await _send_quiet_period_push_bg(
-            _apns(request), _fcm(request), _push_apns, _push_fcm,
+        await _dispatch_quiet_period_push(
+            request,
+            apns_tokens=_push_apns,
+            fcm_tokens=_push_fcm,
             title=_push_title,
             message=_push_msg,
             extra_data={"type": "quiet_period_update", "status": record.status, "quiet_period_id": str(record.id)},
@@ -6655,8 +6718,10 @@ async def deny_quiet_period_request_api(
         _target_uid = int(record.user_id)
         _push_apns = [d.token for d in await _registry(request).list_by_provider("apns") if d.user_id == _target_uid and d.is_valid]
         _push_fcm = [d.token for d in await _registry(request).list_by_provider("fcm") if d.user_id == _target_uid and d.is_valid]
-        await _send_quiet_period_push_bg(
-            _apns(request), _fcm(request), _push_apns, _push_fcm,
+        await _dispatch_quiet_period_push(
+            request,
+            apns_tokens=_push_apns,
+            fcm_tokens=_push_fcm,
             title="Quiet Period Denied",
             message="Your quiet period request has been denied.",
             extra_data={"type": "quiet_period_update", "status": "denied", "quiet_period_id": str(record.id)},

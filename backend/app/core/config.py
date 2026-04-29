@@ -85,6 +85,29 @@ class Settings(BaseSettings):
     HEALTH_CHECK_INTERVAL: int = 60
     HEALTH_EMAIL_COOLDOWN_MINUTES: int = 30
 
+    # ── Redis / Celery ────────────────────────────────────────────────────────
+    # Redis broker URL. Used only when ENABLE_PUSH_QUEUE or ENABLE_CELERY_BEAT is true.
+    REDIS_URL: str = "redis://localhost:6379/0"
+
+    # When true, push sends are dispatched to the Celery worker queue instead
+    # of running inline via FastAPI BackgroundTasks.  Set false (default) to
+    # keep the existing direct-send behavior; flip to true once the worker is
+    # confirmed healthy in production.
+    ENABLE_PUSH_QUEUE: bool = False
+
+    # When true, the Celery beat scheduler runs maintenance tasks (quiet period
+    # expiration, access code cleanup, etc.).
+    ENABLE_CELERY_BEAT: bool = False
+
+    # ── Backups ───────────────────────────────────────────────────────────────
+    BACKUP_RETENTION_DAYS: int = 14
+    BACKUP_DIR: str = "/backups/bluebird"
+
+    # ── Offsite sync ──────────────────────────────────────────────────────────
+    OFFSITE_BACKUP_ENABLED: bool = False
+    OFFSITE_BACKUP_TARGET: str = ""   # rclone remote:path, e.g. "b2:my-bucket/bluebird"
+    RCLONE_CONFIG_PATH: str = "/config/rclone.conf"
+
     @property
     def apns_host(self) -> str:
         return "api.sandbox.push.apple.com" if self.APNS_USE_SANDBOX else "api.push.apple.com"

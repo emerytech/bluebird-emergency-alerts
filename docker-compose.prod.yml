@@ -1,8 +1,12 @@
 # docker-compose.prod.yml — BlueBird Alerts production stack
 #
 # Services:
-#   backend  — FastAPI/uvicorn application
-#   nginx    — HTTPS termination + reverse proxy
+#   backend  — FastAPI/uvicorn application (always on)
+#   nginx    — HTTPS termination + reverse proxy (always on)
+#   redis    — Celery broker/backend (always on; used only when queue enabled)
+#   worker   — Celery push worker (profile: worker)
+#   beat     — Celery beat scheduler (profile: worker)
+#   backup   — nightly offsite rclone sync (profile: backup)
 #
 # Quick start:
 #   1. Copy backend/.env.example → backend/.env and fill in secrets
@@ -11,12 +15,33 @@
 #   4. Set DOMAIN in your shell environment (or a .env at this directory)
 #   5. docker compose -f docker-compose.prod.yml up -d
 #
+# To enable the Celery worker + beat:
+#   docker compose -f docker-compose.prod.yml --profile worker up -d
+#
 # Persistent data (SQLite databases, logs) lives in Docker named volumes
 # so it survives image rebuilds.
 
 name: bluebird
 
 services:
+
+  # ── Redis ────────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --maxmemory 128mb --maxmemory-policy allkeys-lru --save ""
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "3"
 
   # ── Backend ─────────────────────────────────────────────────────────────────
   backend:
@@ -37,6 +62,9 @@ services:
     # Do NOT expose port 8000 directly — nginx is the only ingress.
     expose:
       - "8000"
+    depends_on:
+      redis:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "python3", "-c",
              "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
@@ -76,6 +104,101 @@ services:
              > /etc/nginx/conf.d/bluebird-resolved.conf
              && nginx -t
              && exec nginx -g 'daemon off;'"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "3"
+
+  # ── Celery worker (profile: worker) ─────────────────────────────────────────
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: bluebird-backend:latest
+    profiles:
+      - worker
+    restart: unless-stopped
+    command: >
+      celery -A app.worker.celery_app worker
+        --loglevel=INFO
+        --concurrency=2
+        --queues=celery
+    env_file:
+      - ./backend/.env
+    volumes:
+      - bluebird_data:/app/data
+      - ./secrets:/app/secrets:ro
+    networks:
+      - internal
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "celery", "-A", "app.worker.celery_app", "inspect", "ping", "--timeout=5"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  # ── Celery beat scheduler (profile: worker) ───────────────────────────────────
+  beat:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: bluebird-backend:latest
+    profiles:
+      - worker
+    restart: unless-stopped
+    command: >
+      celery -A app.worker.celery_app beat
+        --loglevel=INFO
+        --schedule=/app/data/celerybeat-schedule
+    env_file:
+      - ./backend/.env
+    volumes:
+      - bluebird_data:/app/data
+      - ./secrets:/app/secrets:ro
+    networks:
+      - internal
+    depends_on:
+      redis:
+        condition: service_healthy
+      worker:
+        condition: service_started
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "3"
+
+  # ── Offsite backup sync (profile: backup) ────────────────────────────────────
+  backup:
+    image: rclone/rclone:latest
+    profiles:
+      - backup
+    restart: unless-stopped
+    entrypoint: >
+      sh -c "
+        while true; do
+          rclone sync /data/bluebird $$OFFSITE_BACKUP_TARGET
+            --config=$$RCLONE_CONFIG_PATH
+            --log-level=INFO
+            --transfers=4
+            --checksum;
+          sleep 86400;
+        done
+      "
+    env_file:
+      - ./backend/.env
+    volumes:
+      - bluebird_data:/data/bluebird:ro
+      - ./secrets/rclone.conf:/config/rclone.conf:ro
     logging:
       driver: "json-file"
       options:
