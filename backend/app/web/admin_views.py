@@ -49,6 +49,12 @@ def _brand_mark_sm() -> str:
     )
 
 
+def _help_tip(text: str, right: bool = False) -> str:
+    """Inline '?' help tooltip badge. Hover reveals the tip text."""
+    cls = "tip-text tip-text--right" if right else "tip-text"
+    return f'<span class="help-tip" tabindex="0" role="note" aria-label="{escape(text)}">?<span class="{cls}">{escape(text)}</span></span>'
+
+
 def _super_admin_header_html(
     logout_url: str = "/super-admin/logout",
     license_summary: Optional[Mapping[str, object]] = None,
@@ -126,6 +132,7 @@ def _admin_header_html(
         {viewing_indicator}
         <span class="hdr-user">&#128100; {escape(user_display)}</span>
         {extra_action_html}
+        <button class="hdr-btn" onclick="startBluebirdTour()" type="button" title="Take a guided tour of the admin console" style="display:none;" id="bb-tour-btn">&#9654; Tour</button>
         <button class="hdr-btn" onclick="bbToggleTheme()" id="bb-theme-btn" type="button">&#9790; Dark</button>
         <form method="post" action="{logout_url}">
           <button class="hdr-btn" type="submit">Log out</button>
@@ -1045,6 +1052,53 @@ def _base_styles() -> str:
     .bb-toast.show { opacity:1; transform:translateY(0); }
     .bb-toast.ok { background:linear-gradient(135deg,#065f46,#047857); }
     .bb-toast.err { background:linear-gradient(135deg,#991b1b,#dc2626); }
+
+    /* ── Help Tooltip System ────────────────────────────────────────────── */
+    .help-tip {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 16px; height: 16px; border-radius: 50%;
+      background: var(--accent-soft); color: var(--accent);
+      font-size: 9px; font-weight: 800; font-style: normal;
+      cursor: default; position: relative; vertical-align: middle;
+      margin-left: 5px; flex-shrink: 0;
+      border: 1px solid var(--accent-soft-strong);
+      user-select: none; line-height: 1;
+    }
+    .help-tip:hover .tip-text, .help-tip:focus-within .tip-text { display: block; }
+    .tip-text {
+      display: none; position: absolute;
+      left: 50%; bottom: calc(100% + 8px);
+      transform: translateX(-50%);
+      background: var(--text); color: var(--panel);
+      font-size: 0.74rem; font-weight: 400; line-height: 1.45;
+      padding: 8px 12px; border-radius: 8px;
+      white-space: normal; width: 220px; min-width: 160px;
+      z-index: 2000; pointer-events: none;
+      text-align: left; box-shadow: 0 6px 20px rgba(0,0,0,0.22);
+    }
+    .tip-text::after {
+      content: ''; position: absolute; top: 100%; left: 50%;
+      transform: translateX(-50%);
+      border: 5px solid transparent; border-top-color: var(--text);
+    }
+    .tip-text--right { left: auto; right: 0; transform: none; }
+    .tip-text--right::after { left: auto; right: 12px; transform: none; }
+    html[data-theme="dark"] .tip-text { background: #e8f0fe; color: #10203f; }
+    html[data-theme="dark"] .tip-text::after { border-top-color: #e8f0fe; }
+    html[data-theme="dark"] .tip-text--right::after { border-top-color: #e8f0fe; }
+
+    /* ── Guided Tour ────────────────────────────────────────────────────── */
+    @keyframes bb-tour-pulse {
+      0%,100% { box-shadow: 0 0 0 0 rgba(27,95,228,0.5); }
+      50% { box-shadow: 0 0 0 8px rgba(27,95,228,0); }
+    }
+    .bb-tour-highlight {
+      outline: 3px solid var(--accent) !important;
+      outline-offset: 5px !important;
+      border-radius: var(--radius) !important;
+      animation: bb-tour-pulse 1.6s ease-in-out 2;
+      position: relative; z-index: 9002 !important;
+    }
     """
 
 
@@ -1874,15 +1928,21 @@ def _render_district_billing_card(item: Mapping[str, object], plan_opts: str, st
         # Archived card — compact, shows restore + delete only
         can_delete = eff in {"expired", "cancelled", "suspended"} or archived
         delete_btn = (
-            f'<form method="post" action="{delete_action}" style="display:inline;" '
+            f'<span style="display:inline-flex;align-items:center;gap:4px;">'
+            + _help_tip('Permanently removes this license record. Cannot be undone. Only allowed after archiving.')
+            + f'<form method="post" action="{delete_action}" style="display:inline;margin:0;" '
             f'onsubmit="return confirm(\'Permanently delete the license record for {name}? This cannot be undone.\');">'
             f'<button class="button button-danger-outline" type="submit" style="font-size:0.73rem;padding:4px 10px;">Delete</button>'
             f'</form>'
+            f'</span>'
         )
         restore_btn = (
-            f'<form method="post" action="{restore_action}" style="display:inline;">'
+            f'<span style="display:inline-flex;align-items:center;gap:4px;">'
+            + _help_tip('Moves this license back to active status. Enforcement resumes immediately.')
+            + f'<form method="post" action="{restore_action}" style="display:inline;margin:0;">'
             f'<button class="button button-primary" type="submit" style="font-size:0.73rem;padding:4px 10px;">Restore</button>'
             f'</form>'
+            f'</span>'
         )
         return (
             f'<div style="background:rgba(100,116,139,0.06);border:1px solid var(--border);border-radius:12px;'
@@ -1979,7 +2039,9 @@ def _render_district_billing_card(item: Mapping[str, object], plan_opts: str, st
         f'<button class="button button-secondary" type="submit">Set Plan</button>'
         f'</form></div>'
         f'<div class="card" style="padding:12px;">'
-        f'<p style="font-size:0.75rem;font-weight:600;margin-bottom:8px;">Manual Override</p>'
+        f'<p style="font-size:0.75rem;font-weight:600;margin-bottom:8px;">Manual Override'
+        + _help_tip('Grants full access regardless of license status. Use for nonprofits, pilots, or contract exceptions. Always record a reason.')
+        + f'</p>'
         f'<form method="post" action="{tog_ov}" class="stack" style="gap:6px;">'
         f'<input name="override_reason" placeholder="Override reason" value="{override_reason}" />'
         f'<button class="button {override_btn_cls}" type="submit">'
@@ -4857,7 +4919,8 @@ def _render_tenant_settings_panels(
             + _cb("tsf-al", "law_enforcement_can_trigger",
                   "Law enforcement can trigger alerts", a.law_enforcement_can_trigger)
             + _cb("tsf-al", "require_hold_to_activate",
-                  "Require hold-to-activate", a.require_hold_to_activate)
+                  "Require hold-to-activate", a.require_hold_to_activate,
+                  "Staff must press and hold the emergency button for this many seconds before an alert fires. Prevents accidental triggers.")
             + _num("tsf-al", "hold_seconds", "Hold duration", a.hold_seconds, 1, 10, "seconds")
             + _cb("tsf-al", "disable_requires_admin",
                   "Only admins can disable alarm", a.disable_requires_admin)
@@ -6358,20 +6421,20 @@ def render_admin_page(
               <span id="js-alarm-status-pill" class="status-pill {alarm_status_class}"><strong>{alarm_status_label}</strong>{escape(alarm_state.message or 'No active alarm')}</span>
               {"<span class='status-pill warn'><strong>TRAINING</strong>" + escape(alarm_state.training_label or "This is a drill") + "</span>" if alarm_state.is_active and alarm_state.is_training else ""}
               {ack_pill}
-              <span class="status-pill {'ok' if apns_configured else 'danger'}"><strong>APNs</strong>{'ready' if apns_configured else 'not configured'}</span>
-              <span class="status-pill {'ok' if twilio_configured else 'danger'}"><strong>SMS</strong>{'ready' if twilio_configured else 'not configured'}</span>
+              <span class="status-pill {'ok' if apns_configured else 'danger'}"><strong>APNs</strong>{'ready' if apns_configured else 'not configured'}{_help_tip('Apple Push Notifications — required for iPhone alert delivery. Configure in Settings if not ready.', right=True)}</span>
+              <span class="status-pill {'ok' if twilio_configured else 'danger'}"><strong>SMS</strong>{'ready' if twilio_configured else 'not configured'}{_help_tip('Twilio SMS service — sends text alerts to phone numbers. Optional but recommended for users without the app.', right=True)}</span>
             </div>
           </div>
           <div class="metrics-grid">
             <article class="metric-card"><div class="meta">Users</div><div class="metric-value">{len(users)}</div></article>
             <article class="metric-card"><div class="meta">Active users</div><div class="metric-value">{active_users}</div></article>
-            <article class="metric-card"><div class="meta">Login-enabled</div><div class="metric-value">{login_enabled}</div></article>
+            <article class="metric-card"><div class="meta">Login-enabled{_help_tip('Users who have a username and password set. All users receive push alerts regardless.')}</div><div class="metric-value">{login_enabled}</div></article>
             <article class="metric-card"><div class="meta">Devices</div><div class="metric-value">{len(devices)}</div></article>
             <article class="metric-card"><div class="meta">Recent alerts</div><div class="metric-value">{len(alerts)}</div></article>
             <article class="metric-card"><div class="meta">User reports</div><div class="metric-value">{len(reports)}</div></article>
             <article class="metric-card"><div class="meta">Open messages</div><div class="metric-value">{unread_admin_messages}</div></article>
             <article class="metric-card"><div class="meta">Active help requests</div><div class="metric-value">{len(request_help_active)}</div></article>
-            <article class="metric-card"><div class="meta">Quiet period requests</div><div class="metric-value">{len(quiet_periods_active)}</div></article>
+            <article class="metric-card"><div class="meta">Quiet period requests{_help_tip('Staff requests to suppress non-emergency notification sounds during sensitive activities (tests, performances).')}</div><div class="metric-value">{len(quiet_periods_active)}</div></article>
           </div>
           <div class="status-row" style="margin-top:16px;">
             {_count_list(role_counts)}
@@ -6437,11 +6500,11 @@ def render_admin_page(
             <form id="alarm_activate_form" method="post" action="{prefix}/admin/alarm/activate" class="stack">
               <div class="checkbox-row" style="background:color-mix(in srgb,var(--warning) 10%,white);border-color:color-mix(in srgb,var(--warning) 25%,transparent);">
                 <input type="checkbox" name="is_training" value="1" id="is_training" checked />
-                <label for="is_training">Training mode — no real push/SMS delivery</label>
+                <label for="is_training">Training mode — no real push/SMS delivery{_help_tip('Safe mode for drills. Alarm screens appear on devices but no push notifications or SMS are actually sent. Leave this on unless responding to a real emergency.')}</label>
               </div>
               <div class="checkbox-row" style="background:rgba(14,165,233,.08);border-color:rgba(14,165,233,.22);">
                 <input type="checkbox" name="silent_audio" value="1" id="silent_audio" />
-                <label for="silent_audio">Silent audio test — show alarm screens without siren volume</label>
+                <label for="silent_audio">Silent audio test — show alarm screens without siren volume{_help_tip('Useful for testing the visual alert flow without triggering the siren sound in a occupied building.')}</label>
               </div>
               <div class="field">
                 <label for="alarm_message">Alarm message</label>
@@ -6638,7 +6701,7 @@ def render_admin_page(
               <div>
                 <p class="eyebrow">User Management</p>
                 <h2>Accounts &amp; Access Control</h2>
-                <p class="card-copy">Enterprise-grade user management. Role changes require confirmation and are fully audited.</p>
+                <p class="card-copy">Create and manage staff accounts. Roles control what each person can access — use Access Codes to let staff self-register on the mobile app. All role changes are fully audited.</p>
               </div>
               <div class="button-row" id="um-add-btn-wrap"{"" if _um_tab == "active" else ' style="display:none;"'}>
                 <button class="button button-primary" style="min-height:38px;font-size:0.85rem;padding:0 16px;" onclick="umToggleCreate()">+ Add User</button>
@@ -6664,13 +6727,13 @@ def render_admin_page(
               <a href="{prefix}/admin?section=user-management&tab=archived"
                  class="um-tab{"  um-tab-active" if _um_tab == "archived" else ""}"
                  style="padding:8px 20px;font-size:0.85rem;font-weight:600;text-decoration:none;color:{"var(--accent)" if _um_tab == "archived" else "var(--muted)"};border-bottom:{"2px solid var(--accent);margin-bottom:-2px" if _um_tab == "archived" else "none"};">
-                Archived
+                Archived{_help_tip('Archived users cannot log in but are preserved for audit history. They do not count against active user limits.')}
                 {f'<span class="count-badge" style="margin-left:6px;background:rgba(220,38,38,0.12);color:#dc2626;">{len(_archived_user_list)}</span>' if _archived_user_list else ""}
               </a>
               <a href="{prefix}/admin?section=user-management&tab=codes"
                  class="um-tab{"  um-tab-active" if _um_tab == "codes" else ""}"
                  style="padding:8px 20px;font-size:0.85rem;font-weight:600;text-decoration:none;color:{"var(--accent)" if _um_tab == "codes" else "var(--muted)"};border-bottom:{"2px solid var(--accent);margin-bottom:-2px" if _um_tab == "codes" else "none"};">
-                Codes
+                Codes{_help_tip('One-time codes staff can use to self-register on the mobile app. Generate a code, share the link or QR, and they join automatically.')}
                 {f'<span class="count-badge" style="margin-left:6px;background:rgba(27,95,228,0.12);color:var(--accent);">{len(access_code_records)}</span>' if access_code_records else ""}
               </a>
             </div>
@@ -6687,7 +6750,7 @@ def render_admin_page(
                     <div class="form-grid">
                       <div class="field"><label>Name</label><input name="name" placeholder="Full name" /></div>
                       <div class="field">
-                        <label>Role</label>
+                        <label>Role{_help_tip('Teacher/Staff: alert-receive only. Building Admin: full school management. District Admin: cross-school access. Law Enforcement: alert-receive with responder view.')}</label>
                         <select name="role">
                           <option value="teacher">Teacher / Standard</option>
                           <option value="staff">Staff</option>
@@ -7084,8 +7147,8 @@ def render_admin_page(
             <div class="panel-header">
               <div>
                 <p class="eyebrow">Device Management</p>
-                <h2>Active Devices</h2>
-                <p class="card-copy">All devices and active sessions for <strong>{escape(selected_tenant_name)}</strong>.</p>
+                <h2>Active Devices{_help_tip('Devices must register on the BlueBird app to receive push alerts. Unregistered devices will not get notified during an alarm.')}</h2>
+                <p class="card-copy">All devices and active sessions for <strong>{escape(selected_tenant_name)}</strong>. Only registered devices receive push alerts.</p>
               </div>
               <div class="status-row">
                 <span class="status-pill ok"><strong>{_total_device_count}</strong> registered</span>
@@ -7201,6 +7264,141 @@ def render_admin_page(
     applyTheme(saved === 'dark');
     window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', function(e) {{
       if (!localStorage.getItem(THEME_KEY)) applyTheme(e.matches);
+    }});
+  }})();
+  </script>
+
+  <!-- ── Guided Tour ─────────────────────────────────────────────────────── -->
+  <script>
+  (function() {{
+    var PREFIX = '{prefix}';
+    var STEPS = [
+      {{
+        nav: 'dashboard', el: '#overview',
+        title: 'Admin Dashboard',
+        text: 'Your command center. Track user counts, device readiness, active alarm status, and incoming messages — all in one place.'
+      }},
+      {{
+        nav: 'dashboard', el: '#alarm',
+        title: 'Alarm Control',
+        text: 'Activate or end school alerts here. Leave Training Mode on for drills — no real push notifications are sent. Uncheck it only during a live emergency.'
+      }},
+      {{
+        nav: 'user-management', el: '#user-management',
+        title: 'User Management',
+        text: 'Create and manage staff accounts. Each role controls a different level of access. Use the Codes tab to generate one-time links so staff can self-register on the mobile app.'
+      }},
+      {{
+        nav: 'devices', el: '#devices',
+        title: 'Registered Devices',
+        text: 'Every phone with the BlueBird app installed appears here. Devices must register to receive push alerts during an alarm.'
+      }},
+      {{
+        nav: 'settings', el: null,
+        title: 'Settings',
+        text: 'Configure alert hold duration, quiet periods, notification sounds, and access code behavior. Changes take effect immediately across all devices.'
+      }}
+    ];
+
+    var _step = 0;
+    var _overlay = null;
+    var _card = null;
+
+    function _init() {{
+      _overlay = document.createElement('div');
+      _overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.52);z-index:9000;display:none;';
+      _overlay.addEventListener('click', function(e) {{ if (e.target === _overlay) bbEndTour(); }});
+      document.body.appendChild(_overlay);
+
+      _card = document.createElement('div');
+      _card.style.cssText = 'position:fixed;bottom:28px;left:50%;transform:translateX(-50%);'
+        + 'background:var(--surface,#fff);border:1px solid var(--border);border-radius:18px;'
+        + 'padding:24px 28px;max-width:480px;width:calc(100% - 48px);z-index:9001;'
+        + 'box-shadow:0 20px 60px rgba(0,0,0,0.28);display:none;';
+      document.body.appendChild(_card);
+    }}
+
+    function _navigateTo(nav) {{
+      var link = document.querySelector('.nav-item[href*="section=' + nav + '"]');
+      if (link) link.click();
+    }}
+
+    function _highlightEl(sel) {{
+      if (!sel) return;
+      setTimeout(function() {{
+        var el = document.querySelector(sel);
+        if (!el) return;
+        el.scrollIntoView({{ behavior: 'smooth', block: 'center' }});
+        el.classList.add('bb-tour-highlight');
+        setTimeout(function() {{ el.classList.remove('bb-tour-highlight'); }}, 2400);
+      }}, 200);
+    }}
+
+    function _dots(current, total) {{
+      var html = '';
+      for (var i = 0; i < total; i++) {{
+        html += '<span style="display:inline-block;width:7px;height:7px;border-radius:50%;margin:0 3px;'
+          + 'background:' + (i === current ? 'var(--accent,#1b5fe4)' : 'rgba(0,0,0,0.15)') + ';'
+          + 'transition:background 0.2s;"></span>';
+      }}
+      return html;
+    }}
+
+    function _showStep(i) {{
+      if (i < 0 || i >= STEPS.length) {{ bbEndTour(); return; }}
+      _step = i;
+      var s = STEPS[i];
+      _navigateTo(s.nav);
+      _highlightEl(s.el);
+
+      var backBtn = i > 0
+        ? '<button onclick="window._bbTourBack()" style="background:var(--btn-secondary-bg,#f3f4f6);border:1px solid var(--border);'
+          + 'border-radius:8px;padding:8px 16px;font-size:0.82rem;font-weight:600;cursor:pointer;color:var(--text);">&#8592; Back</button>'
+        : '';
+      var nextLbl = i === STEPS.length - 1 ? 'Finish' : 'Next &#8594;';
+
+      _card.innerHTML = (
+        '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">'
+        + '<span style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.09em;color:var(--accent,#1b5fe4);">Guided Tour &mdash; ' + (i+1) + ' of ' + STEPS.length + '</span>'
+        + '<button onclick="bbEndTour()" style="background:none;border:none;cursor:pointer;color:var(--muted);font-size:1.1rem;line-height:1;padding:0 2px;" title="Close tour">&#x2715;</button>'
+        + '</div>'
+        + '<h3 style="margin:0 0 8px;font-size:1.05rem;color:var(--text);">' + s.title + '</h3>'
+        + '<p style="margin:0 0 20px;color:var(--muted);font-size:0.88rem;line-height:1.55;">' + s.text + '</p>'
+        + '<div style="display:flex;gap:10px;align-items:center;">'
+        + backBtn
+        + '<button onclick="window._bbTourNext()" style="background:var(--accent,#1b5fe4);color:#fff;border:none;'
+          + 'border-radius:8px;padding:8px 18px;font-size:0.84rem;font-weight:600;cursor:pointer;">' + nextLbl + '</button>'
+        + '<span style="margin-left:auto;">' + _dots(i, STEPS.length) + '</span>'
+        + '</div>'
+      );
+
+      _overlay.style.display = 'block';
+      _card.style.display = 'block';
+    }}
+
+    window.startBluebirdTour = function() {{
+      localStorage.setItem('bb_tour_seen', '1');
+      _showStep(0);
+    }};
+    window._bbTourNext = function() {{ _showStep(_step + 1); }};
+    window._bbTourBack = function() {{ _showStep(_step - 1); }};
+    window.bbEndTour = function() {{
+      if (_overlay) _overlay.style.display = 'none';
+      if (_card) _card.style.display = 'none';
+      document.querySelectorAll('.bb-tour-highlight').forEach(function(el) {{
+        el.classList.remove('bb-tour-highlight');
+      }});
+    }};
+
+    document.addEventListener('DOMContentLoaded', function() {{
+      _init();
+      // Show tour button in header once JS is ready
+      var btn = document.getElementById('bb-tour-btn');
+      if (btn) btn.style.display = '';
+      // Auto-start for first-time visitors (not in demo mode)
+      if (!localStorage.getItem('bb_tour_seen') && !document.querySelector('[data-demo]')) {{
+        setTimeout(window.startBluebirdTour, 1400);
+      }}
     }});
   }})();
   </script>
