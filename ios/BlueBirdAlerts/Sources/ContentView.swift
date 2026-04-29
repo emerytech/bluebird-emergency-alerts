@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 private enum EmergencyType: String, CaseIterable, Identifiable {
     case secure, lockdown, evacuate, shelter, hold
@@ -58,6 +59,10 @@ struct ContentView: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 20) {
+                if let alarm = appState.alarmState, alarm.isActive {
+                    alarmBanner(alarm)
+                }
+
                 VStack(spacing: 8) {
                     statusLine
                     tokenLine
@@ -180,6 +185,9 @@ struct ContentView: View {
                     }
                 }
             }
+            .onAppear {
+                Task { await appState.refreshAlarmState(client: api) }
+            }
             .onReceive(NotificationCenter.default.publisher(for: .deviceTokenUpdated)) { note in
                 guard let token = note.userInfo?["token"] as? String else { return }
                 appState.deviceToken = token
@@ -188,7 +196,43 @@ struct ContentView: View {
             .onReceive(NotificationCenter.default.publisher(for: .deviceTokenUpdateFailed)) { note in
                 appState.lastError = note.userInfo?["error"] as? String
             }
+            .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
+                Task { await appState.refreshAlarmState(client: api) }
+            }
         }
+    }
+
+    @ViewBuilder
+    private func alarmBanner(_ alarm: AlarmStatusResponse) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Text("⚠️")
+                    .font(.title2)
+                Text(alarm.isTraining ? "TRAINING DRILL" : "ALARM ACTIVE")
+                    .font(.headline)
+                    .fontWeight(.heavy)
+                    .foregroundStyle(.white)
+            }
+            let triggeredBy = alarm.activatedByLabel ?? "Unknown"
+            Text("Triggered by: \(triggeredBy)")
+                .font(.subheadline)
+                .fontWeight(.medium)
+                .foregroundStyle(Color(red: 1, green: 0.8, blue: 0.8))
+            if let at = alarm.activatedAt {
+                Text(at)
+                    .font(.caption)
+                    .foregroundStyle(Color(red: 1, green: 0.75, blue: 0.75))
+            }
+            if let msg = alarm.message, !msg.isEmpty {
+                Text(msg)
+                    .font(.subheadline)
+                    .foregroundStyle(.white)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(16)
+        .background(alarm.isTraining ? Color.orange : Color.red)
+        .clipShape(RoundedRectangle(cornerRadius: 16))
     }
 
     @ViewBuilder

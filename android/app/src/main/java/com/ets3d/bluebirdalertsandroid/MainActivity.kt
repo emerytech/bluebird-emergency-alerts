@@ -613,6 +613,7 @@ data class AlarmStatus(
     val trainingLabel: String? = null,
     val activatedAt: String? = null,
     val activatedByUserId: Int? = null,
+    val activatedByLabel: String? = null,
     val broadcasts: List<BroadcastUpdate> = emptyList(),
     val acknowledgementCount: Int = 0,
     val currentUserAcknowledged: Boolean = false,
@@ -1528,6 +1529,7 @@ class MainViewModel : ViewModel() {
                         message = a.optString("message").ifBlank { null },
                         isTraining = a.optBoolean("is_training", false),
                         trainingLabel = a.optString("training_label").ifBlank { null },
+                        activatedByLabel = a.optString("activated_by_label").ifBlank { null },
                         triggeredByUserId = triggeredByUid,
                         silentForSender = silentForSender,
                         isSilentForCurrentUser = isSilentForMe,
@@ -4596,11 +4598,17 @@ private fun AlarmBanner(alarm: AlarmStatus, schoolName: String = "", modifier: M
                 alarm.message?.let {
                     Text(it, fontSize = 16.sp, color = TextOnDark, fontWeight = FontWeight.Medium)
                 }
+                val triggeredByText = alarm.activatedByLabel
+                    ?: alarm.activatedByUserId?.let { "User #$it" }
+                    ?: "Unknown"
+                Text(
+                    "Triggered by: $triggeredByText",
+                    fontSize = 13.sp,
+                    color = Color(0xFFFFCDD2),
+                    fontWeight = FontWeight.Medium,
+                )
                 alarm.activatedAt?.let {
                     Text("Activated: $it", fontSize = 12.sp, color = Color(0xFFFFCDD2))
-                }
-                alarm.activatedByUserId?.let {
-                    Text("Triggered by user #$it", fontSize = 12.sp, color = Color(0xFFFFCDD2))
                 }
                 if (alarm.acknowledgementCount > 0) {
                     Text(
@@ -6550,6 +6558,7 @@ internal class BackendClient(baseUrl: String, private val apiKey: String) {
                 activatedAt             = j.optString("activated_at").ifBlank { null },
                 activatedByUserId       = if (j.has("activated_by_user_id") && !j.isNull("activated_by_user_id"))
                     j.optInt("activated_by_user_id") else null,
+                activatedByLabel        = j.optString("activated_by_label").ifBlank { null },
                 broadcasts              = broadcasts,
                 acknowledgementCount    = j.optInt("acknowledgement_count", 0),
                 currentUserAcknowledged = j.optBoolean("current_user_acknowledged", false),
@@ -7102,6 +7111,7 @@ internal class BackendClient(baseUrl: String, private val apiKey: String) {
             activatedAt              = j.optString("activated_at").ifBlank { null },
             activatedByUserId        = if (j.has("activated_by_user_id") && !j.isNull("activated_by_user_id"))
                 j.optInt("activated_by_user_id") else null,
+            activatedByLabel         = j.optString("activated_by_label").ifBlank { null },
             broadcasts               = broadcasts,
             acknowledgementCount     = j.optInt("acknowledgement_count", 0),
             currentUserAcknowledged  = j.optBoolean("current_user_acknowledged", false),

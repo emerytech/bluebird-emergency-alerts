@@ -71,6 +71,13 @@ struct APIClient {
         return try JSONDecoder().decode(AlertsResponse.self, from: data)
     }
 
+    func fetchAlarmStatus() async throws -> AlarmStatusResponse {
+        let url = baseURL.appendingPathComponent("alarm/status")
+        let (data, resp) = try await URLSession.shared.data(from: url)
+        try require2xx(resp: resp, data: data)
+        return try JSONDecoder().decode(AlarmStatusResponse.self, from: data)
+    }
+
     func fetchTenantSettings() async throws -> TenantSettings {
         let url = baseURL.appendingPathComponent("tenant-settings")
         let (data, resp) = try await URLSession.shared.data(from: url)
@@ -228,6 +235,24 @@ struct AlertSummary: Decodable, Identifiable {
         case alertId = "alert_id"
         case createdAt = "created_at"
         case message
+    }
+}
+
+// MARK: - Alarm Status
+
+struct AlarmStatusResponse: Decodable {
+    let isActive: Bool
+    let message: String?
+    let isTraining: Bool
+    let activatedAt: String?
+    let activatedByLabel: String?
+
+    enum CodingKeys: String, CodingKey {
+        case isActive        = "is_active"
+        case message
+        case isTraining      = "is_training"
+        case activatedAt     = "activated_at"
+        case activatedByLabel = "activated_by_label"
     }
 }
 

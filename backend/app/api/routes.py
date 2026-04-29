@@ -715,6 +715,15 @@ def _is_platform_actor_label(label: Optional[str]) -> bool:
     return bool(label and label.strip().lower().startswith("platform super admin"))
 
 
+def _label_from_user(user: object) -> Optional[str]:
+    """Build a human-readable actor label from a user record."""
+    base = getattr(user, "login_name", None) or getattr(user, "name", None)
+    if not base:
+        return None
+    title = getattr(user, "title", None)
+    return f"{base} ({title})" if title else str(base)
+
+
 def _quiet_period_action_label(status: str) -> str:
     normalized = (status or "").strip().lower()
     if normalized == "approved":
@@ -7448,6 +7457,14 @@ async def panic(
     trigger_ip = request.client.host if request.client else None
     trigger_user_agent = request.headers.get("user-agent")
 
+    # Build a human-readable label. Web admin sessions carry a label in
+    # request.state; mobile API-key sessions do not, so fall back to fetching
+    # the user record by the resolved user_id.
+    web_label = _current_school_actor_label(request)
+    if web_label is None and triggered_by_user_id is not None:
+        _trigger_user = await users.get_user(triggered_by_user_id)
+        web_label = _label_from_user(_trigger_user) if _trigger_user else None
+
     alert_id, _ = await _activate_alarm_atomically(
         alert_log=_alert_log(request),
         alarm_store=_alarm_store(request),
@@ -7457,7 +7474,7 @@ async def panic(
         training_label=training_label,
         silent_audio=silent_audio,
         triggered_by_user_id=triggered_by_user_id,
-        triggered_by_label=_current_school_actor_label(request),
+        triggered_by_label=web_label,
         trigger_ip=trigger_ip,
         trigger_user_agent=trigger_user_agent,
     )
