@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import UIKit
 
 // Tenant entry returned by /me
 struct TenantSummaryItem: Codable, Identifiable, Equatable {
@@ -37,10 +38,24 @@ final class AppState: ObservableObject {
     private static let selectedTenantSlugKey = "selected_tenant_slug"
     private static let selectedTenantNameKey = "selected_tenant_name"
     private static let userTitleKey = "user_title"
+    // Stable per-install device identifier
+    private static let deviceIDKey = "bluebird_device_id"
 
     @Published var notificationPermissionGranted: Bool?
     @Published var deviceToken: String?
     @Published var usingLocalTestToken = false
+
+    /// Stable per-install UUID. Uses identifierForVendor when available and
+    /// falls back to a persisted UUID so it survives app restarts.
+    var deviceID: String {
+        let defaults = UserDefaults.standard
+        if let stored = defaults.string(forKey: Self.deviceIDKey), !stored.isEmpty {
+            return stored
+        }
+        let generated = UIDevice.current.identifierForVendor?.uuidString ?? UUID().uuidString
+        defaults.set(generated, forKey: Self.deviceIDKey)
+        return generated
+    }
     @Published var deviceRegistered = false
     @Published var setupDone: Bool = UserDefaults.standard.bool(forKey: setupDoneKey)
     @Published var serverURLString: String = UserDefaults.standard.string(forKey: serverURLKey) ?? Config.backendBaseURL.absoluteString

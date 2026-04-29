@@ -3556,7 +3556,7 @@ def _render_activity_rows(alerts: Sequence[AlertRecord]) -> str:
 
 def _render_device_rows(devices: Sequence[RegisteredDevice], users: Sequence[UserRecord], school_path_prefix: str) -> str:
     if not devices:
-        return '<tr><td colspan="8" class="empty-state">No devices registered yet.</td></tr>'
+        return '<tr><td colspan="9" class="empty-state">No devices registered yet.</td></tr>'
     user_lookup = {user.id: user for user in users}
     prefix = escape(school_path_prefix)
     rows = []
@@ -3574,8 +3574,16 @@ def _render_device_rows(devices: Sequence[RegisteredDevice], users: Sequence[Use
             if first_user
             else ("Unknown" if device.first_user_id is None else f"User #{device.first_user_id}")
         )
+        is_archived = bool(getattr(device, "archived_at", None))
+        status_badge = (
+            '<span class="badge badge-muted">Archived</span>'
+            if is_archived
+            else '<span class="badge badge-success">Active</span>'
+        )
+        row_style = ' style="opacity:0.55;"' if is_archived else ""
+        device_id_display = escape(device.device_id[-12:]) if device.device_id else "—"
         rows.append(
-            "<tr>"
+            f"<tr{row_style}>"
             f"<td>{index}</td>"
             f"<td>{escape(device_name)}</td>"
             f"<td>{escape(device.platform)}</td>"
@@ -3583,13 +3591,19 @@ def _render_device_rows(devices: Sequence[RegisteredDevice], users: Sequence[Use
             f"<td>{escape(owner)}</td>"
             f"<td>{escape(first_owner)}</td>"
             f"<td><code>...{escape(device.token[-12:])}</code></td>"
+            f"<td><code title=\"{escape(device.device_id or '')}\">...{device_id_display}</code></td>"
+            f"<td>{status_badge}</td>"
             "<td>"
-            f"<form method=\"post\" action=\"{prefix}/admin/devices/delete\" onsubmit=\"return confirm('Delete this registered device token?');\">"
-            f"<input type=\"hidden\" name=\"token\" value=\"{escape(device.token)}\" />"
-            f"<input type=\"hidden\" name=\"push_provider\" value=\"{escape(device.push_provider)}\" />"
-            "<button class=\"button button-danger-outline\" type=\"submit\">Delete</button>"
-            "</form>"
-            "</td>"
+            + (
+                f"<form method=\"post\" action=\"{prefix}/admin/devices/delete\" onsubmit=\"return confirm('Delete this registered device token?');\">"
+                f"<input type=\"hidden\" name=\"token\" value=\"{escape(device.token)}\" />"
+                f"<input type=\"hidden\" name=\"push_provider\" value=\"{escape(device.push_provider)}\" />"
+                "<button class=\"button button-danger-outline\" type=\"submit\">Delete</button>"
+                "</form>"
+                if not is_archived
+                else "<span class=\"text-muted\" style=\"font-size:12px;\">Archived</span>"
+            )
+            + "</td>"
             "</tr>"
         )
     return "".join(rows)
@@ -5968,7 +5982,7 @@ def render_admin_page(
             <div class="table-search"><input type="search" id="device-search" placeholder="Filter devices..." /></div>
             <div class="table-wrap"><table class="data-table">
               <thead>
-                <tr><th>#</th><th>Device</th><th>Platform</th><th>Provider</th><th>Current user</th><th>First user</th><th>Token</th><th>Action</th></tr>
+                <tr><th>#</th><th>Device</th><th>Platform</th><th>Provider</th><th>Current user</th><th>First user</th><th>Token</th><th>Device ID</th><th>Status</th><th>Action</th></tr>
               </thead>
               <tbody>
                 {_render_device_rows(devices, users, school_path_prefix)}

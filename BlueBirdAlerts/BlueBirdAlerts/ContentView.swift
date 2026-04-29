@@ -684,7 +684,7 @@ struct ContentView: View {
                 }
             }
             .navigationDestination(isPresented: $showSettings) {
-                SettingsView()
+                SettingsView(onSignOut: deregisterAndLogout)
             }
             .navigationDestination(isPresented: $showMessagingCenter) {
                 messagingCenterPage
@@ -2348,7 +2348,7 @@ struct ContentView: View {
         defer { isRegistering = false }
 
         do {
-            let response = try await api.registerDevice(token: token)
+            let response = try await api.registerDevice(token: token, deviceId: appState.deviceID)
             appState.deviceRegistered = response.deviceCount > 0
             appState.registeredDeviceCount = response.deviceCount
             appState.providerCounts = response.providerCounts
@@ -2364,6 +2364,20 @@ struct ContentView: View {
         } catch {
             appState.deviceRegistered = false
             appState.lastError = "Register device failed: \(error.localizedDescription)"
+        }
+    }
+
+    private func deregisterAndLogout() {
+        let token = appState.deviceToken
+        let deviceId = appState.deviceID
+        let userID = appState.userID
+        appState.logout()
+        guard let token else { return }
+        Task.detached {
+            try? await APIClient(
+                baseURL: appState.serverURL,
+                apiKey: Config.backendApiKey
+            ).deregisterDevice(token: token, deviceId: deviceId, userID: userID)
         }
     }
 
@@ -3352,6 +3366,7 @@ private struct TeamAssistForwardSheet: View {
 }
 
 private struct SettingsView: View {
+    let onSignOut: () -> Void
     @EnvironmentObject private var appState: AppState
     @State private var isTestingBackend = false
     @State private var isRegistering = false
@@ -3484,7 +3499,7 @@ private struct SettingsView: View {
 
                     // Sign Out
                     Button {
-                        appState.logout()
+                        onSignOut()
                     } label: {
                         Text("Sign Out")
                             .font(.headline)
@@ -3575,7 +3590,7 @@ private struct SettingsView: View {
         isRegistering = true
         defer { isRegistering = false }
         do {
-            let response = try await api.registerDevice(token: token)
+            let response = try await api.registerDevice(token: token, deviceId: appState.deviceID)
             appState.deviceRegistered = response.deviceCount > 0
             appState.registeredDeviceCount = response.deviceCount
             appState.providerCounts = response.providerCounts

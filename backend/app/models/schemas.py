@@ -43,6 +43,7 @@ class RegisterDeviceRequest(BaseModel):
     platform: Platform = Field(default=Platform.ios, description="Client platform.")
     push_provider: PushProvider = Field(default=PushProvider.apns, description="Push notification provider.")
     device_name: Optional[str] = Field(default=None, max_length=120)
+    device_id: Optional[str] = Field(default=None, max_length=256, description="Stable per-install UUID from the client.")
     user_id: Optional[int] = None
 
     @field_validator("device_token")
@@ -82,13 +83,28 @@ class RegisterDeviceResponse(BaseModel):
     provider_counts: Dict[str, int]
 
 
+class DeregisterDeviceRequest(BaseModel):
+    device_token: str = Field(..., min_length=1, max_length=4096)
+    push_provider: PushProvider = Field(default=PushProvider.apns)
+    device_id: Optional[str] = Field(default=None, max_length=256)
+    user_id: Optional[int] = None
+
+    @field_validator("device_token")
+    @classmethod
+    def _strip_token(cls, v: str) -> str:
+        return v.strip()
+
+
 class DeviceSummary(BaseModel):
     platform: str
     push_provider: str
     device_name: Optional[str] = None
+    device_id: Optional[str] = None
     user_id: Optional[int] = None
     first_user_id: Optional[int] = None
     token_suffix: str
+    is_active: bool = True
+    archived_at: Optional[str] = None
 
 
 class DevicesResponse(BaseModel):

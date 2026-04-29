@@ -23,16 +23,28 @@ struct APIClient {
         return try JSONDecoder().decode(HealthResponse.self, from: data)
     }
 
-    func registerDevice(token: String) async throws -> RegisterDeviceResponse {
+    func registerDevice(token: String, deviceId: String? = nil) async throws -> RegisterDeviceResponse {
         let url = baseURL.appendingPathComponent("register-device")
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONEncoder().encode(RegisterDeviceRequest(deviceToken: token))
+        withAPIKey(&request)
+        request.httpBody = try JSONEncoder().encode(RegisterDeviceRequest(deviceToken: token, deviceId: deviceId))
 
         let (data, response) = try await URLSession.shared.data(for: request)
         try requireSuccess(response: response, data: data)
         return try JSONDecoder().decode(RegisterDeviceResponse.self, from: data)
+    }
+
+    func deregisterDevice(token: String, deviceId: String? = nil, userID: Int? = nil) async throws {
+        let url = baseURL.appendingPathComponent("deregister-device")
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        withAPIKey(&request)
+        request.httpBody = try JSONEncoder().encode(DeregisterDeviceRequest(deviceToken: token, deviceId: deviceId, userID: userID))
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try requireSuccess(response: response, data: data)
     }
 
     func panic(userID: Int, message: String, isTraining: Bool = false, trainingLabel: String? = nil, silentAudio: Bool = false) async throws -> PanicResponse {
@@ -464,11 +476,27 @@ private struct RegisterDeviceRequest: Encodable {
     let deviceToken: String
     let platform = "ios"
     let pushProvider = "apns"
+    let deviceId: String?
 
     enum CodingKeys: String, CodingKey {
         case deviceToken = "device_token"
         case platform
         case pushProvider = "push_provider"
+        case deviceId = "device_id"
+    }
+}
+
+private struct DeregisterDeviceRequest: Encodable {
+    let deviceToken: String
+    let pushProvider = "apns"
+    let deviceId: String?
+    let userID: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case deviceToken = "device_token"
+        case pushProvider = "push_provider"
+        case deviceId = "device_id"
+        case userID = "user_id"
     }
 }
 

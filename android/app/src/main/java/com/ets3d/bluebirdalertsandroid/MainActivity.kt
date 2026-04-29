@@ -151,6 +151,7 @@ internal const val EXTRA_ALERT_TYPE = "bluebird_alert_type"
 private const val KEY_SELECTED_TENANT_SLUG = "selected_tenant_slug"
 private const val KEY_SELECTED_TENANT_NAME = "selected_tenant_name"
 private const val KEY_USER_TITLE = "user_title"
+private const val KEY_DEVICE_ID = "bluebird_device_id"
 
 private enum class HoldActivationUiState {
     Idle,
@@ -289,6 +290,13 @@ private fun setScreenFlashAlertsEnabled(ctx: Context, enabled: Boolean) {
 private fun getSelectedTenantSlug(ctx: Context) = prefs(ctx).getString(KEY_SELECTED_TENANT_SLUG, "") ?: ""
 private fun getSelectedTenantName(ctx: Context) = prefs(ctx).getString(KEY_SELECTED_TENANT_NAME, "") ?: ""
 private fun getUserTitle(ctx: Context) = prefs(ctx).getString(KEY_USER_TITLE, "") ?: ""
+private fun getOrCreateDeviceId(ctx: Context): String {
+    val stored = prefs(ctx).getString(KEY_DEVICE_ID, null)
+    if (!stored.isNullOrBlank()) return stored
+    val generated = java.util.UUID.randomUUID().toString()
+    prefs(ctx).edit().putString(KEY_DEVICE_ID, generated).apply()
+    return generated
+}
 
 private fun snakeToTitle(s: String): String =
     s.split('_', '-').joinToString(" ") { it.replaceFirstChar { c -> c.uppercase() } }
@@ -745,8 +753,9 @@ class MainViewModel : ViewModel() {
             if (!task.isSuccessful) return@addOnCompleteListener
             val token = task.result ?: return@addOnCompleteListener
             val userId = getUserId(ctx).toIntOrNull()
+            val deviceId = getOrCreateDeviceId(ctx)
             viewModelScope.launch(Dispatchers.IO) {
-                runCatching { client?.registerAndroidDevice(token, userId) }
+                runCatching { client?.registerAndroidDevice(token, userId, deviceId) }
             }
         }
     }
@@ -843,6 +852,17 @@ class MainViewModel : ViewModel() {
                 .onFailure { e ->
                     _state.update { it.copy(isBusy = false, errorMsg = e.message ?: "Failed to activate alarm.") }
                 }
+        }
+    }
+
+    fun deregisterCurrentDevice(ctx: Context) {
+        val userId = getUserId(ctx).toIntOrNull()
+        val deviceId = getOrCreateDeviceId(ctx)
+        viewModelScope.launch(Dispatchers.IO) {
+            FirebaseMessaging.getInstance().token.addOnCompleteListener { task ->
+                val token = task.result ?: return@addOnCompleteListener
+                runCatching { client?.deregisterAndroidDevice(token, userId, deviceId) }
+            }
         }
     }
 
@@ -2434,7 +2454,10 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
         ) {
             if (showSettingsScreen) {
                 SettingsScreen(
-                    onLogout = onLogout,
+                    onLogout = {
+                        vm.deregisterCurrentDevice(ctx)
+                        onLogout()
+                    },
                     biometricsEnabled = biometricsEnabled,
                     hapticAlertsEnabled = hapticAlertsOn,
                     flashlightAlertsEnabled = flashlightAlertsOn,
@@ -6177,19 +6200,34 @@ private class BackendClient(baseUrl: String, private val apiKey: String) {
         }
     }
 
-    fun registerAndroidDevice(token: String, userId: Int?) {
+    fun registerAndroidDevice(token: String, userId: Int?, deviceId: String? = null) {
         val body = JSONObject()
             .put("device_token", token.trim())
             .put("platform", "android")
             .put("push_provider", "fcm")
             .put("device_name", currentDeviceName())
             .apply { userId?.let { put("user_id", it) } }
+            .apply { deviceId?.let { put("device_id", it) } }
         val req = Request.Builder()
             .url("$base/register-device")
             .withAuth()
             .post(body.toString().toRequestBody(json))
             .build()
         http.newCall(req).execute().use { requireSuccess(it) }
+    }
+
+    fun deregisterAndroidDevice(token: String, userId: Int?, deviceId: String?) {
+        val body = JSONObject()
+            .put("device_token", token.trim())
+            .put("push_provider", "fcm")
+            .apply { userId?.let { put("user_id", it) } }
+            .apply { deviceId?.let { put("device_id", it) } }
+        val req = Request.Builder()
+            .url("$base/deregister-device")
+            .withAuth()
+            .post(body.toString().toRequestBody(json))
+            .build()
+        runCatching { http.newCall(req).execute().use { it.close() } }
     }
 
     fun alarmStatus(): AlarmStatus {

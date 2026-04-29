@@ -77,6 +77,7 @@ from app.models.schemas import (
     QuietPeriodDeleteRequest,
     QuietPeriodStatusResponse,
     QuietPeriodSummary,
+    DeregisterDeviceRequest,
     RegisterDeviceRequest,
     RegisterDeviceResponse,
     ReportRequest,
@@ -2187,7 +2188,7 @@ async def admin_dashboard(
     await _require_dashboard_admin(request, selected_tenant_slug=tenant)
     effective_school = getattr(request.state, "admin_effective_school", request.state.school)
     available_schools = list(getattr(request.state, "admin_available_schools", [request.state.school]))
-    devices = await _registry(request).list_devices()
+    devices = await _registry(request).list_devices(include_archived=True)
     alerts = await _alert_log(request).list_recent(limit=20)
     users = await _users(request).list_users()
     alarm_state = await _alarm_store(request).get_state()
@@ -5500,9 +5501,12 @@ async def devices(request: Request, _: None = Depends(require_api_key)) -> Devic
                 platform=device.platform,
                 push_provider=device.push_provider,
                 device_name=device.device_name,
+                device_id=device.device_id,
                 user_id=device.user_id,
                 first_user_id=device.first_user_id,
                 token_suffix=device.token[-8:],
+                is_active=device.is_active,
+                archived_at=device.archived_at,
             )
             for device in all_devices
         ],
@@ -6339,6 +6343,7 @@ async def register_device(
         push_provider=body.push_provider.value,
         device_name=body.device_name,
         user_id=body.user_id,
+        device_id=body.device_id,
     )
     device_count = await _registry(request).count()
     platform_counts = await _registry(request).platform_counts()
@@ -6369,6 +6374,55 @@ async def register_device(
         platform_counts=platform_counts,
         provider_counts=provider_counts,
     )
+
+
+@router.post("/deregister-device", status_code=status.HTTP_200_OK)
+@router.post("/devices/deregister", status_code=status.HTTP_200_OK)
+async def deregister_device(
+    body: DeregisterDeviceRequest,
+    request: Request,
+    _: None = Depends(require_api_key),
+) -> dict:
+    """
+    Archives a device record when a user logs out or switches accounts.
+    The record is kept for auditing but excluded from all future push sends.
+    """
+    registry = _registry(request)
+    archived_by_token = False
+    archived_by_device_id = 0
+
+    if body.device_token:
+        archived_by_token = await registry.archive_by_token(
+            token=body.device_token,
+            push_provider=body.push_provider.value,
+        )
+
+    if body.device_id:
+        archived_by_device_id = await registry.archive_by_device_id(
+            device_id=body.device_id,
+            user_id=body.user_id,
+        )
+
+    archived = archived_by_token or archived_by_device_id > 0
+    logger.info(
+        "Device deregistered by_token=%s by_device_id=%s provider=%s token_suffix=%s",
+        archived_by_token,
+        archived_by_device_id,
+        body.push_provider.value,
+        body.device_token[-8:] if body.device_token else "N/A",
+    )
+    _fire_audit(
+        request,
+        "device_deregistered",
+        actor_user_id=body.user_id,
+        target_type="device",
+        metadata={
+            "provider": body.push_provider.value,
+            "device_id": body.device_id,
+            "archived": archived,
+        },
+    )
+    return {"archived": archived}
 
 
 @router.post("/reports", response_model=ReportResponse)
