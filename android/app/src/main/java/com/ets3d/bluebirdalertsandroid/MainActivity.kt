@@ -3191,7 +3191,7 @@ private fun CircularEmergencyButton(
     var holdState by remember { mutableStateOf(HoldActivationUiState.Idle) }
     var holdJob by remember { mutableStateOf<Job?>(null) }
     var triggered by remember { mutableStateOf(false) }
-    val tickIntervalMs = (holdDurationMs / 4L).coerceAtLeast(500L)
+    var lastHapticSecond by remember { mutableStateOf(-1) }
 
     val ringColor by animateColorAsState(
         targetValue = when {
@@ -3219,6 +3219,7 @@ private fun CircularEmergencyButton(
             haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
             holdState = HoldActivationUiState.Canceled
         }
+        lastHapticSecond = -1
         scope.launch {
             holdProgress.animateTo(0f, tween(durationMillis = 200, easing = FastOutSlowInEasing))
             if (holdState != HoldActivationUiState.Triggered) holdState = HoldActivationUiState.Idle
@@ -3244,7 +3245,6 @@ private fun CircularEmergencyButton(
                             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                             holdJob = scope.launch {
                                 val start = withFrameNanos { it }
-                                var nextTickMs = tickIntervalMs
                                 holdProgress.snapTo(0f)
                                 onHoldVisual(true, 0f, AlarmRed)
                                 while (isActive) {
@@ -3259,12 +3259,14 @@ private fun CircularEmergencyButton(
                                         progress > 0.02f -> HoldActivationUiState.Holding
                                         else -> HoldActivationUiState.Pressing
                                     }
-                                    if (elapsedMs >= nextTickMs) {
-                                        haptic.performHapticFeedback(if (progress >= 0.8f) HapticFeedbackType.LongPress else HapticFeedbackType.TextHandleMove)
-                                        nextTickMs += tickIntervalMs
+                                    val remainingSeconds = kotlin.math.ceil((holdDurationMs - elapsedMs) / 1000f).toInt().coerceAtLeast(0)
+                                    if (remainingSeconds != lastHapticSecond) {
+                                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                        lastHapticSecond = remainingSeconds
                                     }
                                     if (progress >= 1f && !triggered) {
                                         triggered = true
+                                        lastHapticSecond = -1
                                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                         onHoldVisual(false, 0f, AlarmRed)
                                         onHoldComplete()
