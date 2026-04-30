@@ -2880,34 +2880,81 @@ async def super_admin_district_analytics(request: Request, slug: str) -> JSONRes
                 "name": str(getattr(school, "name", "")),
                 "user_count": 0,
                 "device_count": 0,
+                "devices_online": 0,
+                "devices_idle": 0,
+                "devices_offline": 0,
                 "alert_count": 0,
+                "ack_rate": None,
+                "avg_ack_time_seconds": None,
                 "last_alert_at": None,
             }
-        users, device_count, recent_alerts = await asyncio.gather(
+        users, devices, recent_alerts = await asyncio.gather(
             tenant_ctx.user_store.list_users(),
-            tenant_ctx.device_registry.count(),
+            tenant_ctx.device_registry.list_devices(),
             tenant_ctx.alert_log.list_recent(limit=500),
         )
+        active_user_count = sum(1 for u in users if u.is_active)
+        _statuses = [compute_device_status(d) for d in devices]
+        dev_online = _statuses.count("online")
+        dev_idle = _statuses.count("idle")
+        dev_offline = len(_statuses) - dev_online - dev_idle
         last_alert = recent_alerts[0].created_at if recent_alerts else None
+
+        # Ack rate + avg response from most recent emergency alert
+        ack_rate: Optional[float] = None
+        avg_ack_s: Optional[float] = None
+        emergency_alerts = [a for a in recent_alerts if not a.is_training]
+        if emergency_alerts and active_user_count > 0:
+            try:
+                acks = await tenant_ctx.alert_log.list_acknowledgements(emergency_alerts[0].id)
+                ack_rate = round(len(acks) / active_user_count * 100.0, 1)
+                alert_dt = datetime.fromisoformat(
+                    emergency_alerts[0].created_at.replace("Z", "+00:00")
+                )
+                deltas = [
+                    (
+                        datetime.fromisoformat(a.acknowledged_at.replace("Z", "+00:00")) - alert_dt
+                    ).total_seconds()
+                    for a in acks
+                ]
+                deltas = [d for d in deltas if 0 <= d <= 3600]
+                if deltas:
+                    avg_ack_s = round(sum(deltas) / len(deltas), 1)
+            except Exception:
+                pass
+
         return {
             "slug": str(getattr(school, "slug", "")),
             "name": str(getattr(school, "name", "")),
-            "user_count": sum(1 for u in users if u.is_active),
-            "device_count": int(device_count),
+            "user_count": active_user_count,
+            "device_count": len(devices),
+            "devices_online": dev_online,
+            "devices_idle": dev_idle,
+            "devices_offline": dev_offline,
             "alert_count": len(recent_alerts),
+            "ack_rate": ack_rate,
+            "avg_ack_time_seconds": avg_ack_s,
             "last_alert_at": last_alert,
         }
 
     per_school = list(await asyncio.gather(*[_school_stats(s) for s in schools]))
 
+    total_users = sum(s["user_count"] for s in per_school)
+    total_devices = sum(s["device_count"] for s in per_school)
+    ack_rates = [s["ack_rate"] for s in per_school if s["ack_rate"] is not None]
+    district_ack_rate = round(sum(ack_rates) / len(ack_rates), 1) if ack_rates else None
     return JSONResponse({
         "district_id": district.id,
         "district_name": district.name,
         "district_slug": district.slug,
         "school_count": len(schools),
-        "total_users": sum(s["user_count"] for s in per_school),
-        "total_devices": sum(s["device_count"] for s in per_school),
+        "total_users": total_users,
+        "total_devices": total_devices,
+        "devices_online": sum(s["devices_online"] for s in per_school),
+        "devices_idle": sum(s["devices_idle"] for s in per_school),
+        "devices_offline": sum(s["devices_offline"] for s in per_school),
         "total_alerts": sum(s["alert_count"] for s in per_school),
+        "district_ack_rate": district_ack_rate,
         "schools": per_school,
     })
 
@@ -6520,18 +6567,26 @@ async def _building_analytics_for_school(
         return None
 
     # All independent reads fired concurrently.
-    all_alerts, hr_data, qp_all, active_users = await asyncio.gather(
+    all_alerts, hr_data, qp_all, active_users, devices = await asyncio.gather(
         tenant.alert_log.list_recent(limit=500),
         tenant.incident_store.help_request_cancellation_analytics(),
         tenant.quiet_period_store.list_recent(limit=500),
         tenant.user_store.count_active(),
+        tenant.device_registry.list_devices(),
     )
 
     period_alerts = [a for a in all_alerts if str(a.created_at) >= cutoff_str]
     emergency_alerts = [a for a in period_alerts if not a.is_training]
     qp_period = sum(1 for q in qp_all if str(getattr(q, "created_at", "") or "") >= cutoff_str)
 
-    avg_ack_s = None
+    # Device status breakdown
+    _dev_statuses = [compute_device_status(d) for d in devices]
+    devices_online = _dev_statuses.count("online")
+    devices_idle = _dev_statuses.count("idle")
+    devices_offline = len(_dev_statuses) - devices_online - devices_idle
+
+    avg_ack_s: Optional[float] = None
+    ack_rate: Optional[float] = None
     if emergency_alerts:
         try:
             acks = await tenant.alert_log.list_acknowledgements(emergency_alerts[0].id)
@@ -6543,6 +6598,8 @@ async def _building_analytics_for_school(
             deltas = [d for d in deltas if 0 <= d <= 3600]
             if deltas:
                 avg_ack_s = round(sum(deltas) / len(deltas), 1)
+            if active_users > 0:
+                ack_rate = round(len(acks) / active_users * 100.0, 1)
         except Exception:
             pass
 
@@ -6577,9 +6634,14 @@ async def _building_analytics_for_school(
         "cancelled_help_requests": int(hr_data.get("cancelled", 0)),
         "quiet_period_requests": qp_period,
         "avg_ack_time_seconds": avg_ack_s,
+        "ack_rate": ack_rate,
         "last_alert_at": period_alerts[0].created_at if period_alerts else None,
         "alert_trend": alert_trend,
         "active_users": int(active_users),
+        "device_count": len(devices),
+        "devices_online": devices_online,
+        "devices_idle": devices_idle,
+        "devices_offline": devices_offline,
         "drill_rate": drill_rate,
     }
 

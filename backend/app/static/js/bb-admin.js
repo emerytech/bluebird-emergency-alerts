@@ -817,10 +817,14 @@ try {
         return;
       }
 
-      var totEmerg = buildings.reduce(function (s, b) { return s + (b.emergency_alerts || 0); }, 0);
-      var totTrain = buildings.reduce(function (s, b) { return s + (b.training_alerts || 0); }, 0);
-      var totHelp  = buildings.reduce(function (s, b) { return s + (b.help_requests || 0); }, 0);
-      var totQP    = buildings.reduce(function (s, b) { return s + (b.quiet_period_requests || 0); }, 0);
+      var totEmerg   = buildings.reduce(function (s, b) { return s + (b.emergency_alerts || 0); }, 0);
+      var totTrain   = buildings.reduce(function (s, b) { return s + (b.training_alerts || 0); }, 0);
+      var totHelp    = buildings.reduce(function (s, b) { return s + (b.help_requests || 0); }, 0);
+      var totQP      = buildings.reduce(function (s, b) { return s + (b.quiet_period_requests || 0); }, 0);
+      var totOnline  = buildings.reduce(function (s, b) { return s + (b.devices_online || 0); }, 0);
+      var totDevices = buildings.reduce(function (s, b) { return s + (b.device_count || 0); }, 0);
+      var ackRates   = buildings.filter(function (b) { return b.ack_rate != null; }).map(function (b) { return b.ack_rate; });
+      var avgAckRate = ackRates.length ? Math.round(ackRates.reduce(function (s, r) { return s + r; }, 0) / ackRates.length) : null;
 
       var summary = '<div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:20px;">'
         + _statChip('Total Alerts', totEmerg + totTrain, '#1d4ed8')
@@ -829,6 +833,8 @@ try {
         + _statChip('Help Requests', totHelp, '#d97706')
         + _statChip('Quiet Requests', totQP, '#7c3aed')
         + _statChip('Buildings', buildings.length, 'var(--accent)')
+        + (avgAckRate != null ? _statChip('Avg Ack Rate', avgAckRate + '%', avgAckRate >= 80 ? '#16a34a' : avgAckRate >= 50 ? '#d97706' : '#dc2626') : '')
+        + (totDevices > 0 ? _statChip('Online Devices', totOnline + ' / ' + totDevices, '#0ea5e9') : '')
         + '</div>';
 
       /* Aggregate daily trend across all buildings */
@@ -852,28 +858,48 @@ try {
           + '</div></div>';
       }
 
-      /* Building ranking with dual bars (emergency red + training blue) */
+      /* Building comparison table — alerts, ack rate, device coverage */
       var sortedB = buildings.slice().sort(function (a, b) { return (b.emergency_alerts || 0) - (a.emergency_alerts || 0); });
       var maxE = Math.max.apply(null, sortedB.map(function (b) { return b.emergency_alerts || 0; })) || 1;
-      var rankRows = sortedB.map(function (b) {
+
+      var tableRows = sortedB.map(function (b) {
         var ePct = Math.max(Math.round(((b.emergency_alerts || 0) / maxE) * 100), (b.emergency_alerts ? 2 : 0));
         var tPct = Math.max(Math.round(((b.training_alerts || 0) / maxE) * 100), (b.training_alerts ? 2 : 0));
-        return '<div style="display:grid;grid-template-columns:160px 1fr 80px;gap:10px;align-items:center;padding:5px 0;border-bottom:1px solid var(--border);">'
-          + '<div style="font-size:0.82rem;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + _esc(b.building_name) + '</div>'
-          + '<div style="display:flex;gap:2px;align-items:center;height:10px;">'
-          + '<div style="background:#dc2626;height:100%;width:' + ePct + '%;border-radius:2px;transition:width 0.4s;"></div>'
-          + '<div style="background:#3b82f6;height:100%;width:' + tPct + '%;border-radius:2px;transition:width 0.4s;opacity:0.7;"></div>'
-          + '</div>'
-          + '<div style="font-size:0.74rem;color:var(--muted);text-align:right;">' + (b.emergency_alerts || 0) + 'E / ' + (b.training_alerts || 0) + 'T</div>'
-          + '</div>';
+        var ackCell = b.ack_rate != null
+          ? '<span style="font-weight:700;color:' + (b.ack_rate >= 80 ? '#16a34a' : b.ack_rate >= 50 ? '#d97706' : '#dc2626') + ';">' + b.ack_rate + '%</span>'
+          : '<span style="color:var(--muted);">—</span>';
+        var devTotal = b.device_count || 0;
+        var devOnline = b.devices_online || 0;
+        var devCell = devTotal > 0
+          ? devOnline + '<span style="color:var(--muted);font-size:0.7rem;"> / ' + devTotal + '</span>'
+          : '<span style="color:var(--muted);">—</span>';
+        return '<tr style="border-bottom:1px solid var(--border);">'
+          + '<td style="padding:8px 6px;font-weight:600;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + _esc(b.building_name) + '</td>'
+          + '<td style="padding:8px 6px;">'
+          + '<div style="display:flex;gap:2px;align-items:center;height:8px;min-width:80px;">'
+          + '<div style="background:#dc2626;height:100%;width:' + ePct + '%;border-radius:2px;"></div>'
+          + '<div style="background:#3b82f6;height:100%;width:' + tPct + '%;border-radius:2px;opacity:0.7;"></div>'
+          + '</div></td>'
+          + '<td style="padding:8px 6px;text-align:right;font-size:0.78rem;color:var(--muted);">' + (b.emergency_alerts || 0) + 'E / ' + (b.training_alerts || 0) + 'T</td>'
+          + '<td style="padding:8px 6px;text-align:right;font-size:0.8rem;">' + ackCell + '</td>'
+          + '<td style="padding:8px 6px;text-align:right;font-size:0.78rem;">' + devCell + '</td>'
+          + '<td style="padding:8px 6px;text-align:right;font-size:0.76rem;color:var(--muted);">' + fmtSeconds(b.avg_ack_time_seconds) + '</td>'
+          + '</tr>';
       }).join('');
+
       var rank = '<div style="margin-bottom:16px;">'
         + '<p style="font-size:0.72rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:0.04em;margin:0 0 10px;">Building Comparison</p>'
-        + '<div style="display:flex;gap:10px;font-size:0.7rem;color:var(--muted);margin-bottom:8px;">'
-        + '<span style="display:flex;align-items:center;gap:4px;"><span style="display:inline-block;width:10px;height:8px;background:#dc2626;border-radius:2px;"></span>Emergency</span>'
-        + '<span style="display:flex;align-items:center;gap:4px;"><span style="display:inline-block;width:10px;height:8px;background:#3b82f6;border-radius:2px;opacity:0.7;"></span>Training</span>'
-        + '</div>'
-        + rankRows + '</div>';
+        + '<div style="overflow-x:auto;">'
+        + '<table style="width:100%;border-collapse:collapse;font-size:0.82rem;">'
+        + '<thead><tr style="border-bottom:2px solid var(--border);">'
+        + '<th style="padding:6px;text-align:left;color:var(--muted);font-size:0.72rem;font-weight:600;">Building</th>'
+        + '<th style="padding:6px;color:var(--muted);font-size:0.72rem;font-weight:600;">Alert Mix</th>'
+        + '<th style="padding:6px;text-align:right;color:var(--muted);font-size:0.72rem;font-weight:600;">Counts</th>'
+        + '<th style="padding:6px;text-align:right;color:var(--muted);font-size:0.72rem;font-weight:600;">Ack Rate</th>'
+        + '<th style="padding:6px;text-align:right;color:var(--muted);font-size:0.72rem;font-weight:600;">Online / Devices</th>'
+        + '<th style="padding:6px;text-align:right;color:var(--muted);font-size:0.72rem;font-weight:600;">Avg Ack Time</th>'
+        + '</tr></thead><tbody>' + tableRows + '</tbody>'
+        + '</table></div></div>';
 
       container.innerHTML = summary + chartSection + rank;
     }
