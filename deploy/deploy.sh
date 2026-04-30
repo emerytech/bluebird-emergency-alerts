@@ -150,7 +150,7 @@ ln -sfn "$RELEASE_DIR" "$CURRENT_LINK"
 # ── Restart service ───────────────────────────────────────────────────────────
 
 log "Restarting $SERVICE_NAME ..."
-systemctl restart "$SERVICE_NAME"
+sudo systemctl restart "$SERVICE_NAME"
 
 # Wait for service to stabilise.
 sleep 4
@@ -165,7 +165,7 @@ else
   if [[ -n "$PREV_RELEASE" && -d "$PREV_RELEASE" ]]; then
     log "Auto-rolling back to: $(basename "$PREV_RELEASE") ..."
     ln -sfn "$PREV_RELEASE" "$CURRENT_LINK"
-    systemctl restart "$SERVICE_NAME"
+    sudo systemctl restart "$SERVICE_NAME"
     sleep 3
     if service_running; then
       log "Rollback succeeded. Previous release is active."
