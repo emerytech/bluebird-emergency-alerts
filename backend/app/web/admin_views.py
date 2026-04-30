@@ -4436,6 +4436,18 @@ def render_super_admin_page(
                 f'</form>'
             )
 
+        # License action button — "Generate License" if no license, inline "Licensing ↓" expand otherwise
+        license_btn = ""
+        if did and is_district:
+            if not d_lic:
+                js_slug2 = json.dumps(slug_raw)
+                js_name2 = json.dumps(raw_name)
+                license_btn = (
+                    f'<button class="button button-primary" type="button"'
+                    f' style="font-size:0.75rem;padding:5px 12px;"'
+                    f' onclick="bbOpenGenLicenseModal({js_slug2},{js_name2})">+ Generate License</button>'
+                )
+
         school_label = "schools" if school_count != 1 else "school"
         district_or_school = "District" if is_district else "School"
         return (
@@ -4454,6 +4466,7 @@ def render_super_admin_page(
             f'<div class="district-card-actions">'
             f'{edit_btn}'
             f'{manage_schools_btn}'
+            f'{license_btn}'
             f'{enter_buttons}'
             f'{archive_btn}'
             f'</div>'
@@ -5221,6 +5234,246 @@ def render_super_admin_page(
           .bb-empty-state{{padding:24px;text-align:center;color:var(--muted);font-size:0.83rem;}}
           </style>
 
+          <script>
+          /* ── District management JS ─────────────────────────────────────────── */
+          var _bbEditDistrictSlug = null;
+
+          function bbCloseModal(id) {{
+            var m = document.getElementById(id);
+            if (m) m.style.display = 'none';
+          }}
+
+          function bbShowBanner(id, msg, isErr) {{
+            var b = document.getElementById(id);
+            if (!b) return;
+            b.textContent = msg;
+            b.className = 'bb-banner ' + (isErr ? 'err' : 'ok');
+            b.style.display = 'block';
+          }}
+
+          function bbClearBanner(id) {{
+            var b = document.getElementById(id);
+            if (b) {{ b.style.display = 'none'; b.textContent = ''; }}
+          }}
+
+          /* Create District */
+          function bbOpenCreateDistrictModal() {{
+            bbClearBanner('bb-create-district-banner');
+            document.getElementById('bb-create-district-name').value = '';
+            document.getElementById('bb-create-district-slug').value = '';
+            document.getElementById('bb-create-district-btn').disabled = false;
+            document.getElementById('bb-create-district-btn').textContent = 'Create District';
+            document.getElementById('bb-create-district-modal').style.display = 'flex';
+            /* Load orgs and pre-select the only one if possible */
+            var sel = document.getElementById('bb-create-district-org');
+            sel.innerHTML = '<option value="">Loading…</option>';
+            document.getElementById('bb-create-org-field').style.display = '';
+            fetch('/super-admin/organizations', {{headers:{{'X-Requested-With':'XMLHttpRequest'}}}})
+              .then(function(r){{return r.json();}})
+              .then(function(d){{
+                var orgs = d.organizations || [];
+                if (orgs.length === 1) {{
+                  /* Only one org — auto-select and hide the field */
+                  sel.innerHTML = '<option value="' + orgs[0].id + '">' + orgs[0].name + '</option>';
+                  document.getElementById('bb-create-org-field').style.display = 'none';
+                }} else {{
+                  sel.innerHTML = '<option value="">Select organization…</option>' +
+                    orgs.map(function(o){{return '<option value="'+o.id+'">'+o.name+'</option>';}}).join('');
+                }}
+              }})
+              .catch(function(){{
+                /* Fallback: default org_id=1 */
+                sel.innerHTML = '<option value="1">Default Organization</option>';
+                document.getElementById('bb-create-org-field').style.display = 'none';
+              }});
+            document.getElementById('bb-create-district-name').focus();
+          }}
+
+          /* Auto-generate slug from name (wired after DOM ready) */
+          document.addEventListener('DOMContentLoaded', function() {{
+            var nameEl = document.getElementById('bb-create-district-name');
+            var slugEl = document.getElementById('bb-create-district-slug');
+            if (nameEl && slugEl) {{
+              nameEl.addEventListener('input', function() {{
+                if (!slugEl._userEdited) {{
+                  slugEl.value = nameEl.value.toLowerCase()
+                    .replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+                }}
+              }});
+              slugEl.addEventListener('input', function() {{ slugEl._userEdited = true; }});
+            }}
+          }});
+
+          function bbSubmitCreateDistrict() {{
+            var name = document.getElementById('bb-create-district-name').value.trim();
+            var slug = document.getElementById('bb-create-district-slug').value.trim();
+            var orgId = document.getElementById('bb-create-district-org').value;
+            if (!name) {{ bbShowBanner('bb-create-district-banner', 'District name is required.', true); return; }}
+            if (!slug) {{ bbShowBanner('bb-create-district-banner', 'Slug is required.', true); return; }}
+            if (!orgId) {{ bbShowBanner('bb-create-district-banner', 'Select an organization.', true); return; }}
+            var btn = document.getElementById('bb-create-district-btn');
+            btn.disabled = true; btn.textContent = 'Creating…';
+            var fd = new FormData();
+            fd.append('name', name); fd.append('slug', slug); fd.append('organization_id', orgId);
+            fetch('/super-admin/districts/create', {{method:'POST', body:fd,
+              headers:{{'X-Requested-With':'XMLHttpRequest'}}}})
+              .then(function(r){{return r.json();}})
+              .then(function(d){{
+                btn.disabled = false; btn.textContent = 'Create District';
+                if (d.ok) {{
+                  bbShowBanner('bb-create-district-banner', 'District "' + d.name + '" created!', false);
+                  /* Inject a minimal card so UI updates without reload */
+                  var grid = document.querySelector('.district-grid');
+                  if (grid) {{
+                    var card = document.createElement('div');
+                    card.className = 'district-card';
+                    card.dataset.districtSlug = d.slug;
+                    card.innerHTML = '<div class="district-card-header"><div>'
+                      + '<p class="district-card-name">' + d.name + '</p>'
+                      + '<p class="district-card-slug">' + d.slug + ' &nbsp;·&nbsp; District</p>'
+                      + '</div><span class="status-pill" style="font-size:0.7rem;padding:2px 10px;">No license</span></div>'
+                      + '<div class="district-card-meta"><span><strong>0</strong> schools</span></div>'
+                      + '<div class="district-card-actions">'
+                      + '<button class="button button-secondary" type="button" style="font-size:0.75rem;padding:5px 12px;"'
+                      + ' onclick="bbOpenEditDistrictModal(' + JSON.stringify(d.slug) + ',' + JSON.stringify(d.name) + ')">Edit</button>'
+                      + '<button class="button button-secondary" type="button" style="font-size:0.75rem;padding:5px 12px;"'
+                      + ' onclick="bbOpenManageSchoolsModal(' + JSON.stringify(d.slug) + ',' + JSON.stringify(d.name) + ',0)">Manage Schools</button>'
+                      + '</div>';
+                    grid.insertBefore(card, grid.firstChild);
+                  }}
+                  setTimeout(function(){{ bbCloseModal('bb-create-district-modal'); }}, 1200);
+                }} else {{
+                  bbShowBanner('bb-create-district-banner', d.detail || d.error || 'Creation failed.', true);
+                }}
+              }})
+              .catch(function(){{
+                btn.disabled = false; btn.textContent = 'Create District';
+                bbShowBanner('bb-create-district-banner', 'Network error — please try again.', true);
+              }});
+          }}
+
+          /* Edit District */
+          function bbOpenEditDistrictModal(slug, name) {{
+            _bbEditDistrictSlug = slug;
+            bbClearBanner('bb-edit-district-banner');
+            document.getElementById('bb-edit-district-name').value = name || '';
+            document.getElementById('bb-edit-district-slug').value = slug || '';
+            document.getElementById('bb-edit-district-btn').disabled = false;
+            document.getElementById('bb-edit-district-btn').textContent = 'Save Changes';
+            document.getElementById('bb-edit-district-modal').style.display = 'flex';
+            document.getElementById('bb-edit-district-name').focus();
+          }}
+
+          function bbSubmitEditDistrict() {{
+            if (!_bbEditDistrictSlug) return;
+            var name = document.getElementById('bb-edit-district-name').value.trim();
+            var slug = document.getElementById('bb-edit-district-slug').value.trim();
+            if (!name) {{ bbShowBanner('bb-edit-district-banner', 'Name is required.', true); return; }}
+            var btn = document.getElementById('bb-edit-district-btn');
+            btn.disabled = true; btn.textContent = 'Saving…';
+            var fd = new FormData();
+            fd.append('name', name); fd.append('new_slug', slug);
+            fetch('/super-admin/districts/' + _bbEditDistrictSlug + '/update',
+              {{method:'POST', body:fd, headers:{{'X-Requested-With':'XMLHttpRequest'}}}})
+              .then(function(r){{return r.json();}})
+              .then(function(d){{
+                btn.disabled = false; btn.textContent = 'Save Changes';
+                if (d.ok !== false && !d.detail) {{
+                  bbShowBanner('bb-edit-district-banner', 'District updated.', false);
+                  /* Update card name/slug in the grid */
+                  var card = document.querySelector('[data-district-slug="' + _bbEditDistrictSlug + '"]');
+                  if (card) {{
+                    var nameEl = card.querySelector('.district-card-name');
+                    var slugEl = card.querySelector('.district-card-slug');
+                    if (nameEl) nameEl.textContent = name;
+                    if (slugEl) slugEl.textContent = slug + ' · District';
+                    card.dataset.districtSlug = slug;
+                  }}
+                  _bbEditDistrictSlug = slug;
+                  setTimeout(function(){{ bbCloseModal('bb-edit-district-modal'); }}, 900);
+                }} else {{
+                  bbShowBanner('bb-edit-district-banner', d.detail || d.error || 'Update failed.', true);
+                }}
+              }})
+              .catch(function(){{
+                btn.disabled = false; btn.textContent = 'Save Changes';
+                bbShowBanner('bb-edit-district-banner', 'Network error.', true);
+              }});
+          }}
+
+          /* Manage Schools */
+          var _bbManageSlug = null, _bbManageDistrictId = null;
+
+          function bbOpenManageSchoolsModal(slug, name, districtId) {{
+            _bbManageSlug = slug;
+            _bbManageDistrictId = districtId;
+            bbClearBanner('bb-manage-schools-banner');
+            document.getElementById('bb-manage-schools-title').textContent = 'Manage Schools — ' + name;
+            document.getElementById('bb-manage-schools-modal').style.display = 'flex';
+            bbRefreshSchoolLists(districtId);
+          }}
+
+          function bbRefreshSchoolLists(districtId) {{
+            var all = window._bbAllSchools || [];
+            var assigned = all.filter(function(s){{ return s.district_id && s.district_id == districtId; }});
+            var available = all.filter(function(s){{ return !s.district_id; }});
+
+            function schoolItem(s, btnClass, btnLabel, onclick) {{
+              return '<div class="bb-school-item">'
+                + '<div><span class="bb-school-item-name">' + s.name + '</span>'
+                + '<br><span class="bb-school-item-slug">' + s.slug + '</span></div>'
+                + '<button class="bb-school-btn ' + btnClass + '" onclick="' + onclick + '">' + btnLabel + '</button>'
+                + '</div>';
+            }}
+
+            var assignedList = document.getElementById('bb-assigned-list');
+            var availableList = document.getElementById('bb-available-list');
+            assignedList.innerHTML = assigned.length
+              ? assigned.map(function(s){{ return schoolItem(s,'remove','Remove',
+                  'bbSchoolAction(' + JSON.stringify(s.slug) + ',null,' + districtId + ')'); }}).join('')
+              : '<div class="bb-empty-state">No schools assigned yet.</div>';
+            availableList.innerHTML = available.length
+              ? available.map(function(s){{ return schoolItem(s,'add','Add',
+                  'bbSchoolAction(' + JSON.stringify(s.slug) + ',' + districtId + ',null)'); }}).join('')
+              : '<div class="bb-empty-state">All schools are assigned.</div>';
+          }}
+
+          function bbSchoolAction(schoolSlug, assignToDistrictId, removeFromDistrictId) {{
+            var fd = new FormData();
+            var url, newDistrictId;
+            if (assignToDistrictId) {{
+              fd.append('district_id', assignToDistrictId);
+              url = '/super-admin/schools/' + schoolSlug + '/assign-district';
+              newDistrictId = assignToDistrictId;
+            }} else {{
+              url = '/super-admin/schools/' + schoolSlug + '/remove-district';
+              newDistrictId = null;
+            }}
+            fetch(url, {{method:'POST', body:fd, headers:{{'X-Requested-With':'XMLHttpRequest'}}}})
+              .then(function(r){{return r.json();}})
+              .then(function(d){{
+                if (d.ok) {{
+                  /* Update local school list */
+                  var all = window._bbAllSchools || [];
+                  all.forEach(function(s){{ if (s.slug === schoolSlug) s.district_id = newDistrictId; }});
+                  bbRefreshSchoolLists(_bbManageDistrictId);
+                  /* Update school count badge on card */
+                  var card = document.querySelector('[data-district-slug="' + _bbManageSlug + '"]');
+                  if (card) {{
+                    var metaEl = card.querySelector('.district-card-meta strong');
+                    if (metaEl) {{
+                      var count = parseInt(metaEl.textContent) || 0;
+                      metaEl.textContent = assignToDistrictId ? count + 1 : Math.max(0, count - 1);
+                    }}
+                  }}
+                }} else {{
+                  bbShowBanner('bb-manage-schools-banner', d.detail || d.error || 'Action failed.', true);
+                }}
+              }})
+              .catch(function(){{ bbShowBanner('bb-manage-schools-banner', 'Network error.', true); }});
+          }}
+          </script>
+
           <!-- Create District Modal -->
           <div id="bb-create-district-modal" class="bb-modal-overlay" style="display:none;" onclick="if(event.target===this)bbCloseModal('bb-create-district-modal')">
             <div class="bb-modal">
@@ -5286,6 +5539,130 @@ def render_super_admin_page(
               <p style="font-size:0.75rem;color:var(--muted);margin-top:12px;">Changes apply immediately. Refresh the page to see updated school counts on district cards.</p>
             </div>
           </div>
+
+          <!-- Generate License Modal -->
+          <div id="bb-gen-license-modal" class="bb-modal-overlay" style="display:none;" onclick="if(event.target===this)bbCloseModal('bb-gen-license-modal')">
+            <div class="bb-modal">
+              <button class="bb-modal-close" onclick="bbCloseModal('bb-gen-license-modal')">&times;</button>
+              <p class="bb-modal-title" id="bb-gen-license-title">Generate License</p>
+              <div id="bb-gen-license-banner" class="bb-banner"></div>
+              <div id="bb-gen-license-key-result" style="display:none;margin-bottom:14px;padding:12px 14px;background:var(--bg);border:1.5px solid var(--accent);border-radius:10px;">
+                <p style="font-size:0.75rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:0.06em;margin:0 0 6px;">License Key</p>
+                <p id="bb-gen-license-key-text" style="font-family:monospace;font-size:1rem;font-weight:700;color:var(--text);letter-spacing:0.08em;margin:0 0 8px;word-break:break-all;"></p>
+                <button class="button button-secondary" style="font-size:0.75rem;padding:4px 12px;" onclick="bbCopyLicenseKey()">Copy Key</button>
+              </div>
+              <div id="bb-gen-license-form">
+                <div class="bb-field">
+                  <label>Plan Type</label>
+                  <select id="bb-gen-plan">
+                    <option value="trial">Trial</option>
+                    <option value="basic">Basic</option>
+                    <option value="pro" selected>Pro</option>
+                    <option value="enterprise">Enterprise</option>
+                  </select>
+                </div>
+                <div class="bb-field">
+                  <label>Start Date</label>
+                  <input id="bb-gen-starts" type="date" />
+                </div>
+                <div class="bb-field">
+                  <label>Expiration Date <span style="font-weight:400;text-transform:none;">(optional)</span></label>
+                  <input id="bb-gen-expires" type="date" />
+                </div>
+                <div class="bb-field">
+                  <label>Customer Name <span style="font-weight:400;text-transform:none;">(optional)</span></label>
+                  <input id="bb-gen-cname" type="text" placeholder="e.g. Maryville R-II" />
+                </div>
+                <div class="bb-field">
+                  <label>Customer Email <span style="font-weight:400;text-transform:none;">(optional)</span></label>
+                  <input id="bb-gen-cemail" type="email" placeholder="admin@district.edu" />
+                </div>
+                <div style="display:flex;gap:10px;margin-top:6px;">
+                  <button class="button button-primary" onclick="bbSubmitGenLicense()" id="bb-gen-license-btn">Generate License</button>
+                  <button class="button button-secondary" onclick="bbCloseModal('bb-gen-license-modal')">Cancel</button>
+                </div>
+              </div>
+            </div>
+          </div>
+          <script>
+          var _bbGenLicenseSlug = null;
+          var _bbGenLicenseKey = null;
+
+          function bbOpenGenLicenseModal(slug, name) {{
+            _bbGenLicenseSlug = slug;
+            _bbGenLicenseKey = null;
+            bbClearBanner('bb-gen-license-banner');
+            document.getElementById('bb-gen-license-title').textContent = 'Generate License — ' + name;
+            document.getElementById('bb-gen-license-key-result').style.display = 'none';
+            document.getElementById('bb-gen-license-form').style.display = '';
+            document.getElementById('bb-gen-license-btn').disabled = false;
+            document.getElementById('bb-gen-license-btn').textContent = 'Generate License';
+            /* Set today as default start */
+            var today = new Date().toISOString().slice(0,10);
+            document.getElementById('bb-gen-starts').value = today;
+            document.getElementById('bb-gen-expires').value = '';
+            document.getElementById('bb-gen-cname').value = name || '';
+            document.getElementById('bb-gen-cemail').value = '';
+            document.getElementById('bb-gen-license-modal').style.display = 'flex';
+          }}
+
+          function bbSubmitGenLicense() {{
+            if (!_bbGenLicenseSlug) return;
+            var btn = document.getElementById('bb-gen-license-btn');
+            btn.disabled = true; btn.textContent = 'Generating…';
+            var fd = new FormData();
+            fd.append('plan_type', document.getElementById('bb-gen-plan').value);
+            fd.append('starts_at', document.getElementById('bb-gen-starts').value);
+            var exp = document.getElementById('bb-gen-expires').value;
+            if (exp) fd.append('current_period_end', exp);
+            var cn = document.getElementById('bb-gen-cname').value.trim();
+            var ce = document.getElementById('bb-gen-cemail').value.trim();
+            if (cn) fd.append('customer_name', cn);
+            if (ce) fd.append('customer_email', ce);
+            fetch('/super-admin/districts/' + _bbGenLicenseSlug + '/billing/generate-license',
+              {{method:'POST', body:fd, headers:{{'X-Requested-With':'XMLHttpRequest'}}}})
+              .then(function(r){{return r.json();}})
+              .then(function(d){{
+                btn.disabled = false; btn.textContent = 'Generate License';
+                if (d.ok || d.license_key) {{
+                  var key = d.license_key || '';
+                  _bbGenLicenseKey = key;
+                  document.getElementById('bb-gen-license-key-text').textContent = key;
+                  document.getElementById('bb-gen-license-key-result').style.display = 'block';
+                  document.getElementById('bb-gen-license-form').style.display = 'none';
+                  bbShowBanner('bb-gen-license-banner', 'License generated and assigned to ' + _bbGenLicenseSlug + '.', false);
+                  /* Update billing meta on card */
+                  var card = document.querySelector('[data-district-slug="' + _bbGenLicenseSlug + '"]');
+                  if (card) {{
+                    var metaSpan = card.querySelector('[data-billing-meta]');
+                    if (metaSpan) {{
+                      metaSpan.innerHTML = '<span style="font-size:0.7rem;font-weight:700;color:#059669;">ACTIVE</span>'
+                        + ' <span style="font-size:0.72rem;color:var(--muted);">·</span>'
+                        + ' <span style="font-size:0.72rem;color:var(--muted);">'
+                        + document.getElementById('bb-gen-plan').value.charAt(0).toUpperCase()
+                        + document.getElementById('bb-gen-plan').value.slice(1) + '</span>';
+                    }}
+                  }}
+                }} else {{
+                  bbShowBanner('bb-gen-license-banner', d.detail || d.error || 'Generation failed.', true);
+                }}
+              }})
+              .catch(function(){{
+                btn.disabled = false; btn.textContent = 'Generate License';
+                bbShowBanner('bb-gen-license-banner', 'Network error.', true);
+              }});
+          }}
+
+          function bbCopyLicenseKey() {{
+            if (!_bbGenLicenseKey) return;
+            navigator.clipboard.writeText(_bbGenLicenseKey)
+              .then(function(){{ bbShowBanner('bb-gen-license-banner', 'License key copied to clipboard.', false); }})
+              .catch(function(){{
+                prompt('Copy this license key:', _bbGenLicenseKey);
+              }});
+          }}
+          </script>
+
         </section>
         <section class="panel command-section" id="schools"{_section_style("schools")}>
           <div class="panel-header hero-band">
