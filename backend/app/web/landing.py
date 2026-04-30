@@ -781,7 +781,7 @@ def render_landing_page() -> str:
         </ul>
         <div style="display:flex;gap:12px;flex-wrap:wrap;">
           <a class="btn btn-primary" href="/login">Get started</a>
-          <a class="btn btn-secondary" href="mailto:{DEMO_EMAIL}">Request a demo</a>
+          <a class="btn btn-secondary" href="/request-demo">Request a demo</a>
         </div>
       </div>
     </div>
@@ -898,8 +898,8 @@ def render_landing_page() -> str:
     <h2>Ready to see BlueBird in action?</h2>
     <p>Schedule a free demo and we'll walk you through the full platform — from first login to your first training drill.</p>
     <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap;">
-      <a href="mailto:{DEMO_EMAIL}?subject=BlueBird%20Alerts%20Demo%20Request" class="btn btn-primary btn-lg" style="background:#fff;color:var(--blue);">&#128231; Schedule a Demo</a>
-      <a href="mailto:{DEMO_EMAIL}" class="btn btn-ghost btn-lg">{DEMO_EMAIL}</a>
+      <a href="/request-demo" class="btn btn-primary btn-lg" style="background:#fff;color:var(--blue);">&#128231; Schedule a Demo</a>
+      <a href="/request-demo" class="btn btn-ghost btn-lg">Request a Demo &rarr;</a>
     </div>
   </div>
 </section>
@@ -912,9 +912,9 @@ def render_landing_page() -> str:
       <span>BlueBird Alerts</span>
     </div>
     <div class="footer-links">
-      <a href="mailto:{DEMO_EMAIL}?subject=BlueBird%20Alerts%20Demo%20Request">Request Demo</a>
+      <a href="/request-demo">Request Demo</a>
       <a href="/login">Admin Login</a>
-      <a href="mailto:{DEMO_EMAIL}">Contact</a>
+      <a href="/request-demo">Contact</a>
     </div>
     <p class="footer-copy">
       &copy; 2026 Emery Tech Solutions &nbsp;&middot;&nbsp; BlueBird Alerts &nbsp;&middot;&nbsp;
@@ -1732,7 +1732,7 @@ def render_safety_page() -> str:
     <a href="/#pricing">Pricing</a>
     <a href="/#safety">Safety</a>
     <a href="/login">Admin Login</a>
-    <a href="mailto:{DEMO_EMAIL}">Contact</a>
+    <a href="/request-demo">Contact</a>
   </div>
   <p>&copy; 2025 BlueBird Alerts. All rights reserved.</p>
   <p class="footer-disclaimer">BlueBird Alerts is a communication tool and is not a replacement for 911 or professional emergency services. Always call 911 in a real emergency. No student data is collected.</p>
