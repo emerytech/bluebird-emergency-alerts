@@ -17,6 +17,10 @@ private let fieldDarkBg = DSColor.inputBackground
 private let fieldDarkBorder = DSColor.border
 private let placeholderMuted = DSColor.textSecondary.opacity(0.78)
 
+private extension String {
+    var nilIfEmptyStr: String? { isEmpty ? nil : self }
+}
+
 private struct PressableScaleButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
@@ -496,6 +500,10 @@ struct ContentView: View {
     @State private var alarmAcknowledgementPercentage: Double = 0.0
     @State private var alarmCurrentUserAcknowledged = false
     @State private var alarmAlertId: Int? = nil
+    @State private var alarmActivatedAt: String? = nil
+    @State private var alarmActivatedByLabel: String? = nil
+    @State private var alarmBroadcasts: [AlarmBroadcastUpdate] = []
+    @State private var showAlertTypeSheet = false
     @State private var isRefreshingIncidentFeed = false
     @State private var isUpdatingAlarm = false
     @State private var adminOutboundMessage = ""
@@ -976,58 +984,102 @@ struct ContentView: View {
         )
     }
 
+    private func ackProgressColor(_ pct: Double) -> Color {
+        if pct >= 70 { return DSColor.success }
+        if pct >= 30 { return DSColor.warning }
+        return DSColor.danger
+    }
+
+    private func shortTime(_ iso: String?) -> String? {
+        guard let iso else { return nil }
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        var d = f.date(from: iso)
+        if d == nil {
+            f.formatOptions = [.withInternetDateTime]
+            d = f.date(from: iso)
+        }
+        guard let date = d else { return nil }
+        let out = DateFormatter()
+        out.dateStyle = .none
+        out.timeStyle = .short
+        return out.string(from: date)
+    }
+
     private var alarmTakeoverOverlay: some View {
         let isTraining = alarmIsTraining
         let accent = isTraining ? DSColor.warning : DSColor.danger
-        let title = isTraining ? "TRAINING DRILL" : "EMERGENCY ALERT"
-        let schoolName = appState.effectiveSchoolName
+        let title  = isTraining ? "TRAINING DRILL" : "EMERGENCY ALERT"
+        let school = appState.effectiveSchoolName
         let subtitle = isTraining
-            ? (alarmTrainingLabel ?? "This is a drill")
-            : ({ let m = alarmMessage?.trimmingCharacters(in: .whitespacesAndNewlines); return (m?.isEmpty == false ? m! : "School alarm is active") }())
+            ? (alarmTrainingLabel?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmptyStr ?? "This is a drill")
+            : (alarmMessage?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmptyStr ?? "School alarm is active")
         let instructions = isTraining
             ? "Follow drill procedures as directed."
             : "Follow school emergency procedures immediately."
+        let ackPct  = alarmAcknowledgementPercentage
+        let ackColor = ackProgressColor(ackPct)
 
         return ZStack {
             LinearGradient(
-                colors: [accent, Color(red: 0.05, green: 0.07, blue: 0.09)],
-                startPoint: .top,
+                colors: [accent, Color(red: 0.04, green: 0.06, blue: 0.10)],
+                startPoint: .topLeading,
                 endPoint: .bottom
             )
             .ignoresSafeArea()
 
             ScrollView {
                 VStack(spacing: 0) {
-                    VStack(spacing: 24) {
-                        Spacer(minLength: 28)
+                    VStack(spacing: 22) {
+                        Spacer(minLength: 32)
 
-                        // ── Icon ──────────────────────────────────────────────
+                        // ── Icon ─────────────────────────────────────────────
                         ZStack {
                             Circle()
-                                .stroke(Color.white.opacity(0.26), lineWidth: 8)
-                                .frame(width: 152, height: 152)
-                            Image(systemName: isTraining ? "exclamationmark.triangle.fill" : "bell.and.waves.left.and.right.fill")
-                                .font(.system(size: 64, weight: .black))
+                                .stroke(Color.white.opacity(0.22), lineWidth: 9)
+                                .frame(width: 140, height: 140)
+                            Circle()
+                                .fill(Color.white.opacity(0.10))
+                                .frame(width: 120, height: 120)
+                            Image(systemName: isTraining
+                                ? "exclamationmark.triangle.fill"
+                                : "bell.and.waves.left.and.right.fill")
+                                .font(.system(size: 58, weight: .black))
                                 .foregroundStyle(.white)
                         }
-                        .shadow(color: .black.opacity(0.35), radius: 18, x: 0, y: 8)
+                        .shadow(color: accent.opacity(0.40), radius: 24, x: 0, y: 8)
 
                         // ── Title block ───────────────────────────────────────
-                        VStack(spacing: 10) {
+                        VStack(spacing: 8) {
                             Text(title)
-                                .font(.system(size: 36, weight: .black, design: .rounded))
+                                .font(.system(size: 34, weight: .black, design: .rounded))
                                 .multilineTextAlignment(.center)
                                 .foregroundStyle(.white)
+                                .tracking(1)
 
                             Text(subtitle)
                                 .font(.title3.weight(.bold))
                                 .multilineTextAlignment(.center)
-                                .foregroundStyle(.white.opacity(0.90))
+                                .foregroundStyle(.white.opacity(0.92))
 
-                            if !schoolName.isEmpty {
-                                Text(schoolName)
+                            if !school.isEmpty {
+                                Text(school)
                                     .font(.subheadline.weight(.semibold))
-                                    .foregroundStyle(.white.opacity(0.68))
+                                    .foregroundStyle(.white.opacity(0.65))
+                            }
+
+                            // Metadata: who / when
+                            HStack(spacing: 10) {
+                                if let by = alarmActivatedByLabel, !by.isEmpty {
+                                    Label(by, systemImage: "person.fill")
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(.white.opacity(0.72))
+                                }
+                                if let at = shortTime(alarmActivatedAt) {
+                                    Label(at, systemImage: "clock.fill")
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(.white.opacity(0.72))
+                                }
                             }
                         }
 
@@ -1035,62 +1087,112 @@ struct ContentView: View {
                         Text(instructions)
                             .font(.body.weight(.semibold))
                             .multilineTextAlignment(.center)
-                            .foregroundStyle(.white.opacity(0.92))
+                            .foregroundStyle(.white.opacity(0.94))
                             .padding(.horizontal, 18)
                             .padding(.vertical, 14)
-                            .background(Color.white.opacity(0.12))
+                            .frame(maxWidth: .infinity)
+                            .background(Color.white.opacity(0.13))
                             .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                            .padding(.horizontal, 4)
 
-                        // ── Acknowledgement count ─────────────────────────────
-                        if alarmAcknowledgementCount > 0 || alarmCurrentUserAcknowledged {
-                            let ackLabel: String = alarmExpectedUserCount > 0
-                                ? "✓ \(alarmAcknowledgementCount) of \(alarmExpectedUserCount) acknowledged (\(Int(alarmAcknowledgementPercentage))%)"
-                                : "✓ \(alarmAcknowledgementCount) acknowledged"
-                            let ackProgress = alarmExpectedUserCount > 0
-                                ? min(alarmAcknowledgementPercentage / 100.0, 1.0)
-                                : 0.0
-                            VStack(spacing: 8) {
-                                Text(ackLabel)
-                                    .font(.subheadline.weight(.semibold))
-                                    .foregroundStyle(Color(red: 0.65, green: 0.96, blue: 0.78))
-                                    .multilineTextAlignment(.center)
-
-                                GeometryReader { geo in
-                                    ZStack(alignment: .leading) {
-                                        Capsule()
-                                            .fill(Color.white.opacity(0.20))
-                                            .frame(height: 6)
-                                        Capsule()
-                                            .fill(Color(red: 0.20, green: 0.83, blue: 0.60))
-                                            .frame(width: geo.size.width * CGFloat(ackProgress), height: 6)
-                                    }
+                        // ── Acknowledgement progress (always shown when active) ─
+                        VStack(spacing: 10) {
+                            HStack {
+                                if alarmExpectedUserCount > 0 {
+                                    Text("\(alarmAcknowledgementCount) / \(alarmExpectedUserCount) acknowledged")
+                                        .font(.subheadline.weight(.bold))
+                                        .foregroundStyle(.white)
+                                    Spacer()
+                                    Text("\(Int(ackPct))%")
+                                        .font(.subheadline.weight(.black))
+                                        .foregroundStyle(ackColor)
+                                } else {
+                                    Text("\(alarmAcknowledgementCount) acknowledged")
+                                        .font(.subheadline.weight(.bold))
+                                        .foregroundStyle(.white)
                                 }
-                                .frame(height: 6)
                             }
-                            .padding(.horizontal, 4)
+                            GeometryReader { geo in
+                                ZStack(alignment: .leading) {
+                                    Capsule()
+                                        .fill(Color.white.opacity(0.18))
+                                        .frame(height: 8)
+                                    let width = alarmExpectedUserCount > 0
+                                        ? geo.size.width * min(CGFloat(ackPct) / 100.0, 1.0)
+                                        : 0
+                                    Capsule()
+                                        .fill(ackColor)
+                                        .frame(width: width, height: 8)
+                                        .animation(.spring(response: 0.5, dampingFraction: 0.75), value: ackPct)
+                                }
+                            }
+                            .frame(height: 8)
+                        }
+                        .padding(.horizontal, 2)
+
+                        // ── Admin updates ─────────────────────────────────────
+                        if !alarmBroadcasts.isEmpty {
+                            VStack(alignment: .leading, spacing: 10) {
+                                Text("Admin Updates")
+                                    .font(.caption.weight(.bold))
+                                    .foregroundStyle(.white.opacity(0.65))
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                ForEach(alarmBroadcasts.prefix(5)) { update in
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text(update.message)
+                                            .font(.subheadline.weight(.semibold))
+                                            .foregroundStyle(.white.opacity(0.94))
+                                        HStack(spacing: 6) {
+                                            if let by = update.adminLabel {
+                                                Text(by)
+                                                    .font(.caption2.weight(.semibold))
+                                                    .foregroundStyle(.white.opacity(0.60))
+                                            }
+                                            if let at = shortTime(update.createdAt) {
+                                                Text(at)
+                                                    .font(.caption2)
+                                                    .foregroundStyle(.white.opacity(0.50))
+                                            }
+                                        }
+                                    }
+                                    .padding(.horizontal, 14)
+                                    .padding(.vertical, 10)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .background(Color.white.opacity(0.10))
+                                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                                }
+                            }
                         }
                     }
                     .padding(.horizontal, 22)
 
-                    Spacer(minLength: 28)
+                    Spacer(minLength: 32)
 
                     // ── Action buttons ────────────────────────────────────────
                     VStack(spacing: 12) {
-                        // Acknowledge — visible to ALL users
+                        // Acknowledge — all users, all roles
                         Button {
                             Task { await acknowledgeAlarm() }
                         } label: {
-                            Text(alarmCurrentUserAcknowledged ? "✓ Acknowledged" : (isUpdatingAlarm ? "Acknowledging…" : "Acknowledge"))
-                                .font(.system(size: 17, weight: .black))
-                                .foregroundStyle(alarmCurrentUserAcknowledged ? Color.white.opacity(0.60) : Color(red: 0.02, green: 0.30, blue: 0.23))
-                                .frame(maxWidth: .infinity, minHeight: 58)
-                                .background(
-                                    alarmCurrentUserAcknowledged
-                                        ? Color.white.opacity(0.18)
-                                        : Color(red: 0.20, green: 0.83, blue: 0.60)
-                                )
-                                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                            HStack(spacing: 8) {
+                                if alarmCurrentUserAcknowledged {
+                                    Image(systemName: "checkmark.circle.fill")
+                                } else if isUpdatingAlarm {
+                                    ProgressView().tint(Color(red: 0.02, green: 0.30, blue: 0.23))
+                                        .scaleEffect(0.85)
+                                }
+                                Text(alarmCurrentUserAcknowledged
+                                     ? "Acknowledged"
+                                     : (isUpdatingAlarm ? "Acknowledging…" : "Acknowledge"))
+                                    .font(.system(size: 17, weight: .black))
+                            }
+                            .foregroundStyle(alarmCurrentUserAcknowledged
+                                ? Color.white.opacity(0.70)
+                                : Color(red: 0.02, green: 0.30, blue: 0.23))
+                            .frame(maxWidth: .infinity, minHeight: 58)
+                            .background(alarmCurrentUserAcknowledged
+                                ? Color.white.opacity(0.20)
+                                : DSColor.success)
+                            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                         }
                         .buttonStyle(PressableScaleButtonStyle())
                         .disabled(alarmCurrentUserAcknowledged || isUpdatingAlarm || alarmAlertId == nil)
@@ -1099,7 +1201,8 @@ struct ContentView: View {
                             Button {
                                 Task { await authenticateThenDeactivateAlarm() }
                             } label: {
-                                Label(isUpdatingAlarm ? "Disabling Alarm…" : "Disable Alarm", systemImage: "bell.slash.fill")
+                                Label(isUpdatingAlarm ? "Disabling Alarm…" : "Disable Alarm",
+                                      systemImage: "bell.slash.fill")
                                     .font(.headline.weight(.bold))
                                     .foregroundStyle(accent)
                                     .frame(maxWidth: .infinity, minHeight: 52)
@@ -1109,10 +1212,9 @@ struct ContentView: View {
                             .buttonStyle(PressableScaleButtonStyle())
                             .disabled(isUpdatingAlarm)
                         }
-
                     }
                     .padding(.horizontal, 22)
-                    .padding(.bottom, 34)
+                    .padding(.bottom, 40)
                 }
                 .frame(minHeight: UIScreen.main.bounds.height)
             }
@@ -1306,15 +1408,71 @@ struct ContentView: View {
 
     private var safetyGrid: some View {
         card {
-            VStack(spacing: 16) {
-                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 18) {
-                    ForEach(safetyActions.prefix(4)) { action in
-                        safetyActionButton(action: action)
+            VStack(spacing: 20) {
+                VStack(spacing: 4) {
+                    Text("Emergency Activation")
+                        .font(.headline.weight(.bold))
+                        .foregroundStyle(textPrimary)
+                    Text("Hold the button, then select an alert type.")
+                        .font(.caption)
+                        .foregroundStyle(textMuted)
+                        .multilineTextAlignment(.center)
+                }
+                SafetyHoldButton(
+                    action: .init(id: "__activate", title: "ACTIVATE", icon: "bell.and.waves.left.and.right.fill",
+                                  color: DSColor.danger,
+                                  message: "Emergency alert initiated."),
+                    titleColor: textPrimary,
+                    isEnabled: !isSending && !isUpdatingAlarm,
+                    onHoldVisual: updateHoldFlash
+                ) {
+                    showAlertTypeSheet = true
+                }
+            }
+        }
+        .sheet(isPresented: $showAlertTypeSheet) {
+            NavigationStack {
+                List {
+                    Section("Select Alert Type") {
+                        ForEach(safetyActions) { action in
+                            Button {
+                                showAlertTypeSheet = false
+                                message = action.message
+                                pendingAlertAction = action
+                            } label: {
+                                HStack(spacing: 14) {
+                                    ZStack {
+                                        Circle()
+                                            .fill(action.color.opacity(0.14))
+                                            .frame(width: 44, height: 44)
+                                        Image(systemName: action.icon)
+                                            .font(.system(size: 20, weight: .bold))
+                                            .foregroundStyle(action.color)
+                                    }
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(action.title)
+                                            .font(.headline.weight(.bold))
+                                            .foregroundStyle(textPrimary)
+                                    }
+                                    Spacer()
+                                    Image(systemName: "chevron.right")
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(textMuted)
+                                }
+                                .padding(.vertical, 6)
+                            }
+                        }
                     }
                 }
-                safetyActionButton(action: safetyActions[4])
-                    .frame(maxWidth: .infinity)
+                .navigationTitle("Select Alert Type")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Cancel") { showAlertTypeSheet = false }
+                    }
+                }
             }
+            .presentationDetents([.medium])
         }
     }
 
@@ -2333,6 +2491,9 @@ struct ContentView: View {
             alarmAcknowledgementPercentage = alarm.acknowledgementPercentage ?? 0.0
             alarmCurrentUserAcknowledged = alarm.currentUserAcknowledged
             if let id = alarm.currentAlertId { alarmAlertId = id }
+            alarmActivatedAt = alarm.activatedAt
+            alarmActivatedByLabel = alarm.activatedByLabel
+            alarmBroadcasts = alarm.broadcasts
             anySuccess = true
         } catch {
             errors.append("Alarm status: \(error.localizedDescription)")

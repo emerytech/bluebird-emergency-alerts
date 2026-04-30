@@ -449,6 +449,7 @@ data class BroadcastUpdate(
     val updateId: Int,
     val createdAt: String,
     val adminUserId: Int? = null,
+    val adminLabel: String? = null,
     val message: String,
 )
 
@@ -4752,33 +4753,97 @@ private fun EmergencyAlarmTakeover(
                 }
 
                 // ── Acknowledgement progress ──────────────────────────────
-                if (alarm.acknowledgementCount > 0 || alarm.currentUserAcknowledged) {
+                run {
                     val ackPct = alarm.acknowledgementPercentage
-                    val ackLabel = if (alarm.expectedUserCount > 0)
-                        "✓ ${alarm.acknowledgementCount} of ${alarm.expectedUserCount} acknowledged (${ackPct.toInt()}%)"
-                    else
-                        "✓ ${alarm.acknowledgementCount} acknowledged"
+                    val ackColor = when {
+                        ackPct >= 70f -> Color(0xFF34D399)  // success green
+                        ackPct >= 30f -> Color(0xFFFBBF24)  // warning amber
+                        else          -> Color(0xFFF87171)  // danger red
+                    }
+                    val animatedPct by animateFloatAsState(
+                        targetValue = (ackPct / 100f).coerceIn(0f, 1f),
+                        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy),
+                        label = "ackProgress",
+                    )
                     Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.spacedBy(6.dp),
                         modifier = Modifier.fillMaxWidth(),
                     ) {
-                        Text(
-                            ackLabel,
-                            color = Color(0xFFA7F3D0),
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            textAlign = TextAlign.Center,
-                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                if (alarm.expectedUserCount > 0)
+                                    "${alarm.acknowledgementCount} / ${alarm.expectedUserCount} acknowledged"
+                                else
+                                    "${alarm.acknowledgementCount} acknowledged",
+                                color = Color.White,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                            if (alarm.expectedUserCount > 0) {
+                                Text(
+                                    "${ackPct.toInt()}%",
+                                    color = ackColor,
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Black,
+                                )
+                            }
+                        }
                         LinearProgressIndicator(
-                            progress = { (ackPct / 100f).coerceIn(0f, 1f) },
-                            color = Color(0xFF34D399),
-                            trackColor = Color.White.copy(alpha = 0.20f),
+                            progress = { animatedPct },
+                            color = ackColor,
+                            trackColor = Color.White.copy(alpha = 0.18f),
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(6.dp)
-                                .clip(RoundedCornerShape(3.dp)),
+                                .height(8.dp)
+                                .clip(RoundedCornerShape(4.dp)),
                         )
+                    }
+                }
+
+                // ── Admin broadcasts ──────────────────────────────────────
+                if (alarm.broadcasts.isNotEmpty()) {
+                    Column(
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(
+                            "Admin Updates",
+                            color = Color.White.copy(alpha = 0.65f),
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = 0.5.sp,
+                        )
+                        alarm.broadcasts.take(5).forEach { update ->
+                            Surface(
+                                color = Color.White.copy(alpha = 0.10f),
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Column(
+                                    verticalArrangement = Arrangement.spacedBy(3.dp),
+                                    modifier = Modifier.padding(12.dp),
+                                ) {
+                                    Text(
+                                        update.message,
+                                        color = Color.White.copy(alpha = 0.94f),
+                                        fontSize = 13.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                    )
+                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        update.adminLabel?.let {
+                                            Text(it, color = Color.White.copy(alpha = 0.55f), fontSize = 10.sp, fontWeight = FontWeight.SemiBold)
+                                        }
+                                        update.createdAt?.let {
+                                            Text(it.take(16).replace("T", " "), color = Color.White.copy(alpha = 0.45f), fontSize = 10.sp)
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -6619,6 +6684,7 @@ internal class BackendClient(baseUrl: String, private val apiKey: String) {
                                 updateId = item.optInt("update_id"),
                                 createdAt = item.optString("created_at"),
                                 adminUserId = if (item.has("admin_user_id") && !item.isNull("admin_user_id")) item.optInt("admin_user_id") else null,
+                                adminLabel = item.optString("admin_label").ifBlank { null },
                                 message = item.optString("message"),
                             )
                         )

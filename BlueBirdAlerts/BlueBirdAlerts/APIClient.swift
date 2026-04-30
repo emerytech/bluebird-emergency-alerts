@@ -623,6 +623,20 @@ struct IncidentSummary: Decodable, Identifiable {
     }
 }
 
+struct AlarmBroadcastUpdate: Decodable, Identifiable {
+    let id: Int
+    let message: String
+    let adminLabel: String?
+    let createdAt: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id = "update_id"
+        case message
+        case adminLabel = "admin_label"
+        case createdAt = "created_at"
+    }
+}
+
 struct AlarmStatusResponse: Decodable {
     let isActive: Bool
     let message: String?
@@ -634,6 +648,9 @@ struct AlarmStatusResponse: Decodable {
     let acknowledgementPercentage: Double?
     let currentUserAcknowledged: Bool
     let currentAlertId: Int?
+    let activatedAt: String?
+    let activatedByLabel: String?
+    let broadcasts: [AlarmBroadcastUpdate]
 
     enum CodingKeys: String, CodingKey {
         case isActive = "is_active"
@@ -646,6 +663,9 @@ struct AlarmStatusResponse: Decodable {
         case acknowledgementPercentage = "acknowledgement_percentage"
         case currentUserAcknowledged = "current_user_acknowledged"
         case currentAlertId = "current_alert_id"
+        case activatedAt = "activated_at"
+        case activatedByLabel = "activated_by_label"
+        case broadcasts
     }
 
     init(from decoder: Decoder) throws {
@@ -660,6 +680,9 @@ struct AlarmStatusResponse: Decodable {
         acknowledgementPercentage = try container.decodeIfPresent(Double.self, forKey: .acknowledgementPercentage)
         currentUserAcknowledged = try container.decodeIfPresent(Bool.self, forKey: .currentUserAcknowledged) ?? false
         currentAlertId = try container.decodeIfPresent(Int.self, forKey: .currentAlertId)
+        activatedAt = try container.decodeIfPresent(String.self, forKey: .activatedAt)
+        activatedByLabel = try container.decodeIfPresent(String.self, forKey: .activatedByLabel)
+        broadcasts = try container.decodeIfPresent([AlarmBroadcastUpdate].self, forKey: .broadcasts) ?? []
     }
 }
 
