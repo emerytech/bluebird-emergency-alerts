@@ -48,7 +48,7 @@ struct AuditLogsModal: View {
             TextField("Search by action or user…", text: $searchText)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
-                .onChange(of: searchText) { _ in scheduleSearch() }
+                .onChange(of: searchText) { _, _ in scheduleSearch() }
             if !searchText.isEmpty {
                 Button { searchText = ""; scheduleSearch() } label: {
                     Image(systemName: "xmark.circle.fill")

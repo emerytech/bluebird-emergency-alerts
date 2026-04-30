@@ -2979,14 +2979,24 @@ def _render_sales_inbox_section(messages: object, section: str, unread_count: in
         status = str(getattr(msg, "status", "new"))
         is_read = bool(getattr(msg, "is_read", False))
         received = str(getattr(msg, "received_at", "") or getattr(msg, "created_at", ""))[:16].replace("T", " ")
+        linked_customer_id = getattr(msg, "linked_customer_id", None)
+        linked_district_id = getattr(msg, "linked_district_id", None)
         icon = status_icon.get(status, "⚪")
         weight = "600" if not is_read else "400"
+        link_badges = ""
+        if linked_customer_id:
+            link_badges += (f'<span style="font-size:0.67rem;background:#dbeafe;color:#1d4ed8;'
+                            f'border-radius:4px;padding:1px 5px;margin-right:3px;">C#{linked_customer_id}</span>')
+        if linked_district_id:
+            link_badges += (f'<span style="font-size:0.67rem;background:#d1fae5;color:#065f46;'
+                            f'border-radius:4px;padding:1px 5px;">D#{linked_district_id}</span>')
         rows_html += (
             f'<tr style="cursor:pointer;" onclick="bbInboxOpen({msg_id});">'
             f'<td style="text-align:center;font-size:1rem;">{icon}</td>'
             f'<td style="font-weight:{weight};white-space:nowrap;">'
             f'{from_name or from_email}<br><span style="font-size:0.72rem;color:var(--muted);">{from_email}</span></td>'
-            f'<td style="font-weight:{weight};">{subject}</td>'
+            f'<td style="font-weight:{weight};">{subject}'
+            f'{"<br>" + link_badges if link_badges else ""}</td>'
             f'<td style="font-size:0.75rem;color:var(--muted);white-space:nowrap;">{received}</td>'
             f'<td style="text-align:center;">'
             f'<button class="button button-outline" style="font-size:0.72rem;padding:2px 8px;" '
@@ -3006,7 +3016,7 @@ def _render_sales_inbox_section(messages: object, section: str, unread_count: in
         '<div id="bb-inbox-modal" style="display:none;position:fixed;inset:0;z-index:9999;'
         'background:rgba(0,0,0,0.55);align-items:center;justify-content:center;">'
         '<div style="background:var(--surface);border-radius:12px;max-width:640px;width:90%;'
-        'max-height:80vh;overflow-y:auto;box-shadow:0 8px 40px rgba(0,0,0,.25);padding:32px;">'
+        'max-height:85vh;overflow-y:auto;box-shadow:0 8px 40px rgba(0,0,0,.25);padding:32px;">'
         '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px;">'
         '<h2 id="bb-inbox-subject" style="margin:0;font-size:1.1rem;flex:1;"></h2>'
         '<button onclick="document.getElementById(\'bb-inbox-modal\').style.display=\'none\';" '
@@ -3014,6 +3024,16 @@ def _render_sales_inbox_section(messages: object, section: str, unread_count: in
         '</div>'
         '<p style="margin:0 0 4px;font-size:0.8rem;color:var(--muted);">From: <span id="bb-inbox-from"></span></p>'
         '<p style="margin:0 0 16px;font-size:0.8rem;color:var(--muted);">Received: <span id="bb-inbox-date"></span></p>'
+        '<div id="bb-inbox-link-bar" style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;">'
+        '<div style="display:flex;gap:6px;align-items:center;">'
+        '<input id="bb-link-customer-id" type="number" placeholder="Customer ID" min="1" '
+        'style="width:100px;font-size:0.8rem;padding:4px 6px;border:1px solid var(--border);'
+        'border-radius:4px;background:var(--bg);color:var(--text);" />'
+        '<button type="button" class="button button-outline" style="font-size:0.75rem;padding:3px 10px;" '
+        'onclick="bbInboxLinkCustomer();">Link Customer</button>'
+        '</div>'
+        '<span id="bb-inbox-linked-customer" style="font-size:0.75rem;color:var(--muted);align-self:center;"></span>'
+        '</div>'
         '<pre id="bb-inbox-body" style="white-space:pre-wrap;word-break:break-word;font-family:inherit;'
         'font-size:0.85rem;background:var(--bg);border-radius:8px;padding:16px;max-height:240px;overflow-y:auto;'
         'border:1px solid var(--border);margin:0 0 16px;"></pre>'
@@ -3050,7 +3070,23 @@ def _render_sales_inbox_section(messages: object, section: str, unread_count: in
         '    var dt=(msg.received_at||msg.created_at||"").replace("T"," ").slice(0,16);'
         '    document.getElementById("bb-inbox-date").textContent=dt;'
         '    document.getElementById("bb-inbox-body").textContent=msg.body_text||"(no text content)";'
+        '    var lc=document.getElementById("bb-inbox-linked-customer");'
+        '    if(msg.linked_customer_id) lc.textContent="Linked: Customer #"+msg.linked_customer_id;'
+        '    else lc.textContent="";'
+        '    document.getElementById("bb-link-customer-id").value=msg.linked_customer_id||"";'
         '  }).catch(()=>alert("Failed to load message."));'
+        '}'
+        'function bbInboxLinkCustomer(){'
+        '  var cid=document.getElementById("bb-link-customer-id").value.trim();'
+        '  if(!cid&&!confirm("Remove customer link?"))return;'
+        '  var fd=new FormData();if(cid)fd.append("customer_id",cid);'
+        '  fetch("/super-admin/inbox/"+_bbInboxMsgId+"/link-customer",{method:"POST",body:fd,'
+        '  headers:{"X-Requested-With":"XMLHttpRequest"}})'
+        '  .then(r=>r.json()).then(d=>{'
+        '    if(d.ok){var lc=document.getElementById("bb-inbox-linked-customer");'
+        '    lc.textContent=cid?"Linked: Customer #"+cid:"";location.reload();}'
+        '    else alert("Link failed: "+(d.error||"unknown"));'
+        '  }).catch(()=>alert("Network error."));'
         '}'
         'function bbInboxSendReply(){'
         '  var body=document.getElementById("bb-inbox-reply-body").value.trim();'
@@ -3142,6 +3178,9 @@ def _render_inquiries_section(inquiries: object, section: str) -> str:
             + f'</select></form>'
             f' <button class="button button-outline" style="font-size:0.72rem;padding:2px 8px;" '
             f'onclick="bbInquiryConvert({inq_id},\'{escape(school)}\');" type="button">→ District</button>'
+            f' <button class="button button-outline" style="font-size:0.72rem;padding:2px 8px;" '
+            f'onclick="bbInquiryToCustomer({inq_id},\'{escape(name)}\',\'{escape(email)}\',\'{escape(school)}\');" '
+            f'type="button">→ Customer</button>'
             f'</td>'
             f'<td style="min-width:180px;">'
             f'<form onsubmit="event.preventDefault();bbSaveInquiryNotes(this,{inq_id});" style="display:flex;gap:4px;align-items:flex-start;">'
@@ -3183,6 +3222,23 @@ def _render_inquiries_section(inquiries: object, section: str) -> str:
         '</div></div>'
     )
 
+    convert_customer_modal = (
+        '<div id="bb-convert-customer-modal" style="display:none;position:fixed;inset:0;z-index:9998;'
+        'background:rgba(0,0,0,0.55);align-items:center;justify-content:center;">'
+        '<div style="background:var(--surface);border-radius:12px;max-width:440px;width:90%;'
+        'padding:32px;box-shadow:0 8px 40px rgba(0,0,0,.25);">'
+        '<h2 style="margin:0 0 12px;">Create Customer Lead</h2>'
+        '<p style="font-size:0.85rem;color:var(--muted);margin:0 0 16px;">'
+        'Save this inquiry as a CRM customer record without creating a district.</p>'
+        '<input type="hidden" id="bcc-inq-id" value="">'
+        '<p id="bcc-summary" style="font-size:0.82rem;margin-bottom:16px;"></p>'
+        '<div style="display:flex;gap:8px;">'
+        '<button type="button" class="button button-primary" id="bcc-btn" onclick="bbDoInquiryToCustomer();">Create Customer</button>'
+        '<button type="button" class="button button-outline" '
+        'onclick="document.getElementById(\'bb-convert-customer-modal\').style.display=\'none\';">Cancel</button>'
+        '</div></div></div>'
+    )
+
     inquiry_js = (
         '<script>'
         'function bbSaveInquiryNotes(form,id){'
@@ -3216,12 +3272,31 @@ def _render_inquiries_section(inquiries: object, section: str) -> str:
         '    else alert("Error: "+(d.error||"unknown"));'
         '  }).catch(()=>{btn.disabled=false;btn.textContent="Create District";alert("Network error.");});'
         '}'
+        'function bbInquiryToCustomer(id,name,email,org){'
+        '  document.getElementById("bcc-inq-id").value=id;'
+        '  document.getElementById("bcc-summary").textContent=name+" ("+email+") — "+org;'
+        '  document.getElementById("bb-convert-customer-modal").style.display="flex";'
+        '}'
+        'function bbDoInquiryToCustomer(){'
+        '  var id=document.getElementById("bcc-inq-id").value;'
+        '  var btn=document.getElementById("bcc-btn");'
+        '  btn.disabled=true;btn.textContent="Creating…";'
+        '  fetch("/super-admin/inquiries/"+id+"/convert-to-customer",{method:"POST",'
+        '  headers:{"X-Requested-With":"XMLHttpRequest"}})'
+        '  .then(r=>r.json()).then(d=>{'
+        '    btn.disabled=false;btn.textContent="Create Customer";'
+        '    if(d.ok){document.getElementById("bb-convert-customer-modal").style.display="none";'
+        '    alert("Customer created: "+d.customer_name);location.reload();}'
+        '    else alert("Error: "+(d.error||"unknown"));'
+        '  }).catch(()=>{btn.disabled=false;btn.textContent="Create Customer";alert("Network error.");});'
+        '}'
         '</script>'
     )
 
     return (
         f'<section class="panel command-section" id="inquiries"{_style}>'
         f'{convert_modal}'
+        f'{convert_customer_modal}'
         f'<div class="panel-header hero-band">'
         f'<div><p class="eyebrow">Marketing</p><h1>Website Inquiries</h1>'
         f'<p class="hero-copy">Leads submitted through the BlueBird Alerts marketing contact form.</p></div>'
@@ -3233,6 +3308,231 @@ def _render_inquiries_section(inquiries: object, section: str) -> str:
         f'<tbody id="inquiry-table-body">{rows_html}</tbody>'
         f'</table></div>'
         f'{inquiry_js}'
+        f'</section>'
+    )
+
+
+def _render_customers_section(customers: object, section: str) -> str:
+    _style = "" if section == "customers" else ' style="display:none;"'
+    status_colors = {
+        "lead": "#2563eb",
+        "active": "#059669",
+        "closed": "#6b7280",
+        "archived": "#9ca3af",
+    }
+    source_labels = {"website": "Web", "email": "Email", "manual": "Manual"}
+    rows_html = ""
+    for c in (customers or []):
+        cid = int(getattr(c, "id", 0))
+        name = escape(str(getattr(c, "name", "")))
+        email = escape(str(getattr(c, "email", "")))
+        org = escape(str(getattr(c, "organization", "") or ""))
+        status = str(getattr(c, "status", "lead"))
+        source = str(getattr(c, "source", "manual"))
+        district_id = getattr(c, "district_id", None)
+        created = str(getattr(c, "created_at", ""))[:10]
+        st_color = status_colors.get(status, "#6b7280")
+        src_label = source_labels.get(source, source.title())
+        district_badge = (
+            f'<a href="/super-admin?section=districts#districts" '
+            f'style="font-size:0.7rem;color:var(--accent);text-decoration:none;" '
+            f'title="Linked district #{district_id}">District #{district_id}</a>'
+            if district_id else
+            '<span style="font-size:0.72rem;color:var(--muted);">—</span>'
+        )
+        rows_html += (
+            f'<tr style="cursor:pointer;" onclick="bbCustomerOpen({cid});">'
+            f'<td style="font-weight:600;">{name}</td>'
+            f'<td><a href="mailto:{email}" onclick="event.stopPropagation();" '
+            f'style="color:var(--accent);">{email}</a></td>'
+            f'<td>{org or "<span style=\"color:var(--muted);\">—</span>"}</td>'
+            f'<td style="text-align:center;"><span style="font-size:0.7rem;font-weight:700;'
+            f'color:{st_color};">{status.upper()}</span></td>'
+            f'<td style="text-align:center;font-size:0.72rem;color:var(--muted);">{src_label}</td>'
+            f'<td style="text-align:center;">{district_badge}</td>'
+            f'<td style="font-size:0.75rem;color:var(--muted);">{created}</td>'
+            f'<td onclick="event.stopPropagation();">'
+            f'<form method="post" action="/super-admin/customers/{cid}/update" '
+            f'style="display:inline;" onsubmit="event.preventDefault();bbUpdateCustomerStatus(this,{cid});">'
+            f'<select name="status" style="font-size:0.72rem;padding:2px 6px;border-radius:4px;" '
+            f'onchange="this.form.requestSubmit();">'
+            + "".join(
+                f'<option value="{s}"{" selected" if s == status else ""}>{s.title()}</option>'
+                for s in ("lead", "active", "closed", "archived")
+            )
+            + f'</select></form>'
+            f' <button class="button button-outline" style="font-size:0.72rem;padding:2px 8px;" '
+            f'onclick="event.stopPropagation();bbCustomerOpen({cid});" type="button">View</button>'
+            f'</td>'
+            f'</tr>'
+        )
+    if not rows_html:
+        rows_html = ('<tr><td colspan="8" style="text-align:center;color:var(--muted);padding:24px;">'
+                     'No customers yet. Convert an inquiry or create one manually.</td></tr>')
+
+    create_modal = (
+        '<div id="bb-customer-create-modal" style="display:none;position:fixed;inset:0;z-index:9998;'
+        'background:rgba(0,0,0,0.55);align-items:center;justify-content:center;">'
+        '<div style="background:var(--surface);border-radius:12px;max-width:480px;width:90%;'
+        'padding:32px;box-shadow:0 8px 40px rgba(0,0,0,.25);max-height:90vh;overflow-y:auto;">'
+        '<h2 style="margin:0 0 16px;">Create Customer</h2>'
+        '<form onsubmit="event.preventDefault();bbDoCreateCustomer();" class="stack" style="gap:8px;">'
+        '<input id="bc-name" name="name" type="text" placeholder="Full name" required '
+        'style="font-size:0.85rem;padding:8px;border:1px solid var(--border);border-radius:6px;'
+        'background:var(--bg);color:var(--text);" />'
+        '<input id="bc-email" name="email" type="email" placeholder="Email address" required '
+        'style="font-size:0.85rem;padding:8px;border:1px solid var(--border);border-radius:6px;'
+        'background:var(--bg);color:var(--text);" />'
+        '<input id="bc-org" name="organization" type="text" placeholder="School / District name" '
+        'style="font-size:0.85rem;padding:8px;border:1px solid var(--border);border-radius:6px;'
+        'background:var(--bg);color:var(--text);" />'
+        '<input id="bc-phone" name="phone" type="tel" placeholder="Phone (optional)" '
+        'style="font-size:0.85rem;padding:8px;border:1px solid var(--border);border-radius:6px;'
+        'background:var(--bg);color:var(--text);" />'
+        '<select id="bc-source" name="source" style="font-size:0.83rem;padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);">'
+        '<option value="manual">Source: Manual</option>'
+        '<option value="website">Source: Website</option>'
+        '<option value="email">Source: Email</option>'
+        '</select>'
+        '<textarea id="bc-notes" name="notes" rows="3" placeholder="Internal notes…" '
+        'style="font-size:0.83rem;padding:8px;border:1px solid var(--border);border-radius:6px;'
+        'background:var(--bg);color:var(--text);resize:vertical;"></textarea>'
+        '<div style="display:flex;gap:8px;margin-top:8px;">'
+        '<button type="submit" class="button button-primary" id="bc-submit-btn">Create Customer</button>'
+        '<button type="button" class="button button-outline" '
+        'onclick="document.getElementById(\'bb-customer-create-modal\').style.display=\'none\';">Cancel</button>'
+        '</div></form></div></div>'
+    )
+
+    detail_modal = (
+        '<div id="bb-customer-modal" style="display:none;position:fixed;inset:0;z-index:9999;'
+        'background:rgba(0,0,0,0.55);align-items:center;justify-content:center;">'
+        '<div style="background:var(--surface);border-radius:12px;max-width:680px;width:90%;'
+        'max-height:85vh;overflow-y:auto;box-shadow:0 8px 40px rgba(0,0,0,.25);padding:32px;">'
+        '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px;">'
+        '<h2 id="bc-detail-name" style="margin:0;font-size:1.1rem;"></h2>'
+        '<button onclick="document.getElementById(\'bb-customer-modal\').style.display=\'none\';" '
+        'style="background:none;border:none;font-size:1.5rem;cursor:pointer;color:var(--muted);">✕</button>'
+        '</div>'
+        '<div id="bc-detail-meta" style="font-size:0.82rem;color:var(--muted);margin-bottom:16px;line-height:1.8;"></div>'
+        '<div id="bc-detail-billing" style="margin-bottom:16px;display:none;">'
+        '<h4 style="margin:0 0 6px;font-size:0.85rem;">Licensing</h4>'
+        '<div id="bc-detail-billing-body" style="font-size:0.82rem;color:var(--muted);"></div>'
+        '</div>'
+        '<div id="bc-detail-emails-wrap" style="margin-bottom:16px;display:none;">'
+        '<h4 style="margin:0 0 6px;font-size:0.85rem;">Linked Emails</h4>'
+        '<div id="bc-detail-emails" style="font-size:0.82rem;max-height:180px;overflow-y:auto;'
+        'border:1px solid var(--border);border-radius:8px;padding:8px;background:var(--bg);"></div>'
+        '</div>'
+        '<div>'
+        '<h4 style="margin:0 0 6px;font-size:0.85rem;">Notes</h4>'
+        '<form onsubmit="event.preventDefault();bbSaveCustomerNotes();" style="display:flex;gap:8px;">'
+        '<textarea id="bc-detail-notes" rows="3" style="flex:1;font-size:0.82rem;padding:8px;'
+        'border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);resize:vertical;">'
+        '</textarea>'
+        '<button type="submit" class="button button-outline" style="align-self:flex-start;">Save</button>'
+        '</form></div></div></div>'
+    )
+
+    customers_js = (
+        '<script>'
+        'var _bbCustId=null;'
+        'function bbCustomerOpen(id){'
+        '  _bbCustId=id;'
+        '  var m=document.getElementById("bb-customer-modal");'
+        '  m.style.display="flex";'
+        '  document.getElementById("bc-detail-name").textContent="Loading…";'
+        '  document.getElementById("bc-detail-meta").innerHTML="";'
+        '  document.getElementById("bc-detail-billing").style.display="none";'
+        '  document.getElementById("bc-detail-emails-wrap").style.display="none";'
+        '  fetch("/super-admin/customers/"+id,{headers:{"X-Requested-With":"XMLHttpRequest"}})'
+        '  .then(r=>r.json()).then(d=>{'
+        '    if(!d.ok){alert("Error loading customer.");return;}'
+        '    var c=d.customer;'
+        '    document.getElementById("bc-detail-name").textContent=c.name;'
+        '    var meta=c.email+"  •  "+(c.organization||"—")+"  •  Status: "+c.status+"  •  Source: "+c.source;'
+        '    if(c.phone) meta+="  •  "+c.phone;'
+        '    if(c.district_id) meta+="<br>District #"+c.district_id;'
+        '    if(c.inquiry_id) meta+="  •  Inquiry #"+c.inquiry_id;'
+        '    document.getElementById("bc-detail-meta").innerHTML=meta;'
+        '    document.getElementById("bc-detail-notes").value=c.notes||"";'
+        '    if(c.billing){'
+        '      document.getElementById("bc-detail-billing").style.display="block";'
+        '      var b=c.billing;'
+        '      document.getElementById("bc-detail-billing-body").textContent='
+        '        "Plan: "+(b.plan_type||"—")+"  |  Status: "+(b.status||"—")'
+        '        +"  |  Renewal: "+(b.renewal_date||"—");'
+        '    }'
+        '    if(c.emails&&c.emails.length){'
+        '      document.getElementById("bc-detail-emails-wrap").style.display="block";'
+        '      document.getElementById("bc-detail-emails").innerHTML='
+        '        c.emails.map(function(e){'
+        '          return "<div style=\'padding:4px 0;border-bottom:1px solid var(--border);font-size:0.78rem;\'>"'
+        '            +"<strong>"+(e.direction==="inbound"?"←":"→")+"</strong> "+(e.subject||"(no subject)")'
+        '            +" — <span style=\'color:var(--muted);\'>"+(e.received_at||e.created_at||"").slice(0,10)+"</span></div>";'
+        '        }).join("");'
+        '    }'
+        '  }).catch(()=>alert("Failed to load customer."));'
+        '}'
+        'function bbSaveCustomerNotes(){'
+        '  var fd=new FormData();fd.append("notes",document.getElementById("bc-detail-notes").value);'
+        '  fetch("/super-admin/customers/"+_bbCustId+"/update",{method:"POST",body:fd,'
+        '  headers:{"X-Requested-With":"XMLHttpRequest"}})'
+        '  .then(r=>r.json()).then(d=>{'
+        '    if(!d.ok)alert("Save failed: "+(d.error||"unknown"));'
+        '  }).catch(()=>alert("Network error."));'
+        '}'
+        'function bbUpdateCustomerStatus(form,id){'
+        '  var fd=new FormData(form);'
+        '  fetch("/super-admin/customers/"+id+"/update",{method:"POST",body:fd,'
+        '  headers:{"X-Requested-With":"XMLHttpRequest"}})'
+        '  .then(r=>r.json()).then(d=>{'
+        '    if(!d.ok)alert("Update failed: "+(d.error||"unknown"));'
+        '    else location.reload();'
+        '  }).catch(()=>alert("Network error."));'
+        '}'
+        'function bbCreateCustomer(){'
+        '  document.getElementById("bb-customer-create-modal").style.display="flex";'
+        '}'
+        'function bbDoCreateCustomer(){'
+        '  var btn=document.getElementById("bc-submit-btn");'
+        '  btn.disabled=true;btn.textContent="Creating…";'
+        '  var fd=new FormData();'
+        '  fd.append("name",document.getElementById("bc-name").value);'
+        '  fd.append("email",document.getElementById("bc-email").value);'
+        '  fd.append("organization",document.getElementById("bc-org").value);'
+        '  fd.append("phone",document.getElementById("bc-phone").value);'
+        '  fd.append("source",document.getElementById("bc-source").value);'
+        '  fd.append("notes",document.getElementById("bc-notes").value);'
+        '  fetch("/super-admin/customers",{method:"POST",body:fd,'
+        '  headers:{"X-Requested-With":"XMLHttpRequest"}})'
+        '  .then(r=>r.json()).then(d=>{'
+        '    btn.disabled=false;btn.textContent="Create Customer";'
+        '    if(d.ok){document.getElementById("bb-customer-create-modal").style.display="none";location.reload();}'
+        '    else alert("Error: "+(d.error||"unknown"));'
+        '  }).catch(()=>{btn.disabled=false;btn.textContent="Create Customer";alert("Network error.");});'
+        '}'
+        '</script>'
+    )
+
+    return (
+        f'<section class="panel command-section" id="customers"{_style}>'
+        f'{create_modal}'
+        f'{detail_modal}'
+        f'<div class="panel-header hero-band">'
+        f'<div><p class="eyebrow">CRM</p><h1>Customers</h1>'
+        f'<p class="hero-copy">Sales leads, active customers, and their licensing status.</p></div>'
+        f'<div style="display:flex;gap:8px;align-items:center;">'
+        f'<button class="button button-primary" type="button" onclick="bbCreateCustomer();">+ New Customer</button>'
+        f'</div>'
+        f'</div>'
+        f'<div style="overflow-x:auto;margin-top:16px;">'
+        f'<table class="data-table" style="width:100%;font-size:0.82rem;">'
+        f'<thead><tr><th>Name</th><th>Email</th><th>Organization</th>'
+        f'<th>Status</th><th>Source</th><th>District</th><th>Created</th><th>Actions</th></tr></thead>'
+        f'<tbody>{rows_html}</tbody>'
+        f'</table></div>'
+        f'{customers_js}'
         f'</section>'
     )
 
@@ -3474,6 +3774,7 @@ def render_super_admin_page(
     inquiries: Sequence[object] = (),
     inbox_messages: Sequence[object] = (),
     inbox_unread_count: int = 0,
+    customers: Sequence[object] = (),
     email_delivery_settings: Mapping[str, str] = {},
     auto_reply_settings: Mapping[str, str] = {},
     stripe_settings: Mapping[str, str] = {},
@@ -3613,7 +3914,7 @@ def render_super_admin_page(
         for c in setup_codes
     ) or '<tr><td colspan="7" class="empty-state">No setup codes generated yet.</td></tr>'
 
-    section = active_section if active_section in {"districts", "schools", "billing", "platform-audit", "create-school", "security", "configuration", "server-tools", "health", "email-tool", "setup-codes", "noc", "msp", "platform-control", "sandbox", "ai-insights", "inquiries", "sales-inbox"} else "districts"
+    section = active_section if active_section in {"districts", "schools", "billing", "platform-audit", "create-school", "security", "configuration", "server-tools", "health", "email-tool", "setup-codes", "noc", "msp", "platform-control", "sandbox", "ai-insights", "inquiries", "sales-inbox", "customers"} else "districts"
 
     def _section_style(name: str) -> str:
         return "" if section == name else ' style="display:none;"'
@@ -4254,6 +4555,7 @@ def render_super_admin_page(
             {_nav_item("email-tool", "Email Tool")}
             {_nav_item("sales-inbox", "Sales Inbox", str(inbox_unread_count) if inbox_unread_count else None)}
             {_nav_item("inquiries", "Inquiries")}
+            {_nav_item("customers", "Customers")}
             {_nav_item("configuration", "Configuration", None if email_configured else "!")}
             {_nav_item("setup-codes", "Setup Codes")}
             {_nav_item("security", "Security")}
@@ -5122,6 +5424,7 @@ def render_super_admin_page(
         </section>
         {_render_sales_inbox_section(inbox_messages, section, inbox_unread_count)}
         {_render_inquiries_section(inquiries, section)}
+        {_render_customers_section(customers, section)}
         <section class="panel command-section" id="email-tool"{_section_style("email-tool")}>
           <div class="panel-header hero-band">
             <div>
@@ -5814,6 +6117,7 @@ def render_super_admin_page(
       {{t:'nav',i:'⚙',l:'Configuration',d:'Platform and email settings',u:'/super-admin?section=configuration#configuration'}},
       {{t:'nav',i:'❤',l:'System Health',d:'Service uptime and status',u:'/super-admin?section=health#health'}},
       {{t:'nav',i:'📧',l:'Email Tool',d:'Send test emails',u:'/super-admin?section=email-tool#email-tool'}},
+      {{t:'nav',i:'👥',l:'Customers',d:'CRM leads and active customers',u:'/super-admin?section=customers#customers'}},
       {{t:'nav',i:'🔐',l:'Platform Control',d:'Brand and theme settings',u:'/super-admin?section=platform-control#platform-control'}},
       {{t:'nav',i:'🔧',l:'Server Tools',d:'Git pull, restart, debug',u:'/super-admin?section=server-tools#server-tools'}},
       {{t:'nav',i:'🏖',l:'Sandbox',d:'Test and demo environments',u:'/super-admin?section=sandbox#sandbox'}},

@@ -3467,7 +3467,7 @@ struct ContentView: View {
             if event == "quiet_request_created", isAdminSession {
                 let requesterName = json["user_name"] as? String ?? "A team member"
                 let reason = json["reason"] as? String
-                let body = reason.map { ""\($0)"" } ?? "Awaiting admin approval."
+                let body = reason.map { "\"\($0)\"" } ?? "Awaiting admin approval."
                 pendingAdminEvents.append(AdminEvent(
                     id: "quiet_created_\(Date().timeIntervalSince1970)",
                     type: .quietPending,

@@ -123,6 +123,7 @@ from app.services.push_queue import PushJob, PushQueue
 from app.services.alarm_store import AlarmStateRecord, AlarmStore
 from app.services.apns import APNsClient
 from app.services.email_service import EmailService, TEMPLATE_KEYS as EMAIL_TEMPLATE_KEYS
+from app.services.customer_store import CustomerStore, VALID_STATUSES as CUSTOMER_VALID_STATUSES
 from app.services.health_monitor import HealthMonitor
 from app.services.alert_log import AlertLog
 from app.services.audit_log_service import AuditLogService, AuditEventRecord
@@ -426,6 +427,9 @@ def _email_service(req: Request) -> EmailService:
 
 def _inquiry_store(req: Request):
     return req.app.state.inquiry_store  # type: ignore[attr-defined]
+
+def _customer_store(req: Request) -> CustomerStore:
+    return req.app.state.customer_store  # type: ignore[attr-defined]
 
 
 def _inbox_sync_service(req: Request):
@@ -4255,6 +4259,7 @@ async def super_admin_dashboard(
             inquiries=await _inquiry_store(request).list_inquiries(limit=100),
             inbox_messages=await es.list_messages(limit=50),
             inbox_unread_count=await es.unread_count(),
+            customers=await _customer_store(request).list_customers(limit=200),
             email_delivery_settings=await es.get_delivery_settings(),
             auto_reply_settings=await es.get_auto_reply_settings(),
             stripe_settings=await es.get_stripe_settings(),
@@ -11124,6 +11129,23 @@ async def super_admin_convert_inquiry_to_district(
             customer_email=inquiry.email,
         )
         await _inquiry_store(request).update_status(inquiry_id=int(inquiry_id), new_status="closed")
+        # Create (or update) a customer record linked to this inquiry + district.
+        cstore = _customer_store(request)
+        existing_cust = await cstore.get_by_inquiry(int(inquiry_id))
+        if existing_cust is None:
+            await cstore.create_customer(
+                name=inquiry.name,
+                email=inquiry.email,
+                organization=inquiry.school_or_district,
+                source="website",
+                status="active",
+                inquiry_id=int(inquiry_id),
+                district_id=district.id,
+            )
+        else:
+            await cstore.update_customer(
+                existing_cust.id, district_id=district.id, status="active"
+            )
     except Exception as exc:
         logger.warning("convert_inquiry error inquiry_id=%s: %s", inquiry_id, exc)
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
@@ -11230,6 +11252,219 @@ async def super_admin_inbox_sync(request: Request) -> JSONResponse:
         logger.warning("manual inbox sync error: %s", exc)
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
     return JSONResponse({"ok": True, "new_messages": new_count})
+
+
+@router.post("/super-admin/inbox/{message_id}/link-customer", include_in_schema=False)
+async def super_admin_inbox_link_customer(
+    request: Request,
+    message_id: int,
+    customer_id: Optional[int] = Form(default=None),
+) -> JSONResponse:
+    _require_super_admin(request)
+    await _email_service(request).link_customer(int(message_id), customer_id)
+    return JSONResponse({"ok": True})
+
+
+@router.post("/super-admin/inbox/{message_id}/link-district", include_in_schema=False)
+async def super_admin_inbox_link_district(
+    request: Request,
+    message_id: int,
+    district_id: Optional[int] = Form(default=None),
+) -> JSONResponse:
+    _require_super_admin(request)
+    await _email_service(request).link_district(int(message_id), district_id)
+    return JSONResponse({"ok": True})
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SUPER ADMIN — CUSTOMERS (CRM)
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+@router.get("/super-admin/customers", include_in_schema=False)
+async def super_admin_list_customers(
+    request: Request,
+    status: Optional[str] = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+) -> JSONResponse:
+    _require_super_admin(request)
+    customers = await _customer_store(request).list_customers(status=status, limit=limit)
+    return JSONResponse({"customers": [c.to_dict() for c in customers]})
+
+
+@router.post("/super-admin/customers", include_in_schema=False)
+async def super_admin_create_customer(
+    request: Request,
+    name: str = Form(...),
+    email: str = Form(...),
+    organization: str = Form(default=""),
+    phone: str = Form(default=""),
+    source: str = Form(default="manual"),
+    status: str = Form(default="lead"),
+    inquiry_id: Optional[int] = Form(default=None),
+    district_id: Optional[int] = Form(default=None),
+    notes: str = Form(default=""),
+) -> JSONResponse:
+    _require_super_admin(request)
+    if status not in CUSTOMER_VALID_STATUSES:
+        return JSONResponse({"ok": False, "error": f"Invalid status '{status}'."}, status_code=422)
+    customer = await _customer_store(request).create_customer(
+        name=name.strip(),
+        email=email.strip().lower(),
+        organization=organization.strip(),
+        phone=phone.strip() or None,
+        source=source,
+        status=status,
+        inquiry_id=inquiry_id,
+        district_id=district_id,
+        notes=notes,
+    )
+    return JSONResponse({"ok": True, "customer": customer.to_dict()})
+
+
+@router.get("/super-admin/customers/{customer_id}", include_in_schema=False)
+async def super_admin_get_customer(
+    request: Request,
+    customer_id: int,
+) -> JSONResponse:
+    _require_super_admin(request)
+    customer = await _customer_store(request).get_customer(int(customer_id))
+    if customer is None:
+        return JSONResponse({"ok": False, "error": "Customer not found."}, status_code=404)
+    data = customer.to_dict()
+    # Enrich with district billing info if linked.
+    if customer.district_id is not None:
+        try:
+            billing = await request.app.state.tenant_billing_store.get_district_billing(
+                district_id=customer.district_id
+            )
+            if billing:
+                data["billing"] = {
+                    "plan_type": billing.plan_type,
+                    "billing_status": billing.billing_status,
+                    "license_key": billing.license_key,
+                    "renewal_date": billing.renewal_date,
+                    "trial_ends_at": billing.trial_ends_at,
+                    "override_enabled": billing.override_enabled,
+                }
+        except Exception:
+            pass
+    # Linked emails.
+    try:
+        es = _email_service(request)
+        msgs = await es.list_messages_by_customer(int(customer_id))
+        data["emails"] = [m.to_dict() for m in msgs]
+    except Exception:
+        data["emails"] = []
+    return JSONResponse({"ok": True, "customer": data})
+
+
+@router.post("/super-admin/customers/{customer_id}/update", include_in_schema=False)
+async def super_admin_update_customer(
+    request: Request,
+    customer_id: int,
+    name: Optional[str] = Form(default=None),
+    email: Optional[str] = Form(default=None),
+    organization: Optional[str] = Form(default=None),
+    phone: Optional[str] = Form(default=None),
+    source: Optional[str] = Form(default=None),
+    status: Optional[str] = Form(default=None),
+    district_id: Optional[int] = Form(default=None),
+    notes: Optional[str] = Form(default=None),
+) -> JSONResponse:
+    _require_super_admin(request)
+    if status is not None and status not in CUSTOMER_VALID_STATUSES:
+        return JSONResponse({"ok": False, "error": f"Invalid status '{status}'."}, status_code=422)
+    customer = await _customer_store(request).update_customer(
+        int(customer_id),
+        name=name.strip() if name else None,
+        email=email.strip().lower() if email else None,
+        organization=organization.strip() if organization is not None else None,
+        phone=phone.strip() if phone is not None else None,
+        source=source,
+        status=status,
+        district_id=district_id,
+        notes=notes,
+    )
+    if customer is None:
+        return JSONResponse({"ok": False, "error": "Customer not found."}, status_code=404)
+    return JSONResponse({"ok": True, "customer": customer.to_dict()})
+
+
+@router.post("/super-admin/inquiries/{inquiry_id}/convert-to-customer", include_in_schema=False)
+async def super_admin_convert_inquiry_to_customer(
+    request: Request,
+    inquiry_id: int,
+    organization: str = Form(default=""),
+    notes: str = Form(default=""),
+) -> JSONResponse:
+    """Create a customer lead from an inquiry without also creating a district."""
+    _require_super_admin(request)
+    inquiry = await _inquiry_store(request).get_inquiry(int(inquiry_id))
+    if inquiry is None:
+        return JSONResponse({"ok": False, "error": "Inquiry not found."}, status_code=404)
+    cstore = _customer_store(request)
+    existing = await cstore.get_by_inquiry(int(inquiry_id))
+    if existing:
+        return JSONResponse({"ok": True, "customer": existing.to_dict(), "created": False})
+    customer = await cstore.create_customer(
+        name=inquiry.name,
+        email=inquiry.email,
+        organization=organization.strip() or inquiry.school_or_district,
+        source="website",
+        status="lead",
+        inquiry_id=int(inquiry_id),
+        notes=notes,
+    )
+    return JSONResponse({"ok": True, "customer": customer.to_dict(), "created": True})
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SUPER ADMIN — AUTO-REPLY SETTINGS
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+@router.get("/super-admin/auto-reply-settings", include_in_schema=False)
+async def super_admin_get_auto_reply_settings(request: Request) -> JSONResponse:
+    _require_super_admin(request)
+    settings = await _email_service(request).get_auto_reply_settings()
+    return JSONResponse(settings)
+
+
+@router.post("/super-admin/auto-reply-settings", include_in_schema=False)
+async def super_admin_save_auto_reply_settings(
+    request: Request,
+    enabled: bool = Form(...),
+    subject: str = Form(default=""),
+    body: str = Form(default=""),
+) -> JSONResponse:
+    _require_super_admin(request)
+    await _email_service(request).save_auto_reply_settings(
+        enabled=enabled, subject=subject.strip(), body=body.strip()
+    )
+    return JSONResponse({"ok": True})
+
+
+@router.post("/super-admin/auto-reply-settings/test", include_in_schema=False)
+async def super_admin_test_auto_reply(
+    request: Request,
+    to_email: str = Form(...),
+) -> JSONResponse:
+    """Send a test auto-reply to the given address."""
+    _require_super_admin(request)
+    es = _email_service(request)
+    from app.services.inquiry_store import InquiryRecord as _InquiryRecord
+    dummy = _InquiryRecord(
+        id=0, name="Test User", email=to_email.strip(),
+        school_or_district="Test School", estimated_students=None,
+        number_of_schools=None, message="(test)", size_tag="unknown",
+        status="new", created_at="", updated_at="", notes="",
+    )
+    try:
+        await es.send_inquiry_auto_reply(dummy)
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+    return JSONResponse({"ok": True})
 
 
 # ══════════════════════════════════════════════════════════════════════════════

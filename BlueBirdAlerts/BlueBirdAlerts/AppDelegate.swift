@@ -35,7 +35,9 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data
     ) {
         let token = deviceToken.map { String(format: "%02.2hhx", $0) }.joined()
+        #if DEBUG
         print("APNs device token: \(token)")
+        #endif
 
         NotificationCenter.default.post(
             name: .deviceTokenUpdated,
@@ -48,7 +50,9 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         _ application: UIApplication,
         didFailToRegisterForRemoteNotificationsWithError error: Error
     ) {
+        #if DEBUG
         print("APNs registration failed: \(error)")
+        #endif
 
         NotificationCenter.default.post(
             name: .deviceTokenUpdateFailed,

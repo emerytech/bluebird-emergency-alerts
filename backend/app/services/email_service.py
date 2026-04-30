@@ -124,6 +124,8 @@ class EmailMessage:
     is_read: bool
     status: str             # new | read | replied | archived
     linked_inquiry_id: Optional[int]
+    linked_customer_id: Optional[int]
+    linked_district_id: Optional[int]
     created_at: str
 
     def to_dict(self) -> dict:
@@ -143,6 +145,8 @@ class EmailMessage:
             "is_read": self.is_read,
             "status": self.status,
             "linked_inquiry_id": self.linked_inquiry_id,
+            "linked_customer_id": self.linked_customer_id,
+            "linked_district_id": self.linked_district_id,
             "created_at": self.created_at,
         }
 
@@ -315,6 +319,8 @@ class EmailService:
                     is_read             INTEGER NOT NULL DEFAULT 0,
                     status              TEXT    NOT NULL DEFAULT 'new',
                     linked_inquiry_id   INTEGER NULL,
+                    linked_customer_id  INTEGER NULL,
+                    linked_district_id  INTEGER NULL,
                     created_at          TEXT    NOT NULL
                 );
                 """
@@ -327,6 +333,15 @@ class EmailService:
                 "CREATE INDEX IF NOT EXISTS idx_email_msg_direction "
                 "ON email_messages(direction, is_read);"
             )
+            # Migrations for existing databases.
+            for col, typedef in (
+                ("linked_customer_id", "INTEGER NULL"),
+                ("linked_district_id", "INTEGER NULL"),
+            ):
+                try:
+                    conn.execute(f"ALTER TABLE email_messages ADD COLUMN {col} {typedef};")
+                except Exception:
+                    pass  # column already exists
 
             # Seed default plans if table is empty
             now = datetime.now(timezone.utc).isoformat()
@@ -1254,13 +1269,15 @@ class EmailService:
             is_read=bool(int(row[12])),
             status=str(row[13]),
             linked_inquiry_id=int(row[14]) if row[14] is not None else None,
-            created_at=str(row[15]),
+            linked_customer_id=int(row[15]) if row[15] is not None else None,
+            linked_district_id=int(row[16]) if row[16] is not None else None,
+            created_at=str(row[17]),
         )
 
     _MSG_COLS = (
         "id, provider_message_id, thread_id, direction, from_email, from_name, "
         "to_email, subject, body_text, body_html, received_at, sent_at, "
-        "is_read, status, linked_inquiry_id, created_at"
+        "is_read, status, linked_inquiry_id, linked_customer_id, linked_district_id, created_at"
     )
 
     def store_message_sync(
@@ -1280,6 +1297,8 @@ class EmailService:
         is_read: bool = False,
         status: str = "new",
         linked_inquiry_id: Optional[int] = None,
+        linked_customer_id: Optional[int] = None,
+        linked_district_id: Optional[int] = None,
     ) -> Optional["EmailMessage"]:
         now = datetime.now(timezone.utc).isoformat()
         with self._connect() as conn:
@@ -1289,15 +1308,17 @@ class EmailService:
                     INSERT INTO email_messages
                         (provider_message_id, thread_id, direction, from_email, from_name,
                          to_email, subject, body_text, body_html, received_at, sent_at,
-                         is_read, status, linked_inquiry_id, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                         is_read, status, linked_inquiry_id, linked_customer_id,
+                         linked_district_id, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
                     """,
                     (
                         provider_message_id[:2048], thread_id, direction,
                         from_email[:512], from_name[:255], to_email[:512],
                         subject[:512], body_text[:65535], body_html[:131072],
                         received_at, sent_at, 1 if is_read else 0,
-                        status, linked_inquiry_id, now,
+                        status, linked_inquiry_id, linked_customer_id,
+                        linked_district_id, now,
                     ),
                 )
                 row = conn.execute(
@@ -1369,6 +1390,40 @@ class EmailService:
 
     async def link_inquiry(self, message_id: int, inquiry_id: Optional[int]) -> None:
         await anyio.to_thread.run_sync(lambda: self.link_inquiry_sync(int(message_id), inquiry_id))
+
+    def link_customer_sync(self, message_id: int, customer_id: Optional[int]) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE email_messages SET linked_customer_id = ? WHERE id = ?;",
+                (customer_id, int(message_id)),
+            )
+
+    async def link_customer(self, message_id: int, customer_id: Optional[int]) -> None:
+        await anyio.to_thread.run_sync(lambda: self.link_customer_sync(int(message_id), customer_id))
+
+    def link_district_sync(self, message_id: int, district_id: Optional[int]) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE email_messages SET linked_district_id = ? WHERE id = ?;",
+                (district_id, int(message_id)),
+            )
+
+    async def link_district(self, message_id: int, district_id: Optional[int]) -> None:
+        await anyio.to_thread.run_sync(lambda: self.link_district_sync(int(message_id), district_id))
+
+    def _list_messages_by_customer_sync(self, customer_id: int, limit: int = 50) -> List[EmailMessage]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"SELECT {self._MSG_COLS} FROM email_messages "
+                f"WHERE linked_customer_id = ? ORDER BY created_at DESC LIMIT ?;",
+                (int(customer_id), limit),
+            ).fetchall()
+        return [self._msg_row(r) for r in rows]
+
+    async def list_messages_by_customer(self, customer_id: int, limit: int = 50) -> List[EmailMessage]:
+        return await anyio.to_thread.run_sync(
+            lambda: self._list_messages_by_customer_sync(customer_id, limit)
+        )
 
     def mark_replied_sync(self, message_id: int) -> None:
         with self._connect() as conn:
