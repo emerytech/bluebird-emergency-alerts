@@ -1339,7 +1339,8 @@ class EmailService:
         unread_only: bool = False,
         limit: int = 100,
     ) -> List["EmailMessage"]:
-        clauses, params: list = [], []
+        clauses: list = []
+        params: list = []
         if direction:
             clauses.append("direction = ?")
             params.append(direction)
