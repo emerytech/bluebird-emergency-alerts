@@ -27,7 +27,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Query, Requ
 from fastapi import HTTPException, status
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, StreamingResponse, JSONResponse
 
-from app.web.landing import render_landing_page, render_login_portal, render_safety_page
+from app.web.landing import render_landing_page, render_login_portal, render_safety_page, render_request_demo_page
 from app.api.deps import require_api_key
 from app.constants.labels import FEATURE_LABELS, get_feature_label
 from app.models.schemas import (
@@ -294,6 +294,26 @@ def _check_inquiry_rate_limit(ip: str, *, max_attempts: int = 5, window_seconds:
         return True
 
 
+# ── Public demo request rate limiter (per-IP) ─────────────────────────────────
+_demo_rate_store: dict[str, deque] = {}
+_demo_rate_lock = Lock()
+
+
+def _check_demo_rate_limit(ip: str, *, max_attempts: int = 3, window_seconds: int = 3600) -> bool:
+    """3 demo requests per IP per hour."""
+    now = time.monotonic()
+    with _demo_rate_lock:
+        if ip not in _demo_rate_store:
+            _demo_rate_store[ip] = deque()
+        dq = _demo_rate_store[ip]
+        while dq and now - dq[0] > window_seconds:
+            dq.popleft()
+        if len(dq) >= max_attempts:
+            return False
+        dq.append(now)
+        return True
+
+
 TRUST_DEVICE_TTL_SECONDS = 14 * 24 * 60 * 60
 ADMIN_TRUST_COOKIE = "bluebird_admin_trusted_device"
 SUPER_ADMIN_TRUST_COOKIE = "bluebird_super_admin_trusted_device"
@@ -430,6 +450,9 @@ def _inquiry_store(req: Request):
 
 def _customer_store(req: Request) -> CustomerStore:
     return req.app.state.customer_store  # type: ignore[attr-defined]
+
+def _demo_request_store(req: Request):
+    return req.app.state.demo_request_store  # type: ignore[attr-defined]
 
 
 def _inbox_sync_service(req: Request):
@@ -1748,6 +1771,11 @@ async def login_portal(request: Request) -> HTMLResponse:
 @router.get("/safety", include_in_schema=False)
 async def safety_page(request: Request) -> HTMLResponse:
     return HTMLResponse(content=render_safety_page())
+
+
+@router.get("/request-demo", include_in_schema=False)
+async def request_demo_page(request: Request) -> HTMLResponse:
+    return HTMLResponse(content=render_request_demo_page())
 
 
 @router.get("/favicon.ico", include_in_schema=False)
@@ -4257,6 +4285,7 @@ async def super_admin_dashboard(
             sandbox_data=_sandbox_data,
             prod_districts=_prod_districts,
             inquiries=await _inquiry_store(request).list_inquiries(limit=100),
+            demo_requests=await _demo_request_store(request).list_demo_requests(limit=200),
             inbox_messages=await es.list_messages(limit=50),
             inbox_unread_count=await es.unread_count(),
             customers=await _customer_store(request).list_customers(limit=200),
@@ -11993,3 +12022,182 @@ async def _handle_stripe_event(
         sub_id = str(obj.get("subscription", "") or "")
         # The subscription.updated event with status=past_due handles this
         pass
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PUBLIC — DEMO REQUEST FORM
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+@router.post("/public/request-demo", include_in_schema=False)
+async def public_submit_demo_request(
+    request: Request,
+    name: str = Form(default=""),
+    email: str = Form(default=""),
+    organization: str = Form(default=""),
+    role: str = Form(default=""),
+    school_count: str = Form(default=""),
+    message: str = Form(default=""),
+    phone: str = Form(default=""),
+    preferred_time: str = Form(default=""),
+    website: str = Form(default=""),   # honeypot
+) -> JSONResponse:
+    """Public demo request submission. Rate-limited per IP. Never exposes internal errors."""
+    ip = _client_ip(request)
+
+    if website.strip():
+        return JSONResponse({"ok": True})
+
+    if not _check_demo_rate_limit(ip):
+        return JSONResponse(
+            {"ok": False, "error": "Too many submissions. Please try again later."},
+            status_code=429,
+        )
+
+    name = name.strip()[:255]
+    email = email.strip().lower()[:255]
+    organization = organization.strip()[:255]
+    role = role.strip()[:100]
+    message = message.strip()[:4000]
+    phone = phone.strip()[:50]
+    preferred_time = preferred_time.strip()[:255]
+
+    errors: list[str] = []
+    if not name:
+        errors.append("Full name is required.")
+    if not email or not _EMAIL_RE.match(email):
+        errors.append("A valid email address is required.")
+    if not organization:
+        errors.append("Organization name is required.")
+    if errors:
+        return JSONResponse({"ok": False, "errors": errors}, status_code=422)
+
+    try:
+        count: int | None = int(school_count) if school_count.strip() else None
+    except ValueError:
+        count = None
+
+    try:
+        demo_req = await _demo_request_store(request).create_demo_request(
+            name=name,
+            email=email,
+            organization=organization,
+            role=role,
+            school_count=count,
+            message=message,
+            phone=phone,
+            preferred_time=preferred_time,
+        )
+        es = _email_service(request)
+        await es.send_demo_request_notification(demo_req)
+        await es.send_demo_request_auto_reply(demo_req)
+    except Exception as exc:
+        logger.error("demo_request_submission_error ip=%s err=%s", ip, exc)
+
+    return JSONResponse({"ok": True, "message": "Your demo request has been submitted. We'll contact you shortly!"})
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SUPER ADMIN — DEMO REQUESTS
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+@router.get("/super-admin/demo-requests", include_in_schema=False)
+async def super_admin_list_demo_requests(
+    request: Request,
+    status: str = Query(default=""),
+    limit: int = Query(default=200),
+) -> JSONResponse:
+    _require_super_admin(request)
+    records = await _demo_request_store(request).list_demo_requests(
+        status=status.strip() or None,
+        limit=min(int(limit), 500),
+    )
+    return JSONResponse({"demo_requests": [r.to_dict() for r in records]})
+
+
+@router.post("/super-admin/demo-requests/{req_id}/status", include_in_schema=False)
+async def super_admin_update_demo_request_status(
+    request: Request,
+    req_id: int,
+    new_status: str = Form(default=""),
+) -> JSONResponse:
+    _require_super_admin(request)
+    from app.services.demo_request_store import VALID_STATUSES as DEMO_STATUSES
+    if new_status not in DEMO_STATUSES:
+        return JSONResponse({"ok": False, "error": f"Invalid status: {new_status!r}"}, status_code=422)
+    record = await _demo_request_store(request).update_status(req_id=int(req_id), new_status=new_status)
+    if record is None:
+        return JSONResponse({"ok": False, "error": "Demo request not found."}, status_code=404)
+    return JSONResponse({"ok": True, "demo_request": record.to_dict()})
+
+
+@router.post("/super-admin/demo-requests/{req_id}/notes", include_in_schema=False)
+async def super_admin_update_demo_request_notes(
+    request: Request,
+    req_id: int,
+    notes: str = Form(default=""),
+) -> JSONResponse:
+    _require_super_admin(request)
+    record = await _demo_request_store(request).update_notes(req_id=int(req_id), notes=notes)
+    if record is None:
+        return JSONResponse({"ok": False, "error": "Demo request not found."}, status_code=404)
+    return JSONResponse({"ok": True, "demo_request": record.to_dict()})
+
+
+@router.delete("/super-admin/demo-requests/{req_id}", include_in_schema=False)
+async def super_admin_delete_demo_request(
+    request: Request,
+    req_id: int,
+) -> JSONResponse:
+    _require_super_admin(request)
+    deleted = await _demo_request_store(request).delete_demo_request(int(req_id))
+    if not deleted:
+        return JSONResponse({"ok": False, "error": "Demo request not found."}, status_code=404)
+    return JSONResponse({"ok": True})
+
+
+@router.post("/super-admin/demo-requests/{req_id}/convert", include_in_schema=False)
+async def super_admin_convert_demo_request(
+    request: Request,
+    req_id: int,
+    district_name: str = Form(default=""),
+    district_slug: str = Form(default=""),
+) -> JSONResponse:
+    """Convert an accepted demo request into a real district + mark as converted."""
+    _require_super_admin(request)
+    demo_req = await _demo_request_store(request).get_demo_request(int(req_id))
+    if demo_req is None:
+        return JSONResponse({"ok": False, "error": "Demo request not found."}, status_code=404)
+    name = district_name.strip() or demo_req.organization
+    raw_slug = district_slug.strip() or _re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+    if not name:
+        return JSONResponse({"ok": False, "error": "District name is required."}, status_code=422)
+    try:
+        school_registry: SchoolRegistry = request.app.state.school_registry
+        existing = await school_registry.get_district_by_slug(raw_slug)
+        if existing is None:
+            district = await school_registry.create_district(name=name, slug=raw_slug, organization_id=1)
+        else:
+            district = existing
+        billing_store = request.app.state.tenant_billing_store
+        await billing_store.ensure_district_billing(district_id=district.id)
+        await billing_store.update_district_billing_full(
+            district_id=district.id,
+            customer_name=demo_req.name,
+            customer_email=demo_req.email,
+        )
+        await _demo_request_store(request).update_status(req_id=int(req_id), new_status="converted")
+        cstore = _customer_store(request)
+        await cstore.create_customer(
+            name=demo_req.name,
+            email=demo_req.email,
+            organization=demo_req.organization,
+            source="demo_request",
+            status="active",
+            district_id=district.id,
+        )
+    except Exception as exc:
+        logger.warning("convert_demo_request error req_id=%s: %s", req_id, exc)
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+    return JSONResponse({"ok": True, "district_slug": raw_slug, "district_name": name})

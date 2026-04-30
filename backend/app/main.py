@@ -36,6 +36,7 @@ from app.services.user_tenant_store import UserTenantStore
 from app.services.inquiry_store import InquiryStore
 from app.services.inbox_sync import InboxSyncService
 from app.services.customer_store import CustomerStore
+from app.services.demo_request_store import DemoRequestStore
 
 import anyio
 
@@ -742,6 +743,9 @@ async def lifespan(app: FastAPI):
 
     customer_store = CustomerStore(settings.PLATFORM_DB_PATH)
     app.state.customer_store = customer_store
+
+    demo_request_store = DemoRequestStore(settings.PLATFORM_DB_PATH)
+    app.state.demo_request_store = demo_request_store
 
     inbox_sync_service = InboxSyncService(email_service)
     app.state.inbox_sync_service = inbox_sync_service

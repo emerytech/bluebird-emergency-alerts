@@ -3136,6 +3136,134 @@ def _render_sales_inbox_section(messages: object, section: str, unread_count: in
     )
 
 
+def _render_demo_requests_section(demo_requests: object, section: str) -> str:
+    _style = "" if section == "demo-requests" else ' style="display:none;"'
+    status_colors = {
+        "new": "#2563eb",
+        "contacted": "#d97706",
+        "converted": "#059669",
+        "closed": "#6b7280",
+    }
+    rows_html = ""
+    for dr in (demo_requests or []):
+        rid = int(getattr(dr, "id", 0))
+        name = escape(str(getattr(dr, "name", "")))
+        email = escape(str(getattr(dr, "email", "")))
+        org = escape(str(getattr(dr, "organization", "")))
+        role = escape(str(getattr(dr, "role", "") or ""))
+        school_count = getattr(dr, "school_count", None)
+        sc_disp = escape(str(school_count)) if school_count is not None else "—"
+        message = escape(str(getattr(dr, "message", "") or ""))
+        phone = escape(str(getattr(dr, "phone", "") or ""))
+        preferred_time = escape(str(getattr(dr, "preferred_time", "") or ""))
+        status = escape(str(getattr(dr, "status", "new")))
+        created_at = escape(str(getattr(dr, "created_at", ""))[:10])
+        notes = escape(str(getattr(dr, "notes", "") or ""))
+        sc = status_colors.get(status, "#6b7280")
+        status_badge = (
+            f'<span style="display:inline-block;padding:2px 8px;border-radius:20px;'
+            f'background:{sc}15;color:{sc};font-size:.72rem;font-weight:700;'
+            f'text-transform:uppercase;letter-spacing:.04em;">{status}</span>'
+        )
+        convert_btn = (
+            f'<button class="bb-btn-xs bb-btn-success" onclick="bbDemoConvert({rid},\'{escape(org)}\')">→ District</button>'
+            if status not in ("converted", "closed") else ""
+        )
+        rows_html += (
+            f'<tr>'
+            f'<td><strong>{org}</strong><br/><small style="color:var(--muted);">{role}</small></td>'
+            f'<td>{name}<br/><a href="mailto:{email}" style="font-size:.8rem;color:var(--blue);">{email}</a></td>'
+            f'<td style="font-size:.85rem;">{sc_disp} schools</td>'
+            f'<td style="max-width:200px;font-size:.82rem;color:var(--muted);">'
+            f'<div style="white-space:pre-wrap;overflow:hidden;max-height:3em;" title="{message}">'
+            f'{message[:120]}{"…" if len(message) > 120 else ""}</div>'
+            f'{"<br/><small>Phone: " + phone + "</small>" if phone else ""}'
+            f'{"<br/><small>Prefers: " + preferred_time + "</small>" if preferred_time else ""}'
+            f'</td>'
+            f'<td>{status_badge}</td>'
+            f'<td style="font-size:.82rem;">{created_at}</td>'
+            f'<td style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">'
+            f'<select onchange="bbDemoStatus({rid},this.value)" style="font-size:.8rem;padding:3px 6px;border-radius:6px;">'
+            f'<option value="">— Status —</option>'
+            f'<option value="new">New</option>'
+            f'<option value="contacted">Contacted</option>'
+            f'<option value="converted">Converted</option>'
+            f'<option value="closed">Closed</option>'
+            f'</select>'
+            f'{convert_btn}'
+            f'<button class="bb-btn-xs" style="background:#fee2e2;color:#dc2626;" onclick="bbDemoDelete({rid})">Delete</button>'
+            f'</td>'
+            f'</tr>'
+            f'<tr><td colspan="7" style="padding:4px 12px 12px;">'
+            f'<textarea id="dr-notes-{rid}" style="width:100%;font-size:.8rem;border:1px solid var(--border);border-radius:6px;padding:6px;resize:vertical;min-height:48px;"'
+            f' placeholder="Internal notes…" onblur="bbDemoNotes({rid},this.value)">{notes}</textarea>'
+            f'</td></tr>'
+        )
+
+    if not rows_html:
+        rows_html = '<tr><td colspan="7" style="text-align:center;color:var(--muted);padding:32px 0;">No demo requests yet.</td></tr>'
+
+    new_count = sum(1 for dr in (demo_requests or []) if getattr(dr, "status", "") == "new")
+    badge = f'<span style="background:#2563eb;color:#fff;border-radius:20px;padding:2px 8px;font-size:.75rem;margin-left:8px;">{new_count} new</span>' if new_count else ""
+
+    demo_js = """
+<script>
+async function bbDemoStatus(id, status) {
+  if (!status) return;
+  var fd = new FormData(); fd.append('new_status', status);
+  var r = await fetch('/super-admin/demo-requests/' + id + '/status', {method:'POST', body: fd});
+  var d = await r.json();
+  if (d.ok) bbShowBanner('Status updated.');
+  else bbShowBanner('Error: ' + (d.error || 'unknown'), true);
+}
+async function bbDemoNotes(id, notes) {
+  var fd = new FormData(); fd.append('notes', notes);
+  await fetch('/super-admin/demo-requests/' + id + '/notes', {method:'POST', body: fd});
+}
+async function bbDemoDelete(id) {
+  if (!confirm('Delete this demo request? This cannot be undone.')) return;
+  var r = await fetch('/super-admin/demo-requests/' + id, {method:'DELETE'});
+  var d = await r.json();
+  if (d.ok) { location.reload(); }
+  else bbShowBanner('Error: ' + (d.error || 'unknown'), true);
+}
+function bbDemoConvert(id, org) {
+  var dname = prompt('District name:', org);
+  if (!dname) return;
+  var dslug = dname.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'');
+  var confirmed = confirm('Create district "' + dname + '" (slug: ' + dslug + ')?');
+  if (!confirmed) return;
+  var fd = new FormData();
+  fd.append('district_name', dname);
+  fd.append('district_slug', dslug);
+  fetch('/super-admin/demo-requests/' + id + '/convert', {method:'POST', body: fd})
+    .then(r => r.json())
+    .then(d => {
+      if (d.ok) { bbShowBanner('District "' + d.district_name + '" created. Demo request marked converted.'); setTimeout(() => location.reload(), 1200); }
+      else bbShowBanner('Error: ' + (d.error || 'unknown'), true);
+    });
+}
+</script>
+"""
+
+    return (
+        f'<section class="panel command-section" id="demo-requests"{_style}>'
+        f'<h2 style="margin-bottom:4px;">Demo Requests {badge}</h2>'
+        f'<p style="color:var(--muted);font-size:.875rem;margin-bottom:20px;">'
+        f'Submissions from the /request-demo form. Convert promising leads directly to districts.</p>'
+        f'<div class="table-wrap" style="overflow-x:auto;">'
+        f'<table class="data-table" style="min-width:860px;">'
+        f'<thead><tr>'
+        f'<th>Organization</th><th>Contact</th><th>Size</th>'
+        f'<th>Message</th><th>Status</th><th>Date</th><th>Actions</th>'
+        f'</tr></thead>'
+        f'<tbody>{rows_html}</tbody>'
+        f'</table></div>'
+        f'{demo_js}'
+        f'</section>'
+    )
+
+
 def _render_inquiries_section(inquiries: object, section: str) -> str:
     _style = "" if section == "inquiries" else ' style="display:none;"'
     status_colors = {
@@ -3772,6 +3900,7 @@ def render_super_admin_page(
     sandbox_data: Sequence[Mapping[str, object]] = (),
     prod_districts: Sequence[object] = (),
     inquiries: Sequence[object] = (),
+    demo_requests: Sequence[object] = (),
     inbox_messages: Sequence[object] = (),
     inbox_unread_count: int = 0,
     customers: Sequence[object] = (),
@@ -3914,7 +4043,7 @@ def render_super_admin_page(
         for c in setup_codes
     ) or '<tr><td colspan="7" class="empty-state">No setup codes generated yet.</td></tr>'
 
-    section = active_section if active_section in {"districts", "schools", "billing", "platform-audit", "create-school", "security", "configuration", "server-tools", "health", "email-tool", "setup-codes", "noc", "msp", "platform-control", "sandbox", "ai-insights", "inquiries", "sales-inbox", "customers"} else "districts"
+    section = active_section if active_section in {"districts", "schools", "billing", "platform-audit", "create-school", "security", "configuration", "server-tools", "health", "email-tool", "setup-codes", "noc", "msp", "platform-control", "sandbox", "ai-insights", "inquiries", "demo-requests", "sales-inbox", "customers"} else "districts"
 
     def _section_style(name: str) -> str:
         return "" if section == name else ' style="display:none;"'
@@ -4568,6 +4697,7 @@ def render_super_admin_page(
             {_nav_item("email-tool", "Email Tool")}
             {_nav_item("sales-inbox", "Sales Inbox", str(inbox_unread_count) if inbox_unread_count else None)}
             {_nav_item("inquiries", "Inquiries")}
+            {_nav_item("demo-requests", "Demo Requests", str(sum(1 for dr in demo_requests if getattr(dr, "status", "") == "new")) if any(getattr(dr, "status", "") == "new" for dr in demo_requests) else None)}
             {_nav_item("customers", "Customers")}
             {_nav_item("configuration", "Configuration", None if email_configured else "!")}
             {_nav_item("setup-codes", "Setup Codes")}
@@ -5801,6 +5931,7 @@ def render_super_admin_page(
         </section>
         {_render_sales_inbox_section(inbox_messages, section, inbox_unread_count)}
         {_render_inquiries_section(inquiries, section)}
+        {_render_demo_requests_section(demo_requests, section)}
         {_render_customers_section(customers, section)}
         <section class="panel command-section" id="email-tool"{_section_style("email-tool")}>
           <div class="panel-header hero-band">

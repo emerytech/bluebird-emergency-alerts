@@ -477,7 +477,7 @@ def render_landing_page() -> str:
       BlueBird Alerts
     </a>
     <div class="nav-actions">
-      <a href="mailto:{DEMO_EMAIL}?subject=BlueBird%20Alerts%20Demo%20Request" class="btn btn-secondary">Request Demo</a>
+      <a href="/request-demo" class="btn btn-secondary">Request Demo</a>
       <a href="/login" class="btn btn-primary">Admin Login</a>
     </div>
   </div>
@@ -489,7 +489,7 @@ def render_landing_page() -> str:
   <h1>Fast, simple emergency alerts<br /><span>for every school in your district.</span></h1>
   <p class="hero-sub">BlueBird Alerts puts instant push notifications and real-time acknowledgement tracking in the hands of every administrator — no complex setup, no delays.</p>
   <div class="hero-actions">
-    <a href="mailto:{DEMO_EMAIL}?subject=BlueBird%20Alerts%20Demo%20Request" class="btn btn-primary btn-lg">&#128231; Schedule a Demo</a>
+    <a href="/request-demo" class="btn btn-primary btn-lg">&#128231; Schedule a Demo</a>
     <div class="hero-login-wrap">
       <a href="/login" class="btn btn-ghost btn-lg">Admin Login &rarr;</a>
       <span class="hero-login-hint">Select your district &amp; school to sign in</span>
@@ -1737,6 +1737,367 @@ def render_safety_page() -> str:
   <p>&copy; 2025 BlueBird Alerts. All rights reserved.</p>
   <p class="footer-disclaimer">BlueBird Alerts is a communication tool and is not a replacement for 911 or professional emergency services. Always call 911 in a real emergency. No student data is collected.</p>
 </footer>
+
+</body>
+</html>"""
+
+
+def render_request_demo_page() -> str:
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Request a Demo — BlueBird Alerts</title>
+  <meta name="description" content="See BlueBird Alerts in action. Request a personalized demo for your school or district." />
+  <link rel="icon" href="/favicon.ico?v=1" />
+  <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32x32.png?v=1" />
+  <link rel="apple-touch-icon" href="/static/apple-touch-icon.png?v=1" />
+  <style>
+    *, *::before, *::after {{ box-sizing: border-box; margin: 0; padding: 0; }}
+    :root {{
+      --blue:      #1b5fe4;
+      --blue-dark: #1048c0;
+      --blue-soft: #eff6ff;
+      --dark:      #0f172a;
+      --text:      #10203f;
+      --muted:     #5d7398;
+      --border:    rgba(18,52,120,.12);
+      --white:     #ffffff;
+      --radius:    14px;
+      --error:     #dc2626;
+      --success:   #16a34a;
+    }}
+    html {{ scroll-behavior: smooth; }}
+    body {{
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+      color: var(--text);
+      background: var(--blue-soft);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }}
+    /* ── NAV ── */
+    .nav {{
+      background: rgba(255,255,255,.94);
+      backdrop-filter: saturate(180%) blur(12px);
+      border-bottom: 1px solid var(--border);
+      padding: 0 24px;
+    }}
+    .nav-inner {{
+      max-width: 900px; margin: 0 auto;
+      display: flex; align-items: center; justify-content: space-between;
+      height: 60px;
+    }}
+    .nav-logo {{
+      display: flex; align-items: center; gap: 10px;
+      font-weight: 700; font-size: 1.05rem; color: var(--dark);
+      text-decoration: none;
+    }}
+    .nav-logo img {{ height: 32px; width: auto; }}
+    .btn {{
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 9px 20px; border-radius: 8px; font-size: .875rem;
+      font-weight: 600; text-decoration: none; cursor: pointer;
+      border: none; transition: background .15s, opacity .15s;
+    }}
+    .btn-ghost {{ background: transparent; color: var(--muted); }}
+    .btn-ghost:hover {{ color: var(--text); }}
+    /* ── PAGE LAYOUT ── */
+    .page {{
+      flex: 1; display: flex; align-items: flex-start; justify-content: center;
+      padding: 48px 16px 64px;
+    }}
+    .card {{
+      background: var(--white);
+      border-radius: var(--radius);
+      box-shadow: 0 4px 24px rgba(10,40,100,.10), 0 1px 4px rgba(10,40,100,.06);
+      padding: 48px 40px;
+      width: 100%; max-width: 560px;
+    }}
+    .card-eyebrow {{
+      font-size: .75rem; font-weight: 700; letter-spacing: .08em;
+      color: var(--blue); text-transform: uppercase; margin-bottom: 8px;
+    }}
+    .card-title {{
+      font-size: 1.75rem; font-weight: 800; color: var(--dark);
+      line-height: 1.25; margin-bottom: 8px;
+    }}
+    .card-sub {{
+      color: var(--muted); font-size: .925rem; margin-bottom: 32px;
+      line-height: 1.6;
+    }}
+    /* ── FORM ── */
+    .field {{ margin-bottom: 18px; }}
+    .field label {{
+      display: block; font-size: .8rem; font-weight: 600;
+      color: var(--text); margin-bottom: 5px;
+    }}
+    .field label .req {{ color: var(--blue); margin-left: 2px; }}
+    .field input, .field select, .field textarea {{
+      width: 100%; padding: 11px 14px;
+      border: 1.5px solid var(--border);
+      border-radius: 8px; font-size: .9rem; color: var(--text);
+      background: var(--white); font-family: inherit;
+      transition: border-color .15s, box-shadow .15s;
+      outline: none; appearance: none;
+    }}
+    .field input:focus, .field select:focus, .field textarea:focus {{
+      border-color: var(--blue);
+      box-shadow: 0 0 0 3px rgba(27,95,228,.12);
+    }}
+    .field textarea {{ resize: vertical; min-height: 90px; }}
+    .field-row {{ display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }}
+    .optional-label {{
+      font-size: .75rem; font-weight: 500; color: var(--muted);
+      font-style: italic; margin-left: 4px;
+    }}
+    /* ── SUBMIT ── */
+    .submit-btn {{
+      width: 100%; padding: 14px; margin-top: 8px;
+      background: var(--blue); color: var(--white);
+      border: none; border-radius: 9px;
+      font-size: 1rem; font-weight: 700;
+      cursor: pointer; transition: background .15s, opacity .15s;
+      display: flex; align-items: center; justify-content: center; gap: 8px;
+    }}
+    .submit-btn:hover:not(:disabled) {{ background: var(--blue-dark); }}
+    .submit-btn:disabled {{ opacity: .6; cursor: not-allowed; }}
+    /* ── MESSAGES ── */
+    .msg {{
+      border-radius: 9px; padding: 14px 16px;
+      font-size: .875rem; font-weight: 500; margin-bottom: 20px;
+      display: none;
+    }}
+    .msg.success {{
+      background: #f0fdf4; border: 1.5px solid #86efac; color: var(--success);
+    }}
+    .msg.error {{
+      background: #fef2f2; border: 1.5px solid #fca5a5; color: var(--error);
+    }}
+    .msg.visible {{ display: block; }}
+    /* ── TRUST ── */
+    .trust-row {{
+      display: flex; align-items: center; gap: 20px;
+      margin-top: 28px; padding-top: 20px;
+      border-top: 1px solid var(--border);
+      flex-wrap: wrap;
+    }}
+    .trust-item {{
+      display: flex; align-items: center; gap: 6px;
+      font-size: .775rem; color: var(--muted); font-weight: 500;
+    }}
+    /* ── RESPONSIVE ── */
+    @media (max-width: 560px) {{
+      .card {{ padding: 32px 20px; }}
+      .field-row {{ grid-template-columns: 1fr; gap: 0; }}
+      .card-title {{ font-size: 1.45rem; }}
+    }}
+    /* ── HONEYPOT ── */
+    .hp-field {{ display: none; }}
+    /* ── DARK MODE ── */
+    @media (prefers-color-scheme: dark) {{
+      body {{ background: #0c1524; }}
+      .nav {{ background: rgba(15,23,42,.94); }}
+      .card {{ background: #111827; box-shadow: 0 4px 24px rgba(0,0,0,.35); }}
+      .card-title {{ color: #f1f5f9; }}
+      .card-sub {{ color: #94a3b8; }}
+      .field label {{ color: #e2e8f0; }}
+      .field input, .field select, .field textarea {{
+        background: #1e293b; border-color: rgba(255,255,255,.1);
+        color: #f1f5f9;
+      }}
+      .field input:focus, .field select:focus, .field textarea:focus {{
+        border-color: #3b82f6; box-shadow: 0 0 0 3px rgba(59,130,246,.15);
+      }}
+      .trust-row {{ border-color: rgba(255,255,255,.08); }}
+      .trust-item {{ color: #64748b; }}
+      .nav-logo {{ color: #f1f5f9; }}
+    }}
+  </style>
+</head>
+<body>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a href="/" class="nav-logo">
+      <img src="{LOGO}" alt="BlueBird Alerts" />
+      BlueBird Alerts
+    </a>
+    <a href="/" class="btn btn-ghost">← Back</a>
+  </div>
+</nav>
+
+<main class="page">
+  <div class="card">
+    <div class="card-eyebrow">See it in action</div>
+    <h1 class="card-title">Request a Demo</h1>
+    <p class="card-sub">Tell us about your school or district and we'll reach out to schedule a personalized demo. Takes less than 60 seconds.</p>
+
+    <div id="success-msg" class="msg success">
+      &#10003;&nbsp; Your demo request has been submitted. We'll contact you shortly!
+    </div>
+    <div id="error-msg" class="msg error"></div>
+
+    <form id="demo-form" novalidate>
+      <!-- Honeypot -->
+      <div class="hp-field">
+        <input type="text" name="website" id="hp-website" autocomplete="off" tabindex="-1" />
+      </div>
+
+      <div class="field-row">
+        <div class="field">
+          <label for="name">Full Name <span class="req">*</span></label>
+          <input type="text" id="name" name="name" placeholder="Jane Smith" autocomplete="name" required />
+        </div>
+        <div class="field">
+          <label for="email">Work Email <span class="req">*</span></label>
+          <input type="email" id="email" name="email" placeholder="jane@yourdistrict.edu" autocomplete="email" required />
+        </div>
+      </div>
+
+      <div class="field">
+        <label for="organization">Organization / School Name <span class="req">*</span></label>
+        <input type="text" id="organization" name="organization" placeholder="Springfield Unified School District" required />
+      </div>
+
+      <div class="field-row">
+        <div class="field">
+          <label for="role">Your Role <span class="req">*</span></label>
+          <select id="role" name="role" required>
+            <option value="" disabled selected>Select your role</option>
+            <option value="Superintendent">Superintendent</option>
+            <option value="IT Director">IT Director</option>
+            <option value="Principal">Principal</option>
+            <option value="Safety Coordinator">Safety Coordinator</option>
+            <option value="Other">Other</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="school_count">Number of Schools <span class="req">*</span></label>
+          <select id="school_count" name="school_count">
+            <option value="" disabled selected>Select range</option>
+            <option value="1">1 school</option>
+            <option value="2">2–5 schools</option>
+            <option value="6">6–15 schools</option>
+            <option value="16">16–50 schools</option>
+            <option value="51">51+ schools</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="field">
+        <label for="message">What are you hoping BlueBird can help with? <span class="req">*</span></label>
+        <textarea id="message" name="message" placeholder="We're looking to improve our emergency communication and need something that works across all our schools..." required></textarea>
+      </div>
+
+      <div class="field-row">
+        <div class="field">
+          <label for="phone">Phone <span class="optional-label">(optional)</span></label>
+          <input type="tel" id="phone" name="phone" placeholder="(555) 000-0000" autocomplete="tel" />
+        </div>
+        <div class="field">
+          <label for="preferred_time">Preferred Demo Time <span class="optional-label">(optional)</span></label>
+          <input type="text" id="preferred_time" name="preferred_time" placeholder="e.g. Weekday mornings" />
+        </div>
+      </div>
+
+      <button type="submit" class="submit-btn" id="submit-btn">
+        <span id="btn-label">Request Demo</span>
+      </button>
+    </form>
+
+    <div class="trust-row">
+      <div class="trust-item">&#128274; No spam, ever</div>
+      <div class="trust-item">&#9200; Response within 24 hours</div>
+      <div class="trust-item">&#127968; Built for K–12</div>
+    </div>
+  </div>
+</main>
+
+<script>
+(function() {{
+  var form = document.getElementById('demo-form');
+  var btn = document.getElementById('submit-btn');
+  var btnLabel = document.getElementById('btn-label');
+  var successMsg = document.getElementById('success-msg');
+  var errorMsg = document.getElementById('error-msg');
+
+  function showError(msg) {{
+    errorMsg.textContent = msg;
+    errorMsg.classList.add('visible');
+    successMsg.classList.remove('visible');
+  }}
+
+  function clearMessages() {{
+    errorMsg.classList.remove('visible');
+    successMsg.classList.remove('visible');
+  }}
+
+  form.addEventListener('submit', async function(e) {{
+    e.preventDefault();
+    clearMessages();
+
+    var name = document.getElementById('name').value.trim();
+    var email = document.getElementById('email').value.trim();
+    var organization = document.getElementById('organization').value.trim();
+    var role = document.getElementById('role').value.trim();
+    var school_count = document.getElementById('school_count').value.trim();
+    var message = document.getElementById('message').value.trim();
+    var phone = document.getElementById('phone').value.trim();
+    var preferred_time = document.getElementById('preferred_time').value.trim();
+    var hp = document.getElementById('hp-website').value.trim();
+
+    var errors = [];
+    if (!name) errors.push('Full name is required.');
+    if (!email || !/^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$/.test(email)) errors.push('A valid email address is required.');
+    if (!organization) errors.push('Organization name is required.');
+    if (!role) errors.push('Please select your role.');
+    if (!message) errors.push('Please tell us what you need help with.');
+    if (errors.length) {{ showError(errors[0]); return; }}
+
+    btn.disabled = true;
+    btnLabel.textContent = 'Sending…';
+
+    var body = new URLSearchParams({{
+      name: name,
+      email: email,
+      organization: organization,
+      role: role,
+      school_count: school_count,
+      message: message,
+      phone: phone,
+      preferred_time: preferred_time,
+      website: hp,
+    }});
+
+    try {{
+      var resp = await fetch('/public/request-demo', {{
+        method: 'POST',
+        headers: {{ 'Content-Type': 'application/x-www-form-urlencoded' }},
+        body: body.toString(),
+      }});
+      var data = await resp.json();
+      if (data.ok) {{
+        form.reset();
+        successMsg.classList.add('visible');
+        btn.disabled = false;
+        btnLabel.textContent = 'Request Demo';
+        form.style.display = 'none';
+      }} else {{
+        var msg = (data.errors && data.errors[0]) || data.error || 'Something went wrong. Please try again.';
+        showError(msg);
+        btn.disabled = false;
+        btnLabel.textContent = 'Request Demo';
+      }}
+    }} catch (err) {{
+      showError('Network error. Please check your connection and try again.');
+      btn.disabled = false;
+      btnLabel.textContent = 'Request Demo';
+    }}
+  }});
+}})();
+</script>
 
 </body>
 </html>"""

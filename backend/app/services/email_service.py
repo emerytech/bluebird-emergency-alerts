@@ -980,6 +980,71 @@ class EmailService:
         except Exception:
             return False
 
+    # ── Demo request emails ──────────────────────────────────────────────────
+
+    async def send_demo_request_notification(self, req: Any) -> bool:
+        """Send admin notification email for a new demo request. Never raises."""
+        try:
+            values = await anyio.to_thread.run_sync(self._settings_map_sync)
+            notify_email = (
+                values.get("INQUIRY_NOTIFY_EMAIL") or DEFAULT_INQUIRY_NOTIFY_EMAIL
+            ).strip()
+            if not notify_email:
+                return False
+
+            role = str(getattr(req, "role", "") or "")
+            school_count = str(getattr(req, "school_count", "N/A") or "N/A")
+            phone = str(getattr(req, "phone", "") or "")
+            preferred_time = str(getattr(req, "preferred_time", "") or "")
+            body = (
+                f"New BlueBird Alerts Demo Request\n\n"
+                f"Name: {getattr(req, 'name', '')}\n"
+                f"Email: {getattr(req, 'email', '')}\n"
+                f"Organization: {getattr(req, 'organization', '')}\n"
+                f"Role: {role}\n"
+                f"Number of Schools: {school_count}\n"
+                f"Phone: {phone or 'N/A'}\n"
+                f"Preferred Demo Time: {preferred_time or 'N/A'}\n"
+                f"Submitted: {getattr(req, 'created_at', '')}\n\n"
+                f"Message:\n{getattr(req, 'message', '')}\n\n"
+                f"--\nView in Super Admin: /super-admin?section=demo-requests"
+            )
+            return await self.send_via_provider(
+                to_address=notify_email,
+                subject=f"New Demo Request — {getattr(req, 'organization', 'New request')}",
+                body=body,
+                event_type="demo_request_notification",
+            )
+        except Exception:
+            return False
+
+    async def send_demo_request_auto_reply(self, req: Any) -> bool:
+        """Send auto-reply to demo request submitter if auto-reply is enabled. Never raises."""
+        try:
+            ar = await self.get_auto_reply_settings()
+            if ar.get("enabled", "0") != "1":
+                return False
+
+            vars: Dict[str, str] = {
+                "name": str(getattr(req, "name", "")),
+                "email": str(getattr(req, "email", "")),
+                "organization": str(getattr(req, "organization", "")),
+                "school_or_district": str(getattr(req, "organization", "")),
+                "role": str(getattr(req, "role", "") or ""),
+                "school_count": str(getattr(req, "school_count", "") or ""),
+            }
+            subject = self.render_template(ar["subject"], vars)
+            body = self.render_template(ar["body"], vars)
+
+            return await self.send_via_provider(
+                to_address=str(getattr(req, "email", "")),
+                subject=subject,
+                body=body,
+                event_type="demo_request_auto_reply",
+            )
+        except Exception:
+            return False
+
     # ── Stripe settings ──────────────────────────────────────────────────────
 
     def _get_stripe_settings_sync(self) -> Dict[str, str]:
