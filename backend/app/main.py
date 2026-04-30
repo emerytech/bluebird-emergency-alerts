@@ -455,15 +455,15 @@ async def _auto_reminder_loop(app: FastAPI, interval_hours: float = 24.0) -> Non
 async def _ai_insights_loop(app: FastAPI, interval: float = 600.0) -> None:
     """
     Background loop: runs AI analysis on enabled tenants using Ollama/llama3.
-    Skips all tenants where ai_insights.enabled is False.
-    Skips entirely if AI_INSIGHTS_GLOBAL_ENABLED env var is not set to true.
-    Never crashes the server on failure.
+    Metrics history is recorded on every run (even when insights are filtered out)
+    to drive trend detection. Checks every 10 minutes.
     """
     from app.services.ai_insights import (
         AI_INSIGHTS_GLOBAL_ENABLED,
         AiInsightsStore,
         _check_ollama_available,
         run_tenant_analysis,
+        compute_device_status_offline_pct,
     )
 
     if not AI_INSIGHTS_GLOBAL_ENABLED:
@@ -496,7 +496,7 @@ async def _ai_insights_loop(app: FastAPI, interval: float = 600.0) -> None:
                         continue
                     debug_mode = effective.ai_insights.debug_mode
 
-                    # Collect aggregate stats — counts only, no raw data or PII
+                    # Collect aggregate stats — counts/rates only, no raw data or PII
                     stats: dict = {}
                     try:
                         stats["active_users"] = await tenant.user_store.count_active()
@@ -505,8 +505,10 @@ async def _ai_insights_loop(app: FastAPI, interval: float = 600.0) -> None:
                     try:
                         devices = await tenant.device_registry.list_devices()
                         stats["device_count"] = len(devices)
+                        stats["offline_pct"] = compute_device_status_offline_pct(devices)
                     except Exception:
                         stats["device_count"] = 0
+                        stats["offline_pct"] = 0.0
                     try:
                         recent_alerts = await tenant.alert_log.list_recent(limit=100)
                         stats["alert_count"] = len(recent_alerts)
@@ -515,6 +517,8 @@ async def _ai_insights_loop(app: FastAPI, interval: float = 600.0) -> None:
                     stats["drill_count"] = 0
                     stats["quiet_period_count"] = 0
                     stats["ack_rate_pct"] = 0
+                    stats["push_failure_rate"] = 0.0
+                    stats["avg_response_time"] = 0.0
 
                     await run_tenant_analysis(
                         school.slug, stats, ai_store, debug_mode=debug_mode
@@ -527,6 +531,66 @@ async def _ai_insights_loop(app: FastAPI, interval: float = 600.0) -> None:
             break
         except Exception as exc:
             logger.warning("AI insights loop error: %s", exc)
+
+
+async def _ai_weekly_report_loop(app: FastAPI, check_interval: float = 21600.0) -> None:
+    """
+    Background loop: generates weekly AI reports. Checks every 6 hours.
+    Uses the UNIQUE index on (tenant_slug, week_start) to ensure at-most-one
+    report per tenant per week regardless of restarts.
+    """
+    from app.services.ai_insights import (
+        AI_INSIGHTS_GLOBAL_ENABLED,
+        AiInsightsStore,
+        _check_ollama_available,
+        generate_weekly_report,
+    )
+
+    if not AI_INSIGHTS_GLOBAL_ENABLED:
+        return
+
+    while True:
+        await asyncio.sleep(check_interval)
+        try:
+            school_registry: SchoolRegistry = app.state.school_registry
+            tenant_manager: TenantManager = app.state.tenant_manager
+            ai_store: AiInsightsStore = app.state.ai_insights_store
+
+            available, reason = await anyio.to_thread.run_sync(_check_ollama_available)
+            if not available:
+                logger.debug("AI Weekly: Ollama unavailable — %s", reason)
+                continue
+
+            now = datetime.now(timezone.utc)
+            # ISO week starts on Monday
+            week_start_dt = now - timedelta(days=now.weekday())
+            week_start = week_start_dt.strftime("%Y-%m-%d")
+
+            schools = await school_registry.list_schools()
+            for school in schools:
+                if school.is_test or getattr(school, "simulation_mode_enabled", False) \
+                        or getattr(school, "is_archived", False) or not school.is_active:
+                    continue
+                tenant = tenant_manager.get(school)
+                if tenant is None:
+                    continue
+                try:
+                    effective = await tenant.settings_store.get_effective_settings()
+                    if not effective.ai_insights.enabled:
+                        continue
+                    already_done = await ai_store.week_report_exists(school.slug, week_start)
+                    if already_done:
+                        continue
+                    await generate_weekly_report(school.slug, week_start, ai_store)
+                    logger.info("AI Weekly report generated: tenant=%s week=%s", school.slug, week_start)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    logger.debug("AI Weekly error tenant=%s: %s", school.slug, exc)
+        except asyncio.CancelledError:
+            break
+        except Exception as exc:
+            logger.warning("AI weekly report loop error: %s", exc)
 
 
 @asynccontextmanager
@@ -621,6 +685,9 @@ async def lifespan(app: FastAPI):
     ai_insights_task = asyncio.create_task(
         _ai_insights_loop(app, interval=600.0)
     )
+    ai_weekly_task = asyncio.create_task(
+        _ai_weekly_report_loop(app, check_interval=21600.0)
+    )
 
     yield
 
@@ -657,8 +724,13 @@ async def lifespan(app: FastAPI):
     except asyncio.CancelledError:
         pass
     ai_insights_task.cancel()
+    ai_weekly_task.cancel()
     try:
         await ai_insights_task
+    except asyncio.CancelledError:
+        pass
+    try:
+        await ai_weekly_task
     except asyncio.CancelledError:
         pass
 

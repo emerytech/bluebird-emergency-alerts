@@ -10062,6 +10062,10 @@ async def super_admin_ai_insights_list(request: Request, slug: str) -> JSONRespo
                 "severity": r.severity,
                 "summary": r.summary,
                 "recommendations": r.recommendations,
+                "category": r.category,
+                "trend": r.trend,
+                "trend_arrow": r.trend_arrow,
+                "health_score": r.health_score,
                 "final_confidence": r.final_confidence,
                 "llm_confidence": r.llm_confidence,
                 "rule_score": r.rule_score,
@@ -10070,6 +10074,61 @@ async def super_admin_ai_insights_list(request: Request, slug: str) -> JSONRespo
                 "needs_review": r.needs_review,
             }
             for r in records
+        ],
+    })
+
+
+@router.get("/super-admin/tenants/{slug}/ai-insights/health", include_in_schema=False)
+async def super_admin_ai_insights_health(request: Request, slug: str) -> JSONResponse:
+    """Current health score and trend for a tenant. Super admin only."""
+    _require_super_admin(request)
+    from app.services.ai_insights import AiInsightsStore, TREND_STABLE
+    school = await _schools(request).get_by_slug(slug.strip().lower())
+    if school is None:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    ai_store: AiInsightsStore = request.app.state.ai_insights_store  # type: ignore[attr-defined]
+    latest = await ai_store.get_latest_health(slug)
+    history = await ai_store.get_metrics_history(slug, limit=10)
+    from app.services.ai_insights import detect_trend
+    trend = detect_trend(history)
+    return JSONResponse({
+        "slug": slug,
+        "health_score": latest.health_score if latest else None,
+        "trend": trend,
+        "trend_arrow": {"improving": "↑", "worsening": "↓", "stable": "→"}.get(trend, "→"),
+        "last_updated": latest.timestamp if latest else None,
+        "history": [
+            {"timestamp": m.timestamp, "health_score": m.health_score,
+             "ack_rate": m.ack_rate, "offline_pct": m.offline_pct}
+            for m in history
+        ],
+    })
+
+
+@router.get("/super-admin/tenants/{slug}/ai-insights/reports", include_in_schema=False)
+async def super_admin_ai_insights_reports(request: Request, slug: str) -> JSONResponse:
+    """List weekly AI reports for a tenant. Super admin only."""
+    _require_super_admin(request)
+    from app.services.ai_insights import AiInsightsStore
+    school = await _schools(request).get_by_slug(slug.strip().lower())
+    if school is None:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    ai_store: AiInsightsStore = request.app.state.ai_insights_store  # type: ignore[attr-defined]
+    reports = await ai_store.list_reports(slug, limit=12)
+    return JSONResponse({
+        "slug": slug,
+        "reports": [
+            {
+                "id": r.id,
+                "week_start": r.week_start,
+                "generated_at": r.generated_at,
+                "summary": r.summary,
+                "recommendations": r.recommendations,
+                "health_score": r.health_score,
+                "trend": r.trend,
+                "trend_arrow": {"improving": "↑", "worsening": "↓", "stable": "→"}.get(r.trend, "→"),
+            }
+            for r in reports
         ],
     })
 

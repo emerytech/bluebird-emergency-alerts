@@ -3028,6 +3028,8 @@ def render_super_admin_page(
         onclick_enabled = "bbAiToggle('" + s + "','enabled')"
         onclick_debug = "bbAiToggle('" + s + "','debug')"
         onclick_view = "bbAiViewInsights('" + s + "')"
+        onclick_health = "bbAiViewHealth('" + s + "')"
+        onclick_reports = "bbAiViewReports('" + s + "')"
         return (
             '<tr id="ai-row-' + s + '">'
             '<td>' + n + '</td>'
@@ -3037,14 +3039,15 @@ def render_super_admin_page(
             'onclick="' + onclick_enabled + '">Toggle ON/OFF</button>'
             '<span id="ai-enabled-' + s + '" style="margin-left:8px;font-size:0.8rem;color:var(--muted);">&mdash;</span>'
             '</td>'
-            '<td>'
+            '<td id="ai-health-cell-' + s + '" style="white-space:nowrap;">'
             '<button class="button button-secondary" style="font-size:0.8rem;padding:4px 10px;" '
-            'onclick="' + onclick_debug + '">Toggle Debug</button>'
-            '<span id="ai-debug-' + s + '" style="margin-left:8px;font-size:0.8rem;color:var(--muted);">&mdash;</span>'
+            'onclick="' + onclick_health + '">Load</button>'
             '</td>'
             '<td>'
             '<button class="button button-secondary" style="font-size:0.8rem;padding:4px 10px;" '
-            'onclick="' + onclick_view + '">View</button>'
+            'onclick="' + onclick_view + '">Insights</button>'
+            ' <button class="button button-secondary" style="font-size:0.8rem;padding:4px 10px;" '
+            'onclick="' + onclick_reports + '">Reports</button>'
             '</td>'
             '</tr>'
         )
@@ -4868,8 +4871,8 @@ def render_super_admin_page(
                 <th>School</th>
                 <th>Slug</th>
                 <th>AI Insights</th>
-                <th>Debug Mode</th>
-                <th>Recent Insights</th>
+                <th>Health / Trend</th>
+                <th>Actions</th>
               </tr></thead>
               <tbody id="ai-insights-tenant-table">
                 {_ai_insights_tenant_rows_html}
@@ -4880,6 +4883,11 @@ def render_super_admin_page(
           <div id="ai-insights-panel" style="display:none;margin-top:24px;">
             <h3 id="ai-insights-panel-title" style="margin-bottom:12px;">Recent Insights</h3>
             <div id="ai-insights-panel-body" style="font-size:0.9rem;"></div>
+          </div>
+
+          <div id="ai-reports-panel" style="display:none;margin-top:24px;">
+            <h3 id="ai-reports-panel-title" style="margin-bottom:12px;">Weekly Reports</h3>
+            <div id="ai-reports-panel-body" style="font-size:0.9rem;"></div>
           </div>
 
           <details style="margin-top:32px;">
@@ -4913,6 +4921,8 @@ def render_super_admin_page(
               }})
               .catch(function(e) {{ alert('Error: ' + e); }});
           }}
+          var _BB_CAT_COLOR = {{security:'#dc2626', performance:'#d97706', readiness:'#2563eb'}};
+          var _BB_CAT_ICON  = {{security:'🔒', performance:'⚡', readiness:'✅'}};
           function _bbConfBar(pct, color) {{
             return '<div title="' + pct + '%" style="background:var(--border);border-radius:3px;height:6px;width:100px;display:inline-block;vertical-align:middle;overflow:hidden;">'
               + '<div style="width:' + pct + '%;height:100%;background:' + color + ';transition:width .3s;"></div></div>';
@@ -4920,10 +4930,70 @@ def render_super_admin_page(
           function _bbConfColor(pct) {{
             return pct >= 80 ? '#16a34a' : (pct >= 60 ? '#d97706' : '#dc2626');
           }}
+          function _bbHealthColor(score) {{
+            return score >= 80 ? '#16a34a' : (score >= 60 ? '#d97706' : '#dc2626');
+          }}
+          function bbAiViewHealth(slug) {{
+            var cell = document.getElementById('ai-health-cell-' + slug);
+            if (cell) cell.textContent = 'Loading…';
+            fetch('/super-admin/tenants/' + encodeURIComponent(slug) + '/ai-insights/health')
+              .then(function(r) {{ return r.json(); }})
+              .then(function(d) {{
+                if (!cell) return;
+                if (d.health_score == null) {{
+                  cell.innerHTML = '<span style="color:var(--muted);font-size:0.8rem;">No data yet</span>';
+                  return;
+                }}
+                var hc = _bbHealthColor(d.health_score);
+                var arrow = d.trend_arrow || '→';
+                cell.innerHTML = '<span style="font-weight:700;color:' + hc + ';font-size:1rem;">' + d.health_score + '</span>'
+                  + '<span style="font-size:0.9rem;margin-left:4px;">/100</span>'
+                  + ' <span style="font-size:1rem;" title="' + (d.trend||'stable') + '">' + arrow + '</span>';
+              }})
+              .catch(function() {{ if(cell) cell.textContent = 'Error'; }});
+          }}
+          function bbAiViewReports(slug) {{
+            var panel = document.getElementById('ai-reports-panel');
+            var title = document.getElementById('ai-reports-panel-title');
+            var body = document.getElementById('ai-reports-panel-body');
+            document.getElementById('ai-insights-panel').style.display = 'none';
+            panel.style.display = 'block';
+            title.textContent = 'Weekly Reports — ' + slug;
+            body.textContent = 'Loading…';
+            fetch('/super-admin/tenants/' + encodeURIComponent(slug) + '/ai-insights/reports')
+              .then(function(r) {{ return r.json(); }})
+              .then(function(d) {{
+                if (!d.reports || !d.reports.length) {{
+                  body.innerHTML = '<p class="mini-copy">No weekly reports yet. Reports are generated automatically each week when AI Insights is enabled.</p>';
+                  return;
+                }}
+                var html = '';
+                d.reports.forEach(function(rep) {{
+                  var hc = _bbHealthColor(rep.health_score);
+                  html += '<div style="border:1px solid var(--border);border-radius:8px;padding:14px 16px;margin-bottom:12px;">'
+                    + '<div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;flex-wrap:wrap;">'
+                    + '<strong>Week of ' + rep.week_start + '</strong>'
+                    + '<span style="font-weight:700;color:' + hc + ';">' + rep.health_score + '/100</span>'
+                    + '<span title="' + (rep.trend||'stable') + '">' + (rep.trend_arrow||'→') + ' ' + (rep.trend||'stable') + '</span>'
+                    + '<span style="font-size:0.75rem;color:var(--muted);">Generated: ' + rep.generated_at.slice(0,10) + '</span>'
+                    + '</div>'
+                    + '<p style="margin:0 0 8px;">' + rep.summary + '</p>';
+                  if (rep.recommendations && rep.recommendations.length) {{
+                    html += '<ul style="margin:0;padding-left:18px;">';
+                    rep.recommendations.forEach(function(r) {{ html += '<li style="font-size:0.85rem;">' + r + '</li>'; }});
+                    html += '</ul>';
+                  }}
+                  html += '</div>';
+                }});
+                body.innerHTML = html;
+              }})
+              .catch(function(e) {{ body.textContent = 'Error: ' + e; }});
+          }}
           function bbAiViewInsights(slug) {{
             var panel = document.getElementById('ai-insights-panel');
             var title = document.getElementById('ai-insights-panel-title');
             var body = document.getElementById('ai-insights-panel-body');
+            document.getElementById('ai-reports-panel').style.display = 'none';
             panel.style.display = 'block';
             title.textContent = 'Recent Insights — ' + slug;
             body.textContent = 'Loading…';
@@ -4942,11 +5012,20 @@ def render_super_admin_page(
                   var confColor = _bbConfColor(conf);
                   var confLabel = ins.confidence_label || (conf >= 80 ? 'High' : (conf >= 60 ? 'Needs Review' : 'Low'));
                   var needsReview = ins.needs_review;
+                  var cat = ins.category || 'readiness';
+                  var catColor = _BB_CAT_COLOR[cat] || '#6b7280';
+                  var catIcon = _BB_CAT_ICON[cat] || '📊';
+                  var trendArrow = ins.trend_arrow || '→';
+                  var hs = ins.health_score != null ? ins.health_score : '—';
+                  var hsColor = ins.health_score != null ? _bbHealthColor(ins.health_score) : 'var(--muted)';
                   html += '<div style="border:1px solid ' + (needsReview ? '#d97706' : 'var(--border)') + ';border-radius:8px;padding:12px 16px;margin-bottom:12px;">';
                   html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap;">'
+                    + '<span style="background:' + catColor + ';color:#fff;font-size:0.7rem;padding:2px 8px;border-radius:4px;">' + catIcon + ' ' + cat.toUpperCase() + '</span>'
                     + '<span style="background:' + sevColor + ';color:#fff;font-size:0.7rem;padding:2px 7px;border-radius:4px;text-transform:uppercase;">' + sev + '</span>'
+                    + '<span style="font-size:0.85rem;" title="trend">' + trendArrow + '</span>'
+                    + '<span style="font-size:0.75rem;color:' + hsColor + ';font-weight:600;">Health: ' + hs + '/100</span>'
                     + (needsReview ? '<span style="background:#d97706;color:#fff;font-size:0.7rem;padding:2px 7px;border-radius:4px;">Needs Review</span>' : '')
-                    + '<span style="font-size:0.75rem;color:var(--muted);">' + ins.timestamp.slice(0,19).replace('T',' ') + '</span>'
+                    + '<span style="font-size:0.75rem;color:var(--muted);margin-left:auto;">' + ins.timestamp.slice(0,19).replace('T',' ') + '</span>'
                     + '</div>';
                   html += '<p style="margin:0 0 8px;">' + ins.summary + '</p>';
                   if (ins.recommendations && ins.recommendations.length) {{
