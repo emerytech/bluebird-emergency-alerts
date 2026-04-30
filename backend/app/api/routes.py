@@ -776,8 +776,13 @@ def _fire_audit(
     metadata: Optional[dict] = None,
 ) -> None:
     """Fire-and-forget audit event. Never raises, never blocks the response."""
-    svc = _audit_log_svc(request)
-    slug = _tenant(request).slug
+    if not hasattr(request.state, "tenant"):
+        return  # No tenant context on super-admin routes — skip tenant audit
+    try:
+        svc = _audit_log_svc(request)
+        slug = _tenant(request).slug
+    except AttributeError:
+        return
 
     async def _task() -> None:
         try:
