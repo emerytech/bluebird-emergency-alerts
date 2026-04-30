@@ -10,9 +10,10 @@ from datetime import datetime, timezone
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from threading import Lock
-from typing import Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence
 
 import anyio
+import httpx
 from cryptography.fernet import Fernet, InvalidToken
 
 from app.core.config import Settings
@@ -88,8 +89,23 @@ TEMPLATES: Dict[str, Dict[str, str]] = {
 
 TEMPLATE_KEYS = list(TEMPLATES.keys())
 
+DEFAULT_AUTO_REPLY_SUBJECT = "Thanks for your interest in BlueBird Alerts"
+DEFAULT_AUTO_REPLY_BODY = (
+    "Hi {{name}},\n\n"
+    "Thanks for reaching out about BlueBird Alerts. I received your request for "
+    "{{school_or_district}} and will review the details soon.\n\n"
+    "BlueBird Alerts is designed to help schools quickly notify staff, coordinate "
+    "responses, and improve visibility during active situations.\n\n"
+    "I'll follow up with more information and a custom quote.\n\n"
+    "Thanks,\n"
+    "Taylor\n"
+    "Emery Tech Solutions"
+)
 
-# ── Record type ────────────────────────────────────────────────────────────────
+DEFAULT_INQUIRY_NOTIFY_EMAIL = "taylor@emerytechsolutions.com"
+
+
+# ── Record types ───────────────────────────────────────────────────────────────
 
 @dataclass(frozen=True)
 class EmailLogRecord:
@@ -186,6 +202,71 @@ class EmailService:
                 );
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS platform_stripe_settings (
+                    id                      INTEGER PRIMARY KEY DEFAULT 1,
+                    mode                    TEXT    NOT NULL DEFAULT 'test',
+                    publishable_key         TEXT    NOT NULL DEFAULT '',
+                    secret_key_encrypted    TEXT    NOT NULL DEFAULT '',
+                    webhook_secret_encrypted TEXT   NOT NULL DEFAULT '',
+                    updated_at              TEXT    NOT NULL DEFAULT ''
+                );
+                """
+            )
+            # Ensure the singleton row exists
+            conn.execute(
+                "INSERT OR IGNORE INTO platform_stripe_settings (id) VALUES (1);"
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS stripe_events (
+                    event_id     TEXT    PRIMARY KEY,
+                    event_type   TEXT    NOT NULL,
+                    district_id  INTEGER NULL,
+                    processed_at TEXT    NOT NULL,
+                    payload_json TEXT    NOT NULL DEFAULT '{}'
+                );
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_stripe_events_ts "
+                "ON stripe_events(processed_at DESC);"
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS billing_plans (
+                    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+                    plan_type            TEXT    NOT NULL UNIQUE,
+                    display_name         TEXT    NOT NULL,
+                    stripe_price_id_test TEXT    NULL,
+                    stripe_price_id_live TEXT    NULL,
+                    max_schools          INTEGER NULL,
+                    max_users            INTEGER NULL,
+                    features_json        TEXT    NULL,
+                    internal_notes       TEXT    NULL,
+                    is_active            INTEGER NOT NULL DEFAULT 1,
+                    created_at           TEXT    NOT NULL,
+                    updated_at           TEXT    NOT NULL
+                );
+                """
+            )
+            # Seed default plans if table is empty
+            now = datetime.now(timezone.utc).isoformat()
+            for pt, dn in (
+                ("trial", "Trial"),
+                ("basic", "Basic"),
+                ("pro", "Pro"),
+                ("enterprise", "Enterprise"),
+            ):
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO billing_plans
+                        (plan_type, display_name, is_active, created_at, updated_at)
+                    VALUES (?, ?, 1, ?, ?);
+                    """,
+                    (pt, dn, now, now),
+                )
 
     def _log_sync(
         self,
@@ -550,3 +631,508 @@ class EmailService:
     @classmethod
     def get_template(cls, key: str) -> Dict[str, str]:
         return dict(TEMPLATES.get(key, TEMPLATES["maintenance_notice"]))
+
+    # ── Extended email delivery settings ────────────────────────────────────
+
+    def _get_delivery_settings_sync(self) -> Dict[str, str]:
+        return self._settings_map_sync()
+
+    async def get_delivery_settings(self) -> Dict[str, str]:
+        """Return all platform_email_settings as a dict (secrets masked)."""
+        raw = await anyio.to_thread.run_sync(self._get_delivery_settings_sync)
+        masked: Dict[str, str] = {}
+        for k, v in raw.items():
+            if "ENCRYPTED" in k or k == "SMTP_PASSWORD":
+                masked[k] = "••••••••" if v else ""
+            else:
+                masked[k] = v
+        return masked
+
+    def _save_settings_sync(self, updates: Dict[str, str]) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            for key, value in updates.items():
+                conn.execute(
+                    """
+                    INSERT INTO platform_email_settings (key, value, updated_at)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(key) DO UPDATE SET
+                        value = excluded.value, updated_at = excluded.updated_at;
+                    """,
+                    (key, value, now),
+                )
+
+    async def save_delivery_settings(
+        self,
+        *,
+        provider: str,
+        from_email: str,
+        from_name: str,
+        reply_to_email: str = "",
+        inquiry_notify_email: str = "",
+        sendgrid_api_key: Optional[str] = None,
+    ) -> None:
+        """Save provider-level and general email delivery settings."""
+        valid_providers = {"smtp", "sendgrid", "disabled"}
+        if provider not in valid_providers:
+            raise ValueError(f"Invalid provider: {provider!r}")
+        updates: Dict[str, str] = {
+            "PROVIDER": provider,
+            "FROM_EMAIL": from_email.strip().lower(),
+            "FROM_NAME": from_name.strip() or "BlueBird Alerts",
+            "REPLY_TO_EMAIL": reply_to_email.strip(),
+            "INQUIRY_NOTIFY_EMAIL": (
+                inquiry_notify_email.strip() or DEFAULT_INQUIRY_NOTIFY_EMAIL
+            ),
+        }
+        if sendgrid_api_key and sendgrid_api_key.strip():
+            updates["SENDGRID_API_KEY_ENCRYPTED"] = encrypt_secret(
+                sendgrid_api_key.strip(), self._encryption_secret
+            )
+        await anyio.to_thread.run_sync(self._save_settings_sync, updates)
+
+    async def save_auto_reply_settings(
+        self,
+        *,
+        enabled: bool,
+        subject: str,
+        body: str,
+    ) -> None:
+        updates: Dict[str, str] = {
+            "AUTO_REPLY_ENABLED": "1" if enabled else "0",
+            "AUTO_REPLY_SUBJECT": subject.strip() or DEFAULT_AUTO_REPLY_SUBJECT,
+            "AUTO_REPLY_BODY": body.strip() or DEFAULT_AUTO_REPLY_BODY,
+        }
+        await anyio.to_thread.run_sync(self._save_settings_sync, updates)
+
+    def _get_auto_reply_sync(self) -> Dict[str, str]:
+        values = self._settings_map_sync()
+        return {
+            "enabled": values.get("AUTO_REPLY_ENABLED", "0"),
+            "subject": values.get("AUTO_REPLY_SUBJECT", DEFAULT_AUTO_REPLY_SUBJECT),
+            "body": values.get("AUTO_REPLY_BODY", DEFAULT_AUTO_REPLY_BODY),
+        }
+
+    async def get_auto_reply_settings(self) -> Dict[str, str]:
+        return await anyio.to_thread.run_sync(self._get_auto_reply_sync)
+
+    # ── SendGrid ────────────────────────────────────────────────────────────
+
+    async def _send_via_sendgrid(
+        self,
+        *,
+        to_address: str,
+        subject: str,
+        body_text: str,
+        from_address: str,
+        from_name: str,
+        reply_to: Optional[str] = None,
+        api_key: str,
+    ) -> None:
+        payload: Dict[str, Any] = {
+            "personalizations": [{"to": [{"email": to_address}]}],
+            "from": {"email": from_address, "name": from_name},
+            "subject": subject,
+            "content": [{"type": "text/plain", "value": body_text}],
+        }
+        if reply_to:
+            payload["reply_to"] = {"email": reply_to}
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.post(
+                "https://api.sendgrid.com/v3/mail/send",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+            )
+            if r.status_code not in (200, 202):
+                raise RuntimeError(
+                    f"SendGrid error {r.status_code}: {r.text[:200]}"
+                )
+
+    # ── Unified send (routes through active provider) ────────────────────────
+
+    async def send_via_provider(
+        self,
+        *,
+        to_address: str,
+        subject: str,
+        body: str,
+        event_type: str = "manual",
+        reply_to: Optional[str] = None,
+    ) -> bool:
+        """
+        Send through whichever provider is configured.
+        Returns True on success. Never raises — logs and returns False on failure.
+        """
+        timestamp = datetime.now(timezone.utc).isoformat()
+        ok = False
+        error: Optional[str] = None
+        try:
+            values = await anyio.to_thread.run_sync(self._settings_map_sync)
+            provider = values.get("PROVIDER", "smtp").lower()
+
+            if provider == "disabled":
+                return True  # silently drop
+
+            if provider == "sendgrid":
+                api_key_enc = values.get("SENDGRID_API_KEY_ENCRYPTED", "")
+                api_key = (
+                    decrypt_secret(api_key_enc, self._encryption_secret)
+                    if api_key_enc
+                    else ""
+                )
+                if not api_key:
+                    raise RuntimeError("SendGrid API key not configured")
+                from_email = (
+                    values.get("FROM_EMAIL")
+                    or values.get("SMTP_FROM")
+                    or self._settings.SMTP_FROM
+                    or ""
+                ).strip()
+                from_name = (values.get("FROM_NAME") or values.get("SMTP_FROM_NAME") or "BlueBird Alerts").strip()
+                rt = reply_to or values.get("REPLY_TO_EMAIL", "")
+                await self._send_via_sendgrid(
+                    to_address=to_address,
+                    subject=subject,
+                    body_text=body,
+                    from_address=from_email,
+                    from_name=from_name,
+                    reply_to=rt or None,
+                    api_key=api_key,
+                )
+                ok = True
+            else:
+                # SMTP path (existing logic)
+                await anyio.to_thread.run_sync(self._send_sync, to_address, subject, body)
+                ok = True
+
+        except Exception as exc:
+            error = str(exc)[:500]
+
+        try:
+            await anyio.to_thread.run_sync(
+                self._log_sync, timestamp, event_type, to_address, subject, ok, error
+            )
+        except Exception:
+            pass
+        return ok
+
+    # ── Inquiry emails ───────────────────────────────────────────────────────
+
+    @staticmethod
+    def render_template(template: str, vars: Dict[str, str]) -> str:
+        """Replace {{var}} placeholders in template with values dict."""
+        result = template
+        for key, val in vars.items():
+            result = result.replace("{{" + key + "}}", str(val))
+        return result
+
+    async def send_inquiry_notification(self, inquiry: Any) -> bool:
+        """Send admin notification email for a new inquiry. Never raises."""
+        try:
+            values = await anyio.to_thread.run_sync(self._settings_map_sync)
+            notify_email = (
+                values.get("INQUIRY_NOTIFY_EMAIL") or DEFAULT_INQUIRY_NOTIFY_EMAIL
+            ).strip()
+            if not notify_email:
+                return False
+
+            students = str(getattr(inquiry, "estimated_students", "N/A") or "N/A")
+            schools = str(getattr(inquiry, "number_of_schools", "N/A") or "N/A")
+            tag = str(getattr(inquiry, "size_tag", "")).upper()
+            body = (
+                f"New BlueBird Alerts Inquiry [{tag}]\n\n"
+                f"Name: {getattr(inquiry, 'name', '')}\n"
+                f"Email: {getattr(inquiry, 'email', '')}\n"
+                f"School/District: {getattr(inquiry, 'school_or_district', '')}\n"
+                f"Estimated Students: {students}\n"
+                f"Number of Schools: {schools}\n"
+                f"Submitted: {getattr(inquiry, 'created_at', '')}\n\n"
+                f"Message:\n{getattr(inquiry, 'message', '')}\n\n"
+                f"--\nView in Super Admin: /super-admin?section=inquiries"
+            )
+            return await self.send_via_provider(
+                to_address=notify_email,
+                subject=f"[BlueBird Inquiry] {getattr(inquiry, 'name', 'New inquiry')} — {getattr(inquiry, 'school_or_district', '')}",
+                body=body,
+                event_type="inquiry_notification",
+            )
+        except Exception:
+            return False
+
+    async def send_inquiry_auto_reply(self, inquiry: Any) -> bool:
+        """Send auto-reply to inquiry submitter if enabled. Never raises."""
+        try:
+            ar = await self.get_auto_reply_settings()
+            if ar.get("enabled", "0") != "1":
+                return False
+
+            vars: Dict[str, str] = {
+                "name": str(getattr(inquiry, "name", "")),
+                "email": str(getattr(inquiry, "email", "")),
+                "school_or_district": str(getattr(inquiry, "school_or_district", "")),
+                "estimated_students": str(getattr(inquiry, "estimated_students", "") or ""),
+                "number_of_schools": str(getattr(inquiry, "number_of_schools", "") or ""),
+            }
+            subject = self.render_template(ar["subject"], vars)
+            body = self.render_template(ar["body"], vars)
+
+            return await self.send_via_provider(
+                to_address=str(getattr(inquiry, "email", "")),
+                subject=subject,
+                body=body,
+                event_type="inquiry_auto_reply",
+            )
+        except Exception:
+            return False
+
+    # ── Stripe settings ──────────────────────────────────────────────────────
+
+    def _get_stripe_settings_sync(self) -> Dict[str, str]:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT mode, publishable_key, secret_key_encrypted, "
+                "webhook_secret_encrypted, updated_at "
+                "FROM platform_stripe_settings WHERE id = 1;"
+            ).fetchone()
+        if row is None:
+            return {
+                "mode": "test",
+                "publishable_key": "",
+                "secret_key_set": "0",
+                "webhook_secret_set": "0",
+                "updated_at": "",
+            }
+        return {
+            "mode": str(row[0] or "test"),
+            "publishable_key": str(row[1] or ""),
+            "secret_key_set": "1" if row[2] else "0",
+            "webhook_secret_set": "1" if row[3] else "0",
+            "updated_at": str(row[4] or ""),
+        }
+
+    async def get_stripe_settings(self) -> Dict[str, str]:
+        return await anyio.to_thread.run_sync(self._get_stripe_settings_sync)
+
+    def _get_stripe_secret_sync(self) -> str:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT secret_key_encrypted FROM platform_stripe_settings WHERE id = 1;"
+            ).fetchone()
+        if not row or not row[0]:
+            return ""
+        return decrypt_secret(str(row[0]), self._encryption_secret)
+
+    async def get_stripe_secret_key(self) -> str:
+        """Return the decrypted Stripe secret key. Do not log or return to frontend."""
+        return await anyio.to_thread.run_sync(self._get_stripe_secret_sync)
+
+    def _get_stripe_webhook_secret_sync(self) -> str:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT webhook_secret_encrypted FROM platform_stripe_settings WHERE id = 1;"
+            ).fetchone()
+        if not row or not row[0]:
+            return ""
+        return decrypt_secret(str(row[0]), self._encryption_secret)
+
+    async def get_stripe_webhook_secret(self) -> str:
+        return await anyio.to_thread.run_sync(self._get_stripe_webhook_secret_sync)
+
+    def _get_stripe_mode_sync(self) -> str:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT mode FROM platform_stripe_settings WHERE id = 1;"
+            ).fetchone()
+        return str(row[0] or "test") if row else "test"
+
+    async def get_stripe_mode(self) -> str:
+        return await anyio.to_thread.run_sync(self._get_stripe_mode_sync)
+
+    def _save_stripe_settings_sync(
+        self,
+        mode: str,
+        publishable_key: str,
+        secret_key: Optional[str],
+        webhook_secret: Optional[str],
+    ) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT secret_key_encrypted, webhook_secret_encrypted "
+                "FROM platform_stripe_settings WHERE id = 1;"
+            ).fetchone()
+            existing_sk = str(row[0] or "") if row else ""
+            existing_wh = str(row[1] or "") if row else ""
+
+            new_sk = (
+                encrypt_secret(secret_key.strip(), self._encryption_secret)
+                if secret_key and secret_key.strip()
+                else existing_sk
+            )
+            new_wh = (
+                encrypt_secret(webhook_secret.strip(), self._encryption_secret)
+                if webhook_secret and webhook_secret.strip()
+                else existing_wh
+            )
+            conn.execute(
+                """
+                INSERT INTO platform_stripe_settings
+                    (id, mode, publishable_key, secret_key_encrypted,
+                     webhook_secret_encrypted, updated_at)
+                VALUES (1, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    mode                     = excluded.mode,
+                    publishable_key          = excluded.publishable_key,
+                    secret_key_encrypted     = excluded.secret_key_encrypted,
+                    webhook_secret_encrypted = excluded.webhook_secret_encrypted,
+                    updated_at               = excluded.updated_at;
+                """,
+                (mode, publishable_key, new_sk, new_wh, now),
+            )
+
+    async def save_stripe_settings(
+        self,
+        *,
+        mode: str,
+        publishable_key: str,
+        secret_key: Optional[str] = None,
+        webhook_secret: Optional[str] = None,
+    ) -> Dict[str, str]:
+        if mode not in ("test", "live"):
+            raise ValueError("Stripe mode must be 'test' or 'live'")
+        await anyio.to_thread.run_sync(
+            self._save_stripe_settings_sync,
+            mode,
+            publishable_key.strip(),
+            secret_key,
+            webhook_secret,
+        )
+        return await self.get_stripe_settings()
+
+    # ── Stripe event idempotency ─────────────────────────────────────────────
+
+    def _mark_stripe_event_sync(
+        self, event_id: str, event_type: str, district_id: Optional[int], payload_json: str
+    ) -> bool:
+        """Returns True if the event was freshly inserted, False if already processed."""
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO stripe_events (event_id, event_type, district_id, processed_at, payload_json)
+                    VALUES (?, ?, ?, ?, ?);
+                    """,
+                    (event_id, event_type, district_id, now, payload_json[:65535]),
+                )
+                return True
+            except Exception:
+                return False
+
+    async def mark_stripe_event(
+        self,
+        *,
+        event_id: str,
+        event_type: str,
+        district_id: Optional[int] = None,
+        payload_json: str = "{}",
+    ) -> bool:
+        return await anyio.to_thread.run_sync(
+            self._mark_stripe_event_sync, event_id, event_type, district_id, payload_json
+        )
+
+    # ── Billing plans ────────────────────────────────────────────────────────
+
+    def _list_billing_plans_sync(self) -> List[Dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, plan_type, display_name, stripe_price_id_test,
+                       stripe_price_id_live, max_schools, max_users,
+                       features_json, internal_notes, is_active
+                FROM billing_plans ORDER BY id;
+                """
+            ).fetchall()
+        return [
+            {
+                "id": int(r[0]),
+                "plan_type": str(r[1]),
+                "display_name": str(r[2]),
+                "stripe_price_id_test": r[3],
+                "stripe_price_id_live": r[4],
+                "max_schools": r[5],
+                "max_users": r[6],
+                "features_json": r[7],
+                "internal_notes": r[8],
+                "is_active": bool(r[9]),
+            }
+            for r in rows
+        ]
+
+    async def list_billing_plans(self) -> List[Dict[str, Any]]:
+        return await anyio.to_thread.run_sync(self._list_billing_plans_sync)
+
+    def _save_billing_plan_sync(
+        self,
+        plan_type: str,
+        display_name: str,
+        stripe_price_id_test: Optional[str],
+        stripe_price_id_live: Optional[str],
+        max_schools: Optional[int],
+        max_users: Optional[int],
+        internal_notes: Optional[str],
+    ) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO billing_plans
+                    (plan_type, display_name, stripe_price_id_test, stripe_price_id_live,
+                     max_schools, max_users, internal_notes, is_active, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+                ON CONFLICT(plan_type) DO UPDATE SET
+                    display_name         = excluded.display_name,
+                    stripe_price_id_test = excluded.stripe_price_id_test,
+                    stripe_price_id_live = excluded.stripe_price_id_live,
+                    max_schools          = excluded.max_schools,
+                    max_users            = excluded.max_users,
+                    internal_notes       = excluded.internal_notes,
+                    updated_at           = excluded.updated_at;
+                """,
+                (
+                    plan_type,
+                    display_name,
+                    stripe_price_id_test or None,
+                    stripe_price_id_live or None,
+                    max_schools,
+                    max_users,
+                    internal_notes or None,
+                    now,
+                    now,
+                ),
+            )
+
+    async def save_billing_plan(
+        self,
+        *,
+        plan_type: str,
+        display_name: str,
+        stripe_price_id_test: Optional[str] = None,
+        stripe_price_id_live: Optional[str] = None,
+        max_schools: Optional[int] = None,
+        max_users: Optional[int] = None,
+        internal_notes: Optional[str] = None,
+    ) -> None:
+        await anyio.to_thread.run_sync(
+            self._save_billing_plan_sync,
+            plan_type,
+            display_name,
+            stripe_price_id_test,
+            stripe_price_id_live,
+            max_schools,
+            max_users,
+            internal_notes,
+        )

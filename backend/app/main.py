@@ -33,6 +33,7 @@ from app.services.ai_insights import AiInsightsStore, AI_INSIGHTS_GLOBAL_ENABLED
 from app.services.push_queue import PushQueue
 from app.services.twilio_sms import TwilioSMSClient
 from app.services.user_tenant_store import UserTenantStore
+from app.services.inquiry_store import InquiryStore
 
 import anyio
 
@@ -711,6 +712,9 @@ async def lifespan(app: FastAPI):
 
     ai_insights_store = AiInsightsStore(settings.PLATFORM_DB_PATH)
     app.state.ai_insights_store = ai_insights_store
+
+    inquiry_store = InquiryStore(settings.PLATFORM_DB_PATH)
+    app.state.inquiry_store = inquiry_store
 
     push_queue = PushQueue(maxsize=500)
     await push_queue.start()

@@ -2967,6 +2967,267 @@ def _render_district_billing_section(district_billing_rows: Sequence[Mapping[str
     )
 
 
+def _render_inquiries_section(inquiries: object, section: str) -> str:
+    _style = "" if section == "inquiries" else ' style="display:none;"'
+    status_colors = {
+        "new": "#2563eb",
+        "contacted": "#d97706",
+        "quoted": "#7c3aed",
+        "closed": "#059669",
+    }
+    size_colors = {"small": "#6b7280", "medium": "#d97706", "large": "#dc2626", "unknown": "#6b7280"}
+    rows_html = ""
+    for inq in (inquiries or []):
+        inq_id = int(getattr(inq, "id", 0))
+        name = escape(str(getattr(inq, "name", "")))
+        email = escape(str(getattr(inq, "email", "")))
+        school = escape(str(getattr(inq, "school_or_district", "")))
+        students = str(getattr(inq, "estimated_students", "") or "—")
+        tag = str(getattr(inq, "size_tag", "unknown"))
+        st = str(getattr(inq, "status", "new"))
+        created = str(getattr(inq, "created_at", ""))[:10]
+        st_color = status_colors.get(st, "#6b7280")
+        sz_color = size_colors.get(tag, "#6b7280")
+        rows_html += (
+            f'<tr>'
+            f'<td style="font-weight:600;">{name}</td>'
+            f'<td><a href="mailto:{email}" style="color:var(--accent);">{email}</a></td>'
+            f'<td>{school}</td>'
+            f'<td style="text-align:center;">{students}</td>'
+            f'<td style="text-align:center;"><span style="font-size:0.72rem;font-weight:700;color:{sz_color};">{tag.upper()}</span></td>'
+            f'<td style="text-align:center;"><span style="font-size:0.72rem;font-weight:700;color:{st_color};">{st.upper()}</span></td>'
+            f'<td style="font-size:0.75rem;color:var(--muted);">{created}</td>'
+            f'<td>'
+            f'<form method="post" action="/super-admin/inquiries/{inq_id}/status" '
+            f'style="display:inline;" onsubmit="event.preventDefault();bbUpdateInquiryStatus(this,{inq_id});">'
+            f'<select name="new_status" style="font-size:0.72rem;padding:2px 6px;border-radius:4px;" onchange="this.form.requestSubmit();">'
+            + "".join(
+                f'<option value="{s}"{" selected" if s == st else ""}>{s.title()}</option>'
+                for s in ("new", "contacted", "quoted", "closed")
+            )
+            + f'</select></form>'
+            f'</td>'
+            f'</tr>'
+        )
+    if not rows_html:
+        rows_html = '<tr><td colspan="8" style="text-align:center;color:var(--muted);padding:24px;">No inquiries yet. Submit the contact form on the marketing site to test.</td></tr>'
+
+    return (
+        f'<section class="panel command-section" id="inquiries"{_style}>'
+        f'<div class="panel-header hero-band">'
+        f'<div><p class="eyebrow">Marketing</p><h1>Website Inquiries</h1>'
+        f'<p class="hero-copy">Leads submitted through the BlueBird Alerts marketing contact form.</p></div>'
+        f'</div>'
+        f'<div style="overflow-x:auto;margin-top:16px;">'
+        f'<table class="data-table" style="width:100%;font-size:0.82rem;">'
+        f'<thead><tr><th>Name</th><th>Email</th><th>School / District</th><th>Students</th>'
+        f'<th>Size</th><th>Status</th><th>Date</th><th>Action</th></tr></thead>'
+        f'<tbody id="inquiry-table-body">{rows_html}</tbody>'
+        f'</table></div>'
+        f'</section>'
+    )
+
+
+def _render_email_delivery_section(
+    settings: object, auto_reply: object, section: str = "configuration"
+) -> str:
+    def _v(key: str, default: str = "") -> str:
+        if isinstance(settings, dict):
+            return escape(str(settings.get(key, default) or default))
+        return escape(default)
+
+    def _ar(key: str, default: str = "") -> str:
+        if isinstance(auto_reply, dict):
+            return str(auto_reply.get(key, default) or default)
+        return default
+
+    provider = _v("PROVIDER", "smtp")
+    from_email = _v("FROM_EMAIL") or _v("SMTP_FROM")
+    from_name = _v("FROM_NAME") or _v("SMTP_FROM_NAME", "BlueBird Alerts")
+    reply_to = _v("REPLY_TO_EMAIL")
+    notify_email = _v("INQUIRY_NOTIFY_EMAIL", "taylor@emerytechsolutions.com")
+    sg_set = _v("SENDGRID_API_KEY_ENCRYPTED")
+    ar_enabled = _ar("enabled", "0") == "1"
+    ar_subject = escape(_ar("subject", "Thanks for your interest in BlueBird Alerts"))
+    ar_body = escape(_ar("body", "Hi {{name}},\n\nThanks for reaching out..."))
+
+    prov_opts = "".join(
+        f'<option value="{p}"{" selected" if p == provider else ""}>{p.title()}</option>'
+        for p in ("smtp", "sendgrid", "disabled")
+    )
+
+    sendgrid_hint = (
+        '<span class="status-pill ok" style="font-size:0.68rem;">API key stored</span>'
+        if sg_set else
+        '<span style="font-size:0.72rem;color:var(--muted);">No API key stored</span>'
+    )
+
+    return (
+        f'<div id="email-delivery-panel">'
+        f'<h2 style="margin-bottom:8px;">Email Delivery</h2>'
+        f'<p class="card-copy" style="margin-bottom:16px;">Provider for inquiry notifications and auto-replies. '
+        f'Separate from the Gmail/SMTP settings above — used for outbound marketing emails.</p>'
+        f'<div class="form-grid" style="gap:24px;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));margin-top:16px;">'
+        f'<div style="border:1px solid var(--border);border-radius:10px;padding:20px;">'
+        f'<h3 style="margin-bottom:12px;">Provider &amp; Identity</h3>'
+        f'<form id="email-delivery-form" method="post" action="/super-admin/email-delivery-settings" class="stack" style="gap:8px;">'
+        f'<label style="font-size:0.78rem;">Provider</label>'
+        f'<select name="provider" style="margin-bottom:6px;">{prov_opts}</select>'
+        f'<input name="from_email" type="email" value="{from_email}" placeholder="From email" style="font-size:0.83rem;" />'
+        f'<input name="from_name" value="{from_name}" placeholder="From name" style="font-size:0.83rem;" />'
+        f'<input name="reply_to_email" value="{reply_to}" placeholder="Reply-to (optional)" style="font-size:0.83rem;" />'
+        f'<input name="inquiry_notify_email" type="email" value="{notify_email}" placeholder="Inquiry notification email" style="font-size:0.83rem;" />'
+        f'<p style="font-size:0.72rem;color:var(--muted);margin:0;">Inquiry notifications are sent here.</p>'
+        f'<hr style="margin:8px 0;border-color:var(--border);" />'
+        f'<label style="font-size:0.78rem;">SendGrid API Key {sendgrid_hint}</label>'
+        f'<input name="sendgrid_api_key" type="password" placeholder="Leave blank to keep existing" style="font-size:0.83rem;" />'
+        f'<p style="font-size:0.72rem;color:var(--muted);margin:0;">Only needed if provider = SendGrid.</p>'
+        f'<div class="button-row" style="margin-top:8px;">'
+        f'<button class="button button-primary" type="submit" id="email-delivery-save-btn">Save Settings</button>'
+        f'</div></form>'
+        f'<div style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px;">'
+        f'<p style="font-size:0.78rem;font-weight:600;margin-bottom:8px;">Send Test Email</p>'
+        f'<div style="display:flex;gap:8px;">'
+        f'<input id="email-test-to" type="email" placeholder="Recipient address" style="flex:1;font-size:0.83rem;" />'
+        f'<button class="button button-secondary" type="button" onclick="bbSendTestEmail()">Send Test</button>'
+        f'</div>'
+        f'<span id="email-test-result" style="font-size:0.75rem;margin-top:4px;display:block;"></span>'
+        f'</div></div>'
+        f'<div style="border:1px solid var(--border);border-radius:10px;padding:20px;margin-top:0;">'
+        f'<h3 style="margin-bottom:12px;">Auto-Reply Template</h3>'
+        f'<form id="auto-reply-form" method="post" action="/super-admin/email-delivery-settings/auto-reply" class="stack" style="gap:8px;">'
+        f'<label style="display:flex;align-items:center;gap:8px;font-size:0.82rem;">'
+        f'<input type="checkbox" name="auto_reply_enabled" value="1"{"  checked" if ar_enabled else ""} />'
+        f'Enable auto-reply to submitters</label>'
+        f'<input name="auto_reply_subject" value="{ar_subject}" placeholder="Subject" style="font-size:0.83rem;" />'
+        f'<textarea name="auto_reply_body" rows="10" style="font-size:0.8rem;font-family:monospace;resize:vertical;"'
+        f' placeholder="Body (use {{{{name}}}}, {{{{school_or_district}}}}, etc.)">{ar_body}</textarea>'
+        f'<p style="font-size:0.72rem;color:var(--muted);">Variables: {{{{name}}}}, {{{{email}}}}, {{{{school_or_district}}}}, '
+        f'{{{{estimated_students}}}}, {{{{number_of_schools}}}}</p>'
+        f'<div class="button-row" style="margin-top:4px;">'
+        f'<button class="button button-primary" type="submit">Save Auto-Reply</button>'
+        f'<button class="button button-secondary" type="button" onclick="bbPreviewAutoReply()">Preview</button>'
+        f'</div></form>'
+        f'<div id="auto-reply-preview" style="display:none;margin-top:12px;padding:12px;'
+        f'background:var(--card-bg, #f8faff);border:1px solid var(--border);border-radius:8px;">'
+        f'<p style="font-size:0.78rem;font-weight:600;margin-bottom:4px;">Subject: <span id="preview-subject"></span></p>'
+        f'<pre id="preview-body" style="font-size:0.78rem;white-space:pre-wrap;margin:0;"></pre>'
+        f'</div></div></div></div>'
+    )
+
+
+def _render_stripe_section(
+    stripe: object, plans: object, section: str = "configuration"
+) -> str:
+    def _sv(key: str, default: str = "") -> str:
+        if isinstance(stripe, dict):
+            return escape(str(stripe.get(key, default) or default))
+        return escape(default)
+
+    mode = _sv("mode", "test")
+    pub_key = _sv("publishable_key")
+    sk_set = _sv("secret_key_set") == "1"
+    wh_set = _sv("webhook_secret_set") == "1"
+    updated = _sv("updated_at")
+
+    mode_opts = "".join(
+        f'<option value="{m}"{" selected" if m == mode else ""}>{m.title()}</option>'
+        for m in ("test", "live")
+    )
+    mode_badge = (
+        f'<span class="status-pill {"ok" if mode == "live" else ""}" '
+        f'style="font-size:0.68rem;">{mode.upper()}</span>'
+    )
+
+    plans_rows = ""
+    for p in (plans or []):
+        if not isinstance(p, dict):
+            continue
+        pt = escape(str(p.get("plan_type", "")))
+        dn = escape(str(p.get("display_name", "")))
+        pid_t = escape(str(p.get("stripe_price_id_test") or ""))
+        pid_l = escape(str(p.get("stripe_price_id_live") or ""))
+        ms = str(p.get("max_schools") or "")
+        mu = str(p.get("max_users") or "")
+        notes = escape(str(p.get("internal_notes") or ""))
+        plans_rows += (
+            f'<tr>'
+            f'<td style="font-weight:600;">{pt}</td>'
+            f'<td>{dn}</td>'
+            f'<td style="font-family:monospace;font-size:0.72rem;">{pid_t or "—"}</td>'
+            f'<td style="font-family:monospace;font-size:0.72rem;">{pid_l or "—"}</td>'
+            f'<td style="text-align:center;">{ms or "—"}</td>'
+            f'<td style="text-align:center;">{mu or "—"}</td>'
+            f'<td style="font-size:0.72rem;color:var(--muted);">{notes}</td>'
+            f'<td><button class="button button-secondary" type="button" style="font-size:0.72rem;padding:3px 8px;" '
+            f'onclick="bbEditPlan({json.dumps(pt)},{json.dumps(dn)},{json.dumps(pid_t)},{json.dumps(pid_l)},{json.dumps(ms)},{json.dumps(mu)},{json.dumps(notes)})">Edit</button></td>'
+            f'</tr>'
+        )
+    if not plans_rows:
+        plans_rows = '<tr><td colspan="8" style="text-align:center;color:var(--muted);padding:12px;">No plans configured.</td></tr>'
+
+    _sk_cls = "ok" if sk_set else "danger"
+    _sk_lbl = "set" if sk_set else "missing"
+    _wh_cls = "ok" if wh_set else ""
+    _wh_lbl = "set" if wh_set else "not set"
+    _updated_html = f'<p style="font-size:0.72rem;color:var(--muted);">Last updated: {updated[:10]}</p>' if updated else ''
+    _sk_ph = "Secret key (stored — change to replace)" if sk_set else "Secret key (sk_...)"
+    _wh_ph = "Webhook secret (stored — change to replace)" if wh_set else "Webhook signing secret (whsec_...)"
+
+    return (
+        f'<div id="stripe-billing-panel">'
+        f'<div style="display:flex;align-items:center;gap:12px;margin-bottom:8px;">'
+        f'<h2 style="margin:0;">Stripe Billing</h2> {mode_badge}'
+        f'<span class="status-pill {_sk_cls}" style="font-size:0.68rem;">Secret {_sk_lbl}</span>'
+        f'<span class="status-pill {_wh_cls}" style="font-size:0.68rem;">Webhook {_wh_lbl}</span>'
+        f'</div>'
+        f'<p class="card-copy" style="margin-bottom:16px;">Stripe API credentials and subscription plan configuration. Secrets are encrypted at rest and never exposed.</p>'
+        f'<div class="form-grid" style="gap:24px;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));margin-top:16px;">'
+        f'<div style="border:1px solid var(--border);border-radius:10px;padding:20px;">'
+        f'<h3 style="margin-bottom:12px;">API Credentials</h3>'
+        f'<form id="stripe-settings-form" method="post" action="/super-admin/stripe-settings" class="stack" style="gap:8px;">'
+        f'<label style="font-size:0.78rem;">Mode</label>'
+        f'<select name="stripe_mode" style="margin-bottom:6px;">{mode_opts}</select>'
+        f'<input name="publishable_key" value="{pub_key}" placeholder="Publishable key (pk_...)" style="font-size:0.83rem;" />'
+        f'<input name="secret_key" type="password" placeholder="{_sk_ph}" style="font-size:0.83rem;" />'
+        f'<input name="webhook_secret" type="password" placeholder="{_wh_ph}" style="font-size:0.83rem;" />'
+        f'<p style="font-size:0.72rem;color:var(--muted);">Webhook URL: <code>/stripe/webhook</code></p>'
+        f'{_updated_html}'
+        f'<div class="button-row" style="margin-top:8px;">'
+        f'<button class="button button-primary" type="submit">Save Settings</button>'
+        f'<button class="button button-secondary" type="button" onclick="bbTestStripe()">Test Connection</button>'
+        f'</div></form>'
+        f'<span id="stripe-test-result" style="font-size:0.75rem;margin-top:8px;display:block;"></span>'
+        f'</div>'
+        f'<div style="border:1px solid var(--border);border-radius:10px;padding:20px;">'
+        f'<h3 style="margin-bottom:12px;">Billing Plans</h3>'
+        f'<p style="font-size:0.78rem;color:var(--muted);margin-bottom:12px;">Map plan types to Stripe price IDs. Never exposed publicly.</p>'
+        f'<div style="overflow-x:auto;">'
+        f'<table class="data-table" style="font-size:0.78rem;width:100%;">'
+        f'<thead><tr><th>Plan</th><th>Label</th><th>Test Price ID</th><th>Live Price ID</th>'
+        f'<th>Max Schools</th><th>Max Users</th><th>Notes</th><th></th></tr></thead>'
+        f'<tbody id="billing-plans-tbody">{plans_rows}</tbody>'
+        f'</table></div>'
+        f'<div id="edit-plan-form-wrap" style="display:none;margin-top:12px;padding:12px;border:1px solid var(--border);border-radius:8px;">'
+        f'<form id="edit-plan-form" method="post" action="/super-admin/stripe-settings/plans" class="stack" style="gap:6px;" onsubmit="event.preventDefault();bbSavePlan();">'
+        f'<input id="ep-plan_type" name="plan_type" placeholder="plan_type (e.g. basic)" style="font-size:0.82rem;" />'
+        f'<input id="ep-display_name" name="display_name" placeholder="Display name" style="font-size:0.82rem;" />'
+        f'<input id="ep-test" name="stripe_price_id_test" placeholder="Test price ID" style="font-size:0.82rem;" />'
+        f'<input id="ep-live" name="stripe_price_id_live" placeholder="Live price ID" style="font-size:0.82rem;" />'
+        f'<input id="ep-ms" name="max_schools" type="number" placeholder="Max schools" style="font-size:0.82rem;" />'
+        f'<input id="ep-mu" name="max_users" type="number" placeholder="Max users" style="font-size:0.82rem;" />'
+        f'<input id="ep-notes" name="internal_notes" placeholder="Internal notes" style="font-size:0.82rem;" />'
+        f'<div class="button-row">'
+        f'<button class="button button-primary" type="submit">Save Plan</button>'
+        f'<button class="button button-secondary" type="button" onclick="document.getElementById(\'edit-plan-form-wrap\').style.display=\'none\'">Cancel</button>'
+        f'</div></form></div>'
+        f'<button class="button button-secondary" type="button" style="margin-top:12px;font-size:0.78rem;" '
+        f'onclick="bbEditPlan(\'\',\'\',\'\',\'\',\'\',\'\',\'\')">+ Add / Edit Plan</button>'
+        f'</div></div>'
+        f'</div>'
+    )
+
+
 def render_super_admin_page(
     *,
     base_domain: str,
@@ -3001,6 +3262,11 @@ def render_super_admin_page(
     platform_stats: Optional[Mapping[str, object]] = None,
     sandbox_data: Sequence[Mapping[str, object]] = (),
     prod_districts: Sequence[object] = (),
+    inquiries: Sequence[object] = (),
+    email_delivery_settings: Mapping[str, str] = {},
+    auto_reply_settings: Mapping[str, str] = {},
+    stripe_settings: Mapping[str, str] = {},
+    billing_plans: Sequence[Mapping[str, object]] = (),
 ) -> str:
     _active_school_rows = [r for r in school_rows if not r.get("is_archived")]
     _archived_school_rows = [r for r in school_rows if r.get("is_archived")]
@@ -3136,7 +3402,7 @@ def render_super_admin_page(
         for c in setup_codes
     ) or '<tr><td colspan="7" class="empty-state">No setup codes generated yet.</td></tr>'
 
-    section = active_section if active_section in {"districts", "schools", "billing", "platform-audit", "create-school", "security", "configuration", "server-tools", "health", "email-tool", "setup-codes", "noc", "msp", "platform-control", "sandbox", "ai-insights"} else "districts"
+    section = active_section if active_section in {"districts", "schools", "billing", "platform-audit", "create-school", "security", "configuration", "server-tools", "health", "email-tool", "setup-codes", "noc", "msp", "platform-control", "sandbox", "ai-insights", "inquiries"} else "districts"
 
     def _section_style(name: str) -> str:
         return "" if section == name else ' style="display:none;"'
@@ -3775,6 +4041,7 @@ def render_super_admin_page(
             {_nav_item("platform-audit", "Platform Audit")}
             {_nav_item("health", "System Health", None if (not health_status or health_status.overall == 'ok') else "!")}
             {_nav_item("email-tool", "Email Tool")}
+            {_nav_item("inquiries", "Inquiries")}
             {_nav_item("configuration", "Configuration", None if email_configured else "!")}
             {_nav_item("setup-codes", "Setup Codes")}
             {_nav_item("security", "Security")}
@@ -4641,6 +4908,7 @@ def render_super_admin_page(
             <tbody>{_hb_rows_html}</tbody>
           </table></div>
         </section>
+        {_render_inquiries_section(inquiries, section)}
         <section class="panel command-section" id="email-tool"{_section_style("email-tool")}>
           <div class="panel-header hero-band">
             <div>
@@ -4830,6 +5098,14 @@ def render_super_admin_page(
                 <p class="mini-copy">For now this stores the app password so the backend can send mail after restarts. Use a dedicated Google app password, not your normal account password.</p>
               </article>
             </div>
+          </div>
+          <hr style="margin:28px 0;border:none;border-top:1px solid var(--border);" />
+          <div id="email-delivery-subsection">
+            {_render_email_delivery_section(email_delivery_settings, auto_reply_settings, "configuration")}
+          </div>
+          <hr style="margin:28px 0;border:none;border-top:1px solid var(--border);" />
+          <div id="stripe-billing-subsection">
+            {_render_stripe_section(stripe_settings, billing_plans, "configuration")}
           </div>
         </section>
         <section class="panel command-section" id="security"{_section_style("security")}>

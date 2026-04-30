@@ -1494,3 +1494,260 @@ try {
 
   })();
 } catch (e) { console.error('[BB] district-mgmt', e); }
+
+// ── Inquiries ──────────────────────────────────────────────────────────────
+function bbUpdateInquiryStatus(form, inquiryId) {
+  var sel = form.querySelector('select[name="new_status"]');
+  if (!sel) return;
+  var data = new URLSearchParams();
+  data.append('new_status', sel.value);
+  fetch('/super-admin/inquiries/' + inquiryId + '/status', {
+    method: 'POST',
+    headers: { 'X-Requested-With': 'XMLHttpRequest' },
+    body: data,
+  })
+    .then(function(r) { return r.json(); })
+    .then(function(j) {
+      if (!j.ok) { alert('Error: ' + (j.error || 'Unknown')); }
+    })
+    .catch(function(e) { console.error('[BB] inquiry status', e); });
+}
+
+// ── Email delivery settings AJAX ──────────────────────────────────────────
+(function() {
+  document.addEventListener('DOMContentLoaded', function() {
+    var deliveryForm = document.getElementById('email-delivery-form');
+    if (deliveryForm) {
+      deliveryForm.addEventListener('submit', function(ev) {
+        ev.preventDefault();
+        var btn = document.getElementById('email-delivery-save-btn');
+        var orig = btn ? btn.textContent : '';
+        if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
+        fetch(deliveryForm.action, {
+          method: 'POST',
+          headers: { 'X-Requested-With': 'XMLHttpRequest' },
+          body: new URLSearchParams(new FormData(deliveryForm)),
+        })
+          .then(function(r) { return r.json(); })
+          .then(function(j) {
+            var chip = document.createElement('span');
+            chip.className = 'status-pill ' + (j.ok ? 'ok' : 'danger');
+            chip.style.cssText = 'font-size:0.7rem;padding:2px 8px;margin-left:8px;';
+            chip.textContent = j.ok ? 'Saved' : (j.error || 'Error');
+            if (btn) { btn.after(chip); setTimeout(function() { chip.remove(); }, 3500); }
+          })
+          .catch(function() {})
+          .finally(function() { if (btn) { btn.disabled = false; btn.textContent = orig; } });
+      });
+    }
+
+    var arForm = document.getElementById('auto-reply-form');
+    if (arForm) {
+      arForm.addEventListener('submit', function(ev) {
+        ev.preventDefault();
+        var btn = arForm.querySelector('button[type="submit"]');
+        var orig = btn ? btn.textContent : '';
+        if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
+        fetch(arForm.action, {
+          method: 'POST',
+          headers: { 'X-Requested-With': 'XMLHttpRequest' },
+          body: new URLSearchParams(new FormData(arForm)),
+        })
+          .then(function(r) { return r.json(); })
+          .then(function(j) {
+            var chip = document.createElement('span');
+            chip.className = 'status-pill ' + (j.ok ? 'ok' : 'danger');
+            chip.style.cssText = 'font-size:0.7rem;padding:2px 8px;margin-left:8px;';
+            chip.textContent = j.ok ? 'Saved' : (j.error || 'Error');
+            if (btn) { btn.after(chip); setTimeout(function() { chip.remove(); }, 3500); }
+          })
+          .catch(function() {})
+          .finally(function() { if (btn) { btn.disabled = false; btn.textContent = orig; } });
+      });
+    }
+
+    var stripeForm = document.getElementById('stripe-settings-form');
+    if (stripeForm) {
+      stripeForm.addEventListener('submit', function(ev) {
+        ev.preventDefault();
+        var btn = stripeForm.querySelector('button[type="submit"]');
+        var orig = btn ? btn.textContent : '';
+        if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
+        fetch(stripeForm.action, {
+          method: 'POST',
+          headers: { 'X-Requested-With': 'XMLHttpRequest' },
+          body: new URLSearchParams(new FormData(stripeForm)),
+        })
+          .then(function(r) { return r.json(); })
+          .then(function(j) {
+            var chip = document.createElement('span');
+            chip.className = 'status-pill ' + (j.ok ? 'ok' : 'danger');
+            chip.style.cssText = 'font-size:0.7rem;padding:2px 8px;margin-left:8px;';
+            chip.textContent = j.ok ? 'Saved' : (j.error || 'Error');
+            if (btn) { btn.after(chip); setTimeout(function() { chip.remove(); }, 3500); }
+          })
+          .catch(function() {})
+          .finally(function() { if (btn) { btn.disabled = false; btn.textContent = orig; } });
+      });
+    }
+  });
+})();
+
+function bbSendTestEmail() {
+  var to = document.getElementById('email-test-to');
+  var result = document.getElementById('email-test-result');
+  if (!to || !to.value.trim()) { if (result) result.textContent = 'Enter a recipient email.'; return; }
+  if (result) result.textContent = 'Sending…';
+  var data = new URLSearchParams();
+  data.append('test_to', to.value.trim());
+  fetch('/super-admin/email-delivery-settings/test', {
+    method: 'POST',
+    headers: { 'X-Requested-With': 'XMLHttpRequest' },
+    body: data,
+  })
+    .then(function(r) { return r.json(); })
+    .then(function(j) {
+      if (result) {
+        result.style.color = j.ok ? '#059669' : '#dc2626';
+        result.textContent = j.message || (j.ok ? 'Sent!' : 'Failed');
+      }
+    })
+    .catch(function(e) { if (result) { result.style.color = '#dc2626'; result.textContent = 'Error'; } });
+}
+
+function bbPreviewAutoReply() {
+  var preview = document.getElementById('auto-reply-preview');
+  var subEl = document.getElementById('preview-subject');
+  var bodyEl = document.getElementById('preview-body');
+  if (!preview) return;
+  fetch('/super-admin/email-delivery-settings/preview-auto-reply', {
+    headers: { 'X-Requested-With': 'XMLHttpRequest' },
+  })
+    .then(function(r) { return r.json(); })
+    .then(function(j) {
+      if (j.ok) {
+        if (subEl) subEl.textContent = j.subject;
+        if (bodyEl) bodyEl.textContent = j.body;
+        preview.style.display = 'block';
+      }
+    })
+    .catch(function(e) { console.error('[BB] preview', e); });
+}
+
+function bbTestStripe() {
+  var result = document.getElementById('stripe-test-result');
+  if (result) result.textContent = 'Testing…';
+  fetch('/super-admin/stripe-settings/test', {
+    method: 'POST',
+    headers: { 'X-Requested-With': 'XMLHttpRequest' },
+    body: new URLSearchParams(),
+  })
+    .then(function(r) { return r.json(); })
+    .then(function(j) {
+      if (result) {
+        result.style.color = j.ok ? '#059669' : '#dc2626';
+        result.textContent = j.ok
+          ? ('Connected: ' + (j.business_name || j.account_id || 'OK') + ' [' + j.mode + ']')
+          : (j.error || 'Failed');
+      }
+    })
+    .catch(function(e) { if (result) { result.style.color = '#dc2626'; result.textContent = 'Error'; } });
+}
+
+function bbEditPlan(planType, displayName, testId, liveId, maxSchools, maxUsers, notes) {
+  var wrap = document.getElementById('edit-plan-form-wrap');
+  if (!wrap) return;
+  function _s(id, val) { var el = document.getElementById(id); if (el) el.value = val || ''; }
+  _s('ep-plan_type', planType);
+  _s('ep-display_name', displayName);
+  _s('ep-test', testId);
+  _s('ep-live', liveId);
+  _s('ep-ms', maxSchools);
+  _s('ep-mu', maxUsers);
+  _s('ep-notes', notes);
+  wrap.style.display = 'block';
+  wrap.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+function bbSavePlan() {
+  var form = document.getElementById('edit-plan-form');
+  if (!form) return;
+  var btn = form.querySelector('button[type="submit"]');
+  var orig = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
+  fetch(form.action, {
+    method: 'POST',
+    headers: { 'X-Requested-With': 'XMLHttpRequest' },
+    body: new URLSearchParams(new FormData(form)),
+  })
+    .then(function(r) { return r.json(); })
+    .then(function(j) {
+      if (j.ok) {
+        document.getElementById('edit-plan-form-wrap').style.display = 'none';
+        // Refresh page to show updated plans
+        window.location.reload();
+      } else {
+        alert('Error: ' + (j.error || 'Unknown'));
+      }
+    })
+    .catch(function(e) { alert('Error: ' + e); })
+    .finally(function() { if (btn) { btn.disabled = false; btn.textContent = orig; } });
+}
+
+// ── Stripe checkout / portal launchers ────────────────────────────────────
+function bbStartStripeCheckout(districtSlug, planType) {
+  var data = new URLSearchParams();
+  data.append('plan_type', planType);
+  fetch('/super-admin/districts/' + districtSlug + '/billing/create-checkout', {
+    method: 'POST',
+    headers: { 'X-Requested-With': 'XMLHttpRequest' },
+    body: data,
+  })
+    .then(function(r) { return r.json(); })
+    .then(function(j) {
+      if (j.ok && j.checkout_url) {
+        window.open(j.checkout_url, '_blank');
+      } else {
+        alert('Stripe error: ' + (j.error || 'Unknown'));
+      }
+    })
+    .catch(function(e) { alert('Error: ' + e); });
+}
+
+function bbOpenStripePortal(districtSlug) {
+  fetch('/super-admin/districts/' + districtSlug + '/billing/create-portal', {
+    method: 'POST',
+    headers: { 'X-Requested-With': 'XMLHttpRequest' },
+    body: new URLSearchParams(),
+  })
+    .then(function(r) { return r.json(); })
+    .then(function(j) {
+      if (j.ok && j.portal_url) {
+        window.open(j.portal_url, '_blank');
+      } else {
+        alert('Stripe error: ' + (j.error || 'Unknown'));
+      }
+    })
+    .catch(function(e) { alert('Error: ' + e); });
+}
+
+function bbSyncStripe(districtSlug, btn) {
+  var orig = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = 'Syncing…'; }
+  fetch('/super-admin/districts/' + districtSlug + '/billing/sync-stripe', {
+    method: 'POST',
+    headers: { 'X-Requested-With': 'XMLHttpRequest' },
+    body: new URLSearchParams(),
+  })
+    .then(function(r) { return r.json(); })
+    .then(function(j) {
+      if (j.ok) {
+        // Refresh billing card
+        bbRefreshBillingCard(districtSlug);
+      } else {
+        alert('Sync error: ' + (j.error || 'Unknown'));
+      }
+    })
+    .catch(function(e) { alert('Error: ' + e); })
+    .finally(function() { if (btn) { btn.disabled = false; btn.textContent = orig; } });
+}

@@ -297,9 +297,11 @@ class TenantBillingStore:
     def _migrate_district_billing_table(self, conn: sqlite3.Connection) -> None:
         existing = {row[1] for row in conn.execute("PRAGMA table_info(district_billing);").fetchall()}
         migrations = [
-            ("is_archived", "INTEGER NOT NULL DEFAULT 0"),
-            ("archived_at", "TEXT NULL"),
-            ("archived_by", "TEXT NULL"),
+            ("is_archived",          "INTEGER NOT NULL DEFAULT 0"),
+            ("archived_at",          "TEXT NULL"),
+            ("archived_by",          "TEXT NULL"),
+            ("stripe_product_id",    "TEXT NULL"),
+            ("cancel_at_period_end", "INTEGER NOT NULL DEFAULT 0"),
         ]
         for col, defn in migrations:
             if col not in existing:
@@ -1052,6 +1054,11 @@ class TenantBillingStore:
         override_enabled: Optional[bool] = None,
         override_reason: Optional[str] = None,
         internal_notes: Optional[str] = None,
+        stripe_customer_id: Optional[str] = None,
+        stripe_subscription_id: Optional[str] = None,
+        stripe_price_id: Optional[str] = None,
+        stripe_product_id: Optional[str] = None,
+        cancel_at_period_end: Optional[bool] = None,
     ) -> TenantBillingRecord:
         now = datetime.now(timezone.utc).isoformat()
         fields: list[str] = []
@@ -1093,6 +1100,16 @@ class TenantBillingStore:
             _set("free_reason", override_reason)
         if internal_notes is not None:
             _set("internal_notes", internal_notes)
+        if stripe_customer_id is not None:
+            _set("stripe_customer_id", stripe_customer_id)
+        if stripe_subscription_id is not None:
+            _set("stripe_subscription_id", stripe_subscription_id)
+        if stripe_price_id is not None:
+            _set("stripe_price_id", stripe_price_id)
+        if stripe_product_id is not None:
+            _set("stripe_product_id", stripe_product_id)
+        if cancel_at_period_end is not None:
+            _set("cancel_at_period_end", 1 if cancel_at_period_end else 0)
 
         fields.append("updated_at = ?")
         params.append(now)
@@ -1133,6 +1150,11 @@ class TenantBillingStore:
         override_enabled: Optional[bool] = None,
         override_reason: Optional[str] = None,
         internal_notes: Optional[str] = None,
+        stripe_customer_id: Optional[str] = None,
+        stripe_subscription_id: Optional[str] = None,
+        stripe_price_id: Optional[str] = None,
+        stripe_product_id: Optional[str] = None,
+        cancel_at_period_end: Optional[bool] = None,
     ) -> TenantBillingRecord:
         return await anyio.to_thread.run_sync(
             lambda: self._update_district_billing_full_sync(
@@ -1150,5 +1172,10 @@ class TenantBillingStore:
                 override_enabled=override_enabled,
                 override_reason=override_reason,
                 internal_notes=internal_notes,
+                stripe_customer_id=stripe_customer_id,
+                stripe_subscription_id=stripe_subscription_id,
+                stripe_price_id=stripe_price_id,
+                stripe_product_id=stripe_product_id,
+                cancel_at_period_end=cancel_at_period_end,
             )
         )

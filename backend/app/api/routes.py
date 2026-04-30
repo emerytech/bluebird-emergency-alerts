@@ -269,6 +269,26 @@ def _client_ip(request: Request) -> str:
     return request.client.host if request.client else "unknown"
 
 
+# ── Public inquiry rate limiter (per-IP) ──────────────────────────────────────
+_inquiry_rate_store: dict[str, deque] = {}
+_inquiry_rate_lock = Lock()
+
+
+def _check_inquiry_rate_limit(ip: str, *, max_attempts: int = 5, window_seconds: int = 3600) -> bool:
+    """5 submissions per IP per hour."""
+    now = time.monotonic()
+    with _inquiry_rate_lock:
+        if ip not in _inquiry_rate_store:
+            _inquiry_rate_store[ip] = deque()
+        dq = _inquiry_rate_store[ip]
+        while dq and now - dq[0] > window_seconds:
+            dq.popleft()
+        if len(dq) >= max_attempts:
+            return False
+        dq.append(now)
+        return True
+
+
 TRUST_DEVICE_TTL_SECONDS = 14 * 24 * 60 * 60
 ADMIN_TRUST_COOKIE = "bluebird_admin_trusted_device"
 SUPER_ADMIN_TRUST_COOKIE = "bluebird_super_admin_trusted_device"
@@ -398,6 +418,10 @@ def _health_monitor(req: Request) -> HealthMonitor:
 
 def _email_service(req: Request) -> EmailService:
     return req.app.state.email_service  # type: ignore[attr-defined]
+
+
+def _inquiry_store(req: Request):
+    return req.app.state.inquiry_store  # type: ignore[attr-defined]
 
 
 def _access_codes(req: Request) -> AccessCodeService:
@@ -4132,6 +4156,11 @@ async def super_admin_dashboard(
             platform_stats=_platform_stats,
             sandbox_data=_sandbox_data,
             prod_districts=_prod_districts,
+            inquiries=await _inquiry_store(request).list_inquiries(limit=100),
+            email_delivery_settings=await es.get_delivery_settings(),
+            auto_reply_settings=await es.get_auto_reply_settings(),
+            stripe_settings=await es.get_stripe_settings(),
+            billing_plans=await es.list_billing_plans(),
         )
     )
 
@@ -10827,3 +10856,645 @@ async def super_admin_ai_insights_debug(request: Request, slug: str) -> JSONResp
             for r in records
         ],
     })
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PUBLIC INQUIRY FORM
+# ══════════════════════════════════════════════════════════════════════════════
+
+import re as _re
+_EMAIL_RE = _re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+@router.post("/public/inquiry", include_in_schema=False)
+async def public_submit_inquiry(
+    request: Request,
+    name: str = Form(default=""),
+    email: str = Form(default=""),
+    school_or_district: str = Form(default=""),
+    estimated_students: str = Form(default=""),
+    number_of_schools: str = Form(default=""),
+    message: str = Form(default=""),
+    website: str = Form(default=""),   # honeypot
+) -> JSONResponse:
+    """Public inquiry submission. Rate-limited per IP. Never exposes internal errors."""
+    ip = _client_ip(request)
+
+    # Honeypot — bots fill this, humans don't
+    if website.strip():
+        return JSONResponse({"ok": True})
+
+    # Rate limit
+    if not _check_inquiry_rate_limit(ip):
+        return JSONResponse(
+            {"ok": False, "error": "Too many submissions. Please try again later."},
+            status_code=429,
+        )
+
+    # Validation
+    name = name.strip()[:255]
+    email = email.strip().lower()[:255]
+    school_or_district = school_or_district.strip()[:255]
+    message = message.strip()[:4000]
+
+    errors: list[str] = []
+    if not name:
+        errors.append("Name is required.")
+    if not email or not _EMAIL_RE.match(email):
+        errors.append("A valid email address is required.")
+    if not school_or_district:
+        errors.append("School or district name is required.")
+    if errors:
+        return JSONResponse({"ok": False, "errors": errors}, status_code=422)
+
+    try:
+        students: int | None = int(estimated_students) if estimated_students.strip() else None
+    except ValueError:
+        students = None
+    try:
+        schools: int | None = int(number_of_schools) if number_of_schools.strip() else None
+    except ValueError:
+        schools = None
+
+    try:
+        inquiry = await _inquiry_store(request).create_inquiry(
+            name=name,
+            email=email,
+            school_or_district=school_or_district,
+            estimated_students=students,
+            number_of_schools=schools,
+            message=message,
+        )
+        es = _email_service(request)
+        await es.send_inquiry_notification(inquiry)
+        await es.send_inquiry_auto_reply(inquiry)
+    except Exception as exc:
+        logger.error("inquiry_submission_error ip=%s err=%s", ip, exc)
+
+    return JSONResponse({"ok": True, "message": "Thank you! We'll be in touch soon."})
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SUPER ADMIN — INQUIRIES
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+@router.get("/super-admin/inquiries", include_in_schema=False)
+async def super_admin_list_inquiries(
+    request: Request,
+    status: str = Query(default=""),
+    limit: int = Query(default=200),
+) -> JSONResponse:
+    _require_super_admin(request)
+    store = _inquiry_store(request)
+    records = await store.list_inquiries(
+        status=status.strip() or None,
+        limit=min(int(limit), 500),
+    )
+    return JSONResponse({"inquiries": [r.to_dict() for r in records]})
+
+
+@router.post("/super-admin/inquiries/{inquiry_id}/status", include_in_schema=False)
+async def super_admin_update_inquiry_status(
+    request: Request,
+    inquiry_id: int,
+    new_status: str = Form(default=""),
+) -> JSONResponse:
+    _require_super_admin(request)
+    from app.services.inquiry_store import VALID_STATUSES
+    if new_status not in VALID_STATUSES:
+        return JSONResponse({"ok": False, "error": f"Invalid status: {new_status!r}"}, status_code=422)
+    record = await _inquiry_store(request).update_status(
+        inquiry_id=int(inquiry_id), new_status=new_status
+    )
+    if record is None:
+        return JSONResponse({"ok": False, "error": "Inquiry not found."}, status_code=404)
+    return JSONResponse({"ok": True, "inquiry": record.to_dict()})
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SUPER ADMIN — EMAIL DELIVERY SETTINGS (EXTENDED)
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+@router.post("/super-admin/email-delivery-settings", include_in_schema=False)
+async def super_admin_save_email_delivery_settings(
+    request: Request,
+    provider: str = Form(default="smtp"),
+    from_email: str = Form(default=""),
+    from_name: str = Form(default="BlueBird Alerts"),
+    reply_to_email: str = Form(default=""),
+    inquiry_notify_email: str = Form(default=""),
+    sendgrid_api_key: str = Form(default=""),
+) -> RedirectResponse:
+    _require_super_admin(request)
+    es = _email_service(request)
+    try:
+        await es.save_delivery_settings(
+            provider=provider.strip().lower(),
+            from_email=from_email.strip().lower(),
+            from_name=from_name.strip(),
+            reply_to_email=reply_to_email.strip(),
+            inquiry_notify_email=inquiry_notify_email.strip(),
+            sendgrid_api_key=sendgrid_api_key.strip() or None,
+        )
+        msg = "Email delivery settings saved."
+        _set_flash(request, message=msg)
+        if _is_xhr(request):
+            return JSONResponse({"ok": True, "message": msg})
+    except ValueError as exc:
+        _set_flash(request, error=str(exc))
+        if _is_xhr(request):
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=422)
+    return RedirectResponse(url=_super_admin_url("configuration"), status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.post("/super-admin/email-delivery-settings/auto-reply", include_in_schema=False)
+async def super_admin_save_auto_reply(
+    request: Request,
+    auto_reply_enabled: str = Form(default="0"),
+    auto_reply_subject: str = Form(default=""),
+    auto_reply_body: str = Form(default=""),
+) -> RedirectResponse:
+    _require_super_admin(request)
+    es = _email_service(request)
+    await es.save_auto_reply_settings(
+        enabled=auto_reply_enabled in ("1", "on", "true", "yes"),
+        subject=auto_reply_subject.strip(),
+        body=auto_reply_body.strip(),
+    )
+    _set_flash(request, message="Auto-reply settings saved.")
+    if _is_xhr(request):
+        return JSONResponse({"ok": True, "message": "Auto-reply settings saved."})
+    return RedirectResponse(url=_super_admin_url("configuration"), status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.post("/super-admin/email-delivery-settings/test", include_in_schema=False)
+async def super_admin_test_email_delivery(
+    request: Request,
+    test_to: str = Form(default=""),
+) -> JSONResponse:
+    _require_super_admin(request)
+    es = _email_service(request)
+    to_addr = test_to.strip() or ""
+    if not to_addr or not _EMAIL_RE.match(to_addr):
+        return JSONResponse({"ok": False, "error": "Invalid test email address."}, status_code=422)
+    ok = await es.send_via_provider(
+        to_address=to_addr,
+        subject="BlueBird Alerts — Email Delivery Test",
+        body=(
+            "This is a test message from the BlueBird Alerts platform.\n\n"
+            "If you received this, your email delivery settings are working correctly.\n\n"
+            "— BlueBird Alerts"
+        ),
+        event_type="delivery_test",
+    )
+    return JSONResponse({"ok": ok, "message": "Test email sent." if ok else "Failed to send test email."})
+
+
+@router.get("/super-admin/email-delivery-settings/preview-auto-reply", include_in_schema=False)
+async def super_admin_preview_auto_reply(request: Request) -> JSONResponse:
+    _require_super_admin(request)
+    es = _email_service(request)
+    ar = await es.get_auto_reply_settings()
+    sample = {
+        "name": "Alex Johnson",
+        "email": "alex@exampleschool.edu",
+        "school_or_district": "Example Unified School District",
+        "estimated_students": "650",
+        "number_of_schools": "3",
+    }
+    subject = es.render_template(ar["subject"], sample)
+    body = es.render_template(ar["body"], sample)
+    return JSONResponse({"ok": True, "subject": subject, "body": body})
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SUPER ADMIN — STRIPE SETTINGS
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+@router.get("/super-admin/stripe-settings", include_in_schema=False)
+async def super_admin_get_stripe_settings(request: Request) -> JSONResponse:
+    _require_super_admin(request)
+    es = _email_service(request)
+    settings_data = await es.get_stripe_settings()
+    plans = await es.list_billing_plans()
+    return JSONResponse({"ok": True, "stripe": settings_data, "plans": plans})
+
+
+@router.post("/super-admin/stripe-settings", include_in_schema=False)
+async def super_admin_save_stripe_settings(
+    request: Request,
+    stripe_mode: str = Form(default="test"),
+    publishable_key: str = Form(default=""),
+    secret_key: str = Form(default=""),
+    webhook_secret: str = Form(default=""),
+) -> RedirectResponse:
+    _require_super_admin(request)
+    es = _email_service(request)
+    try:
+        await es.save_stripe_settings(
+            mode=stripe_mode.strip().lower(),
+            publishable_key=publishable_key.strip(),
+            secret_key=secret_key.strip() or None,
+            webhook_secret=webhook_secret.strip() or None,
+        )
+        msg = "Stripe settings saved."
+        _set_flash(request, message=msg)
+        if _is_xhr(request):
+            return JSONResponse({"ok": True, "message": msg})
+    except ValueError as exc:
+        _set_flash(request, error=str(exc))
+        if _is_xhr(request):
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=422)
+    return RedirectResponse(url=_super_admin_url("configuration"), status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.post("/super-admin/stripe-settings/test", include_in_schema=False)
+async def super_admin_test_stripe(request: Request) -> JSONResponse:
+    _require_super_admin(request)
+    from app.services.stripe_service import StripeService
+    es = _email_service(request)
+    secret = await es.get_stripe_secret_key()
+    if not secret:
+        return JSONResponse({"ok": False, "error": "Stripe secret key is not configured."}, status_code=422)
+    mode = await es.get_stripe_mode()
+    svc = StripeService(secret_key=secret, mode=mode)
+    try:
+        acct = await svc.get_account()
+        return JSONResponse({
+            "ok": True,
+            "mode": mode,
+            "account_id": acct.get("id", ""),
+            "business_name": acct.get("business_profile", {}).get("name", ""),
+            "email": acct.get("email", ""),
+        })
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": f"Stripe connection failed: {exc}"}, status_code=422)
+
+
+@router.post("/super-admin/stripe-settings/plans", include_in_schema=False)
+async def super_admin_save_billing_plan(
+    request: Request,
+    plan_type: str = Form(default=""),
+    display_name: str = Form(default=""),
+    stripe_price_id_test: str = Form(default=""),
+    stripe_price_id_live: str = Form(default=""),
+    max_schools: str = Form(default=""),
+    max_users: str = Form(default=""),
+    internal_notes: str = Form(default=""),
+) -> JSONResponse:
+    _require_super_admin(request)
+    if not plan_type.strip():
+        return JSONResponse({"ok": False, "error": "plan_type is required"}, status_code=422)
+    es = _email_service(request)
+    try:
+        ms: int | None = int(max_schools) if max_schools.strip() else None
+        mu: int | None = int(max_users) if max_users.strip() else None
+    except ValueError:
+        return JSONResponse({"ok": False, "error": "max_schools and max_users must be integers"}, status_code=422)
+    await es.save_billing_plan(
+        plan_type=plan_type.strip().lower(),
+        display_name=display_name.strip() or plan_type.strip().title(),
+        stripe_price_id_test=stripe_price_id_test.strip() or None,
+        stripe_price_id_live=stripe_price_id_live.strip() or None,
+        max_schools=ms,
+        max_users=mu,
+        internal_notes=internal_notes.strip() or None,
+    )
+    plans = await es.list_billing_plans()
+    return JSONResponse({"ok": True, "plans": plans})
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SUPER ADMIN — STRIPE CHECKOUT / PORTAL
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+@router.post("/super-admin/districts/{slug}/billing/create-checkout", include_in_schema=False)
+async def super_admin_district_create_checkout(
+    request: Request,
+    slug: str,
+    plan_type: str = Form(default="basic"),
+) -> JSONResponse:
+    _require_super_admin(request)
+    from app.services.stripe_service import StripeService
+    es = _email_service(request)
+    secret = await es.get_stripe_secret_key()
+    if not secret:
+        return JSONResponse({"ok": False, "error": "Stripe is not configured."}, status_code=422)
+
+    mode = await es.get_stripe_mode()
+    plans = await es.list_billing_plans()
+    plan = next((p for p in plans if p["plan_type"] == plan_type), None)
+    if plan is None:
+        return JSONResponse({"ok": False, "error": f"Unknown plan: {plan_type!r}"}, status_code=422)
+
+    price_id_key = "stripe_price_id_test" if mode == "test" else "stripe_price_id_live"
+    price_id = plan.get(price_id_key) or ""
+    if not price_id:
+        return JSONResponse(
+            {"ok": False, "error": f"No Stripe price ID configured for plan '{plan_type}' in {mode} mode."},
+            status_code=422,
+        )
+
+    district = await _schools(request).get_district_by_slug(slug.strip().lower())
+    if district is None:
+        return JSONResponse({"ok": False, "error": "District not found."}, status_code=404)
+
+    billing = await _tenant_billing(request).ensure_district_billing(district_id=int(district.id))
+
+    svc = StripeService(secret_key=secret, mode=mode)
+    customer_id = billing.stripe_customer_id or ""
+    customer_email = billing.customer_email or ""
+
+    try:
+        customer = await svc.create_or_get_customer(
+            district_id=int(district.id),
+            district_name=district.name,
+            email=customer_email,
+            existing_customer_id=customer_id or None,
+        )
+        customer_id = customer["id"]
+        await _tenant_billing(request).update_district_billing_full(
+            district_id=int(district.id),
+            stripe_customer_id=customer_id,
+        )
+
+        base_url = str(request.base_url).rstrip("/")
+        session = await svc.create_checkout_session(
+            price_id=price_id,
+            customer_id=customer_id,
+            district_id=int(district.id),
+            district_slug=slug,
+            success_url=f"{base_url}/super-admin?section=billing&stripe_success=1",
+            cancel_url=f"{base_url}/super-admin?section=billing&stripe_cancel=1",
+        )
+        await _tenant_billing(request).update_district_billing_full(
+            district_id=int(district.id),
+            stripe_customer_id=customer_id,
+            stripe_price_id=price_id,
+        )
+        return JSONResponse({"ok": True, "checkout_url": session["url"]})
+
+    except Exception as exc:
+        logger.error("stripe_checkout_error district=%s err=%s", slug, exc)
+        return JSONResponse({"ok": False, "error": f"Stripe error: {exc}"}, status_code=500)
+
+
+@router.post("/super-admin/districts/{slug}/billing/create-portal", include_in_schema=False)
+async def super_admin_district_create_portal(
+    request: Request,
+    slug: str,
+) -> JSONResponse:
+    _require_super_admin(request)
+    from app.services.stripe_service import StripeService
+    es = _email_service(request)
+    secret = await es.get_stripe_secret_key()
+    if not secret:
+        return JSONResponse({"ok": False, "error": "Stripe is not configured."}, status_code=422)
+
+    district = await _schools(request).get_district_by_slug(slug.strip().lower())
+    if district is None:
+        return JSONResponse({"ok": False, "error": "District not found."}, status_code=404)
+
+    billing = await _tenant_billing(request).get_district_billing(district_id=int(district.id))
+    customer_id = (billing.stripe_customer_id if billing else None) or ""
+    if not customer_id:
+        return JSONResponse({"ok": False, "error": "No Stripe customer ID for this district."}, status_code=422)
+
+    mode = await es.get_stripe_mode()
+    svc = StripeService(secret_key=secret, mode=mode)
+    try:
+        base_url = str(request.base_url).rstrip("/")
+        portal = await svc.create_portal_session(
+            customer_id=customer_id,
+            return_url=f"{base_url}/super-admin?section=billing",
+        )
+        return JSONResponse({"ok": True, "portal_url": portal["url"]})
+    except Exception as exc:
+        logger.error("stripe_portal_error district=%s err=%s", slug, exc)
+        return JSONResponse({"ok": False, "error": f"Stripe error: {exc}"}, status_code=500)
+
+
+@router.post("/super-admin/districts/{slug}/billing/sync-stripe", include_in_schema=False)
+async def super_admin_district_sync_stripe(
+    request: Request,
+    slug: str,
+) -> JSONResponse:
+    """Pull current subscription state from Stripe and update district billing."""
+    _require_super_admin(request)
+    from app.services.stripe_service import StripeService
+    es = _email_service(request)
+    secret = await es.get_stripe_secret_key()
+    if not secret:
+        return JSONResponse({"ok": False, "error": "Stripe is not configured."}, status_code=422)
+
+    district = await _schools(request).get_district_by_slug(slug.strip().lower())
+    if district is None:
+        return JSONResponse({"ok": False, "error": "District not found."}, status_code=404)
+
+    billing = await _tenant_billing(request).get_district_billing(district_id=int(district.id))
+    customer_id = (billing.stripe_customer_id if billing else None) or ""
+    sub_id = (billing.stripe_subscription_id if billing else None) or ""
+    if not customer_id:
+        return JSONResponse({"ok": False, "error": "No Stripe customer ID for this district."}, status_code=422)
+
+    mode = await es.get_stripe_mode()
+    svc = StripeService(secret_key=secret, mode=mode)
+    try:
+        if sub_id:
+            sub = await svc.get_subscription(sub_id)
+        else:
+            subs = await svc.list_customer_subscriptions(customer_id)
+            sub = subs[0] if subs else None
+
+        if not sub:
+            return JSONResponse({"ok": False, "error": "No active Stripe subscription found."}, status_code=404)
+
+        stripe_status = sub.get("status", "")
+        new_billing_status = StripeService.billing_status_from_stripe(stripe_status)
+        period_start = None
+        period_end = None
+        price_id = None
+        product_id = None
+        cancel_at = None
+
+        items = sub.get("items", {}).get("data", [])
+        if items:
+            item = items[0]
+            price = item.get("price", {})
+            price_id = price.get("id")
+            product_id = price.get("product")
+        if sub.get("current_period_start"):
+            from datetime import datetime, timezone
+            period_start = datetime.fromtimestamp(sub["current_period_start"], tz=timezone.utc).isoformat()
+        if sub.get("current_period_end"):
+            from datetime import datetime, timezone
+            period_end = datetime.fromtimestamp(sub["current_period_end"], tz=timezone.utc).isoformat()
+        cancel_at = bool(sub.get("cancel_at_period_end"))
+
+        await _tenant_billing(request).update_district_billing_full(
+            district_id=int(district.id),
+            billing_status=new_billing_status,
+            stripe_subscription_id=sub["id"],
+            stripe_price_id=price_id,
+            stripe_product_id=product_id,
+            current_period_start=period_start,
+            current_period_end=period_end,
+            cancel_at_period_end=cancel_at,
+        )
+        return JSONResponse({
+            "ok": True,
+            "billing_status": new_billing_status,
+            "stripe_status": stripe_status,
+            "current_period_end": period_end,
+            "cancel_at_period_end": cancel_at,
+        })
+    except Exception as exc:
+        logger.error("stripe_sync_error district=%s err=%s", slug, exc)
+        return JSONResponse({"ok": False, "error": f"Stripe sync failed: {exc}"}, status_code=500)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# STRIPE WEBHOOK
+# ══════════════════════════════════════════════════════════════════════════════
+
+import json as _json_mod
+
+
+@router.post("/stripe/webhook", include_in_schema=False)
+async def stripe_webhook(request: Request) -> JSONResponse:
+    """
+    Stripe webhook handler.
+    Verifies signature, deduplicates by event_id, updates district billing.
+    Must return 200 quickly — heavy work is done inline but is idempotent.
+    """
+    from app.services.stripe_service import StripeService
+    payload_bytes = await request.body()
+    sig_header = request.headers.get("stripe-signature", "")
+
+    es = _email_service(request)
+    webhook_secret = await es.get_stripe_webhook_secret()
+    if not webhook_secret:
+        logger.warning("stripe_webhook called but webhook secret not configured")
+        return JSONResponse({"error": "Webhook secret not configured"}, status_code=400)
+
+    try:
+        event = StripeService.verify_webhook(
+            payload_bytes=payload_bytes,
+            signature_header=sig_header,
+            webhook_secret=webhook_secret,
+        )
+    except ValueError as exc:
+        logger.warning("stripe_webhook signature error: %s", exc)
+        return JSONResponse({"error": str(exc)}, status_code=400)
+
+    event_id = str(event.get("id", ""))
+    event_type = str(event.get("type", ""))
+    event_data = event.get("data", {}).get("object", {})
+
+    # Idempotency check
+    already_processed = not await es.mark_stripe_event(
+        event_id=event_id,
+        event_type=event_type,
+        payload_json=_json_mod.dumps(event)[:65535],
+    )
+    if already_processed:
+        logger.debug("stripe_webhook duplicate event_id=%s", event_id)
+        return JSONResponse({"ok": True, "status": "already_processed"})
+
+    logger.info("stripe_webhook event_id=%s type=%s", event_id, event_type)
+
+    try:
+        await _handle_stripe_event(request, event_type, event_data, event)
+    except Exception as exc:
+        logger.error("stripe_webhook handler error event_id=%s err=%s", event_id, exc)
+        # Return 200 so Stripe doesn't retry — event is stored, we can replay
+        return JSONResponse({"ok": False, "error": str(exc)})
+
+    return JSONResponse({"ok": True, "event_type": event_type})
+
+
+async def _handle_stripe_event(
+    request: Request,
+    event_type: str,
+    obj: dict,
+    full_event: dict,
+) -> None:
+    from app.services.stripe_service import StripeService
+    from datetime import datetime, timezone
+
+    billing = _tenant_billing(request)
+
+    def _district_id_from_meta(d: dict) -> int | None:
+        meta = d.get("metadata") or {}
+        did = meta.get("district_id")
+        return int(did) if did else None
+
+    def _ts(unix: object) -> str | None:
+        if unix is None:
+            return None
+        try:
+            return datetime.fromtimestamp(int(unix), tz=timezone.utc).isoformat()
+        except Exception:
+            return None
+
+    if event_type in (
+        "customer.subscription.created",
+        "customer.subscription.updated",
+        "customer.subscription.deleted",
+    ):
+        district_id = _district_id_from_meta(obj)
+        if district_id is None:
+            return
+
+        stripe_status = str(obj.get("status", ""))
+        new_status = StripeService.billing_status_from_stripe(stripe_status)
+        items = obj.get("items", {}).get("data", [])
+        price_id = None
+        product_id = None
+        if items:
+            price = items[0].get("price", {})
+            price_id = price.get("id")
+            product_id = price.get("product")
+
+        await billing.update_district_billing_full(
+            district_id=district_id,
+            billing_status=new_status,
+            stripe_customer_id=str(obj.get("customer", "")),
+            stripe_subscription_id=str(obj.get("id", "")),
+            stripe_price_id=price_id,
+            stripe_product_id=product_id,
+            current_period_start=_ts(obj.get("current_period_start")),
+            current_period_end=_ts(obj.get("current_period_end")),
+            cancel_at_period_end=bool(obj.get("cancel_at_period_end")),
+        )
+
+    elif event_type == "checkout.session.completed":
+        district_id = _district_id_from_meta(obj)
+        customer_id = str(obj.get("customer", ""))
+        sub_id = str(obj.get("subscription", "") or "")
+        if district_id and customer_id:
+            await billing.update_district_billing_full(
+                district_id=district_id,
+                billing_status="active",
+                stripe_customer_id=customer_id,
+                stripe_subscription_id=sub_id or None,
+            )
+
+    elif event_type == "invoice.payment_succeeded":
+        sub_id = str(obj.get("subscription", "") or "")
+        customer_id = str(obj.get("customer", "") or "")
+        period_end = _ts(obj.get("period_end") or obj.get("lines", {}).get("data", [{}])[0].get("period", {}).get("end"))
+        if sub_id or customer_id:
+            # Find which district owns this customer/subscription
+            # We scan through a search by customer_id in district_billing
+            # (best-effort; metadata-based lookup not available here without sub fetch)
+            pass  # Subscription events carry metadata and update via subscription.updated
+
+    elif event_type == "invoice.payment_failed":
+        sub_id = str(obj.get("subscription", "") or "")
+        # The subscription.updated event with status=past_due handles this
+        pass
