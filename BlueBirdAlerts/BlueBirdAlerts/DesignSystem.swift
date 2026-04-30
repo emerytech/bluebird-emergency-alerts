@@ -348,6 +348,52 @@ enum DSColor {
             fallback: Color(red: 0.56, green: 0.23, blue: 0.92)
         )
     }
+
+    static var offline: Color {
+        DSTokenStore.shared.color(
+            candidates: ["color.status.offline", "colors.status.offline"],
+            fallback: Color(red: 0.42, green: 0.45, blue: 0.50)
+        )
+    }
+
+    static var trial: Color {
+        DSTokenStore.shared.color(
+            candidates: ["color.status.trial", "colors.status.trial"],
+            fallback: Color(red: 0.85, green: 0.60, blue: 0.02)
+        )
+    }
+}
+
+// MARK: - Alert type colors
+
+enum DSAlertColor {
+    static var lockdown: Color { Color(red: 0.86, green: 0.15, blue: 0.15) }
+    static var secure: Color   { Color(red: 0.11, green: 0.31, blue: 0.85) }
+    static var evacuate: Color { Color(red: 0.09, green: 0.40, blue: 0.20) }
+    static var shelter: Color  { Color(red: 0.70, green: 0.33, blue: 0.03) }
+    static var hold: Color     { Color(red: 0.56, green: 0.23, blue: 0.92) }
+    static var active: Color   { Color(red: 0.86, green: 0.15, blue: 0.15) }
+    static var clear: Color    { Color(red: 0.09, green: 0.40, blue: 0.20) }
+
+    static func forType(_ type: String) -> Color {
+        switch type.lowercased().trimmingCharacters(in: .whitespaces) {
+        case "lockdown":              return lockdown
+        case "secure":                return secure
+        case "evacuate", "evacuation": return evacuate
+        case "shelter":               return shelter
+        case "hold":                  return hold
+        default:                      return active
+        }
+    }
+}
+
+// MARK: - Animation durations
+
+enum DSAnimation {
+    static let fast:   Double = 0.150
+    static let normal: Double = 0.250
+    static let slow:   Double = 0.350
+    static let hold:   Double = 0.080
 }
 
 enum DSSpacing {

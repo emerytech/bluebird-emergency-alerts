@@ -620,6 +620,7 @@ data class AlarmStatus(
     val triggeredByUserId: Int? = null,
     val silentForSender: Boolean = true,
     val isSilentForCurrentUser: Boolean = false,
+    val alertId: Int? = null,
 )
 
 data class IncidentFeedItem(
@@ -891,6 +892,24 @@ class MainViewModel : ViewModel() {
                 }
                 .onFailure { e ->
                     _state.update { it.copy(isBusy = false, errorMsg = e.message ?: "Failed to deactivate alarm.") }
+                }
+        }
+    }
+
+    fun acknowledgeAlarm(ctx: Context) {
+        val userId = getUserId(ctx).toIntOrNull() ?: return
+        val alertId = _state.value.alarm.alertId ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            _state.update { it.copy(isBusy = true, errorMsg = null) }
+            runCatching { client!!.acknowledgeAlert(alertId = alertId, userId = userId) }
+                .onSuccess {
+                    _state.update { it.copy(
+                        isBusy = false,
+                        alarm = it.alarm.copy(currentUserAcknowledged = true),
+                    ) }
+                }
+                .onFailure { e ->
+                    _state.update { it.copy(isBusy = false, errorMsg = e.message ?: "Acknowledgement failed.") }
                 }
         }
     }
@@ -1533,6 +1552,9 @@ class MainViewModel : ViewModel() {
                         triggeredByUserId = triggeredByUid,
                         silentForSender = silentForSender,
                         isSilentForCurrentUser = isSilentForMe,
+                        alertId = if (a.has("current_alert_id") && !a.isNull("current_alert_id"))
+                            a.optInt("current_alert_id") else s.alarm.alertId,
+                        acknowledgementCount = a.optInt("acknowledgement_count", s.alarm.acknowledgementCount),
                     ))
                 }
             }
@@ -1554,6 +1576,14 @@ class MainViewModel : ViewModel() {
                 viewModelScope.launch(Dispatchers.IO) {
                     runCatching { client!!.messageInbox(userId = uid) }
                         .onSuccess { inbox -> _state.update { it.copy(adminInbox = inbox.messages, unreadAdminMessages = inbox.unreadCount) } }
+                }
+            }
+            "tenant_acknowledgement_updated" -> {
+                val a = alarm ?: return
+                _state.update { s ->
+                    s.copy(alarm = s.alarm.copy(
+                        acknowledgementCount = a.optInt("acknowledgement_count", s.alarm.acknowledgementCount),
+                    ))
                 }
             }
             "help_request_acknowledged", "help_request_resolved" -> {
@@ -1693,35 +1723,7 @@ class MainActivity : FragmentActivity() {
 }
 
 // ── Theme ──────────────────────────────────────────────────────────────────────
-@Composable
-private fun BlueBirdTheme(content: @Composable () -> Unit) {
-    val darkTheme = isSystemInDarkTheme()
-    val colorScheme = if (darkTheme) {
-        darkColorScheme(
-            primary      = DSColor.Primary,
-            background   = DSColor.Background,
-            surface      = DSColor.Card,
-            onPrimary    = Color.White,
-            onBackground = DSColor.TextPrimary,
-            onSurface    = DSColor.TextPrimary,
-            error        = DSColor.Danger,
-        )
-    } else {
-        lightColorScheme(
-            primary      = DSColor.Primary,
-            background   = DSColor.Background,
-            surface      = DSColor.Card,
-            onPrimary    = Color.White,
-            onBackground = DSColor.TextPrimary,
-            onSurface    = DSColor.TextPrimary,
-            error        = DSColor.Danger,
-        )
-    }
-    MaterialTheme(
-        colorScheme = colorScheme,
-        content = content,
-    )
-}
+// BlueBirdTheme is defined in BlueBirdTheme.kt
 
 @Composable
 private fun BlueBirdLogo(modifier: Modifier = Modifier) {
@@ -2892,6 +2894,9 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                     isBusy = state.isBusy,
                     onDeactivate = {
                         showDeactivateDialog = true
+                    },
+                    onAcknowledge = {
+                        vm.acknowledgeAlarm(ctx)
                     },
                     onViewDashboard = {
                         showAlarmTakeover = false
@@ -4630,6 +4635,7 @@ private fun EmergencyAlarmTakeover(
     canDeactivate: Boolean,
     isBusy: Boolean,
     onDeactivate: () -> Unit,
+    onAcknowledge: () -> Unit,
     onViewDashboard: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -4638,9 +4644,13 @@ private fun EmergencyAlarmTakeover(
     val subtitle = if (alarm.isTraining) {
         alarm.trainingLabel?.takeIf { it.isNotBlank() } ?: "This is a drill"
     } else {
-        "School alarm is active"
+        alarm.message?.takeIf { it.isNotBlank() } ?: "School alarm is active"
     }
-    val message = alarm.message?.takeIf { it.isNotBlank() } ?: "Follow school emergency procedures immediately."
+    val instructions = if (alarm.isTraining)
+        "Follow drill procedures as directed."
+    else
+        "Follow school emergency procedures immediately."
+
     val pulse = rememberInfiniteTransition(label = "alarmTakeoverPulse")
     val pulseScale by pulse.animateFloat(
         initialValue = 0.96f,
@@ -4654,82 +4664,149 @@ private fun EmergencyAlarmTakeover(
 
     Box(
         modifier = modifier
-            .background(
-                Brush.verticalGradient(
-                    listOf(accent, Color(0xFF111827)),
-                ),
-            )
+            .background(Brush.verticalGradient(listOf(accent, Color(0xFF0D1117))))
             .padding(horizontal = 24.dp, vertical = 28.dp),
         contentAlignment = Alignment.Center,
     ) {
         Column(
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState()),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.SpaceBetween,
         ) {
-            Spacer(Modifier.height(8.dp))
+            // ── Header ─────────────────────────────────────────────────────
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(22.dp),
+                verticalArrangement = Arrangement.spacedBy(20.dp),
+                modifier = Modifier.padding(top = 8.dp),
             ) {
                 Box(
                     modifier = Modifier
-                        .size(150.dp)
-                        .graphicsLayer {
-                            scaleX = pulseScale
-                            scaleY = pulseScale
-                            shadowElevation = 28f
-                        }
-                        .border(9.dp, Color.White.copy(alpha = 0.26f), CircleShape),
+                        .size(148.dp)
+                        .graphicsLayer { scaleX = pulseScale; scaleY = pulseScale }
+                        .border(8.dp, Color.White.copy(alpha = 0.28f), CircleShape),
                     contentAlignment = Alignment.Center,
                 ) {
                     Text(
-                        if (alarm.isTraining) "!" else "⚠",
-                        color = Color.White,
-                        fontSize = 70.sp,
+                        if (alarm.isTraining) "!" else "🚨",
+                        fontSize = 64.sp,
                         fontWeight = FontWeight.Black,
                         textAlign = TextAlign.Center,
                     )
                 }
+
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     Text(
                         title,
                         color = Color.White,
-                        fontSize = 34.sp,
+                        fontSize = 32.sp,
                         fontWeight = FontWeight.Black,
                         textAlign = TextAlign.Center,
+                        lineHeight = 36.sp,
                     )
                     Text(
                         subtitle,
-                        color = Color.White.copy(alpha = 0.9f),
-                        fontSize = 19.sp,
+                        color = Color.White.copy(alpha = 0.92f),
+                        fontSize = 18.sp,
                         fontWeight = FontWeight.Bold,
                         textAlign = TextAlign.Center,
                     )
                     if (schoolName.isNotBlank()) {
                         Text(
                             schoolName,
-                            color = Color.White.copy(alpha = 0.75f),
-                            fontSize = 14.sp,
+                            color = Color.White.copy(alpha = 0.72f),
+                            fontSize = 13.sp,
                             fontWeight = FontWeight.SemiBold,
                             textAlign = TextAlign.Center,
                         )
                     }
+                    alarm.activatedByLabel?.takeIf { it.isNotBlank() }?.let {
+                        Text(
+                            "Activated by: $it",
+                            color = Color.White.copy(alpha = 0.68f),
+                            fontSize = 12.sp,
+                            textAlign = TextAlign.Center,
+                        )
+                    }
+                }
+
+                // ── Instructions ─────────────────────────────────────────
+                Surface(
+                    color = Color.White.copy(alpha = 0.12f),
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
                     Text(
-                        message,
-                        color = Color.White.copy(alpha = 0.9f),
-                        fontSize = 16.sp,
+                        instructions,
+                        color = Color.White.copy(alpha = 0.94f),
+                        fontSize = 15.sp,
                         fontWeight = FontWeight.SemiBold,
                         textAlign = TextAlign.Center,
-                        modifier = Modifier.padding(horizontal = 8.dp),
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
                     )
+                }
+
+                // ── Acknowledgement progress ──────────────────────────────
+                if (alarm.acknowledgementCount > 0 || alarm.currentUserAcknowledged) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(
+                            "✓ ${alarm.acknowledgementCount} acknowledged",
+                            color = Color(0xFFA7F3D0),
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            textAlign = TextAlign.Center,
+                        )
+                        LinearProgressIndicator(
+                            progress = { (alarm.acknowledgementCount / 100f).coerceIn(0f, 1f) },
+                            color = Color(0xFF34D399),
+                            trackColor = Color.White.copy(alpha = 0.20f),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(6.dp)
+                                .clip(RoundedCornerShape(3.dp)),
+                        )
+                    }
                 }
             }
 
+            Spacer(Modifier.height(24.dp))
+
+            // ── Actions ────────────────────────────────────────────────────
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                // Acknowledge button — visible to ALL users
+                Button(
+                    onClick = onAcknowledge,
+                    enabled = !isBusy && !alarm.currentUserAcknowledged && alarm.alertId != null,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color(0xFF34D399),
+                        contentColor = Color(0xFF064E3B),
+                        disabledContainerColor = Color.White.copy(alpha = 0.20f),
+                        disabledContentColor = Color.White.copy(alpha = 0.60f),
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(58.dp),
+                    shape = RoundedCornerShape(16.dp),
+                ) {
+                    Text(
+                        when {
+                            alarm.currentUserAcknowledged -> "✓ Acknowledged"
+                            isBusy -> "Acknowledging…"
+                            else -> "Acknowledge"
+                        },
+                        fontWeight = FontWeight.Black,
+                        fontSize = 17.sp,
+                    )
+                }
+
                 if (canDeactivate) {
                     Button(
                         onClick = onDeactivate,
@@ -4742,26 +4819,27 @@ private fun EmergencyAlarmTakeover(
                         ),
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(58.dp),
+                            .height(52.dp),
                         shape = RoundedCornerShape(16.dp),
                     ) {
                         Text(
-                            if (isBusy) "Disabling Alarm..." else "Disable Alarm",
-                            fontWeight = FontWeight.Black,
-                            fontSize = 16.sp,
+                            if (isBusy) "Disabling Alarm…" else "Disable Alarm",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 15.sp,
                         )
                     }
                 }
+
                 OutlinedButton(
                     onClick = onViewDashboard,
                     colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
-                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.36f)),
+                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.32f)),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(54.dp),
+                        .height(48.dp),
                     shape = RoundedCornerShape(16.dp),
                 ) {
-                    Text("View Dashboard", fontWeight = FontWeight.Bold)
+                    Text("View Dashboard", fontWeight = FontWeight.Medium, fontSize = 14.sp)
                 }
             }
         }
@@ -6562,6 +6640,8 @@ internal class BackendClient(baseUrl: String, private val apiKey: String) {
                 broadcasts              = broadcasts,
                 acknowledgementCount    = j.optInt("acknowledgement_count", 0),
                 currentUserAcknowledged = j.optBoolean("current_user_acknowledged", false),
+                alertId                 = if (j.has("current_alert_id") && !j.isNull("current_alert_id"))
+                    j.optInt("current_alert_id") else null,
             )
         }
     }
@@ -7084,6 +7164,16 @@ internal class BackendClient(baseUrl: String, private val apiKey: String) {
         return http.newCall(req).execute().use { parseAlarm(it) }
     }
 
+    fun acknowledgeAlert(alertId: Int, userId: Int) {
+        val body = JSONObject().put("user_id", userId)
+        val req = Request.Builder()
+            .url("$base/alerts/$alertId/ack")
+            .withAuth()
+            .post(body.toString().toRequestBody(json))
+            .build()
+        http.newCall(req).execute().use { requireSuccess(it) }
+    }
+
     private fun parseAlarm(res: okhttp3.Response): AlarmStatus {
         val body = requireSuccess(res)
         val j = JSONObject(body)
@@ -7115,6 +7205,8 @@ internal class BackendClient(baseUrl: String, private val apiKey: String) {
             broadcasts               = broadcasts,
             acknowledgementCount     = j.optInt("acknowledgement_count", 0),
             currentUserAcknowledged  = j.optBoolean("current_user_acknowledged", false),
+            alertId                  = if (j.has("current_alert_id") && !j.isNull("current_alert_id"))
+                j.optInt("current_alert_id") else null,
         )
     }
 

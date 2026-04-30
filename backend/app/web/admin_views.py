@@ -395,6 +395,14 @@ def _base_styles() -> str:
       --warning: #b45309;
       --info: #1d4ed8;
       --quiet: #8e3beb;
+      --offline: #6B7280;
+      --trial: #D97706;
+      /* alert type colors */
+      --alert-lockdown: #dc2626;
+      --alert-secure:   #1d4ed8;
+      --alert-evacuate: #166534;
+      --alert-shelter:  #b45309;
+      --alert-hold:     #8e3beb;
       --shadow: 0 14px 36px rgba(22, 53, 117, 0.12);
       --radius: 24px;
       --radius-soft: 18px;

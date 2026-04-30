@@ -493,6 +493,7 @@ struct ContentView: View {
     @State private var alarmSilentAudio = false
     @State private var alarmAcknowledgementCount = 0
     @State private var alarmCurrentUserAcknowledged = false
+    @State private var alarmAlertId: Int? = nil
     @State private var showAlarmTakeover = false
     @State private var isRefreshingIncidentFeed = false
     @State private var isUpdatingAlarm = false
@@ -986,88 +987,163 @@ struct ContentView: View {
         let schoolName = appState.effectiveSchoolName
         let subtitle = isTraining
             ? (alarmTrainingLabel ?? "This is a drill")
-            : (schoolName.isEmpty ? "School alarm is active" : "\(schoolName) — alarm is active")
-        let body = alarmMessage?.trimmingCharacters(in: .whitespacesAndNewlines)
+            : ({ let m = alarmMessage?.trimmingCharacters(in: .whitespacesAndNewlines); return (m?.isEmpty == false ? m! : "School alarm is active") }())
+        let instructions = isTraining
+            ? "Follow drill procedures as directed."
+            : "Follow school emergency procedures immediately."
 
         return ZStack {
             LinearGradient(
-                colors: [accent, Color.black],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
+                colors: [accent, Color(red: 0.05, green: 0.07, blue: 0.09)],
+                startPoint: .top,
+                endPoint: .bottom
             )
             .ignoresSafeArea()
 
-            VStack(spacing: 28) {
-                Spacer(minLength: 20)
+            ScrollView {
+                VStack(spacing: 0) {
+                    VStack(spacing: 24) {
+                        Spacer(minLength: 28)
 
-                ZStack {
-                    Circle()
-                        .stroke(Color.white.opacity(0.24), lineWidth: 10)
-                        .frame(width: 154, height: 154)
-                    Image(systemName: isTraining ? "exclamationmark.triangle.fill" : "bell.and.waves.left.and.right.fill")
-                        .font(.system(size: 66, weight: .black))
-                        .foregroundStyle(.white)
-                }
-                .shadow(color: .black.opacity(0.35), radius: 18, x: 0, y: 8)
+                        // ── Icon ──────────────────────────────────────────────
+                        ZStack {
+                            Circle()
+                                .stroke(Color.white.opacity(0.26), lineWidth: 8)
+                                .frame(width: 152, height: 152)
+                            Image(systemName: isTraining ? "exclamationmark.triangle.fill" : "bell.and.waves.left.and.right.fill")
+                                .font(.system(size: 64, weight: .black))
+                                .foregroundStyle(.white)
+                        }
+                        .shadow(color: .black.opacity(0.35), radius: 18, x: 0, y: 8)
 
-                VStack(spacing: 12) {
-                    Text(title)
-                        .font(.system(size: 38, weight: .black, design: .rounded))
-                        .multilineTextAlignment(.center)
-                        .foregroundStyle(.white)
+                        // ── Title block ───────────────────────────────────────
+                        VStack(spacing: 10) {
+                            Text(title)
+                                .font(.system(size: 36, weight: .black, design: .rounded))
+                                .multilineTextAlignment(.center)
+                                .foregroundStyle(.white)
 
-                    Text(subtitle)
-                        .font(.title3.weight(.bold))
-                        .multilineTextAlignment(.center)
-                        .foregroundStyle(.white.opacity(0.88))
+                            Text(subtitle)
+                                .font(.title3.weight(.bold))
+                                .multilineTextAlignment(.center)
+                                .foregroundStyle(.white.opacity(0.90))
 
-                    if let body, !body.isEmpty {
-                        Text(body)
+                            if !schoolName.isEmpty {
+                                Text(schoolName)
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(.white.opacity(0.68))
+                            }
+                        }
+
+                        // ── Instructions card ─────────────────────────────────
+                        Text(instructions)
                             .font(.body.weight(.semibold))
                             .multilineTextAlignment(.center)
-                            .foregroundStyle(.white.opacity(0.9))
-                            .padding(.top, 4)
-                            .padding(.horizontal, 12)
+                            .foregroundStyle(.white.opacity(0.92))
+                            .padding(.horizontal, 18)
+                            .padding(.vertical, 14)
+                            .background(Color.white.opacity(0.12))
+                            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                            .padding(.horizontal, 4)
+
+                        // ── Acknowledgement count ─────────────────────────────
+                        if alarmAcknowledgementCount > 0 || alarmCurrentUserAcknowledged {
+                            VStack(spacing: 8) {
+                                Text("✓ \(alarmAcknowledgementCount) acknowledged")
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(Color(red: 0.65, green: 0.96, blue: 0.78))
+
+                                GeometryReader { geo in
+                                    ZStack(alignment: .leading) {
+                                        Capsule()
+                                            .fill(Color.white.opacity(0.20))
+                                            .frame(height: 6)
+                                        Capsule()
+                                            .fill(Color(red: 0.20, green: 0.83, blue: 0.60))
+                                            .frame(width: geo.size.width * min(CGFloat(alarmAcknowledgementCount) / 100.0, 1.0), height: 6)
+                                    }
+                                }
+                                .frame(height: 6)
+                            }
+                            .padding(.horizontal, 4)
+                        }
                     }
-                }
+                    .padding(.horizontal, 22)
 
-                Spacer()
+                    Spacer(minLength: 28)
 
-                VStack(spacing: 12) {
-                    if appState.canDeactivateAlarm {
+                    // ── Action buttons ────────────────────────────────────────
+                    VStack(spacing: 12) {
+                        // Acknowledge — visible to ALL users
                         Button {
-                            Task { await authenticateThenDeactivateAlarm() }
+                            Task { await acknowledgeAlarm() }
                         } label: {
-                            Label(isUpdatingAlarm ? "Disabling Alarm..." : "Disable Alarm", systemImage: "bell.slash.fill")
-                                .font(.headline.weight(.bold))
-                                .foregroundStyle(accent)
+                            Text(alarmCurrentUserAcknowledged ? "✓ Acknowledged" : (isUpdatingAlarm ? "Acknowledging…" : "Acknowledge"))
+                                .font(.system(size: 17, weight: .black))
+                                .foregroundStyle(alarmCurrentUserAcknowledged ? Color.white.opacity(0.60) : Color(red: 0.02, green: 0.30, blue: 0.23))
                                 .frame(maxWidth: .infinity, minHeight: 58)
-                                .background(Color.white)
+                                .background(
+                                    alarmCurrentUserAcknowledged
+                                        ? Color.white.opacity(0.18)
+                                        : Color(red: 0.20, green: 0.83, blue: 0.60)
+                                )
                                 .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                         }
                         .buttonStyle(PressableScaleButtonStyle())
-                        .disabled(isUpdatingAlarm)
-                    }
+                        .disabled(alarmCurrentUserAcknowledged || isUpdatingAlarm || alarmAlertId == nil)
 
-                    Button {
-                        showAlarmTakeover = false
-                    } label: {
-                        Text("View Dashboard")
-                            .font(.headline.weight(.bold))
-                            .foregroundStyle(.white)
-                            .frame(maxWidth: .infinity, minHeight: 54)
-                            .background(Color.white.opacity(0.18))
-                            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                    .stroke(Color.white.opacity(0.32), lineWidth: 1)
-                            )
+                        if appState.canDeactivateAlarm {
+                            Button {
+                                Task { await authenticateThenDeactivateAlarm() }
+                            } label: {
+                                Label(isUpdatingAlarm ? "Disabling Alarm…" : "Disable Alarm", systemImage: "bell.slash.fill")
+                                    .font(.headline.weight(.bold))
+                                    .foregroundStyle(accent)
+                                    .frame(maxWidth: .infinity, minHeight: 52)
+                                    .background(Color.white)
+                                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                            }
+                            .buttonStyle(PressableScaleButtonStyle())
+                            .disabled(isUpdatingAlarm)
+                        }
+
+                        Button {
+                            showAlarmTakeover = false
+                        } label: {
+                            Text("View Dashboard")
+                                .font(.subheadline.weight(.medium))
+                                .foregroundStyle(.white)
+                                .frame(maxWidth: .infinity, minHeight: 46)
+                                .background(Color.white.opacity(0.12))
+                                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                        .stroke(Color.white.opacity(0.28), lineWidth: 1)
+                                )
+                        }
+                        .buttonStyle(PressableScaleButtonStyle())
                     }
-                    .buttonStyle(PressableScaleButtonStyle())
+                    .padding(.horizontal, 22)
+                    .padding(.bottom, 34)
                 }
-                .padding(.horizontal, 22)
-                .padding(.bottom, 26)
+                .frame(minHeight: UIScreen.main.bounds.height)
             }
+        }
+    }
+
+    private func acknowledgeAlarm() async {
+        guard let alertId = alarmAlertId,
+              let userID = appState.userID,
+              !alarmCurrentUserAcknowledged else { return }
+        isUpdatingAlarm = true
+        defer { isUpdatingAlarm = false }
+        let api = APIClient(baseURL: appState.serverURL, apiKey: Config.apiKey)
+        do {
+            try await api.acknowledgeAlert(alertId: alertId, userID: userID)
+            alarmCurrentUserAcknowledged = true
+            alarmAcknowledgementCount += 1
+        } catch {
+            // Silently ignore ack errors — non-critical
         }
     }
 
@@ -2266,6 +2342,7 @@ struct ContentView: View {
             alarmSilentAudio = alarm.silentAudio
             alarmAcknowledgementCount = alarm.acknowledgementCount
             alarmCurrentUserAcknowledged = alarm.currentUserAcknowledged
+            if let id = alarm.currentAlertId { alarmAlertId = id }
             anySuccess = true
         } catch {
             errors.append("Alarm status: \(error.localizedDescription)")
@@ -2967,6 +3044,8 @@ struct ContentView: View {
                 if let v = a["is_training"] as? Bool { alarmIsTraining = v }
                 alarmTrainingLabel = a["training_label"] as? String
                 if let v = a["silent_audio"] as? Bool { alarmSilentAudio = v }
+                if let v = a["current_alert_id"] as? Int { alarmAlertId = v }
+                if let v = a["acknowledgement_count"] as? Int { alarmAcknowledgementCount = v }
             }
             if alarmIsActive && !wasActive {
                 showAlarmTakeover = true
@@ -3002,9 +3081,9 @@ struct ContentView: View {
             Task { await refreshIncidentFeed() }
 
         case "tenant_acknowledgement_updated":
-            // Ack count is surfaced via refreshIncidentFeed / alarm status poll.
-            // districtTenants already updated above via applyEventToDistrictTenant.
-            break
+            if let a = alarm {
+                if let v = a["acknowledgement_count"] as? Int { alarmAcknowledgementCount = v }
+            }
 
         case "quiet_request_created", "quiet_request_updated":
             if isAdminSession { Task { await loadAdminQuietPeriodRequests() } }

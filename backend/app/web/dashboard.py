@@ -110,16 +110,58 @@ def render_dashboard(
   <style>
     :root {{
       color-scheme: light;
-      --bg: #f5f7fb;
-      --surface: #ffffff;
-      --surface-2: #f9fbff;
-      --border: #d9e2ef;
-      --text: #10243e;
-      --muted: #64748b;
-      --accent: #165dff;
-      --danger: #d92d20;
-      --success: #0f9f62;
-      --shadow: 0 18px 40px rgba(16, 36, 62, 0.08);
+      /* BlueBird design tokens — light mode */
+      --bb-primary:      #1B5FE4;
+      --bb-danger:       #DC2626;
+      --bb-success:      #166534;
+      --bb-warning:      #B45309;
+      --bb-info:         #1D4ED8;
+      --bb-quiet:        #8E3BEB;
+      --bb-offline:      #6B7280;
+      --bb-trial:        #D97706;
+      /* semantic aliases used by components */
+      --bg:              #EEF5FF;
+      --surface:         #FFFFFF;
+      --surface-2:       #DCE9FF;
+      --border:          rgba(18, 52, 120, 0.10);
+      --text:            #10203F;
+      --muted:           #5D7398;
+      --accent:          #1B5FE4;
+      --danger:          #DC2626;
+      --success:         #166534;
+      --warning:         #B45309;
+      --info:            #1D4ED8;
+      --shadow:          0 2px 8px rgba(16,32,63,0.07);
+      --shadow-lg:       0 18px 40px rgba(16,36,62,0.08);
+      /* alert type colors */
+      --alert-lockdown:  #DC2626;
+      --alert-secure:    #1D4ED8;
+      --alert-evacuate:  #166534;
+      --alert-shelter:   #B45309;
+      --alert-hold:      #8E3BEB;
+      /* spacing */
+      --sp-xs:  4px;
+      --sp-sm:  8px;
+      --sp-md:  12px;
+      --sp-lg:  16px;
+      --sp-xl:  20px;
+      --sp-xxl: 24px;
+      /* radius */
+      --r-sm:   8px;
+      --r-md:   12px;
+      --r-lg:   16px;
+      --r-card: 20px;
+      --r-pill: 9999px;
+    }}
+    [data-theme="dark"] {{
+      color-scheme: dark;
+      --bg:        #0D1424;
+      --surface:   #192132;
+      --surface-2: #111B2E;
+      --border:    rgba(255,255,255,0.20);
+      --text:      #E8EEFF;
+      --muted:     #8FA3C8;
+      --accent:    #4D8BFF;
     }}
 
     * {{ box-sizing: border-box; }}

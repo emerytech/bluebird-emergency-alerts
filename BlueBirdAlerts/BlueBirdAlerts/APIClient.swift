@@ -120,6 +120,17 @@ struct APIClient {
         return try JSONDecoder().decode(AlarmStatusResponse.self, from: data)
     }
 
+    func acknowledgeAlert(alertId: Int, userID: Int) async throws {
+        let url = baseURL.appendingPathComponent("alerts/\(alertId)/ack")
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        withAPIKey(&request)
+        request.httpBody = try JSONEncoder().encode(["user_id": userID])
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try requireSuccess(response: response, data: data)
+    }
+
     func activeRequestHelp() async throws -> TeamAssistListResponse {
         let url = baseURL.appendingPathComponent("team-assist/active")
         var request = URLRequest(url: url)
@@ -620,6 +631,7 @@ struct AlarmStatusResponse: Decodable {
     let silentAudio: Bool
     let acknowledgementCount: Int
     let currentUserAcknowledged: Bool
+    let currentAlertId: Int?
 
     enum CodingKeys: String, CodingKey {
         case isActive = "is_active"
@@ -629,6 +641,7 @@ struct AlarmStatusResponse: Decodable {
         case silentAudio = "silent_audio"
         case acknowledgementCount = "acknowledgement_count"
         case currentUserAcknowledged = "current_user_acknowledged"
+        case currentAlertId = "current_alert_id"
     }
 
     init(from decoder: Decoder) throws {
@@ -640,6 +653,7 @@ struct AlarmStatusResponse: Decodable {
         trainingLabel = try container.decodeIfPresent(String.self, forKey: .trainingLabel)
         acknowledgementCount = try container.decodeIfPresent(Int.self, forKey: .acknowledgementCount) ?? 0
         currentUserAcknowledged = try container.decodeIfPresent(Bool.self, forKey: .currentUserAcknowledged) ?? false
+        currentAlertId = try container.decodeIfPresent(Int.self, forKey: .currentAlertId)
     }
 }
 
