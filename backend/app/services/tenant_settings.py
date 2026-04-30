@@ -82,6 +82,12 @@ class UiSettings:
     show_guided_tour: bool = True
 
 
+@dataclass
+class AiInsightsSettings:
+    enabled: bool = False
+    debug_mode: bool = False
+
+
 # ---------------------------------------------------------------------------
 # Root settings object
 # ---------------------------------------------------------------------------
@@ -94,6 +100,7 @@ class TenantSettings:
     devices: DeviceSettings = field(default_factory=DeviceSettings)
     access_codes: AccessCodeSettings = field(default_factory=AccessCodeSettings)
     ui: UiSettings = field(default_factory=UiSettings)
+    ai_insights: AiInsightsSettings = field(default_factory=AiInsightsSettings)
 
 
 # Map category name → dataclass type (for generic merge / validate helpers)
@@ -104,6 +111,7 @@ _CATEGORY_CLASSES: dict[str, type] = {
     "devices": DeviceSettings,
     "access_codes": AccessCodeSettings,
     "ui": UiSettings,
+    "ai_insights": AiInsightsSettings,
 }
 
 # Per-field validation bounds and allowed values
@@ -196,6 +204,7 @@ def settings_from_dict(d: Any) -> TenantSettings:
         devices=_merge_category(DeviceSettings, d.get("devices")),                     # type: ignore[arg-type]
         access_codes=_merge_category(AccessCodeSettings, d.get("access_codes")),       # type: ignore[arg-type]
         ui=_merge_category(UiSettings, d.get("ui")),                                   # type: ignore[arg-type]
+        ai_insights=_merge_category(AiInsightsSettings, d.get("ai_insights")),         # type: ignore[arg-type]
     )
 
 

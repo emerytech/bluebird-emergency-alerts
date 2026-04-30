@@ -29,9 +29,12 @@ from app.services.quiet_state_store import QuietStateStore
 from app.services.school_registry import SchoolRegistry
 from app.services.tenant_manager import TenantManager
 from app.services.demo_live_engine import DemoLiveEngine
+from app.services.ai_insights import AiInsightsStore, AI_INSIGHTS_GLOBAL_ENABLED
 from app.services.push_queue import PushQueue
 from app.services.twilio_sms import TwilioSMSClient
 from app.services.user_tenant_store import UserTenantStore
+
+import anyio
 
 
 settings = Settings()
@@ -449,6 +452,83 @@ async def _auto_reminder_loop(app: FastAPI, interval_hours: float = 24.0) -> Non
             logger.warning("auto_reminder loop error: %s", exc)
 
 
+async def _ai_insights_loop(app: FastAPI, interval: float = 600.0) -> None:
+    """
+    Background loop: runs AI analysis on enabled tenants using Ollama/llama3.
+    Skips all tenants where ai_insights.enabled is False.
+    Skips entirely if AI_INSIGHTS_GLOBAL_ENABLED env var is not set to true.
+    Never crashes the server on failure.
+    """
+    from app.services.ai_insights import (
+        AI_INSIGHTS_GLOBAL_ENABLED,
+        AiInsightsStore,
+        _check_ollama_available,
+        run_tenant_analysis,
+    )
+
+    if not AI_INSIGHTS_GLOBAL_ENABLED:
+        logger.debug("AI Insights: global toggle is off, loop not starting")
+        return
+
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            school_registry: SchoolRegistry = app.state.school_registry
+            tenant_manager: TenantManager = app.state.tenant_manager
+            ai_store: AiInsightsStore = app.state.ai_insights_store
+
+            available, reason = await anyio.to_thread.run_sync(_check_ollama_available)
+            if not available:
+                logger.debug("AI Insights: Ollama unavailable — %s", reason)
+                continue
+
+            schools = await school_registry.list_schools()
+            for school in schools:
+                if school.is_test or getattr(school, "simulation_mode_enabled", False) \
+                        or getattr(school, "is_archived", False) or not school.is_active:
+                    continue
+                tenant = tenant_manager.get(school)
+                if tenant is None:
+                    continue
+                try:
+                    effective = await tenant.settings_store.get_effective_settings()
+                    if not effective.ai_insights.enabled:
+                        continue
+                    debug_mode = effective.ai_insights.debug_mode
+
+                    # Collect aggregate stats — counts only, no raw data or PII
+                    stats: dict = {}
+                    try:
+                        stats["active_users"] = await tenant.user_store.count_active()
+                    except Exception:
+                        stats["active_users"] = 0
+                    try:
+                        devices = await tenant.device_registry.list_devices()
+                        stats["device_count"] = len(devices)
+                    except Exception:
+                        stats["device_count"] = 0
+                    try:
+                        recent_alerts = await tenant.alert_log.list_recent(limit=100)
+                        stats["alert_count"] = len(recent_alerts)
+                    except Exception:
+                        stats["alert_count"] = 0
+                    stats["drill_count"] = 0
+                    stats["quiet_period_count"] = 0
+                    stats["ack_rate_pct"] = 0
+
+                    await run_tenant_analysis(
+                        school.slug, stats, ai_store, debug_mode=debug_mode
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    logger.debug("AI Insights error tenant=%s: %s", school.slug, exc)
+        except asyncio.CancelledError:
+            break
+        except Exception as exc:
+            logger.warning("AI insights loop error: %s", exc)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.started_at = datetime.now(timezone.utc)
@@ -513,6 +593,9 @@ async def lifespan(app: FastAPI):
     app.state.access_code_service = access_code_service
     app.state.demo_live_engine = DemoLiveEngine(tenant_manager)
 
+    ai_insights_store = AiInsightsStore(settings.PLATFORM_DB_PATH)
+    app.state.ai_insights_store = ai_insights_store
+
     push_queue = PushQueue(maxsize=500)
     await push_queue.start()
     app.state.push_queue = push_queue
@@ -534,6 +617,9 @@ async def lifespan(app: FastAPI):
     )
     ack_reminder_task = asyncio.create_task(
         _ack_reminder_loop(app, interval=180.0)
+    )
+    ai_insights_task = asyncio.create_task(
+        _ai_insights_loop(app, interval=600.0)
     )
 
     yield
@@ -568,6 +654,11 @@ async def lifespan(app: FastAPI):
         pass
     try:
         await ack_reminder_task
+    except asyncio.CancelledError:
+        pass
+    ai_insights_task.cancel()
+    try:
+        await ai_insights_task
     except asyncio.CancelledError:
         pass
 

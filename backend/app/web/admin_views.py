@@ -3021,6 +3021,45 @@ def render_super_admin_page(
     else:
         _archived_schools_section_html = ""
     security_feedback = f"{_render_flash(flash_message, 'success')}{_render_flash(flash_error, 'error')}"
+
+    def _ai_insights_row(r: Mapping[str, object]) -> str:
+        s = escape(str(r.get("slug", "")))
+        n = escape(str(r.get("name", "")))
+        onclick_enabled = "bbAiToggle('" + s + "','enabled')"
+        onclick_debug = "bbAiToggle('" + s + "','debug')"
+        onclick_view = "bbAiViewInsights('" + s + "')"
+        return (
+            '<tr id="ai-row-' + s + '">'
+            '<td>' + n + '</td>'
+            '<td><code>' + s + '</code></td>'
+            '<td>'
+            '<button class="button button-secondary" style="font-size:0.8rem;padding:4px 10px;" '
+            'onclick="' + onclick_enabled + '">Toggle ON/OFF</button>'
+            '<span id="ai-enabled-' + s + '" style="margin-left:8px;font-size:0.8rem;color:var(--muted);">&mdash;</span>'
+            '</td>'
+            '<td>'
+            '<button class="button button-secondary" style="font-size:0.8rem;padding:4px 10px;" '
+            'onclick="' + onclick_debug + '">Toggle Debug</button>'
+            '<span id="ai-debug-' + s + '" style="margin-left:8px;font-size:0.8rem;color:var(--muted);">&mdash;</span>'
+            '</td>'
+            '<td>'
+            '<button class="button button-secondary" style="font-size:0.8rem;padding:4px 10px;" '
+            'onclick="' + onclick_view + '">View</button>'
+            '</td>'
+            '</tr>'
+        )
+
+    _ai_insights_tenant_rows_html = "".join(_ai_insights_row(r) for r in _active_school_rows) or \
+        '<tr><td colspan="5" class="empty-state">No active schools.</td></tr>'
+
+    def _ai_insights_debug_btn(r: Mapping[str, object]) -> str:
+        s = escape(str(r.get("slug", "")))
+        return (
+            '<button class="button button-secondary" style="font-size:0.8rem;padding:4px 10px;" '
+            'onclick="bbAiViewDebug(\'' + s + '\')">' + s + '</button>'
+        )
+
+    _ai_insights_debug_btns_html = "".join(_ai_insights_debug_btn(r) for r in _active_school_rows)
     platform_rows = "".join(
         (
             "<tr>"
@@ -3086,7 +3125,7 @@ def render_super_admin_page(
         for c in setup_codes
     ) or '<tr><td colspan="7" class="empty-state">No setup codes generated yet.</td></tr>'
 
-    section = active_section if active_section in {"districts", "schools", "billing", "platform-audit", "create-school", "security", "configuration", "server-tools", "health", "email-tool", "setup-codes", "noc", "msp", "platform-control", "sandbox"} else "districts"
+    section = active_section if active_section in {"districts", "schools", "billing", "platform-audit", "create-school", "security", "configuration", "server-tools", "health", "email-tool", "setup-codes", "noc", "msp", "platform-control", "sandbox", "ai-insights"} else "districts"
 
     def _section_style(name: str) -> str:
         return "" if section == name else ' style="display:none;"'
@@ -3680,6 +3719,7 @@ def render_super_admin_page(
             {_nav_item("security", "Security")}
             {_nav_item("server-tools", "Server Tools")}
             {_nav_item("sandbox", "Sandbox")}
+            {_nav_item("ai-insights", "🧠 AI Insights")}
             <a class="nav-item" href="/super-admin/change-password">Change password</a>
           </nav>
         </div>
@@ -4805,6 +4845,137 @@ def render_super_admin_page(
           </div>
         </section>
 
+        <section class="panel command-section" id="ai-insights"{_section_style("ai-insights")}>
+          <div class="panel-header">
+            <div>
+              <p class="eyebrow">Developer Tool</p>
+              <h2>🧠 AI Insights</h2>
+              <p class="card-copy">Local AI analysis using Llama3 via Ollama. Each analysis is scoped to a single tenant and uses aggregate statistics only — no raw logs or PII. Disabled by default.</p>
+            </div>
+          </div>
+
+          <div class="flash warning" style="margin-bottom:20px;">
+            <strong>Setup required:</strong> Run <code>bash scripts/install_ollama.sh</code> then set
+            <code>AI_INSIGHTS_GLOBAL_ENABLED=true</code> in your environment to activate the background job.
+          </div>
+
+          <h3 style="margin-bottom:12px;">Per-Tenant Toggles</h3>
+          <p class="mini-copy" style="margin-bottom:16px;">Enable AI Insights for individual tenants. Changes take effect on the next background job run (every 10 min).</p>
+
+          <div style="overflow-x:auto;margin-bottom:32px;">
+            <table class="data-table" style="min-width:560px;">
+              <thead><tr>
+                <th>School</th>
+                <th>Slug</th>
+                <th>AI Insights</th>
+                <th>Debug Mode</th>
+                <th>Recent Insights</th>
+              </tr></thead>
+              <tbody id="ai-insights-tenant-table">
+                {_ai_insights_tenant_rows_html}
+              </tbody>
+            </table>
+          </div>
+
+          <div id="ai-insights-panel" style="display:none;margin-top:24px;">
+            <h3 id="ai-insights-panel-title" style="margin-bottom:12px;">Recent Insights</h3>
+            <div id="ai-insights-panel-body" style="font-size:0.9rem;"></div>
+          </div>
+
+          <details style="margin-top:32px;">
+            <summary style="cursor:pointer;font-size:0.85rem;color:var(--muted);padding:8px 0;">&#9658; AI Debug Logs (raw prompt/response)</summary>
+            <div style="margin-top:12px;">
+              <p class="mini-copy" style="margin-bottom:12px;">Only populated when Debug Mode is enabled for a tenant. Prompts are anonymized aggregate statistics.</p>
+              <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;" id="ai-debug-slug-btns">
+                {_ai_insights_debug_btns_html}
+              </div>
+              <div id="ai-debug-panel" style="font-size:0.85rem;"></div>
+            </div>
+          </details>
+
+          <script>
+          function bbAiToggle(slug, kind) {{
+            var url = '/super-admin/tenants/' + encodeURIComponent(slug) + '/ai-insights/'
+              + (kind === 'debug' ? 'debug-toggle' : 'toggle');
+            fetch(url, {{method:'POST', headers:{{'Content-Type':'application/x-www-form-urlencoded'}}}})
+              .then(function(r) {{ return r.json(); }})
+              .then(function(d) {{
+                if (kind === 'debug') {{
+                  var el = document.getElementById('ai-debug-' + slug);
+                  if (el) el.textContent = d.debug_mode ? '✓ ON' : 'OFF';
+                }} else {{
+                  var el = document.getElementById('ai-enabled-' + slug);
+                  if (el) el.textContent = d.ai_insights_enabled ? '✓ ON' : 'OFF';
+                  if (!d.global_enabled) {{
+                    alert('AI Insights toggled for "' + slug + '" but the global toggle is OFF.\\n\\nSet AI_INSIGHTS_GLOBAL_ENABLED=true in your environment to activate the background job.');
+                  }}
+                }}
+              }})
+              .catch(function(e) {{ alert('Error: ' + e); }});
+          }}
+          function bbAiViewInsights(slug) {{
+            var panel = document.getElementById('ai-insights-panel');
+            var title = document.getElementById('ai-insights-panel-title');
+            var body = document.getElementById('ai-insights-panel-body');
+            panel.style.display = 'block';
+            title.textContent = 'Recent Insights — ' + slug;
+            body.textContent = 'Loading…';
+            fetch('/super-admin/tenants/' + encodeURIComponent(slug) + '/ai-insights')
+              .then(function(r) {{ return r.json(); }})
+              .then(function(d) {{
+                if (!d.insights || !d.insights.length) {{
+                  body.innerHTML = '<p class="mini-copy">No insights yet. Enable AI Insights and wait for the next background job run.</p>';
+                  return;
+                }}
+                var html = '';
+                d.insights.forEach(function(ins) {{
+                  var sev = ins.severity || 'info';
+                  var sevColor = sev === 'critical' ? '#dc2626' : (sev === 'warning' ? '#d97706' : '#16a34a');
+                  html += '<div style="border:1px solid var(--border);border-radius:8px;padding:12px 16px;margin-bottom:12px;">'
+                    + '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">'
+                    + '<span style="background:' + sevColor + ';color:#fff;font-size:0.7rem;padding:2px 7px;border-radius:4px;text-transform:uppercase;">' + sev + '</span>'
+                    + '<span style="font-size:0.75rem;color:var(--muted);">' + ins.timestamp.slice(0,19).replace('T',' ') + '</span>'
+                    + '</div>'
+                    + '<p style="margin:0 0 6px;">' + ins.summary + '</p>';
+                  if (ins.recommendations && ins.recommendations.length) {{
+                    html += '<ul style="margin:0;padding-left:18px;">';
+                    ins.recommendations.forEach(function(r) {{ html += '<li style="font-size:0.85rem;">' + r + '</li>'; }});
+                    html += '</ul>';
+                  }}
+                  html += '</div>';
+                }});
+                body.innerHTML = html;
+              }})
+              .catch(function(e) {{ body.textContent = 'Error: ' + e; }});
+          }}
+          function bbAiViewDebug(slug) {{
+            var panel = document.getElementById('ai-debug-panel');
+            panel.textContent = 'Loading debug logs for ' + slug + '…';
+            fetch('/super-admin/tenants/' + encodeURIComponent(slug) + '/ai-insights/debug')
+              .then(function(r) {{ return r.json(); }})
+              .then(function(d) {{
+                if (!d.debug_entries || !d.debug_entries.length) {{
+                  panel.innerHTML = '<p class="mini-copy">No debug entries for "' + slug + '". Enable Debug Mode and wait for the next job run.</p>';
+                  return;
+                }}
+                var html = '';
+                d.debug_entries.forEach(function(e) {{
+                  html += '<details style="border:1px solid var(--border);border-radius:6px;padding:8px 12px;margin-bottom:8px;">'
+                    + '<summary style="cursor:pointer;font-size:0.8rem;">' + e.timestamp.slice(0,19).replace('T',' ')
+                    + (e.latency_ms ? ' — ' + e.latency_ms + 'ms' : '')
+                    + (e.error ? ' ⚠️ error' : '') + '</summary>'
+                    + (e.error ? '<pre style="color:#dc2626;font-size:0.75rem;white-space:pre-wrap;">' + e.error + '</pre>' : '')
+                    + (e.prompt ? '<p style="font-size:0.75rem;color:var(--muted);margin:6px 0 2px;">Prompt:</p><pre style="font-size:0.75rem;white-space:pre-wrap;background:var(--surface-2);padding:8px;border-radius:4px;">' + e.prompt + '</pre>' : '')
+                    + (e.response ? '<p style="font-size:0.75rem;color:var(--muted);margin:6px 0 2px;">Response:</p><pre style="font-size:0.75rem;white-space:pre-wrap;background:var(--surface-2);padding:8px;border-radius:4px;">' + e.response + '</pre>' : '')
+                    + '</details>';
+                }});
+                panel.innerHTML = html;
+              }})
+              .catch(function(e) {{ panel.textContent = 'Error: ' + e; }});
+          }}
+          </script>
+        </section>
+
       </section>
     </div>
   </div>
@@ -4893,6 +5064,7 @@ def render_super_admin_page(
       {{t:'nav',i:'🏖',l:'Sandbox',d:'Test and demo environments',u:'/super-admin?section=sandbox#sandbox'}},
       {{t:'nav',i:'🔑',l:'Setup Codes',d:'First-admin handoff codes',u:'/super-admin?section=setup-codes#setup-codes'}},
       {{t:'nav',i:'🔒',l:'Security',d:'Super admin 2FA and password',u:'/super-admin?section=security#security'}},
+      {{t:'nav',i:'🧠',l:'AI Insights',d:'Local Llama3 AI analysis per tenant',u:'/super-admin?section=ai-insights#ai-insights'}},
     ];
     var _SA_ENTITIES = [{', '.join(
         '{t:' + repr('entity') + ',i:' + repr('🏛') + ',l:' + json.dumps(str(d.get('name', ''))) + ',d:' + repr('District') + ',u:' + repr('/super-admin?section=districts#districts') + '}'

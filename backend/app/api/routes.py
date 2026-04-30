@@ -9975,3 +9975,123 @@ async def admin_reset_settings(request: Request) -> JSONResponse:
         metadata={"action": "reset_to_defaults"},
     )
     return JSONResponse(effective_settings_dict(new_settings))
+
+
+# ---------------------------------------------------------------------------
+# AI Insights — super admin only
+# ---------------------------------------------------------------------------
+
+@router.post("/super-admin/tenants/{slug}/ai-insights/toggle", include_in_schema=False)
+async def super_admin_ai_insights_toggle(
+    request: Request,
+    slug: str,
+    enabled: Optional[bool] = Form(default=None),
+) -> JSONResponse:
+    """Toggle AI Insights on/off for a specific tenant. Super admin only."""
+    _require_super_admin(request)
+    from app.services.ai_insights import AI_INSIGHTS_GLOBAL_ENABLED
+    school = await _schools(request).get_by_slug(slug.strip().lower())
+    if school is None:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    tenant = request.app.state.tenant_manager.get(school)  # type: ignore[attr-defined]
+    if tenant is None:
+        raise HTTPException(status_code=404, detail="Tenant context not found")
+    if enabled is None:
+        current = await tenant.settings_store.get_effective_settings()
+        enabled = not current.ai_insights.enabled
+    new_settings, errors = await tenant.settings_store.update_settings(
+        {"ai_insights": {"enabled": bool(enabled)}},
+        actor_label="super_admin",
+    )
+    if errors:
+        raise HTTPException(status_code=400, detail="; ".join(errors))
+    return JSONResponse({
+        "ok": True,
+        "slug": slug,
+        "ai_insights_enabled": new_settings.ai_insights.enabled,
+        "global_enabled": AI_INSIGHTS_GLOBAL_ENABLED,
+    })
+
+
+@router.post("/super-admin/tenants/{slug}/ai-insights/debug-toggle", include_in_schema=False)
+async def super_admin_ai_insights_debug_toggle(
+    request: Request,
+    slug: str,
+    enabled: Optional[bool] = Form(default=None),
+) -> JSONResponse:
+    """Toggle AI Insights debug mode for a specific tenant. Super admin only."""
+    _require_super_admin(request)
+    school = await _schools(request).get_by_slug(slug.strip().lower())
+    if school is None:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    tenant = request.app.state.tenant_manager.get(school)  # type: ignore[attr-defined]
+    if tenant is None:
+        raise HTTPException(status_code=404, detail="Tenant context not found")
+    if enabled is None:
+        current = await tenant.settings_store.get_effective_settings()
+        enabled = not current.ai_insights.debug_mode
+    new_settings, errors = await tenant.settings_store.update_settings(
+        {"ai_insights": {"debug_mode": bool(enabled)}},
+        actor_label="super_admin",
+    )
+    if errors:
+        raise HTTPException(status_code=400, detail="; ".join(errors))
+    return JSONResponse({
+        "ok": True,
+        "slug": slug,
+        "debug_mode": new_settings.ai_insights.debug_mode,
+    })
+
+
+@router.get("/super-admin/tenants/{slug}/ai-insights", include_in_schema=False)
+async def super_admin_ai_insights_list(request: Request, slug: str) -> JSONResponse:
+    """List recent AI Insights for a tenant. Super admin only."""
+    _require_super_admin(request)
+    from app.services.ai_insights import AiInsightsStore
+    school = await _schools(request).get_by_slug(slug.strip().lower())
+    if school is None:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    ai_store: AiInsightsStore = request.app.state.ai_insights_store  # type: ignore[attr-defined]
+    records = await ai_store.list_insights(slug, limit=20)
+    return JSONResponse({
+        "slug": slug,
+        "insights": [
+            {
+                "id": r.id,
+                "timestamp": r.timestamp,
+                "severity": r.severity,
+                "summary": r.summary,
+                "recommendations": r.recommendations,
+            }
+            for r in records
+        ],
+    })
+
+
+@router.get("/super-admin/tenants/{slug}/ai-insights/debug", include_in_schema=False)
+async def super_admin_ai_insights_debug(request: Request, slug: str) -> JSONResponse:
+    """List debug AI Insight records (prompt/response pairs). Super admin only."""
+    _require_super_admin(request)
+    from app.services.ai_insights import AiInsightsStore, AI_INSIGHTS_GLOBAL_ENABLED
+    school = await _schools(request).get_by_slug(slug.strip().lower())
+    if school is None:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    ai_store: AiInsightsStore = request.app.state.ai_insights_store  # type: ignore[attr-defined]
+    records = await ai_store.list_debug(slug, limit=10)
+    return JSONResponse({
+        "slug": slug,
+        "global_enabled": AI_INSIGHTS_GLOBAL_ENABLED,
+        "debug_entries": [
+            {
+                "id": r.id,
+                "timestamp": r.timestamp,
+                "severity": r.severity,
+                "summary": r.summary,
+                "prompt": r.debug_prompt,
+                "response": r.debug_response,
+                "latency_ms": r.debug_latency_ms,
+                "error": r.debug_error,
+            }
+            for r in records
+        ],
+    })
