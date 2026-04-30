@@ -67,6 +67,42 @@ try {
       connect();
     }
 
+    function _loadUnacknowledged(alertId) {
+      if (!alertId) return;
+      var unackList = document.getElementById('js-unack-list');
+      var unackCount = document.getElementById('js-unack-count');
+      fetch(BB_PATH_PREFIX + '/admin/alerts/' + alertId + '/unacknowledged', { credentials: 'same-origin' })
+        .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
+        .then(function (data) {
+          var users = data.unacknowledged || [];
+          if (unackCount) {
+            if (users.length) {
+              unackCount.textContent = users.length + ' pending';
+              unackCount.style.display = '';
+            } else {
+              unackCount.style.display = 'none';
+            }
+          }
+          if (!unackList) return;
+          if (!users.length) {
+            unackList.innerHTML = '<span class="mini-copy" style="color:#16a34a;">All users acknowledged ✓</span>';
+            return;
+          }
+          unackList.innerHTML = users.map(function (u) {
+            var statusColor = u.presence_status === 'online' ? '#16a34a' : (u.presence_status === 'idle' ? '#d97706' : '#6b7280');
+            var lastSeen = u.last_seen_at ? u.last_seen_at.slice(0, 16).replace('T', ' ') + ' UTC' : 'Never';
+            return '<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 10px;background:rgba(0,0,0,0.03);border-radius:6px;">'
+              + '<div><div style="font-weight:600;">' + u.name + '</div>'
+              + '<div style="font-size:0.72rem;color:var(--muted);">' + u.role + ' · Last seen: ' + lastSeen + '</div></div>'
+              + '<span style="font-size:0.72rem;font-weight:700;color:' + statusColor + ';">' + u.presence_status + '</span>'
+              + '</div>';
+          }).join('');
+        })
+        .catch(function () {
+          if (unackList) unackList.innerHTML = '<span class="mini-copy">Could not load user list.</span>';
+        });
+    }
+
     function updateSingleSchoolUI(data) {
       var pill = document.getElementById('js-alarm-status-pill');
       var ackPill = document.getElementById('js-ack-pill');
@@ -79,14 +115,36 @@ try {
       else if (alarm.is_active) { cls = 'danger'; label = 'ALARM ACTIVE'; }
       pill.className = 'status-pill ' + cls;
       pill.innerHTML = '<strong>' + label + '</strong>' + msg;
+
+      var ackCount = alarm.acknowledgement_count || 0;
       if (ackPill) {
-        var ackCount = alarm.acknowledgement_count || 0;
         if (alarm.is_active && ackCount > 0) {
           ackPill.style.display = '';
           ackPill.innerHTML = '<strong>Acknowledged</strong>' + ackCount + ' user' + (ackCount !== 1 ? 's' : '');
         } else {
           ackPill.style.display = 'none';
         }
+      }
+
+      // Progress bar
+      var progressBar = document.getElementById('js-ack-progress-bar');
+      var progressLabel = document.getElementById('js-ack-progress-label');
+      var progressPct = document.getElementById('js-ack-progress-pct');
+      if (progressBar && alarm.is_active) {
+        var totalUsers = (typeof BB_ACTIVE_USERS !== 'undefined' ? BB_ACTIVE_USERS : 0);
+        if (totalUsers > 0) {
+          var pct = Math.min(Math.round(ackCount / totalUsers * 100), 100);
+          var barColor = pct >= 90 ? '#16a34a' : (pct >= 60 ? '#d97706' : '#dc2626');
+          progressBar.style.width = pct + '%';
+          progressBar.style.background = barColor;
+          if (progressLabel) progressLabel.textContent = ackCount + ' / ' + totalUsers + ' acknowledged';
+          if (progressPct) { progressPct.textContent = pct + '%'; progressPct.style.color = barColor; }
+        }
+      }
+
+      // Refresh unacked list on every ack event
+      if (alarm.is_active && alarm.current_alert_id) {
+        _loadUnacknowledged(alarm.current_alert_id);
       }
     }
 
@@ -165,6 +223,10 @@ try {
     document.addEventListener('DOMContentLoaded', function () {
       makeSingleSchoolWS();
       makeDistrictWS();
+      // Initial load of unacknowledged users if an alarm is already active
+      if (typeof BB_CURRENT_ALERT_ID !== 'undefined' && BB_CURRENT_ALERT_ID) {
+        _loadUnacknowledged(BB_CURRENT_ALERT_ID);
+      }
     });
   })();
 } catch (e) { console.error('[BB] websocket', e); }

@@ -409,6 +409,21 @@ class AlertLog:
         """Returns all acknowledgement records for a given alert, ordered oldest first."""
         return await anyio.to_thread.run_sync(self._list_acknowledgements_sync, int(alert_id))
 
+    def _list_acknowledged_user_ids_sync(self, alert_id: int) -> set:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT user_id FROM alert_acknowledgements WHERE alert_id = ?;",
+                (int(alert_id),),
+            ).fetchall()
+        return {int(row[0]) for row in rows}
+
+    async def list_acknowledged_user_ids(self, alert_id: int) -> set:
+        """Returns the set of user_ids that have acknowledged the given alert."""
+        import functools
+        return await anyio.to_thread.run_sync(
+            functools.partial(self._list_acknowledged_user_ids_sync, int(alert_id))
+        )
+
     def _log_delivery_sync(
         self,
         alert_id: int,

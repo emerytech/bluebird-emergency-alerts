@@ -1,9 +1,50 @@
 import SwiftUI
 import UIKit
 
+// MARK: - Alert Type
+
+private enum AlertType: String, CaseIterable, Identifiable {
+    case lockdown  = "LOCKDOWN"
+    case secure    = "SECURE"
+    case evacuate  = "EVACUATE"
+    case shelter   = "SHELTER"
+    case hold      = "HOLD"
+
+    var id: String { rawValue }
+
+    var title: String { rawValue.capitalized }
+
+    var description: String {
+        switch self {
+        case .lockdown:  return "External threat — lock all doors, stay inside."
+        case .secure:    return "External threat — secure perimeter, continue inside."
+        case .evacuate:  return "Leave the building via designated routes."
+        case .shelter:   return "Shelter in place — move away from windows and doors."
+        case .hold:      return "Stay in classrooms — do not enter hallways."
+        }
+    }
+
+    var color: Color {
+        switch self {
+        case .lockdown:  return .red
+        case .secure:    return .orange
+        case .evacuate:  return Color(red: 0.1, green: 0.45, blue: 0.9)
+        case .shelter:   return Color(red: 0.5, green: 0.2, blue: 0.8)
+        case .hold:      return Color(red: 0.15, green: 0.55, blue: 0.3)
+        }
+    }
+
+    var message: String {
+        "\(rawValue): \(description)"
+    }
+}
+
+// MARK: - ContentView
+
 struct ContentView: View {
     @EnvironmentObject private var appState: AppState
-    @State private var pendingEmergencyMessage: String = ""
+    @State private var selectedAlertType: AlertType? = nil
+    @State private var showAlertTypeSheet: Bool = false
     @State private var showConfirm: Bool = false
     @State private var isSending: Bool = false
     @State private var showSettings: Bool = false
@@ -17,11 +58,10 @@ struct ContentView: View {
         Double(appState.tenantSettings.alerts.holdSeconds).clamped(to: 1...30)
     }
 
-    // TODO(iOS parity): Add "Request Quiet Period" flow matching Android.
-
     var body: some View {
         NavigationStack {
-            VStack(spacing: 20) {
+            ScrollView {
+              VStack(spacing: 20) {
                 if let alarm = appState.alarmState, alarm.isActive {
                     alarmBanner(alarm)
                 }
@@ -41,8 +81,9 @@ struct ContentView: View {
                     holdSeconds: holdSeconds,
                     enabled: !isSending,
                     onHoldComplete: {
-                        pendingEmergencyMessage = "EMERGENCY ALERT initiated. All users are being notified immediately."
-                        showConfirm = true
+                        let gen = UIImpactFeedbackGenerator(style: .heavy)
+                        gen.impactOccurred()
+                        showAlertTypeSheet = true
                     }
                 )
 
@@ -63,9 +104,10 @@ struct ContentView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
 
-                Spacer()
+                Spacer(minLength: 40)
+              }
+              .padding()
             }
-            .padding()
             .navigationTitle("BlueBird Alerts")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -76,13 +118,26 @@ struct ContentView: View {
             .navigationDestination(isPresented: $showSettings) {
                 SettingsView()
             }
-            .alert("Send emergency alert?", isPresented: $showConfirm) {
-                Button("Cancel", role: .cancel) {}
-                Button("Send", role: .destructive) {
+            .sheet(isPresented: $showAlertTypeSheet) {
+                AlertTypeSelectionSheet(onSelect: { type in
+                    selectedAlertType = type
+                    showAlertTypeSheet = false
+                    showConfirm = true
+                }, onCancel: {
+                    showAlertTypeSheet = false
+                })
+            }
+            .alert("Confirm \(selectedAlertType?.title ?? "Alert")", isPresented: $showConfirm) {
+                Button("Cancel", role: .cancel) { selectedAlertType = nil }
+                Button("Activate", role: .destructive) {
                     Task { await sendEmergency() }
                 }
             } message: {
-                Text(pendingEmergencyMessage)
+                if let type = selectedAlertType {
+                    Text("Send a \(type.title) alert?\n\n\(type.description)\n\nThis will notify all registered devices immediately.")
+                } else {
+                    Text("Send emergency alert?")
+                }
             }
             .sheet(isPresented: $showMessageAdminSheet) {
                 NavigationStack {
@@ -209,15 +264,22 @@ struct ContentView: View {
     }
 
     private func sendEmergency() async {
-        guard !pendingEmergencyMessage.isEmpty else { return }
+        let message = selectedAlertType?.message ?? "EMERGENCY ALERT initiated. All users are being notified immediately."
         isSending = true
-        defer { isSending = false }
+        defer {
+            isSending = false
+            selectedAlertType = nil
+        }
         do {
-            let resp = try await api.panic(message: pendingEmergencyMessage)
+            let resp = try await api.panic(message: message)
             appState.lastStatus = "Alert #\(resp.alertId) sent. ok=\(resp.succeeded) failed=\(resp.failed)"
             appState.lastError = nil
+            let gen = UINotificationFeedbackGenerator()
+            gen.notificationOccurred(.success)
         } catch {
             appState.lastError = "Alert failed: \(error.localizedDescription)"
+            let gen = UINotificationFeedbackGenerator()
+            gen.notificationOccurred(.error)
         }
     }
 
@@ -235,6 +297,82 @@ struct ContentView: View {
         } catch {
             appState.lastError = "Message admin failed: \(error.localizedDescription)"
         }
+    }
+}
+
+// MARK: - Alert Type Selection Sheet
+
+private struct AlertTypeSelectionSheet: View {
+    let onSelect: (AlertType) -> Void
+    let onCancel: () -> Void
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 0) {
+                Text("Select Alert Type")
+                    .font(.title3)
+                    .fontWeight(.bold)
+                    .padding(.top, 8)
+                    .padding(.bottom, 16)
+
+                Text("Choose the type of emergency before activating.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 24)
+                    .padding(.bottom, 20)
+
+                VStack(spacing: 10) {
+                    ForEach(AlertType.allCases) { type in
+                        Button {
+                            let gen = UIImpactFeedbackGenerator(style: .medium)
+                            gen.impactOccurred()
+                            onSelect(type)
+                        } label: {
+                            HStack(spacing: 14) {
+                                Circle()
+                                    .fill(type.color)
+                                    .frame(width: 10, height: 10)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(type.title)
+                                        .font(.headline)
+                                        .foregroundStyle(.primary)
+                                    Text(type.description)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(2)
+                                }
+                                Spacer()
+                                Image(systemName: "chevron.right")
+                                    .font(.caption)
+                                    .foregroundStyle(.tertiary)
+                            }
+                            .padding(.horizontal, 18)
+                            .padding(.vertical, 14)
+                            .background(
+                                RoundedRectangle(cornerRadius: 12)
+                                    .fill(type.color.opacity(0.07))
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 12)
+                                            .strokeBorder(type.color.opacity(0.25), lineWidth: 1)
+                                    )
+                            )
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 20)
+
+                Spacer()
+            }
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Cancel", role: .cancel) { onCancel() }
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
     }
 }
 

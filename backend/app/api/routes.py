@@ -2609,6 +2609,7 @@ async def admin_dashboard(
         active_section=selected_section,
         active_tab=tab.strip().lower(),
         acknowledgement_count=_dashboard_ack_count,
+        current_alert_id=_latest_alert.id if _latest_alert is not None and alarm_state.is_active else None,
         fcm_configured=fcm_configured,
         delivery_stats=_dashboard_delivery_stats,
         audit_events=_audit_events,
@@ -6195,6 +6196,38 @@ async def admin_bulk_restore_users(request: Request) -> JSONResponse:
         success_count += 1
 
     return JSONResponse({"success_count": success_count, "skipped_count": len(skipped), "skipped": skipped})
+
+
+@router.get("/admin/alerts/{alert_id}/unacknowledged", include_in_schema=False)
+async def get_unacknowledged_users(alert_id: int, request: Request) -> JSONResponse:
+    """Returns active users who have not yet acknowledged the given alert. Admin-gated."""
+    await _require_dashboard_admin(request)
+    acked_ids = await _alert_log(request).list_acknowledged_user_ids(alert_id)
+    all_users = await _users(request).list_users()
+    active_users = [
+        u for u in all_users
+        if u.is_active and not getattr(u, "is_archived", False)
+    ]
+    devices = await _registry(request).list_devices()
+    best_device: dict = {}
+    for d in devices:
+        if d.user_id is None:
+            continue
+        uid = d.user_id
+        if uid not in best_device or (d.last_seen_at or "") > (best_device[uid].last_seen_at or ""):
+            best_device[uid] = d
+    unacked = [
+        {
+            "user_id": u.id,
+            "name": u.name,
+            "role": u.role,
+            "last_seen_at": best_device[u.id].last_seen_at if u.id in best_device else None,
+            "presence_status": compute_device_status(best_device[u.id]) if u.id in best_device else "offline",
+        }
+        for u in active_users
+        if u.id not in acked_ids
+    ]
+    return JSONResponse({"unacknowledged": unacked, "total": len(unacked)})
 
 
 @router.get("/admin/users/{user_id}/audit", include_in_schema=False)

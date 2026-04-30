@@ -6196,6 +6196,7 @@ def render_admin_page(
     super_admin_actor_name: Optional[str] = None,
     active_section: str = "dashboard",
     acknowledgement_count: int = 0,
+    current_alert_id: Optional[int] = None,
     fcm_configured: bool = False,
     delivery_stats: Optional[Mapping[str, object]] = None,
     audit_events: Sequence[AuditEventRecord] = (),
@@ -6271,6 +6272,8 @@ def render_admin_page(
         acknowledgement_count / max(active_users, 1)
         if alarm_state.is_active and active_users > 0 else None
     )
+    _ack_pct = int(acknowledgement_count / max(active_users, 1) * 100) if alarm_state.is_active and active_users > 0 else 0
+    _ack_bar_color = "#16a34a" if _ack_pct >= 90 else ("#d97706" if _ack_pct >= 60 else "#dc2626")
     _sg_ctx = SuggestionContext(
         role=str(getattr(current_user, "role", "")),
         prefix=school_path_prefix,
@@ -7441,6 +7444,8 @@ def render_admin_page(
   var BB_TENANT_SLUG = {json.dumps(selected_tenant_slug)};
   var BB_SHOW_DISTRICT_WS = {json.dumps(show_district_nav)};
   var BB_PATH_PREFIX = {json.dumps(school_path_prefix)};
+  var BB_ACTIVE_USERS = {json.dumps(active_users)};
+  var BB_CURRENT_ALERT_ID = {json.dumps(current_alert_id)};
   </script>
   <script src="/static/js/bb-admin.js"></script>
 {_demo_mode_script_html}
@@ -7590,6 +7595,25 @@ def render_admin_page(
                 <button class="button button-danger" type="submit">End alarm now</button>
               </div>
             </form>
+            <div style="margin:14px 0 0;padding:14px;background:rgba(220,38,38,0.05);border:1px solid rgba(220,38,38,0.18);border-radius:10px;">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+                <span id="js-ack-progress-label" style="font-size:0.84rem;font-weight:600;">{acknowledgement_count} / {active_users} acknowledged</span>
+                <span id="js-ack-progress-pct" style="font-size:0.84rem;font-weight:700;color:{_ack_bar_color};">{_ack_pct}%</span>
+              </div>
+              <div style="background:rgba(0,0,0,0.12);border-radius:6px;height:9px;overflow:hidden;">
+                <div id="js-ack-progress-bar" style="height:100%;width:{_ack_pct}%;border-radius:6px;background:{_ack_bar_color};transition:width .5s ease,background .5s ease;"></div>
+              </div>
+              <p class="mini-copy" style="margin-top:6px;">Auto-reminders sent every 3 min to users who haven&#39;t acknowledged.</p>
+            </div>
+            <div id="js-unack-section" style="margin-top:10px;">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+                <span style="font-size:0.82rem;font-weight:600;">Users Not Yet Acknowledged</span>
+                <span id="js-unack-count" class="status-pill danger" style="font-size:0.74rem;display:none;"></span>
+              </div>
+              <div id="js-unack-list" style="display:grid;gap:5px;font-size:0.8rem;max-height:220px;overflow-y:auto;">
+                <span class="mini-copy">Loading…</span>
+              </div>
+            </div>
             ''' if alarm_state.is_active else f'''
             {super_admin_recorded_badge_html}
             <div id="live_alert_warning" class="flash error" style="display:none; margin-bottom:12px;">

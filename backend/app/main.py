@@ -169,6 +169,102 @@ def _normalize_tenant_candidate(value: str) -> str:
     return _TENANT_CLEAN_RE.sub("-", value.strip().lower()).strip("-")
 
 
+async def _ack_reminder_loop(app: FastAPI, interval: float = 180.0) -> None:
+    """
+    Background loop: sends push reminders to active users who have not yet
+    acknowledged an in-progress alarm.
+
+    Rules:
+    - Runs every `interval` seconds (default 3 min).
+    - Minimum 3 minutes between reminders per user (in-memory throttle).
+    - Skips test, simulation, and inactive tenants.
+    - Stops sending as soon as user acknowledges or alarm is cleared.
+    - Best-effort: send failures are logged at DEBUG and skipped.
+    """
+    _last_sent: dict = {}  # {(tenant_slug, user_id): datetime}
+    _MIN_GAP = timedelta(minutes=3)
+
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            school_registry: SchoolRegistry = app.state.school_registry
+            tenant_manager: TenantManager = app.state.tenant_manager
+            apns_client = app.state.apns_client
+            fcm_client = app.state.fcm_client
+            now = datetime.now(timezone.utc)
+
+            schools = await school_registry.list_schools()
+            for school in schools:
+                if (school.is_test or getattr(school, "simulation_mode_enabled", False)
+                        or getattr(school, "is_archived", False) or not school.is_active):
+                    continue
+                tenant = tenant_manager.get(school)
+                if tenant is None:
+                    continue
+                try:
+                    alarm_state = await tenant.alarm_store.get_state()
+                    if not alarm_state.is_active:
+                        continue
+                    latest_alert = await tenant.alert_log.latest_alert()
+                    if latest_alert is None:
+                        continue
+                    alert_id = latest_alert.id
+                    alert_type = (alarm_state.message or "").split()[0].upper() or "ALERT"
+
+                    acked_ids = await tenant.alert_log.list_acknowledged_user_ids(alert_id)
+                    all_users = await tenant.user_store.list_users()
+                    unacked = [
+                        u for u in all_users
+                        if u.is_active
+                        and not getattr(u, "is_archived", False)
+                        and u.id not in acked_ids
+                    ]
+                    if not unacked:
+                        continue
+
+                    devices = await tenant.device_registry.list_devices()
+                    apns_by_user: dict = {}
+                    fcm_by_user: dict = {}
+                    for d in devices:
+                        if d.user_id is None:
+                            continue
+                        if d.push_provider == "apns":
+                            apns_by_user.setdefault(d.user_id, []).append(d.token)
+                        elif d.push_provider == "fcm":
+                            fcm_by_user.setdefault(d.user_id, []).append(d.token)
+
+                    reminder_msg = f"Reminder: Please acknowledge the active {alert_type} alert."
+                    slug = str(school.slug)
+
+                    for user in unacked:
+                        key = (slug, user.id)
+                        last = _last_sent.get(key)
+                        if last and (now - last) < _MIN_GAP:
+                            continue
+                        user_apns = apns_by_user.get(user.id, [])
+                        user_fcm = fcm_by_user.get(user.id, [])
+                        if not user_apns and not user_fcm:
+                            continue
+                        try:
+                            if user_apns:
+                                await apns_client.send_bulk(user_apns, reminder_msg)
+                            if user_fcm:
+                                await fcm_client.send_bulk(user_fcm, reminder_msg)
+                            _last_sent[key] = now
+                            logger.info(
+                                "ack_reminder sent tenant=%s user_id=%s alert_id=%s",
+                                slug, user.id, alert_id,
+                            )
+                        except Exception:
+                            logger.debug("ack_reminder send failed user_id=%s", user.id, exc_info=True)
+                except Exception:
+                    logger.debug("ack_reminder error school=%s", school.slug, exc_info=True)
+        except asyncio.CancelledError:
+            break
+        except Exception as exc:
+            logger.warning("ack_reminder loop error: %s", exc)
+
+
 async def _auto_archive_loop(app: FastAPI, interval_hours: float = 6.0) -> None:
     """
     Background loop: auto-archives revoked codes for tenants that have the
@@ -436,6 +532,9 @@ async def lifespan(app: FastAPI):
     auto_archive_task = asyncio.create_task(
         _auto_archive_loop(app, interval_hours=6.0)
     )
+    ack_reminder_task = asyncio.create_task(
+        _ack_reminder_loop(app, interval=180.0)
+    )
 
     yield
 
@@ -446,6 +545,7 @@ async def lifespan(app: FastAPI):
     wal_checkpoint_task.cancel()
     auto_reminder_task.cancel()
     auto_archive_task.cancel()
+    ack_reminder_task.cancel()
     try:
         await health_task
     except asyncio.CancelledError:
@@ -464,6 +564,10 @@ async def lifespan(app: FastAPI):
         pass
     try:
         await auto_archive_task
+    except asyncio.CancelledError:
+        pass
+    try:
+        await ack_reminder_task
     except asyncio.CancelledError:
         pass
 
