@@ -2,6 +2,7 @@ package com.ets3d.bluebirdalertsandroid
 
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.runtime.SideEffect
 import androidx.compose.material3.Shapes
 import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
@@ -117,8 +118,8 @@ fun BlueBirdTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
     content: @Composable () -> Unit,
 ) {
-    DSTokenStore.isDarkMode = darkTheme
     val colorScheme = if (darkTheme) BlueBirdDarkColorScheme else BlueBirdLightColorScheme
+    SideEffect { DSTokenStore.isDarkMode = darkTheme }
     MaterialTheme(
         colorScheme = colorScheme,
         typography  = BlueBirdTypography,

@@ -118,20 +118,22 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 
 // ── Brand colours ─────────────────────────────────────────────────────────────
-private val AppBg       = DSColor.Background
-private val AppBgDeep   = DSColor.BackgroundDeep
-private val SurfaceMain = DSColor.Card
-private val SurfaceSoft = DSColor.Background
-private val BorderSoft  = DSColor.Border
-private val BluePrimary = DSColor.Primary
-private val BlueLight   = DSColor.Info
-private val BlueDark    = DSColor.Primary
-private val QuietPurple = DSColor.QuietAccent
-private val AlarmRed    = DSColor.Danger
-private val AlarmGreen  = DSColor.Success
-private val TextPri     = DSColor.TextPrimary
-private val TextMuted   = DSColor.TextSecondary
-private val TextOnDark  = DSColor.Background
+// get() ensures each composable access re-reads DSTokenStore.tokens(), which
+// reads the mutableStateOf _isDarkMode and creates a Compose snapshot observation.
+private val AppBg       get() = DSColor.Background
+private val AppBgDeep   get() = DSColor.BackgroundDeep
+private val SurfaceMain get() = DSColor.Card
+private val SurfaceSoft get() = DSColor.Background
+private val BorderSoft  get() = DSColor.Border
+private val BluePrimary get() = DSColor.Primary
+private val BlueLight   get() = DSColor.Info
+private val BlueDark    get() = DSColor.Primary
+private val QuietPurple get() = DSColor.QuietAccent
+private val AlarmRed    get() = DSColor.Danger
+private val AlarmGreen  get() = DSColor.Success
+private val TextPri     get() = DSColor.TextPrimary
+private val TextMuted   get() = DSColor.TextSecondary
+private val TextOnDark  get() = DSColor.Background
 
 // ── Prefs ──────────────────────────────────────────────────────────────────────
 private const val PREFS      = "bluebird_prefs"
@@ -1722,9 +1724,15 @@ class MainActivity : FragmentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         applyAlarmLaunchFlags(intent)
-        DSTokenStore.isDarkMode = (resources.configuration.uiMode and
-            android.content.res.Configuration.UI_MODE_NIGHT_MASK) ==
-            android.content.res.Configuration.UI_MODE_NIGHT_YES
+        // User pref takes priority over system dark mode; set before loadIfNeeded so token
+        // parsing uses the correct mode from the very first composition.
+        DSTokenStore.isDarkMode = if (prefs(this).contains(KEY_DARK_MODE)) {
+            loadDarkModeSetting(this)
+        } else {
+            (resources.configuration.uiMode and
+                android.content.res.Configuration.UI_MODE_NIGHT_MASK) ==
+                android.content.res.Configuration.UI_MODE_NIGHT_YES
+        }
         DSTokenStore.loadIfNeeded(this)
         ensureNotificationChannel(this)
         askNotificationPermission()
@@ -1735,6 +1743,7 @@ class MainActivity : FragmentActivity() {
                 App(
                     darkModeEnabled = darkModeEnabled,
                     onDarkModeChanged = { enabled ->
+                        DSTokenStore.isDarkMode = enabled  // batched with darkModeEnabled; single recomposition
                         darkModeEnabled = enabled
                         saveDarkModeSetting(ctx, enabled)
                     },

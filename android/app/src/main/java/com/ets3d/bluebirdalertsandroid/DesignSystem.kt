@@ -1,6 +1,7 @@
 package com.ets3d.bluebirdalertsandroid
 
 import android.content.Context
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -99,47 +100,58 @@ data class DesignTokens(
 
 object DSTokenStore {
     @Volatile private var didLoad = false
-    @Volatile private var current: DesignTokens = DesignTokens.Defaults
 
-    /** Set this to true before calling loadIfNeeded() for correct dark-mode token resolution. */
-    @Volatile var isDarkMode: Boolean = false
+    // Separate token sets so switching theme is a pure state read — no re-parse required.
+    private var lightCurrent: DesignTokens = DesignTokens.Defaults
+    private var darkCurrent: DesignTokens = DesignTokens.DarkDefaults
+
+    // Compose state so any composable reading tokens() is invalidated on toggle.
+    private val _isDarkMode = mutableStateOf(false)
+    var isDarkMode: Boolean
+        get() = _isDarkMode.value
+        set(value) { _isDarkMode.value = value }
 
     fun loadIfNeeded(context: Context) {
         if (didLoad) return
         synchronized(this) {
             if (didLoad) return
             didLoad = true
-            current = runCatching {
-                context.assets.open("tokens.json").bufferedReader().use { reader ->
-                    parseTokens(JSONObject(reader.readText()))
-                }
-            }.getOrElse { if (isDarkMode) DesignTokens.DarkDefaults else DesignTokens.Defaults }
+            runCatching {
+                val json = JSONObject(context.assets.open("tokens.json").bufferedReader().use { it.readText() })
+                lightCurrent = parseTokens(json, darkMode = false)
+                darkCurrent  = parseTokens(json, darkMode = true)
+            }.onFailure {
+                lightCurrent = DesignTokens.Defaults
+                darkCurrent  = DesignTokens.DarkDefaults
+            }
         }
     }
 
-    fun tokens(): DesignTokens = current
+    // Reading _isDarkMode.value here creates a Compose snapshot observation —
+    // every composable that calls tokens() will recompose when isDarkMode changes.
+    fun tokens(): DesignTokens = if (_isDarkMode.value) darkCurrent else lightCurrent
 
     fun parseHexColor(raw: String): Color? = parseHexColorInternal(raw)
 
-    private fun parseTokens(root: JSONObject): DesignTokens {
-        val base = if (isDarkMode) DesignTokens.DarkDefaults else DesignTokens.Defaults
+    private fun parseTokens(root: JSONObject, darkMode: Boolean): DesignTokens {
+        val base = if (darkMode) DesignTokens.DarkDefaults else DesignTokens.Defaults
         return base.copy(
-            primary          = pickColor(root, base.primary,          "color.mode.primary",          "theme.colors.primary", "color.button.primary", "colors.button.primary", "colors.primary", "color.primary"),
-            danger           = pickColor(root, base.danger,           "color.button.danger",          "colors.button.danger", "colors.danger", "color.danger", "theme.colors.danger"),
-            background       = pickColor(root, base.background,       "color.mode.background",        "colors.background.light", "color.background.light", "colors.background", "color.background"),
-            backgroundDeep   = pickColor(root, base.backgroundDeep,   "color.mode.background_deep",   "colors.background.dark", "color.background.dark", "colors.background_deep"),
-            card             = pickColor(root, base.card,             "color.mode.card",              "color.background.surface", "colors.background.surface", "colors.card", "color.card"),
-            inputBackground  = pickColor(root, base.inputBackground,  "colors.input_background",      "color.input_background", "colors.inputBackground", "color.inputBackground"),
-            textPrimary      = pickColor(root, base.textPrimary,      "color.mode.text_primary",      "colors.text_primary", "color.text_primary", "colors.textPrimary", "color.textPrimary"),
-            textSecondary    = pickColor(root, base.textSecondary,    "color.mode.text_secondary",    "colors.text_secondary", "color.text_secondary", "colors.textSecondary", "color.textSecondary"),
-            textTertiary     = pickColor(root, base.textTertiary,     "color.mode.text_tertiary",     "colors.text_tertiary",  "color.text_tertiary"),
-            border           = pickColor(root, base.border,           "color.mode.border",            "color.border.default", "colors.border.default", "colors.border", "color.border"),
-            success          = pickColor(root, base.success,          "color.status.success",         "colors.status.success"),
-            warning          = pickColor(root, base.warning,          "color.status.warning",         "colors.status.warning"),
-            info             = pickColor(root, base.info,             "color.status.info",            "colors.status.info"),
-            quietAccent      = pickColor(root, base.quietAccent,      "color.status.quiet",           "colors.status.quiet"),
-            cardBorder       = pickColor(root, base.cardBorder,       "color.mode.card_border",       "colors.card_border"),
-            inputBorder      = pickColor(root, base.inputBorder,      "color.mode.input_border",      "colors.input_border"),
+            primary          = pickColor(root, base.primary, darkMode,          "color.mode.primary",          "theme.colors.primary", "color.button.primary", "colors.button.primary", "colors.primary", "color.primary"),
+            danger           = pickColor(root, base.danger, darkMode,           "color.button.danger",          "colors.button.danger", "colors.danger", "color.danger", "theme.colors.danger"),
+            background       = pickColor(root, base.background, darkMode,       "color.mode.background",        "colors.background.light", "color.background.light", "colors.background", "color.background"),
+            backgroundDeep   = pickColor(root, base.backgroundDeep, darkMode,   "color.mode.background_deep",   "colors.background.dark", "color.background.dark", "colors.background_deep"),
+            card             = pickColor(root, base.card, darkMode,             "color.mode.card",              "color.background.surface", "colors.background.surface", "colors.card", "color.card"),
+            inputBackground  = pickColor(root, base.inputBackground, darkMode,  "colors.input_background",      "color.input_background", "colors.inputBackground", "color.inputBackground"),
+            textPrimary      = pickColor(root, base.textPrimary, darkMode,      "color.mode.text_primary",      "colors.text_primary", "color.text_primary", "colors.textPrimary", "color.textPrimary"),
+            textSecondary    = pickColor(root, base.textSecondary, darkMode,    "color.mode.text_secondary",    "colors.text_secondary", "color.text_secondary", "colors.textSecondary", "color.textSecondary"),
+            textTertiary     = pickColor(root, base.textTertiary, darkMode,     "color.mode.text_tertiary",     "colors.text_tertiary",  "color.text_tertiary"),
+            border           = pickColor(root, base.border, darkMode,           "color.mode.border",            "color.border.default", "colors.border.default", "colors.border", "color.border"),
+            success          = pickColor(root, base.success, darkMode,          "color.status.success",         "colors.status.success"),
+            warning          = pickColor(root, base.warning, darkMode,          "color.status.warning",         "colors.status.warning"),
+            info             = pickColor(root, base.info, darkMode,             "color.status.info",            "colors.status.info"),
+            quietAccent      = pickColor(root, base.quietAccent, darkMode,      "color.status.quiet",           "colors.status.quiet"),
+            cardBorder       = pickColor(root, base.cardBorder, darkMode,       "color.mode.card_border",       "colors.card_border"),
+            inputBorder      = pickColor(root, base.inputBorder, darkMode,      "color.mode.input_border",      "colors.input_border"),
             spacingXS        = pickInt(root, base.spacingXS,          "spacing.xs"),
             spacingSM        = pickInt(root, base.spacingSM,          "spacing.sm"),
             spacingMD        = pickInt(root, base.spacingMD,          "spacing.md"),
@@ -159,8 +171,8 @@ object DSTokenStore {
         )
     }
 
-    private fun pickColor(root: JSONObject, fallback: Color, vararg paths: String): Color {
-        val variant = if (isDarkMode) "dark" else "light"
+    private fun pickColor(root: JSONObject, fallback: Color, darkMode: Boolean, vararg paths: String): Color {
+        val variant = if (darkMode) "dark" else "light"
         for (path in paths) {
             val raw = lookup(root, path) ?: continue
             val hex = when (raw) {
