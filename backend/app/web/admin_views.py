@@ -4913,6 +4913,13 @@ def render_super_admin_page(
               }})
               .catch(function(e) {{ alert('Error: ' + e); }});
           }}
+          function _bbConfBar(pct, color) {{
+            return '<div title="' + pct + '%" style="background:var(--border);border-radius:3px;height:6px;width:100px;display:inline-block;vertical-align:middle;overflow:hidden;">'
+              + '<div style="width:' + pct + '%;height:100%;background:' + color + ';transition:width .3s;"></div></div>';
+          }}
+          function _bbConfColor(pct) {{
+            return pct >= 80 ? '#16a34a' : (pct >= 60 ? '#d97706' : '#dc2626');
+          }}
           function bbAiViewInsights(slug) {{
             var panel = document.getElementById('ai-insights-panel');
             var title = document.getElementById('ai-insights-panel-title');
@@ -4924,25 +4931,41 @@ def render_super_admin_page(
               .then(function(r) {{ return r.json(); }})
               .then(function(d) {{
                 if (!d.insights || !d.insights.length) {{
-                  body.innerHTML = '<p class="mini-copy">No insights yet. Enable AI Insights and wait for the next background job run.</p>';
+                  body.innerHTML = '<p class="mini-copy">No insights yet (or all were filtered by confidence threshold). Enable AI Insights and wait for the next background run.</p>';
                   return;
                 }}
                 var html = '';
                 d.insights.forEach(function(ins) {{
                   var sev = ins.severity || 'info';
                   var sevColor = sev === 'critical' ? '#dc2626' : (sev === 'warning' ? '#d97706' : '#16a34a');
-                  html += '<div style="border:1px solid var(--border);border-radius:8px;padding:12px 16px;margin-bottom:12px;">'
-                    + '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">'
+                  var conf = ins.final_confidence != null ? ins.final_confidence : 50;
+                  var confColor = _bbConfColor(conf);
+                  var confLabel = ins.confidence_label || (conf >= 80 ? 'High' : (conf >= 60 ? 'Needs Review' : 'Low'));
+                  var needsReview = ins.needs_review;
+                  html += '<div style="border:1px solid ' + (needsReview ? '#d97706' : 'var(--border)') + ';border-radius:8px;padding:12px 16px;margin-bottom:12px;">';
+                  html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap;">'
                     + '<span style="background:' + sevColor + ';color:#fff;font-size:0.7rem;padding:2px 7px;border-radius:4px;text-transform:uppercase;">' + sev + '</span>'
+                    + (needsReview ? '<span style="background:#d97706;color:#fff;font-size:0.7rem;padding:2px 7px;border-radius:4px;">Needs Review</span>' : '')
                     + '<span style="font-size:0.75rem;color:var(--muted);">' + ins.timestamp.slice(0,19).replace('T',' ') + '</span>'
-                    + '</div>'
-                    + '<p style="margin:0 0 6px;">' + ins.summary + '</p>';
+                    + '</div>';
+                  html += '<p style="margin:0 0 8px;">' + ins.summary + '</p>';
                   if (ins.recommendations && ins.recommendations.length) {{
-                    html += '<ul style="margin:0;padding-left:18px;">';
-                    ins.recommendations.forEach(function(r) {{ html += '<li style="font-size:0.85rem;">' + r + '</li>'; }});
+                    html += '<ul style="margin:0 0 10px;padding-left:18px;">';
+                    ins.recommendations.forEach(function(rec) {{ html += '<li style="font-size:0.85rem;">' + rec + '</li>'; }});
                     html += '</ul>';
                   }}
-                  html += '</div>';
+                  html += '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding-top:8px;border-top:1px solid var(--border);">'
+                    + '<span style="font-size:0.75rem;color:' + confColor + ';font-weight:600;">Confidence: ' + conf + '% &mdash; ' + confLabel + '</span>'
+                    + _bbConfBar(conf, confColor)
+                    + '</div>'
+                    + '<details style="margin-top:6px;">'
+                    + '<summary style="font-size:0.72rem;color:var(--muted);cursor:pointer;">Score breakdown</summary>'
+                    + '<div style="font-size:0.72rem;color:var(--muted);margin-top:4px;display:grid;grid-template-columns:repeat(3,auto);gap:4px 16px;">'
+                    + '<span>Rule signal: <strong>' + (ins.rule_score != null ? ins.rule_score : '—') + '</strong></span>'
+                    + '<span>Data quality: <strong>' + (ins.data_quality_score != null ? ins.data_quality_score : '—') + '</strong></span>'
+                    + '<span>LLM self-score: <strong>' + (ins.llm_confidence != null ? ins.llm_confidence : '—') + '</strong></span>'
+                    + '</div></details>'
+                    + '</div>';
                 }});
                 body.innerHTML = html;
               }})
@@ -4960,12 +4983,20 @@ def render_super_admin_page(
                 }}
                 var html = '';
                 d.debug_entries.forEach(function(e) {{
-                  html += '<details style="border:1px solid var(--border);border-radius:6px;padding:8px 12px;margin-bottom:8px;">'
-                    + '<summary style="cursor:pointer;font-size:0.8rem;">' + e.timestamp.slice(0,19).replace('T',' ')
+                  var conf = e.final_confidence != null ? e.final_confidence : '—';
+                  var summLine = e.timestamp.slice(0,19).replace('T',' ')
                     + (e.latency_ms ? ' — ' + e.latency_ms + 'ms' : '')
-                    + (e.error ? ' ⚠️ error' : '') + '</summary>'
-                    + (e.error ? '<pre style="color:#dc2626;font-size:0.75rem;white-space:pre-wrap;">' + e.error + '</pre>' : '')
-                    + (e.prompt ? '<p style="font-size:0.75rem;color:var(--muted);margin:6px 0 2px;">Prompt:</p><pre style="font-size:0.75rem;white-space:pre-wrap;background:var(--surface-2);padding:8px;border-radius:4px;">' + e.prompt + '</pre>' : '')
+                    + ' — confidence: ' + conf + '%'
+                    + (e.error ? ' ⚠️ error' : '');
+                  html += '<details style="border:1px solid var(--border);border-radius:6px;padding:8px 12px;margin-bottom:8px;">'
+                    + '<summary style="cursor:pointer;font-size:0.8rem;">' + summLine + '</summary>'
+                    + (e.error ? '<pre style="color:#dc2626;font-size:0.75rem;white-space:pre-wrap;">' + e.error + '</pre>' : '');
+                  if (e.final_confidence != null) {{
+                    html += '<div style="font-size:0.72rem;color:var(--muted);margin:6px 0;">'
+                      + 'rule_score=' + e.rule_score + '  data_quality=' + e.data_quality_score
+                      + '  llm_confidence=' + e.llm_confidence + '  final=' + e.final_confidence + '</div>';
+                  }}
+                  html += (e.prompt ? '<p style="font-size:0.75rem;color:var(--muted);margin:6px 0 2px;">Prompt:</p><pre style="font-size:0.75rem;white-space:pre-wrap;background:var(--surface-2);padding:8px;border-radius:4px;">' + e.prompt + '</pre>' : '')
                     + (e.response ? '<p style="font-size:0.75rem;color:var(--muted);margin:6px 0 2px;">Response:</p><pre style="font-size:0.75rem;white-space:pre-wrap;background:var(--surface-2);padding:8px;border-radius:4px;">' + e.response + '</pre>' : '')
                     + '</details>';
                 }});
