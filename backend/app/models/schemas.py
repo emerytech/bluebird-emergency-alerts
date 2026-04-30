@@ -495,6 +495,8 @@ class AlarmStatusResponse(BaseModel):
     broadcasts: List[BroadcastUpdateSummary] = []
     triggered_by_user_id: Optional[int] = None
     silent_for_sender: bool = True
+    state_version: int = 0
+    server_ts: Optional[str] = None
 
 
 class AlarmActivateRequest(BaseModel):

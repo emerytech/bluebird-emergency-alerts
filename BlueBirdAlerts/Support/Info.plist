@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
 	<key>BACKEND_BASE_URL</key>
-	<string>https://bluebird.ets3d.com</string>
+	<string>https://bluebird-alerts.com</string>
 	<key>BACKEND_API_KEY</key>
 	<string>$(BACKEND_API_KEY)</string>
 	<key>CFBundleDevelopmentRegion</key>
@@ -28,8 +28,14 @@
 	<true/>
 	<key>NSAppTransportSecurity</key>
 	<dict>
-		<key>NSAllowsArbitraryLoads</key>
-		<true/>
+		<key>NSExceptionDomains</key>
+		<dict>
+			<key>localhost</key>
+			<dict>
+				<key>NSExceptionAllowsInsecureHTTPLoads</key>
+				<true/>
+			</dict>
+		</dict>
 	</dict>
 	<key>NSFaceIDUsageDescription</key>
 	<string>BlueBird Alerts uses Face ID to confirm emergency actions and admin security tasks.</string>

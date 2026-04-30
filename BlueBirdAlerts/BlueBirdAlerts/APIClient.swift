@@ -1,6 +1,6 @@
 import Foundation
 
-struct APIClient {
+struct APIClient: Sendable {
     let baseURL: URL
     let apiKey: String
 
@@ -127,6 +127,17 @@ struct APIClient {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         withAPIKey(&request)
         request.httpBody = try JSONEncoder().encode(["user_id": userID])
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try requireSuccess(response: response, data: data)
+    }
+
+    func heartbeat(deviceToken: String) async throws {
+        let url = baseURL.appendingPathComponent("devices/heartbeat")
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        withAPIKey(&request)
+        request.httpBody = try JSONEncoder().encode(["device_token": deviceToken, "push_provider": "apns"])
         let (data, response) = try await URLSession.shared.data(for: request)
         try requireSuccess(response: response, data: data)
     }

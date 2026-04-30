@@ -269,6 +269,12 @@ private fun getUserRole(ctx: Context) = prefs(ctx).getString(KEY_ROLE, "") ?: ""
 private fun getLoginName(ctx: Context) = prefs(ctx).getString(KEY_LOGIN, "") ?: ""
 private fun getSchoolName(ctx: Context) = prefs(ctx).getString(KEY_SCHOOL_NAME, "") ?: ""
 private fun canDeactivateAlarm(ctx: Context) = prefs(ctx).getBoolean(KEY_CAN_DEACTIVATE, false)
+
+/** Returns true if the current user's role allows access to district-level settings and features. */
+private fun canAccessDistrictSettings(role: String): Boolean =
+    role.equals("district_admin", ignoreCase = true) ||
+    role.equals("super_admin", ignoreCase = true) ||
+    role.equals("platform_super_admin", ignoreCase = true)
 private fun getServerUrl(ctx: Context): String {
     val stored = prefs(ctx).getString(KEY_SERVER_URL, "") ?: ""
     if (stored.isBlank()) return stored
@@ -728,6 +734,8 @@ class MainViewModel : ViewModel() {
     private var cachedUserId: Int? = null
     private var cachedHomeSlug: String = ""
     private val processedEventIds = LinkedHashSet<String>(200)
+    @Volatile private var pendingAck = false
+    @Volatile private var cachedFcmToken: String? = null
 
     private fun isDuplicateEvent(eventId: String): Boolean {
         if (eventId.isBlank()) return false
@@ -757,10 +765,7 @@ class MainViewModel : ViewModel() {
         loadMeData(ctx)
         startAlarmWebSocket(ctx)
         val role = getUserRole(ctx)
-        val isDistrict = role.equals("district_admin", ignoreCase = true) ||
-            role.equals("super_admin", ignoreCase = true) ||
-            role.equals("platform_super_admin", ignoreCase = true)
-        if (isDistrict) startDistrictWebSocket(ctx)
+        if (canAccessDistrictSettings(role)) startDistrictWebSocket(ctx)
     }
 
     fun refreshFeatureLabels() {
@@ -778,6 +783,7 @@ class MainViewModel : ViewModel() {
         FirebaseMessaging.getInstance().token.addOnCompleteListener { task ->
             if (!task.isSuccessful) return@addOnCompleteListener
             val token = task.result ?: return@addOnCompleteListener
+            cachedFcmToken = token
             val userId = getUserId(ctx).toIntOrNull()
             val deviceId = getOrCreateDeviceId(ctx)
             viewModelScope.launch(Dispatchers.IO) {
@@ -795,7 +801,11 @@ class MainViewModel : ViewModel() {
                 runCatching { client!!.alarmStatus() }
                     .onSuccess { alarm ->
                         cycleHadSuccess = true
-                        _state.update { it.copy(alarm = alarm, connected = true) }
+                        _state.update { s ->
+                            val safeAlarm = if (pendingAck && !alarm.currentUserAcknowledged)
+                                alarm.copy(currentUserAcknowledged = true) else alarm
+                            s.copy(alarm = safeAlarm, connected = true)
+                        }
                     }
                 if (userId != null) {
                     runCatching { client!!.quietPeriodStatus(userId = userId) }
@@ -809,6 +819,9 @@ class MainViewModel : ViewModel() {
                 }
                 _state.update { it.copy(connected = cycleHadSuccess) }
                 tick += 1
+                if (tick % 6 == 0) {
+                    cachedFcmToken?.let { token -> runCatching { client!!.heartbeat(token) } }
+                }
                 if (tick % 18 == 0) {
                     runCatching { client!!.configLabels() }
                         .onSuccess { labels ->
@@ -911,17 +924,16 @@ class MainViewModel : ViewModel() {
         val userId = getUserId(ctx).toIntOrNull() ?: return
         val alertId = _state.value.alarm.alertId ?: return
         viewModelScope.launch(Dispatchers.IO) {
-            _state.update { it.copy(isBusy = true, errorMsg = null) }
+            pendingAck = true
+            _state.update { it.copy(isBusy = true, errorMsg = null, alarm = it.alarm.copy(currentUserAcknowledged = true)) }
             runCatching { client!!.acknowledgeAlert(alertId = alertId, userId = userId) }
                 .onSuccess {
-                    _state.update { it.copy(
-                        isBusy = false,
-                        alarm = it.alarm.copy(currentUserAcknowledged = true),
-                    ) }
+                    _state.update { it.copy(isBusy = false) }
                 }
                 .onFailure { e ->
-                    _state.update { it.copy(isBusy = false, errorMsg = e.message ?: "Acknowledgement failed.") }
+                    _state.update { it.copy(isBusy = false, errorMsg = e.message ?: "Acknowledgement failed.", alarm = it.alarm.copy(currentUserAcknowledged = false)) }
                 }
+            pendingAck = false
         }
     }
 
@@ -6839,6 +6851,18 @@ internal class BackendClient(baseUrl: String, private val apiKey: String) {
             .post(body.toString().toRequestBody(json))
             .build()
         http.newCall(req).execute().use { requireSuccess(it) }
+    }
+
+    fun heartbeat(token: String) {
+        val body = JSONObject()
+            .put("device_token", token.trim())
+            .put("push_provider", "fcm")
+        val req = Request.Builder()
+            .url("$base/devices/heartbeat")
+            .withAuth()
+            .post(body.toString().toRequestBody(json))
+            .build()
+        runCatching { http.newCall(req).execute().use { it.close() } }
     }
 
     fun deregisterAndroidDevice(token: String, userId: Int?, deviceId: String?) {

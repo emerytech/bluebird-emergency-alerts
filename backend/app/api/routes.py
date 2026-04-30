@@ -13,6 +13,7 @@ import os
 import socket
 import sys
 import time
+import uuid
 import zipfile
 from collections import defaultdict, deque
 from dataclasses import dataclass
@@ -139,6 +140,7 @@ from app.services.incident_store import IncidentStore
 from app.services.permissions import (
     ALARM_TRIGGER_ROLES,
     CODEGEN_ALLOWED_ROLES,
+    DISTRICT_ONLY_SETTINGS_CATEGORIES,
     PERM_APPROVE_ASSIGNED_TENANT_QUIET_REQUESTS,
     PERM_APPROVE_OWN_TENANT_QUIET_REQUESTS,
     PERM_FULL_ACCESS,
@@ -162,7 +164,9 @@ from app.services.permissions import (
     can_edit_settings,
     can_generate_codes,
     can_view_settings,
+    filter_settings_for_role,
     is_dashboard_role,
+    is_district_admin_or_higher,
     role_display_label,
     valid_tenant_roles,
 )
@@ -424,6 +428,10 @@ def _inquiry_store(req: Request):
     return req.app.state.inquiry_store  # type: ignore[attr-defined]
 
 
+def _inbox_sync_service(req: Request):
+    return req.app.state.inbox_sync_service  # type: ignore[attr-defined]
+
+
 def _access_codes(req: Request) -> AccessCodeService:
     return req.app.state.access_code_service  # type: ignore[attr-defined]
 
@@ -494,7 +502,7 @@ def _admin_section(value: Optional[str]) -> str:
 
 def _super_admin_section(value: Optional[str]) -> str:
     normalized = str(value or "").strip().lower()
-    if normalized in {"districts", "schools", "billing", "platform-audit", "create-school", "security", "configuration", "server-tools", "health", "email-tool", "setup-codes", "noc", "msp", "platform-control", "sandbox"}:
+    if normalized in {"districts", "schools", "billing", "platform-audit", "create-school", "security", "configuration", "server-tools", "health", "email-tool", "setup-codes", "noc", "msp", "platform-control", "sandbox", "sales-inbox", "inquiries"}:
         return normalized
     return "districts"
 
@@ -859,9 +867,13 @@ async def _publish_alert_event(
     # different school publish to the correct WebSocket channel, not the
     # routing-school's channel.
     effective_slug = _tenant(request).slug
+    server_ts = datetime.now(timezone.utc).isoformat()
     payload: dict[str, object] = {
         "event": event,
+        "event_id": str(uuid.uuid4()),
         "tenant_slug": effective_slug,
+        "server_ts": server_ts,
+        "version": int(_state_field(state, "version", 0)),
         "alarm": {
             "is_active": bool(_state_field(state, "is_active", False)),
             "message": cast(Optional[str], _state_field(state, "message", None)),
@@ -878,6 +890,8 @@ async def _publish_alert_event(
             "deactivated_by_label": cast(Optional[str], _state_field(state, "deactivated_by_label", None)),
             "triggered_by_user_id": cast(Optional[int], _state_field(state, "activated_by_user_id", None)),
             "silent_for_sender": True,
+            "state_version": int(_state_field(state, "version", 0)),
+            "server_ts": server_ts,
         },
     }
     if alert_id is not None:
@@ -2162,6 +2176,8 @@ async def alarm_status(
             )
             for item in broadcasts
         ],
+        state_version=int(_state_field(state, "version", 0)),
+        server_ts=datetime.now(timezone.utc).isoformat(),
     )
 
 
@@ -4157,6 +4173,8 @@ async def super_admin_dashboard(
             sandbox_data=_sandbox_data,
             prod_districts=_prod_districts,
             inquiries=await _inquiry_store(request).list_inquiries(limit=100),
+            inbox_messages=await es.list_messages(limit=50),
+            inbox_unread_count=await es.unread_count(),
             email_delivery_settings=await es.get_delivery_settings(),
             auto_reply_settings=await es.get_auto_reply_settings(),
             stripe_settings=await es.get_stripe_settings(),
@@ -10542,13 +10560,15 @@ def _admin_role(request: Request) -> str:
 
 @router.get("/admin/settings/effective", include_in_schema=False)
 async def admin_get_effective_settings(request: Request) -> JSONResponse:
-    """Return the full effective settings dict for the current tenant."""
+    """Return effective settings for the current tenant, filtered by role."""
     await _require_dashboard_admin(request)
-    if not can_view_settings(_admin_role(request)):
+    role = _admin_role(request)
+    if not can_view_settings(role):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions.")
     from app.services.tenant_settings import effective_settings_dict
     settings = await _settings_store(request).get_effective_settings()
-    return JSONResponse(effective_settings_dict(settings))
+    raw = effective_settings_dict(settings)
+    return JSONResponse(filter_settings_for_role(raw, role))
 
 
 @router.get("/admin/settings/history", include_in_schema=False)
@@ -10577,6 +10597,12 @@ async def _update_settings_category(request: Request, category: str) -> JSONResp
     from app.services.tenant_settings import effective_settings_dict
     await _require_dashboard_admin(request)
     role = _admin_role(request)
+    # District-only categories are blocked at the API level regardless of other perm checks
+    if category in DISTRICT_ONLY_SETTINGS_CATEGORIES and not is_district_admin_or_higher(role):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"'{category}' settings require district admin access.",
+        )
     if not can_edit_settings(role, category):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions.")
     try:
@@ -10599,7 +10625,7 @@ async def _update_settings_category(request: Request, category: str) -> JSONResp
         target_id=category,
         metadata={"category": category, "patch": body},
     )
-    return JSONResponse(effective_settings_dict(new_settings))
+    return JSONResponse(filter_settings_for_role(effective_settings_dict(new_settings), role))
 
 
 @router.post("/admin/settings/notifications", include_in_schema=False)
@@ -10665,7 +10691,7 @@ async def admin_reset_settings(request: Request) -> JSONResponse:
         target_id="all",
         metadata={"action": "reset_to_defaults"},
     )
-    return JSONResponse(effective_settings_dict(new_settings))
+    return JSONResponse(filter_settings_for_role(effective_settings_dict(new_settings), role))
 
 
 # ---------------------------------------------------------------------------
@@ -10970,6 +10996,160 @@ async def super_admin_update_inquiry_status(
     if record is None:
         return JSONResponse({"ok": False, "error": "Inquiry not found."}, status_code=404)
     return JSONResponse({"ok": True, "inquiry": record.to_dict()})
+
+
+@router.post("/super-admin/inquiries/{inquiry_id}/notes", include_in_schema=False)
+async def super_admin_update_inquiry_notes(
+    request: Request,
+    inquiry_id: int,
+    notes: str = Form(default=""),
+) -> JSONResponse:
+    _require_super_admin(request)
+    record = await _inquiry_store(request).update_notes(
+        inquiry_id=int(inquiry_id), notes=notes
+    )
+    if record is None:
+        return JSONResponse({"ok": False, "error": "Inquiry not found."}, status_code=404)
+    return JSONResponse({"ok": True, "inquiry": record.to_dict()})
+
+
+@router.post("/super-admin/inquiries/{inquiry_id}/convert", include_in_schema=False)
+async def super_admin_convert_inquiry_to_district(
+    request: Request,
+    inquiry_id: int,
+    district_name: str = Form(default=""),
+    district_slug: str = Form(default=""),
+) -> JSONResponse:
+    """Convert an accepted inquiry into a real district + billing record."""
+    _require_super_admin(request)
+    inquiry = await _inquiry_store(request).get_inquiry(int(inquiry_id))
+    if inquiry is None:
+        return JSONResponse({"ok": False, "error": "Inquiry not found."}, status_code=404)
+    name = district_name.strip() or inquiry.school_or_district
+    raw_slug = district_slug.strip() or _re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+    if not name:
+        return JSONResponse({"ok": False, "error": "District name is required."}, status_code=422)
+    try:
+        school_registry: SchoolRegistry = request.app.state.school_registry
+        existing = await school_registry.get_district_by_slug(raw_slug)
+        if existing is None:
+            district = await school_registry.create_district(name=name, slug=raw_slug, organization_id=1)
+        else:
+            district = existing
+        billing_store = request.app.state.tenant_billing_store
+        await billing_store.ensure_district_billing(district_id=district.id)
+        await billing_store.update_district_billing_full(
+            district_id=district.id,
+            customer_name=inquiry.name,
+            customer_email=inquiry.email,
+        )
+        await _inquiry_store(request).update_status(inquiry_id=int(inquiry_id), new_status="closed")
+    except Exception as exc:
+        logger.warning("convert_inquiry error inquiry_id=%s: %s", inquiry_id, exc)
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+    return JSONResponse({"ok": True, "district_slug": raw_slug, "district_name": name})
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SUPER ADMIN — SALES INBOX (IMAP EMAIL MESSAGES)
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+@router.get("/super-admin/inbox", include_in_schema=False)
+async def super_admin_inbox_list(
+    request: Request,
+    limit: int = Query(default=50),
+    unread_only: bool = Query(default=False),
+) -> JSONResponse:
+    _require_super_admin(request)
+    es = _email_service(request)
+    messages = await es.list_messages(limit=min(int(limit), 200), unread_only=unread_only)
+    unread = await es.unread_count()
+    return JSONResponse({
+        "messages": [m.to_dict() for m in messages],
+        "unread_count": unread,
+    })
+
+
+@router.get("/super-admin/inbox/{message_id}", include_in_schema=False)
+async def super_admin_inbox_get(
+    request: Request,
+    message_id: int,
+) -> JSONResponse:
+    _require_super_admin(request)
+    es = _email_service(request)
+    msg = await es.get_message(int(message_id))
+    if msg is None:
+        return JSONResponse({"ok": False, "error": "Message not found."}, status_code=404)
+    await es.mark_read(int(message_id))
+    return JSONResponse({"ok": True, "message": msg.to_full_dict()})
+
+
+@router.post("/super-admin/inbox/{message_id}/mark-read", include_in_schema=False)
+async def super_admin_inbox_mark_read(
+    request: Request,
+    message_id: int,
+) -> JSONResponse:
+    _require_super_admin(request)
+    es = _email_service(request)
+    await es.mark_read(int(message_id))
+    return JSONResponse({"ok": True})
+
+
+@router.post("/super-admin/inbox/{message_id}/reply", include_in_schema=False)
+async def super_admin_inbox_reply(
+    request: Request,
+    message_id: int,
+    reply_body: str = Form(default=""),
+) -> JSONResponse:
+    _require_super_admin(request)
+    if not reply_body.strip():
+        return JSONResponse({"ok": False, "error": "Reply body is required."}, status_code=422)
+    es = _email_service(request)
+    msg = await es.get_message(int(message_id))
+    if msg is None:
+        return JSONResponse({"ok": False, "error": "Message not found."}, status_code=404)
+    to_addr = msg.from_email
+    if not to_addr:
+        return JSONResponse({"ok": False, "error": "No reply address on original message."}, status_code=422)
+    subject = msg.subject or ""
+    if not subject.lower().startswith("re:"):
+        subject = f"Re: {subject}"
+    ok = await es.send_html_email(
+        to_address=to_addr,
+        subject=subject,
+        body_text=reply_body.strip(),
+        body_html="",
+        event_type="inbox_reply",
+    )
+    if ok:
+        await es.mark_replied(int(message_id))
+        return JSONResponse({"ok": True})
+    return JSONResponse({"ok": False, "error": "Failed to send reply. Check SMTP settings."}, status_code=500)
+
+
+@router.post("/super-admin/inbox/{message_id}/link-inquiry", include_in_schema=False)
+async def super_admin_inbox_link_inquiry(
+    request: Request,
+    message_id: int,
+    inquiry_id: int = Form(...),
+) -> JSONResponse:
+    _require_super_admin(request)
+    es = _email_service(request)
+    await es.link_inquiry(int(message_id), int(inquiry_id))
+    return JSONResponse({"ok": True})
+
+
+@router.post("/super-admin/inbox/sync", include_in_schema=False)
+async def super_admin_inbox_sync(request: Request) -> JSONResponse:
+    """Trigger an immediate IMAP sync (max once per session, no rate-limit on super admin)."""
+    _require_super_admin(request)
+    try:
+        new_count = await _inbox_sync_service(request).sync_inbox()
+    except Exception as exc:
+        logger.warning("manual inbox sync error: %s", exc)
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+    return JSONResponse({"ok": True, "new_messages": new_count})
 
 
 # ══════════════════════════════════════════════════════════════════════════════

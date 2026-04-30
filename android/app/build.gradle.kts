@@ -29,7 +29,7 @@ android {
         versionName = "1.0-alpha01"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        buildConfigField("String", "BACKEND_BASE_URL", "\"https://bluebird.ets3d.com\"")
+        buildConfigField("String", "BACKEND_BASE_URL", "\"https://bluebird-alerts.com\"")
         buildConfigField(
             "String",
             "BACKEND_API_KEY",

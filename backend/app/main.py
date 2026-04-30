@@ -34,6 +34,7 @@ from app.services.push_queue import PushQueue
 from app.services.twilio_sms import TwilioSMSClient
 from app.services.user_tenant_store import UserTenantStore
 from app.services.inquiry_store import InquiryStore
+from app.services.inbox_sync import InboxSyncService
 
 import anyio
 
@@ -505,6 +506,28 @@ async def _auto_reminder_loop(app: FastAPI, interval_hours: float = 24.0) -> Non
             logger.warning("auto_reminder loop error: %s", exc)
 
 
+async def _inbox_sync_loop(app: FastAPI, interval: float = 180.0) -> None:
+    """
+    Background loop: syncs unread IMAP messages into the email_messages table.
+    Completely isolated from emergency alert tables. Runs every `interval` seconds.
+    First sync fires immediately on startup.
+    """
+    while True:
+        try:
+            inbox_sync_service: InboxSyncService = app.state.inbox_sync_service
+            new_count = await inbox_sync_service.sync_inbox()
+            if new_count:
+                logger.info("InboxSync: stored %d new message(s)", new_count)
+        except asyncio.CancelledError:
+            return
+        except Exception as exc:
+            logger.warning("InboxSync loop error: %s", exc)
+        try:
+            await asyncio.sleep(interval)
+        except asyncio.CancelledError:
+            return
+
+
 async def _ai_insights_loop(app: FastAPI, interval: float = 600.0) -> None:
     """
     Background loop: runs AI analysis on enabled tenants using Ollama/llama3.
@@ -716,6 +739,9 @@ async def lifespan(app: FastAPI):
     inquiry_store = InquiryStore(settings.PLATFORM_DB_PATH)
     app.state.inquiry_store = inquiry_store
 
+    inbox_sync_service = InboxSyncService(email_service)
+    app.state.inbox_sync_service = inbox_sync_service
+
     push_queue = PushQueue(maxsize=500)
     await push_queue.start()
     app.state.push_queue = push_queue
@@ -741,6 +767,9 @@ async def lifespan(app: FastAPI):
     )
     ack_reminder_task = asyncio.create_task(
         _ack_reminder_loop(app, interval=180.0)
+    )
+    inbox_sync_task = asyncio.create_task(
+        _inbox_sync_loop(app, interval=180.0)
     )
     ai_insights_task = asyncio.create_task(
         _ai_insights_loop(app, interval=600.0)
@@ -790,8 +819,13 @@ async def lifespan(app: FastAPI):
         await ack_reminder_task
     except asyncio.CancelledError:
         pass
+    inbox_sync_task.cancel()
     ai_insights_task.cancel()
     ai_weekly_task.cancel()
+    try:
+        await inbox_sync_task
+    except asyncio.CancelledError:
+        pass
     try:
         await ai_insights_task
     except asyncio.CancelledError:

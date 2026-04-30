@@ -17,10 +17,13 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     # Server
-    HOST: str = "0.0.0.0"
+    HOST: str = "127.0.0.1"
     PORT: int = 8000
     LOG_LEVEL: str = "INFO"
     ENVIRONMENT: str = "development"  # set to "production" in prod deployments
+
+    # Canonical public URL (used in generated links, QR codes, onboarding emails)
+    BACKEND_PUBLIC_URL: str = "https://bluebird-alerts.com"
 
     # Optional shared-secret API key. If set, write endpoints require `X-API-Key`.
     API_KEY: Optional[str] = None
@@ -29,7 +32,7 @@ class Settings(BaseSettings):
     # SQLite (used for alert logging)
     DB_PATH: str = "./data/bluebird.db"
     PLATFORM_DB_PATH: str = "./data/platform.db"
-    BASE_DOMAIN: str = "bluebird.ets3d.com"
+    BASE_DOMAIN: str = "bluebird-alerts.com"
     DEFAULT_SCHOOL_SLUG: str = "nen"
     DEFAULT_SCHOOL_NAME: str = "Northeast Nodaway RV School District"
 

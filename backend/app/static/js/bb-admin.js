@@ -47,6 +47,18 @@ try {
   (function () {
     var wsProto = location.protocol === 'https:' ? 'wss:' : 'ws:';
 
+    var processedEventIds = new Set();
+
+    function isDuplicateEvent(eventId) {
+      if (!eventId) return false;
+      if (processedEventIds.has(eventId)) return true;
+      processedEventIds.add(eventId);
+      if (processedEventIds.size > 500) {
+        processedEventIds.delete(processedEventIds.values().next().value);
+      }
+      return false;
+    }
+
     function makeSingleSchoolWS() {
       if (!BB_WS_API_KEY || !BB_USER_ID || !BB_TENANT_SLUG) return;
       var url = wsProto + '//' + location.host + '/ws/' + BB_TENANT_SLUG + '/alerts'
@@ -56,7 +68,11 @@ try {
         var ws = new WebSocket(url);
         ws.onopen = function () { backoff = 1000; };
         ws.onmessage = function (evt) {
-          try { var data = JSON.parse(evt.data); updateSingleSchoolUI(data); } catch (e) {}
+          try {
+            var data = JSON.parse(evt.data);
+            if (isDuplicateEvent(data.event_id)) return;
+            updateSingleSchoolUI(data);
+          } catch (e) {}
         };
         ws.onclose = function (evt) {
           if (evt.code >= 4400 && evt.code < 4500) return;
@@ -142,8 +158,13 @@ try {
         }
       }
 
-      // Refresh unacked list on every ack event
-      if (alarm.is_active && alarm.current_alert_id) {
+      // Reload full unacked list only when alert activates or deactivates.
+      // For ack-count updates the counts above are already updated inline,
+      // so we skip the full reload to avoid resetting scroll position.
+      var evt = data.event;
+      var isActivation = evt === 'alarm_activated' || evt === 'alert_triggered';
+      var isDeactivation = evt === 'alarm_deactivated' || evt === 'tenant_alert_cleared';
+      if ((isActivation || isDeactivation) && alarm.current_alert_id) {
         _loadUnacknowledged(alarm.current_alert_id);
       }
     }

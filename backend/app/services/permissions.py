@@ -420,6 +420,51 @@ _SETTINGS_CATEGORY_PERM: Final[dict[str, str]] = {
     "devices": PERM_SETTINGS_EDIT_DEVICES,
 }
 
+# ---------------------------------------------------------------------------
+# District-level settings definitions
+# ---------------------------------------------------------------------------
+
+# Settings categories completely invisible to building_admin in the UI and
+# filtered from GET /admin/settings/effective responses.
+DISTRICT_ONLY_SETTINGS_CATEGORIES: Final[frozenset[str]] = frozenset({
+    "alerts",
+    "ai_insights",
+})
+
+# Within mixed-access categories, fields that only district_admin+ may see.
+DISTRICT_ONLY_SETTINGS_FIELDS: Final[dict[str, frozenset[str]]] = {
+    "quiet_periods": frozenset({
+        "district_admin_can_approve_all",
+        "building_admin_scope",
+        "allow_self_approval",
+    }),
+}
+
+
+def is_district_admin_or_higher(role: str | None) -> bool:
+    """Return True if role grants district-level settings access."""
+    return normalize_role(role) in {ROLE_DISTRICT_ADMIN, ROLE_SUPER_ADMIN}
+
+
+def filter_settings_for_role(settings: dict, role: str) -> dict:
+    """
+    Remove district-only settings from a serialized settings dict for
+    building_admin and below.  district_admin and super_admin receive
+    the full dict unmodified.
+    """
+    if is_district_admin_or_higher(role):
+        return settings
+    result: dict = {}
+    for cat, val in settings.items():
+        if cat in DISTRICT_ONLY_SETTINGS_CATEGORIES:
+            continue
+        if cat in DISTRICT_ONLY_SETTINGS_FIELDS and isinstance(val, dict):
+            restricted = DISTRICT_ONLY_SETTINGS_FIELDS[cat]
+            result[cat] = {k: v for k, v in val.items() if k not in restricted}
+        else:
+            result[cat] = val
+    return result
+
 
 def can_edit_settings(actor_role: str | None, category: str) -> bool:
     """Return True if actor_role may edit the given settings category."""

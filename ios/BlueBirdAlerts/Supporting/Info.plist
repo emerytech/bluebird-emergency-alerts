@@ -40,7 +40,7 @@
 
   <!-- Used by Config.backendBaseURL -->
   <key>BACKEND_BASE_URL</key>
-  <string>https://bluebird.ets3d.com</string>
+  <string>https://bluebird-alerts.com</string>
 
   <!-- Recommended so APNs notifications can be delivered in background. -->
   <key>UIBackgroundModes</key>

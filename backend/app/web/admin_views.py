@@ -19,7 +19,7 @@ from app.services.school_registry import SchoolRecord
 from app.services.tenant_settings import TenantSettings
 from app.services.tenant_settings_store import SettingsChangeRecord
 from app.services.user_store import UserRecord
-from app.services.permissions import can_archive_user, can_generate_codes
+from app.services.permissions import can_archive_user, can_generate_codes, is_district_admin_or_higher
 from app.services.suggestion_engine import Suggestion, SuggestionContext, SuggestionEngine
 
 
@@ -2967,6 +2967,139 @@ def _render_district_billing_section(district_billing_rows: Sequence[Mapping[str
     )
 
 
+def _render_sales_inbox_section(messages: object, section: str, unread_count: int = 0) -> str:
+    _style = "" if section == "sales-inbox" else ' style="display:none;"'
+    status_icon = {"new": "🔵", "read": "⚪", "replied": "✅"}
+    rows_html = ""
+    for msg in (messages or []):
+        msg_id = int(getattr(msg, "id", 0))
+        from_name = escape(str(getattr(msg, "from_name", "") or ""))
+        from_email = escape(str(getattr(msg, "from_email", "") or ""))
+        subject = escape(str(getattr(msg, "subject", "") or "(no subject)"))
+        status = str(getattr(msg, "status", "new"))
+        is_read = bool(getattr(msg, "is_read", False))
+        received = str(getattr(msg, "received_at", "") or getattr(msg, "created_at", ""))[:16].replace("T", " ")
+        icon = status_icon.get(status, "⚪")
+        weight = "600" if not is_read else "400"
+        rows_html += (
+            f'<tr style="cursor:pointer;" onclick="bbInboxOpen({msg_id});">'
+            f'<td style="text-align:center;font-size:1rem;">{icon}</td>'
+            f'<td style="font-weight:{weight};white-space:nowrap;">'
+            f'{from_name or from_email}<br><span style="font-size:0.72rem;color:var(--muted);">{from_email}</span></td>'
+            f'<td style="font-weight:{weight};">{subject}</td>'
+            f'<td style="font-size:0.75rem;color:var(--muted);white-space:nowrap;">{received}</td>'
+            f'<td style="text-align:center;">'
+            f'<button class="button button-outline" style="font-size:0.72rem;padding:2px 8px;" '
+            f'onclick="event.stopPropagation();bbInboxOpen({msg_id});">View</button>'
+            f'</td>'
+            f'</tr>'
+        )
+    if not rows_html:
+        rows_html = ('<tr><td colspan="5" style="text-align:center;color:var(--muted);padding:24px;">'
+                     'No messages yet. Configure IMAP settings in Configuration to start syncing.</td></tr>')
+
+    unread_badge = (f'<span style="display:inline-block;background:#2563eb;color:#fff;border-radius:999px;'
+                    f'font-size:0.75rem;font-weight:700;padding:1px 8px;margin-left:8px;">'
+                    f'{unread_count} unread</span>') if unread_count else ""
+
+    reply_modal = (
+        '<div id="bb-inbox-modal" style="display:none;position:fixed;inset:0;z-index:9999;'
+        'background:rgba(0,0,0,0.55);align-items:center;justify-content:center;">'
+        '<div style="background:var(--surface);border-radius:12px;max-width:640px;width:90%;'
+        'max-height:80vh;overflow-y:auto;box-shadow:0 8px 40px rgba(0,0,0,.25);padding:32px;">'
+        '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px;">'
+        '<h2 id="bb-inbox-subject" style="margin:0;font-size:1.1rem;flex:1;"></h2>'
+        '<button onclick="document.getElementById(\'bb-inbox-modal\').style.display=\'none\';" '
+        'style="background:none;border:none;font-size:1.5rem;cursor:pointer;color:var(--muted);">✕</button>'
+        '</div>'
+        '<p style="margin:0 0 4px;font-size:0.8rem;color:var(--muted);">From: <span id="bb-inbox-from"></span></p>'
+        '<p style="margin:0 0 16px;font-size:0.8rem;color:var(--muted);">Received: <span id="bb-inbox-date"></span></p>'
+        '<pre id="bb-inbox-body" style="white-space:pre-wrap;word-break:break-word;font-family:inherit;'
+        'font-size:0.85rem;background:var(--bg);border-radius:8px;padding:16px;max-height:240px;overflow-y:auto;'
+        'border:1px solid var(--border);margin:0 0 16px;"></pre>'
+        '<form id="bb-inbox-reply-form" onsubmit="event.preventDefault();bbInboxSendReply();">'
+        '<textarea id="bb-inbox-reply-body" rows="5" style="width:100%;box-sizing:border-box;'
+        'font-family:inherit;font-size:0.85rem;border:1px solid var(--border);border-radius:6px;'
+        'padding:10px;background:var(--bg);color:var(--text);resize:vertical;margin-bottom:8px;" '
+        'placeholder="Write your reply…"></textarea>'
+        '<div style="display:flex;gap:8px;">'
+        '<button type="submit" class="button button-primary" id="bb-inbox-send-btn">Send Reply</button>'
+        '<button type="button" class="button button-outline" '
+        'onclick="document.getElementById(\'bb-inbox-modal\').style.display=\'none\';">Cancel</button>'
+        '</div>'
+        '</form>'
+        '</div></div>'
+    )
+
+    inbox_js = (
+        '<script>'
+        'var _bbInboxMsgId=null;'
+        'function bbInboxOpen(id){'
+        '  _bbInboxMsgId=id;'
+        '  var m=document.getElementById("bb-inbox-modal");'
+        '  m.style.display="flex";'
+        '  document.getElementById("bb-inbox-subject").textContent="Loading…";'
+        '  document.getElementById("bb-inbox-body").textContent="";'
+        '  document.getElementById("bb-inbox-reply-body").value="";'
+        '  fetch("/super-admin/inbox/"+id,{headers:{"X-Requested-With":"XMLHttpRequest"}})'
+        '  .then(r=>r.json()).then(d=>{'
+        '    if(!d.ok){alert("Error loading message.");return;}'
+        '    var msg=d.message;'
+        '    document.getElementById("bb-inbox-subject").textContent=msg.subject||"(no subject)";'
+        '    document.getElementById("bb-inbox-from").textContent=(msg.from_name?msg.from_name+" ":"")+"<"+msg.from_email+">";'
+        '    var dt=(msg.received_at||msg.created_at||"").replace("T"," ").slice(0,16);'
+        '    document.getElementById("bb-inbox-date").textContent=dt;'
+        '    document.getElementById("bb-inbox-body").textContent=msg.body_text||"(no text content)";'
+        '  }).catch(()=>alert("Failed to load message."));'
+        '}'
+        'function bbInboxSendReply(){'
+        '  var body=document.getElementById("bb-inbox-reply-body").value.trim();'
+        '  if(!body){alert("Reply cannot be empty.");return;}'
+        '  var btn=document.getElementById("bb-inbox-send-btn");'
+        '  btn.disabled=true;btn.textContent="Sending…";'
+        '  var fd=new FormData();fd.append("reply_body",body);'
+        '  fetch("/super-admin/inbox/"+_bbInboxMsgId+"/reply",{method:"POST",body:fd,'
+        '  headers:{"X-Requested-With":"XMLHttpRequest"}})'
+        '  .then(r=>r.json()).then(d=>{'
+        '    btn.disabled=false;btn.textContent="Send Reply";'
+        '    if(d.ok){document.getElementById("bb-inbox-modal").style.display="none";location.reload();}'
+        '    else alert("Send failed: "+(d.error||"unknown error"));'
+        '  }).catch(()=>{btn.disabled=false;btn.textContent="Send Reply";alert("Network error.");});'
+        '}'
+        'function bbInboxSync(){'
+        '  var btn=document.getElementById("bb-inbox-sync-btn");'
+        '  if(btn){btn.disabled=true;btn.textContent="Syncing…";}'
+        '  fetch("/super-admin/inbox/sync",{method:"POST",headers:{"X-Requested-With":"XMLHttpRequest"}})'
+        '  .then(r=>r.json()).then(d=>{'
+        '    if(d.ok){location.reload();}'
+        '    else alert("Sync failed: "+(d.error||"unknown"));'
+        '  }).catch(()=>alert("Network error during sync."));'
+        '}'
+        '</script>'
+    )
+
+    return (
+        f'<section class="panel command-section" id="sales-inbox"{_style}>'
+        f'{reply_modal}'
+        f'<div class="panel-header hero-band">'
+        f'<div><p class="eyebrow">CRM</p><h1>Sales Inbox{unread_badge}</h1>'
+        f'<p class="hero-copy">Incoming emails received via IMAP. Sync every 3 minutes automatically.</p></div>'
+        f'<div style="display:flex;gap:8px;align-items:center;">'
+        f'<button id="bb-inbox-sync-btn" class="button button-outline" onclick="bbInboxSync();" type="button">'
+        f'↻ Sync Now</button>'
+        f'</div>'
+        f'</div>'
+        f'<div style="overflow-x:auto;margin-top:16px;">'
+        f'<table class="data-table" style="width:100%;font-size:0.82rem;">'
+        f'<thead><tr><th style="width:32px;"></th><th>From</th><th>Subject</th>'
+        f'<th>Received</th><th></th></tr></thead>'
+        f'<tbody>{rows_html}</tbody>'
+        f'</table></div>'
+        f'{inbox_js}'
+        f'</section>'
+    )
+
+
 def _render_inquiries_section(inquiries: object, section: str) -> str:
     _style = "" if section == "inquiries" else ' style="display:none;"'
     status_colors = {
@@ -2986,6 +3119,7 @@ def _render_inquiries_section(inquiries: object, section: str) -> str:
         tag = str(getattr(inq, "size_tag", "unknown"))
         st = str(getattr(inq, "status", "new"))
         created = str(getattr(inq, "created_at", ""))[:10]
+        notes = escape(str(getattr(inq, "notes", "") or ""))
         st_color = status_colors.get(st, "#6b7280")
         sz_color = size_colors.get(tag, "#6b7280")
         rows_html += (
@@ -2997,7 +3131,7 @@ def _render_inquiries_section(inquiries: object, section: str) -> str:
             f'<td style="text-align:center;"><span style="font-size:0.72rem;font-weight:700;color:{sz_color};">{tag.upper()}</span></td>'
             f'<td style="text-align:center;"><span style="font-size:0.72rem;font-weight:700;color:{st_color};">{st.upper()}</span></td>'
             f'<td style="font-size:0.75rem;color:var(--muted);">{created}</td>'
-            f'<td>'
+            f'<td style="min-width:160px;">'
             f'<form method="post" action="/super-admin/inquiries/{inq_id}/status" '
             f'style="display:inline;" onsubmit="event.preventDefault();bbUpdateInquiryStatus(this,{inq_id});">'
             f'<select name="new_status" style="font-size:0.72rem;padding:2px 6px;border-radius:4px;" onchange="this.form.requestSubmit();">'
@@ -3006,14 +3140,88 @@ def _render_inquiries_section(inquiries: object, section: str) -> str:
                 for s in ("new", "contacted", "quoted", "closed")
             )
             + f'</select></form>'
+            f' <button class="button button-outline" style="font-size:0.72rem;padding:2px 8px;" '
+            f'onclick="bbInquiryConvert({inq_id},\'{escape(school)}\');" type="button">→ District</button>'
+            f'</td>'
+            f'<td style="min-width:180px;">'
+            f'<form onsubmit="event.preventDefault();bbSaveInquiryNotes(this,{inq_id});" style="display:flex;gap:4px;align-items:flex-start;">'
+            f'<textarea name="notes" rows="2" style="flex:1;font-size:0.72rem;border:1px solid var(--border);'
+            f'border-radius:4px;padding:4px;background:var(--bg);color:var(--text);resize:vertical;"'
+            f' placeholder="Internal notes…">{notes}</textarea>'
+            f'<button class="button button-outline" style="font-size:0.72rem;padding:2px 8px;" type="submit">Save</button>'
+            f'</form>'
             f'</td>'
             f'</tr>'
         )
     if not rows_html:
-        rows_html = '<tr><td colspan="8" style="text-align:center;color:var(--muted);padding:24px;">No inquiries yet. Submit the contact form on the marketing site to test.</td></tr>'
+        rows_html = '<tr><td colspan="9" style="text-align:center;color:var(--muted);padding:24px;">No inquiries yet. Submit the contact form on the marketing site to test.</td></tr>'
+
+    convert_modal = (
+        '<div id="bb-convert-modal" style="display:none;position:fixed;inset:0;z-index:9998;'
+        'background:rgba(0,0,0,0.55);align-items:center;justify-content:center;">'
+        '<div style="background:var(--surface);border-radius:12px;max-width:480px;width:90%;'
+        'padding:32px;box-shadow:0 8px 40px rgba(0,0,0,.25);">'
+        '<h2 style="margin:0 0 16px;">Convert to District</h2>'
+        '<p style="font-size:0.85rem;color:var(--muted);margin:0 0 20px;">'
+        'Create a new district record and trial billing for this inquiry.</p>'
+        '<form onsubmit="event.preventDefault();bbDoConvert();">'
+        '<input type="hidden" id="bb-convert-inq-id" value="">'
+        '<label style="font-size:0.82rem;font-weight:600;display:block;margin-bottom:4px;">District Name</label>'
+        '<input id="bb-convert-name" type="text" style="width:100%;box-sizing:border-box;'
+        'font-size:0.85rem;padding:8px;border:1px solid var(--border);border-radius:6px;'
+        'background:var(--bg);color:var(--text);margin-bottom:12px;" required>'
+        '<label style="font-size:0.82rem;font-weight:600;display:block;margin-bottom:4px;">District Slug <span style="font-weight:400;color:var(--muted);">(auto-generated)</span></label>'
+        '<input id="bb-convert-slug" type="text" style="width:100%;box-sizing:border-box;'
+        'font-size:0.85rem;padding:8px;border:1px solid var(--border);border-radius:6px;'
+        'background:var(--bg);color:var(--text);margin-bottom:20px;">'
+        '<div style="display:flex;gap:8px;">'
+        '<button type="submit" class="button button-primary" id="bb-convert-btn">Create District</button>'
+        '<button type="button" class="button button-outline" '
+        'onclick="document.getElementById(\'bb-convert-modal\').style.display=\'none\';">Cancel</button>'
+        '</div>'
+        '</form>'
+        '</div></div>'
+    )
+
+    inquiry_js = (
+        '<script>'
+        'function bbSaveInquiryNotes(form,id){'
+        '  var fd=new FormData(form);'
+        '  fetch("/super-admin/inquiries/"+id+"/notes",{method:"POST",body:fd,'
+        '  headers:{"X-Requested-With":"XMLHttpRequest"}})'
+        '  .then(r=>r.json()).then(d=>{'
+        '    if(!d.ok)alert("Save failed: "+(d.error||"unknown"));'
+        '  }).catch(()=>alert("Network error."));'
+        '}'
+        'function bbInquiryConvert(id,schoolName){'
+        '  document.getElementById("bb-convert-inq-id").value=id;'
+        '  document.getElementById("bb-convert-name").value=schoolName;'
+        '  var slug=schoolName.toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-|-$/g,"");'
+        '  document.getElementById("bb-convert-slug").value=slug;'
+        '  document.getElementById("bb-convert-modal").style.display="flex";'
+        '}'
+        'function bbDoConvert(){'
+        '  var id=document.getElementById("bb-convert-inq-id").value;'
+        '  var btn=document.getElementById("bb-convert-btn");'
+        '  btn.disabled=true;btn.textContent="Creating…";'
+        '  var fd=new FormData();'
+        '  fd.append("district_name",document.getElementById("bb-convert-name").value);'
+        '  fd.append("district_slug",document.getElementById("bb-convert-slug").value);'
+        '  fetch("/super-admin/inquiries/"+id+"/convert",{method:"POST",body:fd,'
+        '  headers:{"X-Requested-With":"XMLHttpRequest"}})'
+        '  .then(r=>r.json()).then(d=>{'
+        '    btn.disabled=false;btn.textContent="Create District";'
+        '    if(d.ok){document.getElementById("bb-convert-modal").style.display="none";'
+        '    alert("District created: "+d.district_name+" ("+d.district_slug+")");location.reload();}'
+        '    else alert("Error: "+(d.error||"unknown"));'
+        '  }).catch(()=>{btn.disabled=false;btn.textContent="Create District";alert("Network error.");});'
+        '}'
+        '</script>'
+    )
 
     return (
         f'<section class="panel command-section" id="inquiries"{_style}>'
+        f'{convert_modal}'
         f'<div class="panel-header hero-band">'
         f'<div><p class="eyebrow">Marketing</p><h1>Website Inquiries</h1>'
         f'<p class="hero-copy">Leads submitted through the BlueBird Alerts marketing contact form.</p></div>'
@@ -3021,9 +3229,10 @@ def _render_inquiries_section(inquiries: object, section: str) -> str:
         f'<div style="overflow-x:auto;margin-top:16px;">'
         f'<table class="data-table" style="width:100%;font-size:0.82rem;">'
         f'<thead><tr><th>Name</th><th>Email</th><th>School / District</th><th>Students</th>'
-        f'<th>Size</th><th>Status</th><th>Date</th><th>Action</th></tr></thead>'
+        f'<th>Size</th><th>Status</th><th>Date</th><th>Actions</th><th>Notes</th></tr></thead>'
         f'<tbody id="inquiry-table-body">{rows_html}</tbody>'
         f'</table></div>'
+        f'{inquiry_js}'
         f'</section>'
     )
 
@@ -3263,6 +3472,8 @@ def render_super_admin_page(
     sandbox_data: Sequence[Mapping[str, object]] = (),
     prod_districts: Sequence[object] = (),
     inquiries: Sequence[object] = (),
+    inbox_messages: Sequence[object] = (),
+    inbox_unread_count: int = 0,
     email_delivery_settings: Mapping[str, str] = {},
     auto_reply_settings: Mapping[str, str] = {},
     stripe_settings: Mapping[str, str] = {},
@@ -3402,7 +3613,7 @@ def render_super_admin_page(
         for c in setup_codes
     ) or '<tr><td colspan="7" class="empty-state">No setup codes generated yet.</td></tr>'
 
-    section = active_section if active_section in {"districts", "schools", "billing", "platform-audit", "create-school", "security", "configuration", "server-tools", "health", "email-tool", "setup-codes", "noc", "msp", "platform-control", "sandbox", "ai-insights", "inquiries"} else "districts"
+    section = active_section if active_section in {"districts", "schools", "billing", "platform-audit", "create-school", "security", "configuration", "server-tools", "health", "email-tool", "setup-codes", "noc", "msp", "platform-control", "sandbox", "ai-insights", "inquiries", "sales-inbox"} else "districts"
 
     def _section_style(name: str) -> str:
         return "" if section == name else ' style="display:none;"'
@@ -4041,6 +4252,7 @@ def render_super_admin_page(
             {_nav_item("platform-audit", "Platform Audit")}
             {_nav_item("health", "System Health", None if (not health_status or health_status.overall == 'ok') else "!")}
             {_nav_item("email-tool", "Email Tool")}
+            {_nav_item("sales-inbox", "Sales Inbox", str(inbox_unread_count) if inbox_unread_count else None)}
             {_nav_item("inquiries", "Inquiries")}
             {_nav_item("configuration", "Configuration", None if email_configured else "!")}
             {_nav_item("setup-codes", "Setup Codes")}
@@ -4908,6 +5120,7 @@ def render_super_admin_page(
             <tbody>{_hb_rows_html}</tbody>
           </table></div>
         </section>
+        {_render_sales_inbox_section(inbox_messages, section, inbox_unread_count)}
         {_render_inquiries_section(inquiries, section)}
         <section class="panel command-section" id="email-tool"{_section_style("email-tool")}>
           <div class="panel-header hero-band">
@@ -6474,8 +6687,14 @@ def _render_tenant_settings_panels(
     settings: TenantSettings,
     can_edit: bool,
     hidden: str,
+    is_district_admin: bool = False,
 ) -> str:
-    """HTML for the 5 per-category tenant settings panels + inline JS."""
+    """HTML for per-category tenant settings panels + inline JS.
+
+    District-only panels (alerts, ai_insights) are completely omitted for
+    building_admin users.  Sensitive fields within quiet_periods are also
+    hidden for building_admin.
+    """
     n = settings.notifications
     q = settings.quiet_periods
     a = settings.alerts
@@ -6548,6 +6767,12 @@ def _render_tenant_settings_panels(
         'View only — settings can only be changed by a district administrator.</p>'
     ) if not can_edit else ""
 
+    district_only_banner = (
+        '<p style="font-size:0.88rem;color:var(--muted);margin-bottom:16px;padding:10px 14px;'
+        'background:rgba(239,68,68,0.06);border:1px solid rgba(239,68,68,0.18);border-radius:6px;">'
+        '🔒 District admin access required to view or change these settings.</p>'
+    )
+
     # ── Notifications ────────────────────────────────────────────────────────
     if can_edit:
         notif_body = (
@@ -6593,18 +6818,22 @@ def _render_tenant_settings_panels(
             + _cb("tsf-qp", "enabled", "Quiet periods enabled", q.enabled)
             + _cb("tsf-qp", "requires_approval", "Require admin approval", q.requires_approval)
             + _cb("tsf-qp", "allow_scheduling", "Allow scheduled quiet periods", q.allow_scheduling)
-            + _cb("tsf-qp", "district_admin_can_approve_all", "District admin can approve all buildings",
-                  q.district_admin_can_approve_all)
-            + _sel("tsf-qp", "building_admin_scope", "Building admin approval scope",
-                   q.building_admin_scope,
-                   [("building", "Building — own building only"),
-                    ("district", "District — any building")])
             + _num("tsf-qp", "max_duration_minutes", "Maximum duration",
                    q.max_duration_minutes, 15, 10080, "minutes")
             + _num("tsf-qp", "default_duration_minutes", "Default duration",
                    q.default_duration_minutes, 15, 1440, "minutes")
-            + _cb("tsf-qp", "allow_self_approval", "Allow self-approval", q.allow_self_approval,
-                  "Caution: permits users to approve their own quiet period requests.")
+            # District-only quiet period fields
+            + (
+                _cb("tsf-qp", "district_admin_can_approve_all", "District admin can approve all buildings",
+                    q.district_admin_can_approve_all)
+                + _sel("tsf-qp", "building_admin_scope", "Building admin approval scope",
+                       q.building_admin_scope,
+                       [("building", "Building — own building only"),
+                        ("district", "District — any building")])
+                + _cb("tsf-qp", "allow_self_approval", "Allow self-approval", q.allow_self_approval,
+                      "Caution: permits users to approve their own quiet period requests.")
+                if is_district_admin else ""
+            )
             + _save("tsf-quiet_periods", "quiet_periods", "ts-qp-status")
             + '</form>'
         )
@@ -6614,11 +6843,15 @@ def _render_tenant_settings_panels(
             + _row_ro("Enabled", _yesno(q.enabled))
             + _row_ro("Requires approval", _yesno(q.requires_approval))
             + _row_ro("Allow scheduling", _yesno(q.allow_scheduling))
-            + _row_ro("District admin approves all", _yesno(q.district_admin_can_approve_all))
-            + _row_ro("Building admin scope", f'<code>{escape(q.building_admin_scope)}</code>')
             + _row_ro("Max duration", f'<strong>{q.max_duration_minutes}</strong> min')
             + _row_ro("Default duration", f'<strong>{q.default_duration_minutes}</strong> min')
-            + _row_ro("Allow self-approval", _yesno(q.allow_self_approval))
+            # District-only quiet period fields (read-only view)
+            + (
+                _row_ro("District admin approves all", _yesno(q.district_admin_can_approve_all))
+                + _row_ro("Building admin scope", f'<code>{escape(q.building_admin_scope)}</code>')
+                + _row_ro("Allow self-approval", _yesno(q.allow_self_approval))
+                if is_district_admin else ""
+            )
             + '</div>'
         )
 
@@ -6704,10 +6937,28 @@ def _render_tenant_settings_panels(
         )
 
     # ── Assemble panels ──────────────────────────────────────────────────────
+    alerts_panel = (f"""
+    <section class="panel command-section" id="ts-alerts"{hidden}>
+      <div class="panel-header"><div>
+        <p class="eyebrow">District Settings</p>
+        <h2>Alert trigger rules</h2>
+        <p class="card-copy">Configure who can trigger alerts and how hold-to-activate works. District admin access required.</p>
+      </div></div>
+      {locked_banner}{alerts_body}
+    </section>""") if is_district_admin else (f"""
+    <section class="panel command-section" id="ts-alerts"{hidden}>
+      <div class="panel-header"><div>
+        <p class="eyebrow">District Settings</p>
+        <h2>Alert trigger rules</h2>
+        <p class="card-copy">Alert trigger policy is managed by your district administrator.</p>
+      </div></div>
+      {district_only_banner}
+    </section>""")
+
     return f"""
     <section class="panel command-section" id="ts-notifications"{hidden}>
       <div class="panel-header"><div>
-        <p class="eyebrow">Tenant Settings</p>
+        <p class="eyebrow">School Settings</p>
         <h2>Notification preferences</h2>
         <p class="card-copy">Control which push channels are active and configure non-critical sound behaviour. Emergency alert sounds are system-locked.</p>
       </div></div>
@@ -6716,25 +6967,18 @@ def _render_tenant_settings_panels(
 
     <section class="panel command-section" id="ts-quiet-periods"{hidden}>
       <div class="panel-header"><div>
-        <p class="eyebrow">Tenant Settings</p>
+        <p class="eyebrow">{"District Settings" if is_district_admin else "School Settings"}</p>
         <h2>Quiet period rules</h2>
-        <p class="card-copy">Configure approval workflows, duration limits, and role-based scope for quiet periods.</p>
+        <p class="card-copy">Configure approval workflows and duration limits{", plus role-based scope (district admin only)" if is_district_admin else ""}.</p>
       </div></div>
       {locked_banner}{qp_body}
     </section>
 
-    <section class="panel command-section" id="ts-alerts"{hidden}>
-      <div class="panel-header"><div>
-        <p class="eyebrow">Tenant Settings</p>
-        <h2>Alert trigger rules</h2>
-        <p class="card-copy">Configure who can trigger alerts and how hold-to-activate works.</p>
-      </div></div>
-      {locked_banner}{alerts_body}
-    </section>
+    {alerts_panel}
 
     <section class="panel command-section" id="ts-devices"{hidden}>
       <div class="panel-header"><div>
-        <p class="eyebrow">Tenant Settings</p>
+        <p class="eyebrow">School Settings</p>
         <h2>Device management</h2>
         <p class="card-copy">Control device status reporting and staleness thresholds.</p>
       </div></div>
@@ -6743,7 +6987,7 @@ def _render_tenant_settings_panels(
 
     <section class="panel command-section" id="ts-access-codes"{hidden}>
       <div class="panel-header"><div>
-        <p class="eyebrow">Tenant Settings</p>
+        <p class="eyebrow">School Settings</p>
         <h2>Access code settings</h2>
         <p class="card-copy">Configure access code defaults, auto-expiry, and lifecycle management.</p>
       </div></div>
@@ -6794,6 +7038,7 @@ def _render_settings_panels(
     _section_style,
     effective_settings: Optional[TenantSettings] = None,
     can_edit: bool = False,
+    is_district_admin: bool = False,
 ) -> str:
     # ── Change History ───────────────────────────────────────────────────────
     if settings_history:
@@ -6835,7 +7080,7 @@ def _render_settings_panels(
 
     hidden = _section_style("settings")
     tenant_panels_html = (
-        _render_tenant_settings_panels(prefix, effective_settings, can_edit, hidden)
+        _render_tenant_settings_panels(prefix, effective_settings, can_edit, hidden, is_district_admin=is_district_admin)
         if effective_settings is not None
         else ""
     )
@@ -6921,7 +7166,7 @@ def render_admin_page(
     current_user_id: Optional[int] = None,
     home_tenant_slug: str = "",
     access_code_records: Sequence[object] = (),
-    base_domain: str = "app.bluebirdalerts.com",
+    base_domain: str = "bluebird-alerts.com",
     settings_history: Sequence[SettingsChangeRecord] = (),
     school_district_id: Optional[int] = None,
     active_sessions: Sequence[object] = (),
@@ -6978,8 +7223,8 @@ def render_admin_page(
         f'<strong>Acknowledged</strong>{acknowledgement_count} user{_ack_plural}</span>'
     )
 
-    # District admin flag (used by onboarding system)
-    is_district_admin = str(getattr(current_user, "role", "")).strip().lower() == "district_admin"
+    # District admin flag: district_admin or super_admin (used for settings + onboarding)
+    is_district_admin = is_district_admin_or_higher(str(getattr(current_user, "role", "")))
 
     # Smart suggestions
     _sg_ack_rate: Optional[float] = (
@@ -8252,7 +8497,7 @@ def render_admin_page(
 
         {_da_cl_html if section == "dashboard" else ""}
 
-        {_render_settings_panels(prefix, school_name, school_slug, settings_history, _section_style, effective_settings=effective_settings, can_edit=can_edit_tenant_settings)}
+        {_render_settings_panels(prefix, school_name, school_slug, settings_history, _section_style, effective_settings=effective_settings, can_edit=can_edit_tenant_settings, is_district_admin=is_district_admin)}
 
         <section class="panel command-section" id="security"{_section_style("settings")}>
           <div class="panel-header">

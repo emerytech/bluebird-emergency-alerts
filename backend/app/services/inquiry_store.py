@@ -11,7 +11,7 @@ import anyio
 
 _COLS = (
     "id, name, email, school_or_district, estimated_students, "
-    "number_of_schools, message, size_tag, status, created_at, updated_at"
+    "number_of_schools, message, size_tag, status, created_at, updated_at, notes"
 )
 
 VALID_STATUSES = {"new", "contacted", "quoted", "closed"}
@@ -42,6 +42,7 @@ class InquiryRecord:
     status: str     # new | contacted | quoted | closed
     created_at: str
     updated_at: str
+    notes: str = ""
 
     def to_dict(self) -> dict:
         return {
@@ -56,6 +57,7 @@ class InquiryRecord:
             "status": self.status,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
+            "notes": self.notes,
         }
 
 
@@ -84,10 +86,15 @@ class InquiryStore:
                     size_tag            TEXT    NOT NULL DEFAULT 'unknown',
                     status              TEXT    NOT NULL DEFAULT 'new',
                     created_at          TEXT    NOT NULL,
-                    updated_at          TEXT    NOT NULL
+                    updated_at          TEXT    NOT NULL,
+                    notes               TEXT    NOT NULL DEFAULT ''
                 );
                 """
             )
+            # Migrate existing tables that lack the notes column
+            cols = {str(r[1]) for r in conn.execute("PRAGMA table_info(platform_inquiries);").fetchall()}
+            if "notes" not in cols:
+                conn.execute("ALTER TABLE platform_inquiries ADD COLUMN notes TEXT NOT NULL DEFAULT '';")
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_inquiries_created "
                 "ON platform_inquiries(created_at DESC);"
@@ -111,6 +118,7 @@ class InquiryStore:
             status=str(row[8]),
             created_at=str(row[9]),
             updated_at=str(row[10]),
+            notes=str(row[11]) if len(row) > 11 and row[11] is not None else "",
         )
 
     def _create_sync(
@@ -234,4 +242,22 @@ class InquiryStore:
             raise ValueError(f"Invalid status: {new_status!r}")
         return await anyio.to_thread.run_sync(
             lambda: self._update_status_sync(int(inquiry_id), new_status)
+        )
+
+    def _update_notes_sync(self, inquiry_id: int, notes: str) -> Optional[InquiryRecord]:
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE platform_inquiries SET notes = ?, updated_at = ? WHERE id = ?;",
+                (notes[:8000], now, int(inquiry_id)),
+            )
+            row = conn.execute(
+                f"SELECT {_COLS} FROM platform_inquiries WHERE id = ? LIMIT 1;",
+                (int(inquiry_id),),
+            ).fetchone()
+        return self._row(row) if row else None
+
+    async def update_notes(self, *, inquiry_id: int, notes: str) -> Optional[InquiryRecord]:
+        return await anyio.to_thread.run_sync(
+            lambda: self._update_notes_sync(int(inquiry_id), str(notes))
         )

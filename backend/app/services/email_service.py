@@ -108,6 +108,52 @@ DEFAULT_INQUIRY_NOTIFY_EMAIL = "taylor@emerytechsolutions.com"
 # ── Record types ───────────────────────────────────────────────────────────────
 
 @dataclass(frozen=True)
+class EmailMessage:
+    id: int
+    provider_message_id: str
+    thread_id: Optional[str]
+    direction: str          # inbound | outbound
+    from_email: str
+    from_name: str
+    to_email: str
+    subject: str
+    body_text: str
+    body_html: str
+    received_at: Optional[str]
+    sent_at: Optional[str]
+    is_read: bool
+    status: str             # new | read | replied | archived
+    linked_inquiry_id: Optional[int]
+    created_at: str
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "provider_message_id": self.provider_message_id,
+            "thread_id": self.thread_id,
+            "direction": self.direction,
+            "from_email": self.from_email,
+            "from_name": self.from_name,
+            "to_email": self.to_email,
+            "subject": self.subject,
+            "body_text": self.body_text[:500],
+            "body_html": "",
+            "received_at": self.received_at,
+            "sent_at": self.sent_at,
+            "is_read": self.is_read,
+            "status": self.status,
+            "linked_inquiry_id": self.linked_inquiry_id,
+            "created_at": self.created_at,
+        }
+
+    def to_full_dict(self) -> dict:
+        d = self.to_dict()
+        d["body_text"] = self.body_text
+        d["body_html"] = self.body_html
+        return d
+
+
+@dataclass(frozen=True)
 class EmailLogRecord:
     id: int
     timestamp: str
@@ -251,6 +297,37 @@ class EmailService:
                 );
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS email_messages (
+                    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                    provider_message_id TEXT    NOT NULL UNIQUE,
+                    thread_id           TEXT    NULL,
+                    direction           TEXT    NOT NULL DEFAULT 'inbound',
+                    from_email          TEXT    NOT NULL DEFAULT '',
+                    from_name           TEXT    NOT NULL DEFAULT '',
+                    to_email            TEXT    NOT NULL DEFAULT '',
+                    subject             TEXT    NOT NULL DEFAULT '',
+                    body_text           TEXT    NOT NULL DEFAULT '',
+                    body_html           TEXT    NOT NULL DEFAULT '',
+                    received_at         TEXT    NULL,
+                    sent_at             TEXT    NULL,
+                    is_read             INTEGER NOT NULL DEFAULT 0,
+                    status              TEXT    NOT NULL DEFAULT 'new',
+                    linked_inquiry_id   INTEGER NULL,
+                    created_at          TEXT    NOT NULL
+                );
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_email_msg_created "
+                "ON email_messages(created_at DESC);"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_email_msg_direction "
+                "ON email_messages(direction, is_read);"
+            )
+
             # Seed default plans if table is empty
             now = datetime.now(timezone.utc).isoformat()
             for pt, dn in (
@@ -1136,3 +1213,192 @@ class EmailService:
             max_users,
             internal_notes,
         )
+
+    # ── IMAP credentials ─────────────────────────────────────────────────────
+
+    def get_imap_credentials_sync(self) -> Dict[str, str]:
+        """Return IMAP connection params. Empty strings if not configured."""
+        values = self._settings_map_sync()
+        encrypted_pw = values.get("SMTP_PASSWORD_ENCRYPTED", "")
+        password = decrypt_secret(encrypted_pw, self._encryption_secret) if encrypted_pw else ""
+        username = (values.get("SMTP_USERNAME") or "").strip()
+        imap_host = (values.get("IMAP_HOST") or "imap.gmail.com").strip()
+        imap_port = int(values.get("IMAP_PORT") or 993)
+        return {
+            "host": imap_host,
+            "port": str(imap_port),
+            "username": username,
+            "password": password,
+        }
+
+    async def get_imap_credentials(self) -> Dict[str, str]:
+        return await anyio.to_thread.run_sync(self.get_imap_credentials_sync)
+
+    # ── email_messages CRUD ──────────────────────────────────────────────────
+
+    @staticmethod
+    def _msg_row(row: tuple) -> "EmailMessage":
+        return EmailMessage(
+            id=int(row[0]),
+            provider_message_id=str(row[1]),
+            thread_id=str(row[2]) if row[2] else None,
+            direction=str(row[3]),
+            from_email=str(row[4]),
+            from_name=str(row[5]),
+            to_email=str(row[6]),
+            subject=str(row[7]),
+            body_text=str(row[8]),
+            body_html=str(row[9]),
+            received_at=str(row[10]) if row[10] else None,
+            sent_at=str(row[11]) if row[11] else None,
+            is_read=bool(int(row[12])),
+            status=str(row[13]),
+            linked_inquiry_id=int(row[14]) if row[14] is not None else None,
+            created_at=str(row[15]),
+        )
+
+    _MSG_COLS = (
+        "id, provider_message_id, thread_id, direction, from_email, from_name, "
+        "to_email, subject, body_text, body_html, received_at, sent_at, "
+        "is_read, status, linked_inquiry_id, created_at"
+    )
+
+    def store_message_sync(
+        self,
+        *,
+        provider_message_id: str,
+        thread_id: Optional[str],
+        direction: str,
+        from_email: str,
+        from_name: str,
+        to_email: str,
+        subject: str,
+        body_text: str,
+        body_html: str,
+        received_at: Optional[str],
+        sent_at: Optional[str],
+        is_read: bool = False,
+        status: str = "new",
+        linked_inquiry_id: Optional[int] = None,
+    ) -> Optional["EmailMessage"]:
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            try:
+                cur = conn.execute(
+                    f"""
+                    INSERT INTO email_messages
+                        (provider_message_id, thread_id, direction, from_email, from_name,
+                         to_email, subject, body_text, body_html, received_at, sent_at,
+                         is_read, status, linked_inquiry_id, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                    """,
+                    (
+                        provider_message_id[:2048], thread_id, direction,
+                        from_email[:512], from_name[:255], to_email[:512],
+                        subject[:512], body_text[:65535], body_html[:131072],
+                        received_at, sent_at, 1 if is_read else 0,
+                        status, linked_inquiry_id, now,
+                    ),
+                )
+                row = conn.execute(
+                    f"SELECT {self._MSG_COLS} FROM email_messages WHERE id = ?;",
+                    (cur.lastrowid,),
+                ).fetchone()
+            except Exception:
+                return None
+        return self._msg_row(row) if row else None
+
+    async def store_message(self, **kwargs) -> Optional["EmailMessage"]:
+        return await anyio.to_thread.run_sync(lambda: self.store_message_sync(**kwargs))
+
+    def list_messages_sync(
+        self,
+        *,
+        direction: Optional[str] = None,
+        unread_only: bool = False,
+        limit: int = 100,
+    ) -> List["EmailMessage"]:
+        clauses, params: list = [], []
+        if direction:
+            clauses.append("direction = ?")
+            params.append(direction)
+        if unread_only:
+            clauses.append("is_read = 0")
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"SELECT {self._MSG_COLS} FROM email_messages "
+                f"{where} ORDER BY created_at DESC LIMIT ?;",
+                (*params, int(limit)),
+            ).fetchall()
+        return [self._msg_row(r) for r in rows]
+
+    async def list_messages(self, **kwargs) -> List["EmailMessage"]:
+        return await anyio.to_thread.run_sync(lambda: self.list_messages_sync(**kwargs))
+
+    def get_message_sync(self, message_id: int) -> Optional["EmailMessage"]:
+        with self._connect() as conn:
+            row = conn.execute(
+                f"SELECT {self._MSG_COLS} FROM email_messages WHERE id = ? LIMIT 1;",
+                (int(message_id),),
+            ).fetchone()
+        return self._msg_row(row) if row else None
+
+    async def get_message(self, message_id: int) -> Optional["EmailMessage"]:
+        return await anyio.to_thread.run_sync(lambda: self.get_message_sync(int(message_id)))
+
+    def mark_read_sync(self, message_id: int) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE email_messages SET is_read = 1, status = CASE "
+                "WHEN status = 'new' THEN 'read' ELSE status END "
+                "WHERE id = ?;",
+                (int(message_id),),
+            )
+
+    async def mark_read(self, message_id: int) -> None:
+        await anyio.to_thread.run_sync(lambda: self.mark_read_sync(int(message_id)))
+
+    def link_inquiry_sync(self, message_id: int, inquiry_id: Optional[int]) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE email_messages SET linked_inquiry_id = ? WHERE id = ?;",
+                (inquiry_id, int(message_id)),
+            )
+
+    async def link_inquiry(self, message_id: int, inquiry_id: Optional[int]) -> None:
+        await anyio.to_thread.run_sync(lambda: self.link_inquiry_sync(int(message_id), inquiry_id))
+
+    def mark_replied_sync(self, message_id: int) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE email_messages SET status = 'replied' WHERE id = ?;",
+                (int(message_id),),
+            )
+
+    async def mark_replied(self, message_id: int) -> None:
+        await anyio.to_thread.run_sync(lambda: self.mark_replied_sync(int(message_id)))
+
+    def message_id_exists_sync(self, provider_message_id: str) -> bool:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM email_messages WHERE provider_message_id = ? LIMIT 1;",
+                (str(provider_message_id)[:2048],),
+            ).fetchone()
+        return row is not None
+
+    async def message_id_exists(self, provider_message_id: str) -> bool:
+        return await anyio.to_thread.run_sync(
+            lambda: self.message_id_exists_sync(provider_message_id)
+        )
+
+    def unread_count_sync(self) -> int:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM email_messages WHERE direction = 'inbound' AND is_read = 0;"
+            ).fetchone()
+        return int(row[0]) if row else 0
+
+    async def unread_count(self) -> int:
+        return await anyio.to_thread.run_sync(self.unread_count_sync)

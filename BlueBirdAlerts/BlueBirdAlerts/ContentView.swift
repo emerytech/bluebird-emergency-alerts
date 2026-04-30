@@ -21,6 +21,44 @@ private extension String {
     var nilIfEmptyStr: String? { isEmpty ? nil : self }
 }
 
+private func debugLog(_ message: @autoclosure () -> String) {
+    #if DEBUG
+    print(message())
+    #endif
+}
+
+private enum AppDateFormatters {
+    static let isoWithFractionalSeconds: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+
+    static let isoInternet: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter
+    }()
+
+    static let shortTime: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .none
+        formatter.timeStyle = .short
+        return formatter
+    }()
+
+    static let scheduledTime: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .short
+        formatter.timeStyle = .short
+        return formatter
+    }()
+
+    static func date(from isoString: String) -> Date? {
+        isoWithFractionalSeconds.date(from: isoString) ?? isoInternet.date(from: isoString)
+    }
+}
+
 private struct PressableScaleButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
@@ -62,8 +100,8 @@ private final class AlertController: ObservableObject {
 
     func beginHold(duration: Double = 3.0) {
         guard holdState != .holding, !didTrigger else { return }
-        print("Press detected")
-        print("Hold started")
+        debugLog("Press detected")
+        debugLog("Hold started")
         isTouchDown = true
         holdState = .holding
         holdProgress = 0
@@ -81,7 +119,7 @@ private final class AlertController: ObservableObject {
                 let progressStep = Int(progress * 10)
                 if progressStep != lastLoggedStep {
                     lastLoggedStep = progressStep
-                    print("Progress value: \(String(format: "%.2f", progress))")
+                    debugLog("Progress value: \(String(format: "%.2f", progress))")
                 }
                 try? await Task.sleep(nanoseconds: 16_666_667)
             }
@@ -98,7 +136,7 @@ private final class AlertController: ObservableObject {
         holdTask = nil
         stopHapticLoop()
         fireCompletionHaptic()
-        print("Hold completed; triggering alert")
+        debugLog("Hold completed; triggering alert")
         onActivate()
         Task {
             try? await Task.sleep(nanoseconds: 240_000_000)
@@ -117,7 +155,7 @@ private final class AlertController: ObservableObject {
         holdTask = nil
         stopHapticLoop()
         fireCancelHaptic()
-        print("Hold cancelled")
+        debugLog("Hold cancelled")
         holdState = .canceled
         withAnimation(.easeOut(duration: 0.18)) {
             holdProgress = 0
@@ -142,15 +180,15 @@ private final class AlertController: ObservableObject {
 
     func startAlarmAudio() {
         if Self.audioPlayer?.isPlaying == true {
-            print("Audio already playing")
+            debugLog("Audio already playing")
             Self.enableVolumeLock()
             return
         }
         guard let fileURL = Bundle.main.url(forResource: "bluebird_alarm", withExtension: "caf") else {
-            print("Audio failed: bluebird_alarm.caf not found in app bundle")
+            debugLog("Audio failed: bluebird_alarm.caf not found in app bundle")
             return
         }
-        print("Alarm file URL: \(fileURL)")
+        debugLog("Alarm file URL: \(fileURL)")
         do {
             let session = AVAudioSession.sharedInstance()
             try session.setCategory(.playback, mode: .default, options: [.duckOthers])
@@ -162,12 +200,12 @@ private final class AlertController: ObservableObject {
             if player.play() {
                 Self.audioPlayer = player
                 Self.enableVolumeLock()
-                print("Audio started")
+                debugLog("Audio started")
             } else {
-                print("Audio failed: AVAudioPlayer returned play() == false")
+                debugLog("Audio failed: AVAudioPlayer returned play() == false")
             }
         } catch {
-            print("Audio failed: \(error.localizedDescription)")
+            debugLog("Audio failed: \(error.localizedDescription)")
         }
     }
 
@@ -178,13 +216,13 @@ private final class AlertController: ObservableObject {
                 player.stop()
             }
             player.currentTime = 0
-            print("Audio stopped")
+            debugLog("Audio stopped")
         }
         Self.audioPlayer = nil
         do {
             try AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
         } catch {
-            print("Audio session deactivate error: \(error.localizedDescription)")
+            debugLog("Audio session deactivate error: \(error.localizedDescription)")
         }
     }
 
@@ -220,7 +258,7 @@ private final class AlertController: ObservableObject {
             let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
             let window = windowScene.windows.first
         else {
-            print("Volume lock: no window available for MPVolumeView")
+            debugLog("Volume lock: no window available for MPVolumeView")
             return
         }
 
@@ -230,7 +268,7 @@ private final class AlertController: ObservableObject {
         volumeView = mpView
         volumeSlider = mpView.subviews.compactMap { $0 as? UISlider }.first
         if volumeSlider == nil {
-            print("Volume lock: could not find MPVolumeView slider")
+            debugLog("Volume lock: could not find MPVolumeView slider")
         }
     }
 
@@ -251,7 +289,7 @@ private final class AlertController: ObservableObject {
             while !Task.isCancelled, !didTrigger, holdState == .holding {
                 let isNearComplete = holdProgress >= 0.8
                 fireProgressHaptic(strong: isNearComplete)
-                print("Haptics firing (strong=\(isNearComplete))")
+                debugLog("Haptics firing (strong=\(isNearComplete))")
                 try? await Task.sleep(nanoseconds: 800_000_000)
             }
         }
@@ -506,6 +544,7 @@ struct ContentView: View {
     @State private var showAlertTypeSheet = false
     @State private var isRefreshingIncidentFeed = false
     @State private var isUpdatingAlarm = false
+    @State private var pendingAck = false
     @State private var adminOutboundMessage = ""
     @State private var adminRecipients: [MessageRecipient] = []
     @State private var selectedRecipientIDs: Set<Int> = []
@@ -569,6 +608,10 @@ struct ContentView: View {
         let role = appState.userRole.lowercased()
         return role == "district_admin" || role == "super_admin" || role == "platform_super_admin"
     }
+
+    /// True when the current user may view or edit district-level settings and features.
+    /// Use this (not isAdminSession) to gate any district-scoped configuration UI.
+    private var canAccessDistrictSettings: Bool { isDistrictSession }
 
     private var safetyActions: [SafetyActionItem] {
         buildSafetyActions(featureLabels: featureLabels)
@@ -731,6 +774,9 @@ struct ContentView: View {
                     try? await Task.sleep(nanoseconds: 10_000_000_000)
                     await refreshIncidentFeed()
                     tick += 1
+                    if tick % 6 == 0, let token = appState.deviceToken {
+                        try? await api.heartbeat(deviceToken: token)
+                    }
                     if tick % 18 == 0 {
                         await loadFeatureLabels()
                     }
@@ -995,18 +1041,8 @@ struct ContentView: View {
 
     private func shortTime(_ iso: String?) -> String? {
         guard let iso else { return nil }
-        let f = ISO8601DateFormatter()
-        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        var d = f.date(from: iso)
-        if d == nil {
-            f.formatOptions = [.withInternetDateTime]
-            d = f.date(from: iso)
-        }
-        guard let date = d else { return nil }
-        let out = DateFormatter()
-        out.dateStyle = .none
-        out.timeStyle = .short
-        return out.string(from: date)
+        guard let date = AppDateFormatters.date(from: iso) else { return nil }
+        return AppDateFormatters.shortTime.string(from: date)
     }
 
     private var alarmTakeoverOverlay: some View {
@@ -1288,15 +1324,18 @@ struct ContentView: View {
               let userID = appState.userID,
               !alarmCurrentUserAcknowledged else { return }
         isUpdatingAlarm = true
+        pendingAck = true
+        alarmCurrentUserAcknowledged = true
+        alarmAcknowledgementCount += 1
         defer { isUpdatingAlarm = false }
         let api = APIClient(baseURL: appState.serverURL, apiKey: Config.backendApiKey)
         do {
             try await api.acknowledgeAlert(alertId: alertId, userID: userID)
-            alarmCurrentUserAcknowledged = true
-            alarmAcknowledgementCount += 1
         } catch {
-            // Silently ignore ack errors — non-critical
+            alarmCurrentUserAcknowledged = false
+            alarmAcknowledgementCount = max(0, alarmAcknowledgementCount - 1)
         }
+        pendingAck = false
     }
 
     private func sendAlertMessageFromOverlay(alertId: Int) async {
@@ -1733,7 +1772,7 @@ struct ContentView: View {
                             }
                             if let startAt = item.scheduledStartAt {
                                 HStack(spacing: 4) {
-                                    Image(systemName: "calendar.clock")
+                                    Image(systemName: "calendar")
                                         .font(.caption2)
                                         .foregroundStyle(DSColor.info)
                                     Text("Starts: \(formatScheduledTime(startAt))")
@@ -1935,7 +1974,7 @@ struct ContentView: View {
                             }
                             if let startAt = myQuietRequest?.scheduledStartAt {
                                 HStack(spacing: 6) {
-                                    Image(systemName: "calendar.clock")
+                                    Image(systemName: "calendar")
                                         .font(.subheadline)
                                         .foregroundStyle(DSColor.info)
                                     Text("Scheduled: \(formatScheduledTime(startAt))")
@@ -1996,7 +2035,7 @@ struct ContentView: View {
                             }
                             if let startAt = myQuietRequest?.scheduledStartAt {
                                 HStack(spacing: 6) {
-                                    Image(systemName: "calendar.clock")
+                                    Image(systemName: "calendar")
                                         .font(.subheadline)
                                         .foregroundStyle(DSColor.info)
                                     Text("Starts: \(formatScheduledTime(startAt))")
@@ -2156,7 +2195,7 @@ struct ContentView: View {
                                 axis: .vertical
                             )
                             Toggle(isOn: $scheduleForLater) {
-                                Label("Schedule for later", systemImage: "calendar.clock")
+                                Label("Schedule for later", systemImage: "calendar")
                                     .font(.subheadline)
                                     .foregroundStyle(DSColor.textPrimary)
                             }
@@ -2541,9 +2580,14 @@ struct ContentView: View {
         defer { isRefreshingIncidentFeed = false }
         var errors: [String] = []
         var anySuccess = false
+        let feedAPI = api
+
+        async let incidentsRequest = feedAPI.activeIncidents()
+        async let teamAssistsRequest = feedAPI.activeRequestHelp()
+        async let alarmRequest = feedAPI.alarmStatus()
 
         do {
-            let incidents = try await api.activeIncidents()
+            let incidents = try await incidentsRequest
             activeIncidents = incidents.incidents
             anySuccess = true
         } catch {
@@ -2551,7 +2595,7 @@ struct ContentView: View {
         }
 
         do {
-            let teamAssists = try await api.activeRequestHelp()
+            let teamAssists = try await teamAssistsRequest
             activeTeamAssists = teamAssists.teamAssists
             syncAdminRequestHelpPrompt()
             anySuccess = true
@@ -2560,7 +2604,7 @@ struct ContentView: View {
         }
 
         do {
-            let alarm = try await api.alarmStatus()
+            let alarm = try await alarmRequest
             alarmIsActive = alarm.isActive
             alarmMessage = alarm.message
             alarmIsTraining = alarm.isTraining
@@ -2569,7 +2613,7 @@ struct ContentView: View {
             alarmAcknowledgementCount = alarm.acknowledgementCount
             alarmExpectedUserCount = alarm.expectedUserCount ?? 0
             alarmAcknowledgementPercentage = alarm.acknowledgementPercentage ?? 0.0
-            alarmCurrentUserAcknowledged = alarm.currentUserAcknowledged
+            alarmCurrentUserAcknowledged = pendingAck ? alarmCurrentUserAcknowledged : alarm.currentUserAcknowledged
             if let id = alarm.currentAlertId { alarmAlertId = id }
             alarmActivatedAt = alarm.activatedAt
             alarmActivatedByLabel = alarm.activatedByLabel
@@ -2615,14 +2659,7 @@ struct ContentView: View {
 
     private func secondsUntilISO(_ isoString: String?) -> Int {
         guard let raw = isoString, !raw.isEmpty else { return 0 }
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        var date = formatter.date(from: raw)
-        if date == nil {
-            formatter.formatOptions = [.withInternetDateTime]
-            date = formatter.date(from: raw)
-        }
-        guard let target = date else { return 0 }
+        guard let target = AppDateFormatters.date(from: raw) else { return 0 }
         return max(0, Int(target.timeIntervalSinceNow))
     }
 
@@ -2637,18 +2674,8 @@ struct ContentView: View {
     }
 
     private func formatScheduledTime(_ isoString: String) -> String {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        var date = formatter.date(from: isoString)
-        if date == nil {
-            formatter.formatOptions = [.withInternetDateTime]
-            date = formatter.date(from: isoString)
-        }
-        guard let d = date else { return isoString }
-        let display = DateFormatter()
-        display.dateStyle = .short
-        display.timeStyle = .short
-        return display.string(from: d)
+        guard let date = AppDateFormatters.date(from: isoString) else { return isoString }
+        return AppDateFormatters.scheduledTime.string(from: date)
     }
 
     private func registerDevice(token: String) async {
@@ -3063,10 +3090,8 @@ struct ContentView: View {
         defer { isSubmittingQuickAction = false }
         do {
             let trimmed = quietPeriodReason.trimmingCharacters(in: .whitespacesAndNewlines)
-            let isoFormatter = ISO8601DateFormatter()
-            isoFormatter.formatOptions = [.withInternetDateTime]
-            let startISO: String? = scheduleForLater ? isoFormatter.string(from: scheduledStartDate) : nil
-            let endISO: String? = scheduleForLater ? isoFormatter.string(from: scheduledEndDate) : nil
+            let startISO: String? = scheduleForLater ? AppDateFormatters.isoInternet.string(from: scheduledStartDate) : nil
+            let endISO: String? = scheduleForLater ? AppDateFormatters.isoInternet.string(from: scheduledEndDate) : nil
             let result = try await api.requestQuietPeriod(
                 userID: userID,
                 reason: trimmed.isEmpty ? nil : trimmed,
@@ -3187,7 +3212,7 @@ struct ContentView: View {
             #if DEBUG
             print("[WS] Connecting: \(slug)")
             #endif
-            let wsTask = URLSession(configuration: .default).webSocketTask(with: wsURL)
+            let wsTask = URLSession.shared.webSocketTask(with: wsURL)
             wsTask.resume()
             var connectedOnce = false
             receiveLoop: while !Task.isCancelled {

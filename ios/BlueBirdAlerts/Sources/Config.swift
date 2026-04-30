@@ -7,6 +7,6 @@ enum Config {
             return url
         }
 
-        return URL(string: "https://bluebird.ets3d.com")!
+        return URL(string: "https://bluebird-alerts.com")!
     }
 }

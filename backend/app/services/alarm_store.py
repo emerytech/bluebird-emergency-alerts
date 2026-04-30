@@ -25,6 +25,7 @@ class AlarmStateRecord:
     deactivated_at: Optional[str] = None
     deactivated_by_user_id: Optional[int] = None
     deactivated_by_label: Optional[str] = None
+    version: int = 0
 
 
 class AlarmStore:
@@ -60,7 +61,8 @@ class AlarmStore:
                     activated_by_label TEXT NULL,
                     deactivated_at TEXT NULL,
                     deactivated_by_user_id INTEGER NULL,
-                    deactivated_by_label TEXT NULL
+                    deactivated_by_label TEXT NULL,
+                    version INTEGER NOT NULL DEFAULT 0
                 );
                 """
             )
@@ -91,6 +93,8 @@ class AlarmStore:
             conn.execute("ALTER TABLE alarm_state ADD COLUMN deactivated_by_label TEXT NULL;")
         if "tenant_slug" not in cols:
             conn.execute("ALTER TABLE alarm_state ADD COLUMN tenant_slug TEXT NOT NULL DEFAULT '';")
+        if "version" not in cols:
+            conn.execute("ALTER TABLE alarm_state ADD COLUMN version INTEGER NOT NULL DEFAULT 0;")
 
     def _fetch_state_sync(self) -> AlarmStateRecord:
         with self._connect() as conn:
@@ -98,7 +102,7 @@ class AlarmStore:
                 """
                 SELECT is_active, tenant_slug, message, is_training, training_label, silent_audio,
                        activated_at, activated_by_user_id, activated_by_label,
-                       deactivated_at, deactivated_by_user_id, deactivated_by_label
+                       deactivated_at, deactivated_by_user_id, deactivated_by_label, version
                 FROM alarm_state
                 WHERE id = 1;
                 """
@@ -118,6 +122,7 @@ class AlarmStore:
             deactivated_at=str(row[9]) if row[9] is not None else None,
             deactivated_by_user_id=int(row[10]) if row[10] is not None else None,
             deactivated_by_label=str(row[11]) if row[11] is not None else None,
+            version=int(row[12]) if row[12] is not None else 0,
         )
 
     async def get_state(self) -> AlarmStateRecord:
@@ -149,7 +154,8 @@ class AlarmStore:
                     activated_by_label = ?,
                     deactivated_at = NULL,
                     deactivated_by_user_id = NULL,
-                    deactivated_by_label = NULL
+                    deactivated_by_label = NULL,
+                    version = version + 1
                 WHERE id = 1;
                 """,
                 (
@@ -205,7 +211,8 @@ class AlarmStore:
                     silent_audio = 0,
                     deactivated_at = ?,
                     deactivated_by_user_id = ?,
-                    deactivated_by_label = ?
+                    deactivated_by_label = ?,
+                    version = version + 1
                 WHERE id = 1;
                 """,
                 (tenant_slug, deactivated_at, deactivated_by_user_id, deactivated_by_label),
