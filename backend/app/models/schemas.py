@@ -483,6 +483,8 @@ class AlarmStatusResponse(BaseModel):
     silent_audio: bool = False
     current_alert_id: Optional[int] = None
     acknowledgement_count: int = 0
+    expected_user_count: int = 0
+    acknowledgement_percentage: float = 0.0
     current_user_acknowledged: bool = False
     activated_at: Optional[str] = None
     activated_by_user_id: Optional[int] = None
@@ -545,6 +547,8 @@ class AlertAcknowledgeResponse(BaseModel):
     acknowledged_at: str
     already_acknowledged: bool = False
     acknowledgement_count: int = 0
+    expected_user_count: int = 0
+    acknowledgement_percentage: float = 0.0
 
 
 class IncidentCreateRequest(BaseModel):

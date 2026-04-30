@@ -787,18 +787,21 @@ def _assert_tenant_resolved(request: Request) -> None:
         )
 
 
-async def _active_alert_metadata(request: Request, *, user_id: Optional[int] = None) -> tuple[Optional[int], int, bool]:
+async def _active_alert_metadata(request: Request, *, user_id: Optional[int] = None) -> tuple[Optional[int], int, bool, int]:
     state = await _alarm_store(request).get_state()
     if not bool(_state_field(state, "is_active", False)):
-        return None, 0, False
+        return None, 0, False, 0
     latest = await _alert_log(request).latest_alert()
     if latest is None:
-        return None, 0, False
-    ack_count = await _alert_log(request).acknowledgement_count(latest.id)
+        return None, 0, False, 0
+    ack_count, expected_count = await asyncio.gather(
+        _alert_log(request).acknowledgement_count(latest.id),
+        _users(request).count_active(),
+    )
     user_ack = False
     if user_id is not None and int(user_id) > 0:
         user_ack = await _alert_log(request).has_acknowledged(alert_id=latest.id, user_id=int(user_id))
-    return latest.id, ack_count, user_ack
+    return latest.id, ack_count, user_ack, expected_count
 
 
 async def _publish_alert_event(
@@ -809,7 +812,8 @@ async def _publish_alert_event(
     extra: Optional[dict[str, object]] = None,
 ) -> None:
     state = await _alarm_store(request).get_state()
-    active_alert_id, acknowledgement_count, _ = await _active_alert_metadata(request)
+    active_alert_id, acknowledgement_count, _, expected_user_count = await _active_alert_metadata(request)
+    ack_pct = round((acknowledgement_count / expected_user_count * 100) if expected_user_count > 0 else 0.0, 1)
     # Use the effective tenant's slug so that district-admin operations on a
     # different school publish to the correct WebSocket channel, not the
     # routing-school's channel.
@@ -825,6 +829,8 @@ async def _publish_alert_event(
             "silent_audio": bool(_state_field(state, "silent_audio", False)),
             "current_alert_id": active_alert_id,
             "acknowledgement_count": acknowledgement_count,
+            "expected_user_count": expected_user_count,
+            "acknowledgement_percentage": ack_pct,
             "activated_at": cast(Optional[str], _state_field(state, "activated_at", None)),
             "activated_by_label": cast(Optional[str], _state_field(state, "activated_by_label", None)),
             "deactivated_at": cast(Optional[str], _state_field(state, "deactivated_at", None)),
@@ -2083,10 +2089,11 @@ async def alarm_status(
     except Exception:
         logger.exception("alarm_status: failed to read broadcast updates; returning empty list")
         broadcasts = []
-    current_alert_id, acknowledgement_count, current_user_acknowledged = await _active_alert_metadata(
+    current_alert_id, acknowledgement_count, current_user_acknowledged, expected_user_count = await _active_alert_metadata(
         request,
         user_id=user_id,
     )
+    ack_pct = round((acknowledgement_count / expected_user_count * 100) if expected_user_count > 0 else 0.0, 1)
     return AlarmStatusResponse(
         is_active=bool(_state_field(state, "is_active", False)),
         message=cast(Optional[str], _state_field(state, "message", None)),
@@ -2095,6 +2102,8 @@ async def alarm_status(
         silent_audio=bool(_state_field(state, "silent_audio", False)),
         current_alert_id=current_alert_id,
         acknowledgement_count=acknowledgement_count,
+        expected_user_count=expected_user_count,
+        acknowledgement_percentage=ack_pct,
         current_user_acknowledged=current_user_acknowledged,
         activated_at=cast(Optional[str], _state_field(state, "activated_at", None)),
         activated_by_user_id=cast(Optional[int], _state_field(state, "activated_by_user_id", None)),
@@ -6763,7 +6772,11 @@ async def acknowledge_alert(
         user_label=getattr(user, "login_name", None) or getattr(user, "name", None),
         tenant_slug=tenant_slug,
     )
-    acknowledgement_count = await _alert_log(request).acknowledgement_count(alert_id)
+    acknowledgement_count, expected_user_count = await asyncio.gather(
+        _alert_log(request).acknowledgement_count(alert_id),
+        _users(request).count_active(),
+    )
+    ack_pct = round((acknowledgement_count / expected_user_count * 100) if expected_user_count > 0 else 0.0, 1)
     _fire_audit(
         request,
         "alert_acknowledged",
@@ -6779,7 +6792,7 @@ async def acknowledge_alert(
     )
     await _publish_alert_event(
         request,
-        event="alert_acknowledged",
+        event="tenant_acknowledgement_updated",
         alert_id=alert_id,
         extra={
             "acknowledgement": {
@@ -6787,6 +6800,8 @@ async def acknowledge_alert(
                 "user_label": record.user_label,
                 "acknowledged_at": record.acknowledged_at,
                 "acknowledgement_count": acknowledgement_count,
+                "expected_user_count": expected_user_count,
+                "acknowledgement_percentage": ack_pct,
             }
         },
     )
@@ -6796,6 +6811,8 @@ async def acknowledge_alert(
         acknowledged_at=record.acknowledged_at,
         already_acknowledged=already_acknowledged,
         acknowledgement_count=acknowledgement_count,
+        expected_user_count=expected_user_count,
+        acknowledgement_percentage=ack_pct,
     )
 
 

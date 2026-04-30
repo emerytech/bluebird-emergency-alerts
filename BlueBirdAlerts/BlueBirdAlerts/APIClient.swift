@@ -630,6 +630,8 @@ struct AlarmStatusResponse: Decodable {
     let trainingLabel: String?
     let silentAudio: Bool
     let acknowledgementCount: Int
+    let expectedUserCount: Int?
+    let acknowledgementPercentage: Double?
     let currentUserAcknowledged: Bool
     let currentAlertId: Int?
 
@@ -640,6 +642,8 @@ struct AlarmStatusResponse: Decodable {
         case trainingLabel = "training_label"
         case silentAudio = "silent_audio"
         case acknowledgementCount = "acknowledgement_count"
+        case expectedUserCount = "expected_user_count"
+        case acknowledgementPercentage = "acknowledgement_percentage"
         case currentUserAcknowledged = "current_user_acknowledged"
         case currentAlertId = "current_alert_id"
     }
@@ -652,6 +656,8 @@ struct AlarmStatusResponse: Decodable {
         silentAudio = try container.decodeIfPresent(Bool.self, forKey: .silentAudio) ?? false
         trainingLabel = try container.decodeIfPresent(String.self, forKey: .trainingLabel)
         acknowledgementCount = try container.decodeIfPresent(Int.self, forKey: .acknowledgementCount) ?? 0
+        expectedUserCount = try container.decodeIfPresent(Int.self, forKey: .expectedUserCount)
+        acknowledgementPercentage = try container.decodeIfPresent(Double.self, forKey: .acknowledgementPercentage)
         currentUserAcknowledged = try container.decodeIfPresent(Bool.self, forKey: .currentUserAcknowledged) ?? false
         currentAlertId = try container.decodeIfPresent(Int.self, forKey: .currentAlertId)
     }

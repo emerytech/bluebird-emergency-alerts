@@ -492,6 +492,8 @@ struct ContentView: View {
     @State private var alarmTrainingLabel: String?
     @State private var alarmSilentAudio = false
     @State private var alarmAcknowledgementCount = 0
+    @State private var alarmExpectedUserCount = 0
+    @State private var alarmAcknowledgementPercentage: Double = 0.0
     @State private var alarmCurrentUserAcknowledged = false
     @State private var alarmAlertId: Int? = nil
     @State private var showAlarmTakeover = false
@@ -1048,10 +1050,17 @@ struct ContentView: View {
 
                         // ── Acknowledgement count ─────────────────────────────
                         if alarmAcknowledgementCount > 0 || alarmCurrentUserAcknowledged {
+                            let ackLabel: String = alarmExpectedUserCount > 0
+                                ? "✓ \(alarmAcknowledgementCount) of \(alarmExpectedUserCount) acknowledged (\(Int(alarmAcknowledgementPercentage))%)"
+                                : "✓ \(alarmAcknowledgementCount) acknowledged"
+                            let ackProgress = alarmExpectedUserCount > 0
+                                ? min(alarmAcknowledgementPercentage / 100.0, 1.0)
+                                : 0.0
                             VStack(spacing: 8) {
-                                Text("✓ \(alarmAcknowledgementCount) acknowledged")
+                                Text(ackLabel)
                                     .font(.subheadline.weight(.semibold))
                                     .foregroundStyle(Color(red: 0.65, green: 0.96, blue: 0.78))
+                                    .multilineTextAlignment(.center)
 
                                 GeometryReader { geo in
                                     ZStack(alignment: .leading) {
@@ -1060,7 +1069,7 @@ struct ContentView: View {
                                             .frame(height: 6)
                                         Capsule()
                                             .fill(Color(red: 0.20, green: 0.83, blue: 0.60))
-                                            .frame(width: geo.size.width * min(CGFloat(alarmAcknowledgementCount) / 100.0, 1.0), height: 6)
+                                            .frame(width: geo.size.width * CGFloat(ackProgress), height: 6)
                                     }
                                 }
                                 .frame(height: 6)
@@ -2341,6 +2350,8 @@ struct ContentView: View {
             alarmTrainingLabel = alarm.trainingLabel
             alarmSilentAudio = alarm.silentAudio
             alarmAcknowledgementCount = alarm.acknowledgementCount
+            alarmExpectedUserCount = alarm.expectedUserCount ?? 0
+            alarmAcknowledgementPercentage = alarm.acknowledgementPercentage ?? 0.0
             alarmCurrentUserAcknowledged = alarm.currentUserAcknowledged
             if let id = alarm.currentAlertId { alarmAlertId = id }
             anySuccess = true
@@ -3046,6 +3057,8 @@ struct ContentView: View {
                 if let v = a["silent_audio"] as? Bool { alarmSilentAudio = v }
                 if let v = a["current_alert_id"] as? Int { alarmAlertId = v }
                 if let v = a["acknowledgement_count"] as? Int { alarmAcknowledgementCount = v }
+                if let v = a["expected_user_count"] as? Int { alarmExpectedUserCount = v }
+                if let v = a["acknowledgement_percentage"] as? Double { alarmAcknowledgementPercentage = v }
             }
             if alarmIsActive && !wasActive {
                 showAlarmTakeover = true
@@ -3083,6 +3096,8 @@ struct ContentView: View {
         case "tenant_acknowledgement_updated":
             if let a = alarm {
                 if let v = a["acknowledgement_count"] as? Int { alarmAcknowledgementCount = v }
+                if let v = a["expected_user_count"] as? Int { alarmExpectedUserCount = v }
+                if let v = a["acknowledgement_percentage"] as? Double { alarmAcknowledgementPercentage = v }
             }
 
         case "quiet_request_created", "quiet_request_updated":

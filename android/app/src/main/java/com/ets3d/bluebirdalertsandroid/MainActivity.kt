@@ -616,6 +616,8 @@ data class AlarmStatus(
     val activatedByLabel: String? = null,
     val broadcasts: List<BroadcastUpdate> = emptyList(),
     val acknowledgementCount: Int = 0,
+    val expectedUserCount: Int = 0,
+    val acknowledgementPercentage: Float = 0f,
     val currentUserAcknowledged: Boolean = false,
     val triggeredByUserId: Int? = null,
     val silentForSender: Boolean = true,
@@ -1555,6 +1557,8 @@ class MainViewModel : ViewModel() {
                         alertId = if (a.has("current_alert_id") && !a.isNull("current_alert_id"))
                             a.optInt("current_alert_id") else s.alarm.alertId,
                         acknowledgementCount = a.optInt("acknowledgement_count", s.alarm.acknowledgementCount),
+                        expectedUserCount = a.optInt("expected_user_count", s.alarm.expectedUserCount),
+                        acknowledgementPercentage = a.optDouble("acknowledgement_percentage", s.alarm.acknowledgementPercentage.toDouble()).toFloat(),
                     ))
                 }
             }
@@ -1583,6 +1587,8 @@ class MainViewModel : ViewModel() {
                 _state.update { s ->
                     s.copy(alarm = s.alarm.copy(
                         acknowledgementCount = a.optInt("acknowledgement_count", s.alarm.acknowledgementCount),
+                        expectedUserCount = a.optInt("expected_user_count", s.alarm.expectedUserCount),
+                        acknowledgementPercentage = a.optDouble("acknowledgement_percentage", s.alarm.acknowledgementPercentage.toDouble()).toFloat(),
                     ))
                 }
             }
@@ -4752,20 +4758,25 @@ private fun EmergencyAlarmTakeover(
 
                 // ── Acknowledgement progress ──────────────────────────────
                 if (alarm.acknowledgementCount > 0 || alarm.currentUserAcknowledged) {
+                    val ackPct = alarm.acknowledgementPercentage
+                    val ackLabel = if (alarm.expectedUserCount > 0)
+                        "✓ ${alarm.acknowledgementCount} of ${alarm.expectedUserCount} acknowledged (${ackPct.toInt()}%)"
+                    else
+                        "✓ ${alarm.acknowledgementCount} acknowledged"
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.spacedBy(6.dp),
                         modifier = Modifier.fillMaxWidth(),
                     ) {
                         Text(
-                            "✓ ${alarm.acknowledgementCount} acknowledged",
+                            ackLabel,
                             color = Color(0xFFA7F3D0),
                             fontSize = 13.sp,
                             fontWeight = FontWeight.SemiBold,
                             textAlign = TextAlign.Center,
                         )
                         LinearProgressIndicator(
-                            progress = { (alarm.acknowledgementCount / 100f).coerceIn(0f, 1f) },
+                            progress = { (ackPct / 100f).coerceIn(0f, 1f) },
                             color = Color(0xFF34D399),
                             trackColor = Color.White.copy(alpha = 0.20f),
                             modifier = Modifier
@@ -6639,6 +6650,8 @@ internal class BackendClient(baseUrl: String, private val apiKey: String) {
                 activatedByLabel        = j.optString("activated_by_label").ifBlank { null },
                 broadcasts              = broadcasts,
                 acknowledgementCount    = j.optInt("acknowledgement_count", 0),
+                expectedUserCount       = j.optInt("expected_user_count", 0),
+                acknowledgementPercentage = j.optDouble("acknowledgement_percentage", 0.0).toFloat(),
                 currentUserAcknowledged = j.optBoolean("current_user_acknowledged", false),
                 alertId                 = if (j.has("current_alert_id") && !j.isNull("current_alert_id"))
                     j.optInt("current_alert_id") else null,
@@ -7204,6 +7217,8 @@ internal class BackendClient(baseUrl: String, private val apiKey: String) {
             activatedByLabel         = j.optString("activated_by_label").ifBlank { null },
             broadcasts               = broadcasts,
             acknowledgementCount     = j.optInt("acknowledgement_count", 0),
+            expectedUserCount        = j.optInt("expected_user_count", 0),
+            acknowledgementPercentage = j.optDouble("acknowledgement_percentage", 0.0).toFloat(),
             currentUserAcknowledged  = j.optBoolean("current_user_acknowledged", false),
             alertId                  = if (j.has("current_alert_id") && !j.isNull("current_alert_id"))
                 j.optInt("current_alert_id") else null,
