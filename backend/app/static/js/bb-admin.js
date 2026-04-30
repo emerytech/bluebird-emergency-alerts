@@ -926,3 +926,232 @@ try {
 
   })();
 } catch (e) { console.error('[BB] analytics', e); }
+
+// ── Alert Accountability Panel ────────────────────────────────────────────────
+try {
+  (function () {
+    var _pollTimer = null;
+    var _activeTab = 'not-acked';
+    var _lastMsgCount = 0;
+
+    function _apiHeaders() {
+      var h = { 'Content-Type': 'application/json' };
+      if (typeof BB_WS_API_KEY !== 'undefined' && BB_WS_API_KEY) h['X-API-Key'] = BB_WS_API_KEY;
+      return h;
+    }
+
+    function _fmtRole(role) {
+      if (!role) return '';
+      return role.replace(/_/g, ' ').replace(/\b\w/g, function(c) { return c.toUpperCase(); });
+    }
+
+    function _fmtTs(ts) {
+      if (!ts) return '';
+      try {
+        var d = new Date(ts);
+        return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      } catch (e) { return ts.substring(11, 16) || ts; }
+    }
+
+    function _presenceDot(status) {
+      var color = status === 'online' ? '#16a34a' : status === 'recent' ? '#d97706' : '#9ca3af';
+      return '<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:' + color + ';margin-right:4px;flex-shrink:0;"></span>';
+    }
+
+    function updateAccountabilityUI(data) {
+      var acked = data.acknowledged || [];
+      var unacked = data.not_acknowledged || [];
+      var msgs = data.messages || [];
+      var count = acked.length;
+      var expected = data.expected_user_count || 0;
+      var pct = data.acknowledgement_percentage || 0;
+
+      var barColor = pct >= 90 ? '#16a34a' : pct >= 60 ? '#d97706' : '#dc2626';
+      var labelEl = document.getElementById('js-ack-progress-label');
+      var pctEl = document.getElementById('js-ack-progress-pct');
+      var barEl = document.getElementById('js-ack-progress-bar');
+      if (labelEl) labelEl.textContent = count + ' / ' + expected + ' acknowledged';
+      if (pctEl) { pctEl.textContent = pct + '%'; pctEl.style.color = barColor; }
+      if (barEl) { barEl.style.width = pct + '%'; barEl.style.background = barColor; }
+
+      // Not-yet tab
+      var unackEl = document.getElementById('js-unack-list');
+      if (unackEl) {
+        if (unacked.length === 0) {
+          unackEl.innerHTML = '<span class="mini-copy" style="color:#16a34a;">All users acknowledged!</span>';
+        } else {
+          unackEl.innerHTML = unacked.map(function(u) {
+            return '<div style="display:flex;align-items:center;gap:6px;padding:5px 8px;border-radius:7px;background:rgba(220,38,38,0.04);border:1px solid rgba(220,38,38,0.10);">'
+              + _presenceDot(u.presence_status)
+              + '<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500;">' + (u.name || 'User #' + u.user_id) + '</span>'
+              + '<span style="font-size:0.72rem;color:var(--muted);">' + _fmtRole(u.role) + '</span>'
+              + (u.has_device ? '' : '<span style="font-size:0.7rem;color:#9ca3af;margin-left:2px;">no device</span>')
+              + '</div>';
+          }).join('');
+        }
+      }
+
+      // Acknowledged tab
+      var ackedEl = document.getElementById('js-acked-list');
+      if (ackedEl) {
+        if (acked.length === 0) {
+          ackedEl.innerHTML = '<span class="mini-copy">No acknowledgements yet.</span>';
+        } else {
+          ackedEl.innerHTML = acked.map(function(u) {
+            return '<div style="display:flex;align-items:center;gap:6px;padding:5px 8px;border-radius:7px;background:rgba(22,163,74,0.04);border:1px solid rgba(22,163,74,0.12);">'
+              + _presenceDot(u.presence_status)
+              + '<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500;">' + (u.name || 'User #' + u.user_id) + '</span>'
+              + '<span style="font-size:0.72rem;color:var(--muted);">' + _fmtRole(u.role) + '</span>'
+              + '<span style="font-size:0.72rem;color:#16a34a;margin-left:auto;">' + _fmtTs(u.acknowledged_at) + '</span>'
+              + '</div>';
+          }).join('');
+        }
+      }
+
+      // Messages tab
+      var msgsEl = document.getElementById('js-messages-list');
+      if (msgsEl) {
+        if (msgs.length === 0) {
+          msgsEl.innerHTML = '<span class="mini-copy">No messages yet.</span>';
+        } else {
+          msgsEl.innerHTML = msgs.map(function(m) {
+            var isBroadcast = m.is_broadcast;
+            var fromLabel = m.sender_label || (m.sender_role ? _fmtRole(m.sender_role) : 'User #' + m.sender_id);
+            var bg = isBroadcast ? 'rgba(14,165,233,0.06)' : 'rgba(0,0,0,0.03)';
+            var border = isBroadcast ? '1px solid rgba(14,165,233,0.20)' : '1px solid rgba(0,0,0,0.08)';
+            return '<div style="padding:6px 9px;border-radius:7px;background:' + bg + ';border:' + border + ';">'
+              + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:2px;">'
+              + '<span style="font-weight:600;font-size:0.78rem;">' + fromLabel + (isBroadcast ? ' <span style="font-size:0.68rem;color:#0ea5e9;">[broadcast]</span>' : '') + '</span>'
+              + '<span style="font-size:0.7rem;color:var(--muted);">' + _fmtTs(m.timestamp) + '</span>'
+              + '</div>'
+              + '<div style="font-size:0.82rem;">' + m.message + '</div>'
+              + '</div>';
+          }).join('');
+          msgsEl.scrollTop = msgsEl.scrollHeight;
+        }
+      }
+
+      // Badge on messages tab if new messages
+      var badge = document.getElementById('acc-msg-badge');
+      if (badge) {
+        if (msgs.length > _lastMsgCount && _activeTab !== 'messages') {
+          badge.style.display = '';
+          badge.textContent = msgs.length;
+        }
+        if (_activeTab === 'messages') {
+          badge.style.display = 'none';
+          _lastMsgCount = msgs.length;
+        }
+      }
+    }
+
+    function loadAccountability() {
+      var alertId = (typeof BB_CURRENT_ALERT_ID !== 'undefined') ? BB_CURRENT_ALERT_ID : null;
+      var panel = document.getElementById('accountability-panel');
+      if (!alertId || !panel) return;
+      fetch(BB_PATH_PREFIX + '/admin/alerts/' + alertId + '/full-accountability', {
+        credentials: 'same-origin',
+        headers: _apiHeaders(),
+      })
+        .then(function(r) { return r.ok ? r.json() : Promise.reject(r.status); })
+        .then(updateAccountabilityUI)
+        .catch(function() { /* silently fail — non-critical */ });
+    }
+
+    window.switchAccTab = function(tabName, btn) {
+      _activeTab = tabName;
+      ['not-acked', 'acked', 'messages'].forEach(function(name) {
+        var el = document.getElementById('acc-tab-' + name);
+        if (el) el.style.display = name === tabName ? '' : 'none';
+      });
+      document.querySelectorAll('.acc-tab').forEach(function(b) {
+        var isActive = b.dataset.tab === tabName;
+        b.style.borderBottomColor = isActive ? '#dc2626' : 'transparent';
+        b.style.color = isActive ? '#dc2626' : 'var(--muted)';
+      });
+      if (tabName === 'messages') {
+        var badge = document.getElementById('acc-msg-badge');
+        if (badge) badge.style.display = 'none';
+        _lastMsgCount = document.querySelectorAll('#js-messages-list > div').length;
+      }
+    };
+
+    window.adminRemindAll = function() {
+      var alertId = (typeof BB_CURRENT_ALERT_ID !== 'undefined') ? BB_CURRENT_ALERT_ID : null;
+      if (!alertId) return;
+      var btn = document.getElementById('remind-all-btn');
+      var fb = document.getElementById('remind-feedback');
+      if (btn) { btn.disabled = true; btn.textContent = 'Sending…'; }
+      fetch(BB_PATH_PREFIX + '/admin/alerts/' + alertId + '/remind-all', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: _apiHeaders(),
+        body: JSON.stringify({}),
+      })
+        .then(function(r) { return r.ok ? r.json() : Promise.reject(r.status); })
+        .then(function(data) {
+          if (fb) {
+            fb.style.display = '';
+            fb.style.background = 'rgba(22,163,74,0.10)';
+            fb.style.border = '1px solid rgba(22,163,74,0.25)';
+            fb.style.color = '#15803d';
+            fb.textContent = 'Reminders sent to ' + (data.reminded_count || 0) + ' user(s). ' +
+              (data.skipped_no_device ? data.skipped_no_device + ' skipped (no device).' : '');
+            setTimeout(function() { if (fb) fb.style.display = 'none'; }, 5000);
+          }
+        })
+        .catch(function() {
+          if (fb) {
+            fb.style.display = '';
+            fb.style.background = 'rgba(220,38,38,0.08)';
+            fb.style.border = '1px solid rgba(220,38,38,0.22)';
+            fb.style.color = '#dc2626';
+            fb.textContent = 'Failed to send reminders. Please try again.';
+            setTimeout(function() { if (fb) fb.style.display = 'none'; }, 5000);
+          }
+        })
+        .finally(function() {
+          if (btn) { btn.disabled = false; btn.textContent = 'Send Reminders'; }
+        });
+    };
+
+    window.sendBroadcast = function() {
+      var alertId = (typeof BB_CURRENT_ALERT_ID !== 'undefined') ? BB_CURRENT_ALERT_ID : null;
+      if (!alertId) return;
+      var input = document.getElementById('broadcast-input');
+      if (!input) return;
+      var msg = (input.value || '').trim();
+      if (!msg) return;
+      var sendBtn = input.nextElementSibling;
+      if (sendBtn) sendBtn.disabled = true;
+      fetch(BB_PATH_PREFIX + '/admin/alerts/' + alertId + '/broadcast', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: _apiHeaders(),
+        body: JSON.stringify({ message: msg }),
+      })
+        .then(function(r) { return r.ok ? r.json() : Promise.reject(r.status); })
+        .then(function() {
+          input.value = '';
+          loadAccountability();
+          if (_activeTab !== 'messages') {
+            var messagesBtn = document.querySelector('.acc-tab[data-tab="messages"]');
+            if (messagesBtn) window.switchAccTab('messages', messagesBtn);
+          }
+        })
+        .catch(function() {
+          alert('Failed to send broadcast. Please try again.');
+        })
+        .finally(function() {
+          if (sendBtn) sendBtn.disabled = false;
+        });
+    };
+
+    document.addEventListener('DOMContentLoaded', function() {
+      var panel = document.getElementById('accountability-panel');
+      if (!panel) return;
+      loadAccountability();
+      _pollTimer = setInterval(loadAccountability, 10000);
+    });
+  })();
+} catch (e) { console.error('[BB] accountability', e); }

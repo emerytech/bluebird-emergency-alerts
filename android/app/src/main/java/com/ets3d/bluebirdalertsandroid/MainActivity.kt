@@ -918,6 +918,17 @@ class MainViewModel : ViewModel() {
         }
     }
 
+    fun sendAlertMessageFromOverlay(ctx: Context, message: String) {
+        val userId = getUserId(ctx).toIntOrNull() ?: return
+        val alertId = _state.value.alarm.alertId ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { client!!.sendAlertMessage(alertId = alertId, userId = userId, message = message) }
+                .onFailure { e ->
+                    android.util.Log.d("BlueBird", "sendAlertMessage failed: ${e.message}")
+                }
+        }
+    }
+
     fun sendReport(ctx: Context, category: String, note: String?) {
         val userId = getUserId(ctx).toIntOrNull()
         viewModelScope.launch(Dispatchers.IO) {
@@ -1567,7 +1578,10 @@ class MainViewModel : ViewModel() {
             "alarm_deactivated", "tenant_alert_cleared" -> {
                 AlarmAudioController.stop()
                 _state.update { s ->
-                    s.copy(alarm = s.alarm.copy(isActive = false, message = null, isTraining = false, trainingLabel = null))
+                    s.copy(alarm = s.alarm.copy(
+                        isActive = false, message = null, isTraining = false,
+                        trainingLabel = null, broadcasts = emptyList(),
+                    ))
                 }
             }
             "quiet_request_created", "quiet_request_updated" -> {
@@ -1594,6 +1608,23 @@ class MainViewModel : ViewModel() {
                     ))
                 }
             }
+            "admin_broadcast" -> {
+                val msgId = j.optInt("message_id", -1).takeIf { it > 0 } ?: return
+                val msgText = j.optString("message").ifBlank { null } ?: return
+                val senderLabel = j.optString("sender_label").ifBlank { null }
+                val timestamp = j.optString("timestamp").ifBlank { null }
+                _state.update { s ->
+                    if (s.alarm.broadcasts.any { it.updateId == msgId }) return@update s
+                    val newBroadcast = BroadcastUpdate(
+                        updateId = msgId,
+                        createdAt = timestamp ?: "",
+                        adminLabel = senderLabel,
+                        message = msgText,
+                    )
+                    s.copy(alarm = s.alarm.copy(broadcasts = s.alarm.broadcasts + newBroadcast))
+                }
+            }
+            "new_user_message", "admin_reply" -> { /* handled server-side, no client action needed */ }
             "help_request_acknowledged", "help_request_resolved" -> {
                 viewModelScope.launch(Dispatchers.IO) {
                     runCatching { client!!.activeRequestHelp() }
@@ -2903,6 +2934,9 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                     },
                     onAcknowledge = {
                         vm.acknowledgeAlarm(ctx)
+                    },
+                    onSendMessage = { message ->
+                        vm.sendAlertMessageFromOverlay(ctx, message)
                     },
                     modifier = Modifier
                         .fillMaxSize()
@@ -4639,6 +4673,7 @@ private fun EmergencyAlarmTakeover(
     isBusy: Boolean,
     onDeactivate: () -> Unit,
     onAcknowledge: () -> Unit,
+    onSendMessage: ((message: String) -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     val accent = if (alarm.isTraining) DSColor.Warning else AlarmRed
@@ -4841,6 +4876,98 @@ private fun EmergencyAlarmTakeover(
                                             Text(it.take(16).replace("T", " "), color = Color.White.copy(alpha = 0.45f), fontSize = 10.sp)
                                         }
                                     }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // ── Message admin (post-ack) ───────────────────────────────
+                if (alarm.currentUserAcknowledged && onSendMessage != null) {
+                    var overlayMsg by remember { mutableStateOf("") }
+                    var isSending by remember { mutableStateOf(false) }
+                    var sentFeedback by remember { mutableStateOf(false) }
+
+                    Column(
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(
+                            "Message Admin",
+                            color = Color.White.copy(alpha = 0.65f),
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = 0.5.sp,
+                        )
+                        if (sentFeedback) {
+                            Text(
+                                "✓ Message sent",
+                                color = Color(0xFF34D399),
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                        }
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            androidx.compose.material3.OutlinedTextField(
+                                value = overlayMsg,
+                                onValueChange = { overlayMsg = it },
+                                placeholder = {
+                                    Text(
+                                        "Send message to admin…",
+                                        color = Color.White.copy(alpha = 0.45f),
+                                        fontSize = 13.sp,
+                                    )
+                                },
+                                maxLines = 3,
+                                textStyle = androidx.compose.ui.text.TextStyle(
+                                    color = Color.White,
+                                    fontSize = 13.sp,
+                                ),
+                                colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
+                                    focusedBorderColor = Color.White.copy(alpha = 0.55f),
+                                    unfocusedBorderColor = Color.White.copy(alpha = 0.25f),
+                                    cursorColor = Color.White,
+                                ),
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier.weight(1f),
+                            )
+                            IconButton(
+                                onClick = {
+                                    val msg = overlayMsg.trim()
+                                    if (msg.isNotEmpty() && !isSending) {
+                                        isSending = true
+                                        onSendMessage(msg)
+                                        overlayMsg = ""
+                                        sentFeedback = true
+                                        isSending = false
+                                    }
+                                },
+                                enabled = overlayMsg.trim().isNotEmpty() && !isSending,
+                                modifier = Modifier
+                                    .size(44.dp)
+                                    .background(
+                                        if (overlayMsg.trim().isEmpty()) Color.White.copy(alpha = 0.18f)
+                                        else DSColor.Primary,
+                                        CircleShape,
+                                    ),
+                            ) {
+                                if (isSending) {
+                                    CircularProgressIndicator(
+                                        color = Color.White,
+                                        strokeWidth = 2.dp,
+                                        modifier = Modifier.size(20.dp),
+                                    )
+                                } else {
+                                    Text(
+                                        "→",
+                                        color = Color.White,
+                                        fontSize = 18.sp,
+                                        fontWeight = FontWeight.Bold,
+                                    )
                                 }
                             }
                         }
@@ -7235,6 +7362,49 @@ internal class BackendClient(baseUrl: String, private val apiKey: String) {
             .post(body.toString().toRequestBody(json))
             .build()
         http.newCall(req).execute().use { requireSuccess(it) }
+    }
+
+    fun sendAlertMessage(alertId: Int, userId: Int, message: String, recipientId: Int? = null): Int {
+        val body = JSONObject()
+            .put("user_id", userId)
+            .put("message", message)
+        if (recipientId != null) body.put("recipient_id", recipientId)
+        val req = Request.Builder()
+            .url("$base/alerts/$alertId/messages/send")
+            .withAuth()
+            .post(body.toString().toRequestBody(json))
+            .build()
+        http.newCall(req).execute().use { res ->
+            val text = requireSuccess(res)
+            return JSONObject(text).optInt("id", -1)
+        }
+    }
+
+    fun broadcastAlertMessage(alertId: Int, userId: Int, message: String): Int {
+        val body = JSONObject().put("user_id", userId).put("message", message)
+        val req = Request.Builder()
+            .url("$base/alerts/$alertId/messages/broadcast")
+            .withAuth()
+            .post(body.toString().toRequestBody(json))
+            .build()
+        http.newCall(req).execute().use { res ->
+            val text = requireSuccess(res)
+            return JSONObject(text).optInt("id", -1)
+        }
+    }
+
+    fun remindUnacknowledged(alertId: Int, adminUserId: Int): Pair<Int, Int> {
+        val body = JSONObject().put("user_id", adminUserId)
+        val req = Request.Builder()
+            .url("$base/alerts/$alertId/remind")
+            .withAuth()
+            .post(body.toString().toRequestBody(json))
+            .build()
+        http.newCall(req).execute().use { res ->
+            val text = requireSuccess(res)
+            val j = JSONObject(text)
+            return Pair(j.optInt("reminded_count", 0), j.optInt("skipped_no_device", 0))
+        }
     }
 
     private fun parseAlarm(res: okhttp3.Response): AlarmStatus {

@@ -19,6 +19,7 @@ from app.services.school_registry import SchoolRecord, SchoolRegistry
 from app.services.twilio_sms import TwilioSMSClient
 from app.services.apns import APNsClient
 from app.services.incident_store import IncidentStore
+from app.services.alert_message_store import AlertMessageStore
 from app.services.tenant_settings_store import TenantSettingsStore
 from app.services.user_store import UserStore
 from app.services.session_store import SessionStore
@@ -49,6 +50,7 @@ class TenantContext:
     audit_log_service: AuditLogService
     drill_report_service: DrillReportService
     settings_store: TenantSettingsStore
+    message_store: AlertMessageStore
 
 
 class TenantManager:
@@ -130,6 +132,7 @@ class TenantManager:
                 audit_log_service=AuditLogService(db_path),
                 drill_report_service=DrillReportService(db_path),
                 settings_store=TenantSettingsStore(db_path),
+                message_store=AlertMessageStore(db_path),
             )
             self._cache[normalized] = tenant
             return tenant

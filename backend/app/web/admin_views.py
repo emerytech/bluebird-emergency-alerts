@@ -7885,24 +7885,58 @@ def render_admin_page(
                 <button class="button button-danger" type="submit">End alarm now</button>
               </div>
             </form>
-            <div style="margin:14px 0 0;padding:14px;background:rgba(220,38,38,0.05);border:1px solid rgba(220,38,38,0.18);border-radius:10px;">
-              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+            <!-- ── Alert Accountability ────────────────────────────────── -->
+            <div id="accountability-panel" style="margin:14px 0 0;padding:14px;background:rgba(220,38,38,0.05);border:1px solid rgba(220,38,38,0.18);border-radius:12px;">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+                <span style="font-size:0.78rem;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--danger,#dc2626);">Alert Accountability</span>
+                <button id="remind-all-btn" class="button button-secondary" style="font-size:0.76rem;padding:4px 10px;height:28px;"
+                  onclick="adminRemindAll()" title="Send push reminder to all users who haven't acknowledged">
+                  Send Reminders
+                </button>
+              </div>
+              <!-- Progress bar -->
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:5px;">
                 <span id="js-ack-progress-label" style="font-size:0.84rem;font-weight:600;">{acknowledgement_count} / {active_users} acknowledged</span>
                 <span id="js-ack-progress-pct" style="font-size:0.84rem;font-weight:700;color:{_ack_bar_color};">{_ack_pct}%</span>
               </div>
-              <div style="background:rgba(0,0,0,0.12);border-radius:6px;height:9px;overflow:hidden;">
+              <div style="background:rgba(0,0,0,0.12);border-radius:6px;height:9px;overflow:hidden;margin-bottom:10px;">
                 <div id="js-ack-progress-bar" style="height:100%;width:{_ack_pct}%;border-radius:6px;background:{_ack_bar_color};transition:width .5s ease,background .5s ease;"></div>
               </div>
-              <p class="mini-copy" style="margin-top:6px;">Auto-reminders sent every 3 min to users who haven&#39;t acknowledged.</p>
-            </div>
-            <div id="js-unack-section" style="margin-top:10px;">
-              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
-                <span style="font-size:0.82rem;font-weight:600;">Users Not Yet Acknowledged</span>
-                <span id="js-unack-count" class="status-pill danger" style="font-size:0.74rem;display:none;"></span>
+              <!-- Tabs -->
+              <div style="display:flex;gap:2px;border-bottom:1px solid rgba(0,0,0,0.10);margin-bottom:10px;">
+                <button class="acc-tab acc-tab--active" data-tab="not-acked" onclick="switchAccTab('not-acked',this)" style="background:none;border:none;cursor:pointer;padding:5px 10px;font-size:0.78rem;font-weight:600;border-bottom:2px solid #dc2626;color:#dc2626;">Not Yet</button>
+                <button class="acc-tab" data-tab="acked" onclick="switchAccTab('acked',this)" style="background:none;border:none;cursor:pointer;padding:5px 10px;font-size:0.78rem;font-weight:600;border-bottom:2px solid transparent;color:var(--muted);">Acknowledged</button>
+                <button class="acc-tab" data-tab="messages" onclick="switchAccTab('messages',this)" style="background:none;border:none;cursor:pointer;padding:5px 10px;font-size:0.78rem;font-weight:600;border-bottom:2px solid transparent;color:var(--muted);">Communication <span id="acc-msg-badge" style="display:none;background:#dc2626;color:#fff;border-radius:9px;padding:0 5px;font-size:0.7rem;font-weight:700;margin-left:3px;"></span></button>
               </div>
-              <div id="js-unack-list" style="display:grid;gap:5px;font-size:0.8rem;max-height:220px;overflow-y:auto;">
-                <span class="mini-copy">Loading…</span>
+              <!-- Not-yet tab -->
+              <div id="acc-tab-not-acked">
+                <div id="js-unack-list" style="display:grid;gap:5px;font-size:0.8rem;max-height:260px;overflow-y:auto;">
+                  <span class="mini-copy">Loading…</span>
+                </div>
               </div>
+              <!-- Acknowledged tab -->
+              <div id="acc-tab-acked" style="display:none;">
+                <div id="js-acked-list" style="display:grid;gap:5px;font-size:0.8rem;max-height:260px;overflow-y:auto;">
+                  <span class="mini-copy">Loading…</span>
+                </div>
+              </div>
+              <!-- Communication tab -->
+              <div id="acc-tab-messages" style="display:none;">
+                <div style="margin-bottom:10px;">
+                  <div style="display:flex;gap:6px;">
+                    <input id="broadcast-input" type="text" placeholder="Broadcast message to all users…"
+                      style="flex:1;padding:7px 10px;border:1px solid rgba(0,0,0,0.15);border-radius:8px;font-size:0.83rem;"
+                      onkeydown="if(event.key==='Enter')sendBroadcast()"/>
+                    <button class="button" onclick="sendBroadcast()" style="font-size:0.83rem;padding:7px 14px;">Broadcast</button>
+                  </div>
+                  <p class="mini-copy" style="margin-top:5px;">Message will be delivered to all active users on their alert screen.</p>
+                </div>
+                <div id="js-messages-list" style="display:grid;gap:6px;font-size:0.8rem;max-height:230px;overflow-y:auto;">
+                  <span class="mini-copy">No messages yet.</span>
+                </div>
+              </div>
+              <div id="remind-feedback" style="display:none;margin-top:8px;font-size:0.8rem;padding:6px 10px;border-radius:6px;"></div>
+              <p class="mini-copy" style="margin-top:8px;">Auto-reminders sent every 3 min. Manual reminders button sends immediately to all unacknowledged users with a registered device.</p>
             </div>
             ''' if alarm_state.is_active else f'''
             {super_admin_recorded_badge_html}

@@ -551,6 +551,58 @@ class AlertAcknowledgeResponse(BaseModel):
     acknowledgement_percentage: float = 0.0
 
 
+# ── Alert messaging ──────────────────────────────────────────────────────────
+
+class AlertMessageSendRequest(BaseModel):
+    user_id: int
+    message: str = Field(..., min_length=1, max_length=1000)
+    recipient_id: Optional[int] = None  # None = send to admins; set for admin→user reply
+
+class AlertBroadcastRequest(BaseModel):
+    user_id: int
+    message: str = Field(..., min_length=1, max_length=1000)
+
+class AlertMessageOut(BaseModel):
+    id: int
+    alert_id: int
+    sender_id: int
+    sender_role: str
+    sender_label: Optional[str] = None
+    recipient_id: Optional[int] = None
+    message: str
+    is_broadcast: bool
+    timestamp: str
+
+class AlertMessageListResponse(BaseModel):
+    messages: List[AlertMessageOut]
+
+# ── Alert accountability ──────────────────────────────────────────────────────
+
+class AcknowledgedUserOut(BaseModel):
+    user_id: int
+    user_label: Optional[str] = None
+    role: Optional[str] = None
+    acknowledged_at: str
+
+class UnacknowledgedUserOut(BaseModel):
+    user_id: int
+    user_label: Optional[str] = None
+    role: Optional[str] = None
+    has_device: bool = False
+
+class AlertAccountabilityResponse(BaseModel):
+    alert_id: int
+    acknowledgement_count: int
+    expected_user_count: int
+    acknowledgement_percentage: float
+    acknowledged: List[AcknowledgedUserOut]
+    not_acknowledged: List[UnacknowledgedUserOut]
+
+class AlertRemindResponse(BaseModel):
+    reminded_count: int
+    skipped_no_device: int
+
+
 class IncidentCreateRequest(BaseModel):
     type: str = Field(..., min_length=1, max_length=120)
     user_id: int

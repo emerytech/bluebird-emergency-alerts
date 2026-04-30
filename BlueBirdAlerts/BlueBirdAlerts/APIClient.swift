@@ -446,6 +446,52 @@ struct APIClient {
         return try JSONDecoder().decode(AdminSendMessageResponse.self, from: data)
     }
 
+    func sendAlertMessage(alertId: Int, userID: Int, message: String, recipientId: Int? = nil) async throws -> AlertMessageOut {
+        let url = baseURL.appendingPathComponent("alerts/\(alertId)/messages/send")
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        withAPIKey(&request)
+        request.httpBody = try JSONEncoder().encode(AlertMessageSendRequest(userID: userID, message: message, recipientId: recipientId))
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try requireSuccess(response: response, data: data)
+        return try JSONDecoder().decode(AlertMessageOut.self, from: data)
+    }
+
+    func getAlertMessages(alertId: Int, userID: Int) async throws -> [AlertMessageOut] {
+        var comps = URLComponents(url: baseURL.appendingPathComponent("alerts/\(alertId)/messages"), resolvingAgainstBaseURL: false)!
+        comps.queryItems = [URLQueryItem(name: "user_id", value: "\(userID)")]
+        var request = URLRequest(url: comps.url!)
+        withAPIKey(&request)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try requireSuccess(response: response, data: data)
+        return try JSONDecoder().decode(AlertMessageListResponse.self, from: data).messages
+    }
+
+    func broadcastAlertMessage(alertId: Int, userID: Int, message: String) async throws -> AlertMessageOut {
+        let url = baseURL.appendingPathComponent("alerts/\(alertId)/messages/broadcast")
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        withAPIKey(&request)
+        request.httpBody = try JSONEncoder().encode(AlertBroadcastRequest(userID: userID, message: message))
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try requireSuccess(response: response, data: data)
+        return try JSONDecoder().decode(AlertMessageOut.self, from: data)
+    }
+
+    func remindUnacknowledged(alertId: Int, adminUserID: Int) async throws -> AlertRemindResponse {
+        let url = baseURL.appendingPathComponent("alerts/\(alertId)/remind")
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        withAPIKey(&request)
+        request.httpBody = try JSONEncoder().encode(["user_id": adminUserID])
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try requireSuccess(response: response, data: data)
+        return try JSONDecoder().decode(AlertRemindResponse.self, from: data)
+    }
+
     private func requireSuccess(response: URLResponse, data: Data) throws {
         guard let http = response as? HTTPURLResponse else { return }
         guard (200..<300).contains(http.statusCode) else {
@@ -777,6 +823,66 @@ private struct MessageAdminRequest: Encodable {
     enum CodingKeys: String, CodingKey {
         case userID = "user_id"
         case message
+    }
+}
+
+private struct AlertMessageSendRequest: Encodable {
+    let userID: Int
+    let message: String
+    let recipientId: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case userID = "user_id"
+        case message
+        case recipientId = "recipient_id"
+    }
+}
+
+private struct AlertBroadcastRequest: Encodable {
+    let userID: Int
+    let message: String
+
+    enum CodingKeys: String, CodingKey {
+        case userID = "user_id"
+        case message
+    }
+}
+
+struct AlertMessageOut: Decodable, Identifiable {
+    let id: Int
+    let alertId: Int
+    let senderId: Int
+    let senderRole: String
+    let senderLabel: String?
+    let recipientId: Int?
+    let message: String
+    let isBroadcast: Bool
+    let timestamp: String
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case alertId = "alert_id"
+        case senderId = "sender_id"
+        case senderRole = "sender_role"
+        case senderLabel = "sender_label"
+        case recipientId = "recipient_id"
+        case message
+        case isBroadcast = "is_broadcast"
+        case timestamp
+    }
+}
+
+private struct AlertMessageListResponse: Decodable {
+    let messages: [AlertMessageOut]
+}
+
+struct AlertRemindResponse: Decodable {
+    let remindedCount: Int
+    let skippedNoDevice: Int
+
+    enum CodingKeys: String, CodingKey {
+        case remindedCount = "reminded_count"
+        case skippedNoDevice = "skipped_no_device"
     }
 }
 

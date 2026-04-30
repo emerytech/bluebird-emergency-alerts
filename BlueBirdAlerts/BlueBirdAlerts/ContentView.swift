@@ -513,6 +513,9 @@ struct ContentView: View {
     @State private var isSendingAdminMessage = false
     @State private var userMessageToAdmin = ""
     @State private var isSendingUserMessage = false
+    @State private var alertOverlayMessage = ""
+    @State private var isSendingOverlayMessage = false
+    @State private var overlayMessageSentFeedback = false
     @State private var showTeamAssistPicker = false
     @State private var showMessagingCenter = false
     @State private var showQuietPeriodCenter = false
@@ -1165,6 +1168,65 @@ struct ContentView: View {
                     }
                     .padding(.horizontal, 22)
 
+                    // ── Message admin (shown only after acknowledgement) ───────
+                    if alarmCurrentUserAcknowledged, let alertId = alarmAlertId {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("Message Admin")
+                                .font(.caption.weight(.bold))
+                                .foregroundStyle(.white.opacity(0.65))
+                                .frame(maxWidth: .infinity, alignment: .leading)
+
+                            if overlayMessageSentFeedback {
+                                Label("Message sent", systemImage: "checkmark.circle.fill")
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(DSColor.success)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+
+                            HStack(spacing: 10) {
+                                TextField(
+                                    "",
+                                    text: $alertOverlayMessage,
+                                    prompt: Text("Send message to admin…").foregroundStyle(.white.opacity(0.45)),
+                                    axis: .vertical
+                                )
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 10)
+                                .background(Color.white.opacity(0.13))
+                                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                                .lineLimit(1...3)
+
+                                Button {
+                                    let id = alertId
+                                    Task { await sendAlertMessageFromOverlay(alertId: id) }
+                                } label: {
+                                    if isSendingOverlayMessage {
+                                        ProgressView().tint(.white).scaleEffect(0.85)
+                                    } else {
+                                        Image(systemName: "paperplane.fill")
+                                            .foregroundStyle(.white)
+                                    }
+                                }
+                                .frame(width: 44, height: 44)
+                                .background(
+                                    Circle().fill(
+                                        alertOverlayMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                            ? Color.white.opacity(0.18)
+                                            : DSColor.primary
+                                    )
+                                )
+                                .disabled(
+                                    isSendingOverlayMessage ||
+                                    alertOverlayMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                )
+                            }
+                        }
+                        .padding(.horizontal, 22)
+                        .padding(.top, 12)
+                        .id(alertId)
+                    }
+
                     Spacer(minLength: 32)
 
                     // ── Action buttons ────────────────────────────────────────
@@ -1234,6 +1296,24 @@ struct ContentView: View {
             alarmAcknowledgementCount += 1
         } catch {
             // Silently ignore ack errors — non-critical
+        }
+    }
+
+    private func sendAlertMessageFromOverlay(alertId: Int) async {
+        let trimmed = alertOverlayMessage.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let userID = appState.userID else { return }
+        isSendingOverlayMessage = true
+        defer { isSendingOverlayMessage = false }
+        do {
+            _ = try await api.sendAlertMessage(alertId: alertId, userID: userID, message: trimmed)
+            alertOverlayMessage = ""
+            overlayMessageSentFeedback = true
+            Task {
+                try? await Task.sleep(nanoseconds: 2_500_000_000)
+                overlayMessageSentFeedback = false
+            }
+        } catch {
+            // Non-critical — silently ignore
         }
     }
 
@@ -3212,6 +3292,9 @@ struct ContentView: View {
             alarmIsTraining = false
             alarmTrainingLabel = nil
             alarmSilentAudio = false
+            alarmBroadcasts = []
+            alertOverlayMessage = ""
+            overlayMessageSentFeedback = false
             syncAlarmAudio()
             updateAlertFeedbackState()
             Task { await refreshIncidentFeed() }
@@ -3239,11 +3322,26 @@ struct ContentView: View {
                 if let v = a["acknowledgement_percentage"] as? Double { alarmAcknowledgementPercentage = v }
             }
 
+        case "admin_broadcast":
+            // New broadcast from admin — append to visible updates in overlay
+            if let msgId = json["message_id"] as? Int,
+               let msgText = json["message"] as? String {
+                let update = AlarmBroadcastUpdate(
+                    id: msgId,
+                    message: msgText,
+                    adminLabel: json["sender_label"] as? String,
+                    createdAt: json["timestamp"] as? String
+                )
+                if !alarmBroadcasts.contains(where: { $0.id == msgId }) {
+                    alarmBroadcasts.append(update)
+                }
+            }
+
         case "quiet_request_created", "quiet_request_updated":
             if isAdminSession { Task { await loadAdminQuietPeriodRequests() } }
             Task { await loadMyQuietRequest() }
 
-        case "message_received":
+        case "message_received", "new_user_message", "admin_reply":
             break
 
         case "help_request_acknowledged", "help_request_resolved":

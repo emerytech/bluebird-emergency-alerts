@@ -106,6 +106,14 @@ from app.models.schemas import (
     CustomerMessageRequest,
     HelpRequestCancellationAnalyticsResponse,
     HelpRequestCancellationCategoryBreakdown,
+    AlertMessageSendRequest,
+    AlertBroadcastRequest,
+    AlertMessageOut,
+    AlertMessageListResponse,
+    AcknowledgedUserOut,
+    UnacknowledgedUserOut,
+    AlertAccountabilityResponse,
+    AlertRemindResponse,
 )
 from app.services.access_code_service import AccessCodeService
 from app.services.demo_live_engine import DemoLiveEngine
@@ -399,6 +407,10 @@ def _access_codes(req: Request) -> AccessCodeService:
 def _settings_store(req: Request):
     from app.services.tenant_settings_store import TenantSettingsStore
     return _tenant(req).settings_store  # type: ignore[attr-defined]
+
+
+def _message_store(req: Request):
+    return _tenant(req).message_store  # type: ignore[attr-defined]
 
 
 def _session_user_id(request: Request) -> Optional[int]:
@@ -6207,6 +6219,154 @@ async def admin_bulk_restore_users(request: Request) -> JSONResponse:
     return JSONResponse({"success_count": success_count, "skipped_count": len(skipped), "skipped": skipped})
 
 
+@router.get("/admin/alerts/{alert_id}/full-accountability", include_in_schema=False)
+async def get_full_accountability(alert_id: int, request: Request) -> JSONResponse:
+    """Returns acknowledged + unacknowledged users with device presence + messages. Admin-gated."""
+    await _require_dashboard_admin(request)
+    ack_records, all_users, all_devices, messages = await asyncio.gather(
+        _alert_log(request).list_acknowledgements(alert_id),
+        _users(request).list_users(),
+        _registry(request).list_devices(),
+        _message_store(request).get_messages(alert_id=alert_id, is_admin=True),
+    )
+    acked_by_uid = {r.user_id: r for r in ack_records}
+    active_users = [u for u in all_users if u.is_active and not getattr(u, "is_archived", False)]
+    expected = len(active_users)
+    ack_count = len(acked_by_uid)
+    ack_pct = round((ack_count / expected * 100) if expected > 0 else 0.0, 1)
+    best_device: dict = {}
+    for d in all_devices:
+        if d.user_id is None:
+            continue
+        uid = d.user_id
+        if uid not in best_device or (d.last_seen_at or "") > (best_device[uid].last_seen_at or ""):
+            best_device[uid] = d
+    acknowledged = []
+    not_acknowledged = []
+    for u in active_users:
+        label = getattr(u, "login_name", None) or u.name
+        dev = best_device.get(u.id)
+        device_info = {
+            "has_device": dev is not None,
+            "presence_status": compute_device_status(dev) if dev else "offline",
+            "last_seen_at": dev.last_seen_at if dev else None,
+        }
+        if u.id in acked_by_uid:
+            rec = acked_by_uid[u.id]
+            acknowledged.append({
+                "user_id": u.id, "name": label, "role": u.role,
+                "acknowledged_at": rec.acknowledged_at, **device_info,
+            })
+        else:
+            not_acknowledged.append({
+                "user_id": u.id, "name": label, "role": u.role, **device_info,
+            })
+    msgs = [
+        {
+            "id": m.id, "sender_id": m.sender_id, "sender_role": m.sender_role,
+            "sender_label": m.sender_label, "recipient_id": m.recipient_id,
+            "message": m.message, "is_broadcast": m.is_broadcast, "timestamp": m.timestamp,
+        }
+        for m in messages
+    ]
+    return JSONResponse({
+        "alert_id": alert_id,
+        "acknowledgement_count": ack_count,
+        "expected_user_count": expected,
+        "acknowledgement_percentage": ack_pct,
+        "acknowledged": acknowledged,
+        "not_acknowledged": not_acknowledged,
+        "messages": msgs,
+    })
+
+
+@router.post("/admin/alerts/{alert_id}/broadcast", include_in_schema=False)
+async def admin_broadcast_message(alert_id: int, request: Request) -> JSONResponse:
+    """Admin web: broadcast a message to all users on this alert."""
+    await _require_dashboard_admin(request)
+    data = await request.json()
+    message = str(data.get("message", "")).strip()
+    if not message:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="message required")
+    admin_user_id = _session_user_id(request)
+    if admin_user_id is None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin session required")
+    admin = await _users(request).get_user(admin_user_id)
+    sender_label = getattr(admin, "login_name", None) or getattr(admin, "name", None)
+    tenant_slug = _tenant(request).slug
+    alarm_state = await _alarm_store(request).get_state()
+    if not alarm_state.is_active:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="No active alarm")
+    record = await _message_store(request).send_message(
+        alert_id=alert_id, tenant_slug=tenant_slug, sender_id=admin_user_id,
+        sender_role=getattr(admin, "role", "") or "", sender_label=sender_label,
+        recipient_id=None, message=message, is_broadcast=True,
+    )
+    await _publish_simple_event(
+        request, event="admin_broadcast",
+        extra={
+            "alert_id": alert_id, "message_id": record.id,
+            "sender_id": record.sender_id, "sender_role": record.sender_role,
+            "sender_label": record.sender_label, "message": record.message,
+            "is_broadcast": True, "timestamp": record.timestamp,
+        },
+    )
+    _fire_audit(request, "alert_broadcast_sent", actor_user_id=admin_user_id,
+                actor_label=sender_label, target_type="alert", target_id=str(alert_id),
+                metadata={"message": message, "source": "web"})
+    return JSONResponse({"ok": True, "message_id": record.id})
+
+
+@router.post("/admin/alerts/{alert_id}/remind-all", include_in_schema=False)
+async def admin_remind_all(alert_id: int, request: Request) -> JSONResponse:
+    """Admin web: send push reminders to all unacknowledged users for an alert."""
+    await _require_dashboard_admin(request)
+    alarm_state = await _alarm_store(request).get_state()
+    if not alarm_state.is_active:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="No active alarm")
+    acked_ids, all_users, all_devices = await asyncio.gather(
+        _alert_log(request).list_acknowledged_user_ids(alert_id),
+        _users(request).list_users(),
+        _registry(request).list_devices(),
+    )
+    apns_client = request.app.state.apns_client
+    fcm_client = request.app.state.fcm_client
+    apns_by_user: dict[int, list[str]] = {}
+    fcm_by_user: dict[int, list[str]] = {}
+    for d in all_devices:
+        if d.user_id is None:
+            continue
+        if d.push_provider == "apns":
+            apns_by_user.setdefault(d.user_id, []).append(d.token)
+        elif d.push_provider == "fcm":
+            fcm_by_user.setdefault(d.user_id, []).append(d.token)
+    alert_type = (getattr(alarm_state, "message", "") or "").split()[0].upper() or "ALERT"
+    reminder_msg = f"Reminder: Please acknowledge the active {alert_type} alert."
+    unacked = [u for u in all_users if u.is_active and not getattr(u, "is_archived", False) and u.id not in acked_ids]
+    reminded = skipped = 0
+    for user in unacked:
+        user_apns = apns_by_user.get(user.id, [])
+        user_fcm = fcm_by_user.get(user.id, [])
+        if not user_apns and not user_fcm:
+            skipped += 1
+            continue
+        try:
+            if user_apns:
+                await apns_client.send_bulk(user_apns, reminder_msg)
+            if user_fcm:
+                await fcm_client.send_bulk(user_fcm, reminder_msg)
+            reminded += 1
+        except Exception:
+            logger.debug("admin_remind_all: send failed user_id=%s", user.id, exc_info=True)
+    admin_user_id = _session_user_id(request)
+    admin_user = await _users(request).get_user(admin_user_id) if admin_user_id else None
+    _fire_audit(request, "alert_reminders_sent", actor_user_id=admin_user_id,
+                actor_label=getattr(admin_user, "login_name", None) or getattr(admin_user, "name", None),
+                target_type="alert", target_id=str(alert_id),
+                metadata={"reminded_count": reminded, "skipped_no_device": skipped, "source": "web"})
+    return JSONResponse({"reminded_count": reminded, "skipped_no_device": skipped})
+
+
 @router.get("/admin/alerts/{alert_id}/unacknowledged", include_in_schema=False)
 async def get_unacknowledged_users(alert_id: int, request: Request) -> JSONResponse:
     """Returns active users who have not yet acknowledged the given alert. Admin-gated."""
@@ -6814,6 +6974,339 @@ async def acknowledge_alert(
         expected_user_count=expected_user_count,
         acknowledgement_percentage=ack_pct,
     )
+
+
+@router.post("/alerts/{alert_id}/messages/send", response_model=AlertMessageOut)
+async def send_alert_message(
+    alert_id: int,
+    body: AlertMessageSendRequest,
+    request: Request,
+    _: None = Depends(require_api_key),
+) -> AlertMessageOut:
+    """Any active user can send a message to admins during an active alert."""
+    _assert_tenant_resolved(request)
+    user_id = await _require_active_user(_users(request), body.user_id)
+
+    # Ensure alert exists and belongs to this tenant.
+    alert = await _alert_log(request).get_alert(alert_id)
+    if alert is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Alert not found")
+
+    # Confirm alarm is still active.
+    alarm_state = await _alarm_store(request).get_state()
+    if not alarm_state.is_active:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="No active alarm")
+
+    user = await _users(request).get_user(user_id)
+    sender_role = getattr(user, "role", "") or ""
+    sender_label = getattr(user, "login_name", None) or getattr(user, "name", None)
+    tenant_slug = _tenant(request).slug
+
+    # Rate-limit: max 10 messages per user per 60 seconds.
+    since_ts = (datetime.now(timezone.utc) - timedelta(seconds=60)).isoformat()
+    recent_count = await _message_store(request).count_sent_since(alert_id, user_id, since_ts)
+    if recent_count >= 10:
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="Rate limit exceeded")
+
+    record = await _message_store(request).send_message(
+        alert_id=alert_id,
+        tenant_slug=tenant_slug,
+        sender_id=user_id,
+        sender_role=sender_role,
+        sender_label=sender_label,
+        recipient_id=body.recipient_id,
+        message=body.message,
+        is_broadcast=False,
+    )
+
+    # Publish WS event so admins see the message in real time.
+    ws_event = "admin_reply" if body.recipient_id is not None else "new_user_message"
+    await _publish_simple_event(
+        request,
+        event=ws_event,
+        extra={
+            "alert_id": alert_id,
+            "message_id": record.id,
+            "sender_id": record.sender_id,
+            "sender_role": record.sender_role,
+            "sender_label": record.sender_label,
+            "recipient_id": record.recipient_id,
+            "message": record.message,
+            "is_broadcast": record.is_broadcast,
+            "timestamp": record.timestamp,
+        },
+    )
+    return AlertMessageOut(
+        id=record.id,
+        alert_id=record.alert_id,
+        sender_id=record.sender_id,
+        sender_role=record.sender_role,
+        sender_label=record.sender_label,
+        recipient_id=record.recipient_id,
+        message=record.message,
+        is_broadcast=record.is_broadcast,
+        timestamp=record.timestamp,
+    )
+
+
+@router.get("/alerts/{alert_id}/messages", response_model=AlertMessageListResponse)
+async def get_alert_messages(
+    alert_id: int,
+    request: Request,
+    user_id: int = Query(...),
+    _: None = Depends(require_api_key),
+) -> AlertMessageListResponse:
+    """Return messages for this alert, scoped by caller role."""
+    _assert_tenant_resolved(request)
+    user = await _users(request).get_user(int(user_id))
+    if user is None or not user.is_active:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Active user required")
+
+    alert = await _alert_log(request).get_alert(alert_id)
+    if alert is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Alert not found")
+
+    is_admin = user.role in {ROLE_ADMIN, ROLE_BUILDING_ADMIN, ROLE_DISTRICT_ADMIN, ROLE_SUPER_ADMIN}
+    records = await _message_store(request).get_messages(
+        alert_id=alert_id,
+        user_id=user.id,
+        is_admin=is_admin,
+    )
+    return AlertMessageListResponse(
+        messages=[
+            AlertMessageOut(
+                id=r.id,
+                alert_id=r.alert_id,
+                sender_id=r.sender_id,
+                sender_role=r.sender_role,
+                sender_label=r.sender_label,
+                recipient_id=r.recipient_id,
+                message=r.message,
+                is_broadcast=r.is_broadcast,
+                timestamp=r.timestamp,
+            )
+            for r in records
+        ]
+    )
+
+
+@router.post("/alerts/{alert_id}/messages/broadcast", response_model=AlertMessageOut)
+async def broadcast_alert_message(
+    alert_id: int,
+    body: AlertBroadcastRequest,
+    request: Request,
+    _: None = Depends(require_api_key),
+) -> AlertMessageOut:
+    """Admin-only: broadcast a message to all users on this alert."""
+    _assert_tenant_resolved(request)
+    admin_user_id = await _require_active_user_with_roles(
+        _users(request),
+        body.user_id,
+        roles={ROLE_ADMIN, ROLE_BUILDING_ADMIN, ROLE_DISTRICT_ADMIN, ROLE_SUPER_ADMIN},
+    )
+
+    alert = await _alert_log(request).get_alert(alert_id)
+    if alert is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Alert not found")
+
+    alarm_state = await _alarm_store(request).get_state()
+    if not alarm_state.is_active:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="No active alarm")
+
+    admin = await _users(request).get_user(admin_user_id)
+    sender_label = getattr(admin, "login_name", None) or getattr(admin, "name", None)
+    tenant_slug = _tenant(request).slug
+
+    record = await _message_store(request).send_message(
+        alert_id=alert_id,
+        tenant_slug=tenant_slug,
+        sender_id=admin_user_id,
+        sender_role=getattr(admin, "role", "") or "",
+        sender_label=sender_label,
+        recipient_id=None,
+        message=body.message,
+        is_broadcast=True,
+    )
+    _fire_audit(
+        request,
+        "alert_broadcast_sent",
+        actor_user_id=admin_user_id,
+        actor_label=sender_label,
+        target_type="alert",
+        target_id=str(alert_id),
+        metadata={"message": body.message, "alert_id": alert_id},
+    )
+    await _publish_simple_event(
+        request,
+        event="admin_broadcast",
+        extra={
+            "alert_id": alert_id,
+            "message_id": record.id,
+            "sender_id": record.sender_id,
+            "sender_role": record.sender_role,
+            "sender_label": record.sender_label,
+            "message": record.message,
+            "is_broadcast": True,
+            "timestamp": record.timestamp,
+        },
+    )
+    return AlertMessageOut(
+        id=record.id,
+        alert_id=record.alert_id,
+        sender_id=record.sender_id,
+        sender_role=record.sender_role,
+        sender_label=record.sender_label,
+        recipient_id=record.recipient_id,
+        message=record.message,
+        is_broadcast=record.is_broadcast,
+        timestamp=record.timestamp,
+    )
+
+
+@router.get("/alerts/{alert_id}/accountability", response_model=AlertAccountabilityResponse)
+async def alert_accountability(
+    alert_id: int,
+    request: Request,
+    user_id: int = Query(...),
+    _: None = Depends(require_api_key),
+) -> AlertAccountabilityResponse:
+    """Admin-only: return who has and has not acknowledged this alert."""
+    _assert_tenant_resolved(request)
+    await _require_active_user_with_roles(
+        _users(request),
+        user_id,
+        roles={ROLE_ADMIN, ROLE_BUILDING_ADMIN, ROLE_DISTRICT_ADMIN, ROLE_SUPER_ADMIN},
+    )
+
+    alert = await _alert_log(request).get_alert(alert_id)
+    if alert is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Alert not found")
+
+    ack_records, all_users, all_devices = await asyncio.gather(
+        _alert_log(request).list_acknowledgements(alert_id),
+        _users(request).list_users(),
+        _registry(request).list_devices(),
+    )
+
+    acked_by_user_id = {r.user_id: r for r in ack_records}
+    active_users = [u for u in all_users if u.is_active and not getattr(u, "is_archived", False)]
+    expected_user_count = len(active_users)
+    ack_count = len(acked_by_user_id)
+    ack_pct = round((ack_count / expected_user_count * 100) if expected_user_count > 0 else 0.0, 1)
+
+    device_user_ids = {d.user_id for d in all_devices if d.user_id is not None}
+
+    acknowledged: list[AcknowledgedUserOut] = []
+    not_acknowledged: list[UnacknowledgedUserOut] = []
+    for u in active_users:
+        rec = acked_by_user_id.get(u.id)
+        label = getattr(u, "login_name", None) or getattr(u, "name", None)
+        if rec is not None:
+            acknowledged.append(AcknowledgedUserOut(
+                user_id=u.id,
+                user_label=label,
+                role=getattr(u, "role", None),
+                acknowledged_at=rec.acknowledged_at,
+            ))
+        else:
+            not_acknowledged.append(UnacknowledgedUserOut(
+                user_id=u.id,
+                user_label=label,
+                role=getattr(u, "role", None),
+                has_device=u.id in device_user_ids,
+            ))
+
+    return AlertAccountabilityResponse(
+        alert_id=alert_id,
+        acknowledgement_count=ack_count,
+        expected_user_count=expected_user_count,
+        acknowledgement_percentage=ack_pct,
+        acknowledged=acknowledged,
+        not_acknowledged=not_acknowledged,
+    )
+
+
+@router.post("/alerts/{alert_id}/remind", response_model=AlertRemindResponse)
+async def remind_unacknowledged(
+    alert_id: int,
+    body: AlertAcknowledgeRequest,  # reuse: just needs user_id for auth
+    request: Request,
+    _: None = Depends(require_api_key),
+) -> AlertRemindResponse:
+    """Admin-only: immediately send push reminders to all unacknowledged users."""
+    _assert_tenant_resolved(request)
+    await _require_active_user_with_roles(
+        _users(request),
+        body.user_id,
+        roles={ROLE_ADMIN, ROLE_BUILDING_ADMIN, ROLE_DISTRICT_ADMIN, ROLE_SUPER_ADMIN},
+    )
+
+    alert = await _alert_log(request).get_alert(alert_id)
+    if alert is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Alert not found")
+
+    alarm_state = await _alarm_store(request).get_state()
+    if not alarm_state.is_active:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="No active alarm")
+
+    acked_ids, all_users, all_devices = await asyncio.gather(
+        _alert_log(request).list_acknowledged_user_ids(alert_id),
+        _users(request).list_users(),
+        _registry(request).list_devices(),
+    )
+
+    apns_client = request.app.state.apns_client
+    fcm_client = request.app.state.fcm_client
+
+    apns_by_user: dict[int, list[str]] = {}
+    fcm_by_user: dict[int, list[str]] = {}
+    for d in all_devices:
+        if d.user_id is None:
+            continue
+        if d.push_provider == "apns":
+            apns_by_user.setdefault(d.user_id, []).append(d.token)
+        elif d.push_provider == "fcm":
+            fcm_by_user.setdefault(d.user_id, []).append(d.token)
+
+    alert_type = (getattr(alarm_state, "message", "") or "").split()[0].upper() or "ALERT"
+    reminder_msg = f"Reminder: Please acknowledge the active {alert_type} alert."
+
+    unacked = [
+        u for u in all_users
+        if u.is_active and not getattr(u, "is_archived", False) and u.id not in acked_ids
+    ]
+    reminded_count = 0
+    skipped_no_device = 0
+    for user in unacked:
+        user_apns = apns_by_user.get(user.id, [])
+        user_fcm = fcm_by_user.get(user.id, [])
+        if not user_apns and not user_fcm:
+            skipped_no_device += 1
+            continue
+        try:
+            if user_apns:
+                await apns_client.send_bulk(user_apns, reminder_msg)
+            if user_fcm:
+                await fcm_client.send_bulk(user_fcm, reminder_msg)
+            reminded_count += 1
+        except Exception:
+            logger.debug("remind_unacknowledged: send failed user_id=%s", user.id, exc_info=True)
+
+    admin_user = await _users(request).get_user(body.user_id)
+    _fire_audit(
+        request,
+        "alert_reminders_sent",
+        actor_user_id=body.user_id,
+        actor_label=getattr(admin_user, "login_name", None) or getattr(admin_user, "name", None),
+        target_type="alert",
+        target_id=str(alert_id),
+        metadata={
+            "alert_id": alert_id,
+            "reminded_count": reminded_count,
+            "skipped_no_device": skipped_no_device,
+        },
+    )
+    return AlertRemindResponse(reminded_count=reminded_count, skipped_no_device=skipped_no_device)
 
 
 @router.post("/incidents/create", response_model=IncidentSummary)
