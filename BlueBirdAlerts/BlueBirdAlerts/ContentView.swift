@@ -1289,7 +1289,7 @@ struct ContentView: View {
               !alarmCurrentUserAcknowledged else { return }
         isUpdatingAlarm = true
         defer { isUpdatingAlarm = false }
-        let api = APIClient(baseURL: appState.serverURL, apiKey: Config.apiKey)
+        let api = APIClient(baseURL: appState.serverURL, apiKey: Config.backendApiKey)
         do {
             try await api.acknowledgeAlert(alertId: alertId, userID: userID)
             alarmCurrentUserAcknowledged = true
