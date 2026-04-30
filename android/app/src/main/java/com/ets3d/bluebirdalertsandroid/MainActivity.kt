@@ -23,6 +23,7 @@ import android.os.Vibrator
 import android.os.VibratorManager
 import android.util.Log
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -2175,7 +2176,6 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
     var holdFlashActive by remember { mutableStateOf(false) }
     var holdFlashProgress by remember { mutableStateOf(0f) }
     var holdFlashColor by remember { mutableStateOf(AlarmRed) }
-    var showAlarmTakeover by remember { mutableStateOf(false) }
     var trainingModeEnabled by remember { mutableStateOf(false) }
     var trainingLabel by remember { mutableStateOf("This is a drill") }
     var pendingAlertAction by remember { mutableStateOf<SafetyAction?>(null) }
@@ -2298,13 +2298,8 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
             // Sender gets discreet confirmation — no alarm takeover, no siren.
             vm.handleAlarmLaunch(event.body, isSilentForMe = true)
         } else {
-            showAlarmTakeover = true
             vm.handleAlarmLaunch(event.body)
         }
-    }
-
-    LaunchedEffect(state.alarm.isActive, state.alarm.isSilentForCurrentUser) {
-        showAlarmTakeover = state.alarm.isActive && !state.alarm.isSilentForCurrentUser
     }
 
     // Dismiss flash messages after 3s
@@ -2340,6 +2335,10 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
             }
         }
     }
+
+    // Block back navigation while an alarm is active.
+    val alarmTakeoverActive = state.alarm.isActive && !state.alarm.isSilentForCurrentUser
+    BackHandler(enabled = alarmTakeoverActive) {}
 
     Scaffold(
         containerColor = Color.Transparent,
@@ -2892,7 +2891,7 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                 )
             }
 
-            if (state.alarm.isActive && showAlarmTakeover) {
+            if (alarmTakeoverActive) {
                 EmergencyAlarmTakeover(
                     alarm = state.alarm,
                     schoolName = effectiveSchoolName,
@@ -2903,9 +2902,6 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                     },
                     onAcknowledge = {
                         vm.acknowledgeAlarm(ctx)
-                    },
-                    onViewDashboard = {
-                        showAlarmTakeover = false
                     },
                     modifier = Modifier
                         .fillMaxSize()
@@ -4642,7 +4638,6 @@ private fun EmergencyAlarmTakeover(
     isBusy: Boolean,
     onDeactivate: () -> Unit,
     onAcknowledge: () -> Unit,
-    onViewDashboard: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val accent = if (alarm.isTraining) DSColor.Warning else AlarmRed
@@ -4841,17 +4836,6 @@ private fun EmergencyAlarmTakeover(
                     }
                 }
 
-                OutlinedButton(
-                    onClick = onViewDashboard,
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
-                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.32f)),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(48.dp),
-                    shape = RoundedCornerShape(16.dp),
-                ) {
-                    Text("View Dashboard", fontWeight = FontWeight.Medium, fontSize = 14.sp)
-                }
             }
         }
     }

@@ -496,7 +496,6 @@ struct ContentView: View {
     @State private var alarmAcknowledgementPercentage: Double = 0.0
     @State private var alarmCurrentUserAcknowledged = false
     @State private var alarmAlertId: Int? = nil
-    @State private var showAlarmTakeover = false
     @State private var isRefreshingIncidentFeed = false
     @State private var isUpdatingAlarm = false
     @State private var adminOutboundMessage = ""
@@ -667,11 +666,6 @@ struct ContentView: View {
                         .zIndex(18)
                 }
 
-                if alarmIsActive, showAlarmTakeover {
-                    alarmTakeoverOverlay
-                        .transition(.opacity.combined(with: .scale(scale: 1.02)))
-                        .zIndex(20)
-                }
             }
             .simultaneousGesture(
                 TapGesture().onEnded {
@@ -854,6 +848,14 @@ struct ContentView: View {
                 }
             }
         }
+        .overlay {
+            if alarmIsActive {
+                alarmTakeoverOverlay
+                    .ignoresSafeArea()
+                    .transition(.opacity.combined(with: .scale(scale: 1.02)))
+                    .animation(.easeInOut(duration: DSAnimation.normal), value: alarmIsActive)
+            }
+        }
         .onReceive(NotificationCenter.default.publisher(for: .deviceTokenUpdated)) { note in
             guard let token = note.userInfo?["token"] as? String else { return }
             appState.deviceToken = token
@@ -868,13 +870,7 @@ struct ContentView: View {
         }
         .onChange(of: alarmIsActive) { _, isActive in
             UIApplication.shared.isIdleTimerDisabled = isActive
-            if isActive {
-                showAlarmTakeover = true
-                syncAlarmAudio()
-            } else {
-                showAlarmTakeover = false
-                syncAlarmAudio()
-            }
+            syncAlarmAudio()
             updateAlertFeedbackState()
         }
         .onChange(of: alarmSilentAudio) { _, _ in
@@ -886,7 +882,6 @@ struct ContentView: View {
                 if let pendingAlarmUserInfo = AlarmPushBridge.consumePendingUserInfo() {
                     handleIncomingAlarmNotification(pendingAlarmUserInfo)
                 } else if alarmIsActive {
-                    showAlarmTakeover = true
                     syncAlarmAudio()
                 }
             }
@@ -961,7 +956,6 @@ struct ContentView: View {
             alarmSilentAudio = silent
         }
         alarmIsActive = true
-        showAlarmTakeover = true
         syncAlarmAudio()
         updateAlertFeedbackState()
         Task {
@@ -1116,21 +1110,6 @@ struct ContentView: View {
                             .disabled(isUpdatingAlarm)
                         }
 
-                        Button {
-                            showAlarmTakeover = false
-                        } label: {
-                            Text("View Dashboard")
-                                .font(.subheadline.weight(.medium))
-                                .foregroundStyle(.white)
-                                .frame(maxWidth: .infinity, minHeight: 46)
-                                .background(Color.white.opacity(0.12))
-                                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                        .stroke(Color.white.opacity(0.28), lineWidth: 1)
-                                )
-                        }
-                        .buttonStyle(PressableScaleButtonStyle())
                     }
                     .padding(.horizontal, 22)
                     .padding(.bottom, 34)
@@ -3061,7 +3040,6 @@ struct ContentView: View {
                 if let v = a["acknowledgement_percentage"] as? Double { alarmAcknowledgementPercentage = v }
             }
             if alarmIsActive && !wasActive {
-                showAlarmTakeover = true
                 syncAlarmAudio()
                 updateAlertFeedbackState()
             }
