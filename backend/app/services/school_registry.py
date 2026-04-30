@@ -658,6 +658,22 @@ class SchoolRegistry:
     async def list_districts(self, *, organization_id: Optional[int] = None) -> List[DistrictRecord]:
         return await anyio.to_thread.run_sync(self._list_districts_sync, organization_id)
 
+    def _update_district_sync(self, district_id: int, name: str, slug: str) -> Optional[DistrictRecord]:
+        normalized_slug = slug.strip().lower()
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE districts SET name = ?, slug = ? WHERE id = ? AND is_archived = 0;",
+                (name.strip(), normalized_slug, int(district_id)),
+            )
+            row = conn.execute(
+                f"SELECT {_DISTRICT_COLS} FROM districts WHERE id = ? LIMIT 1;",
+                (int(district_id),),
+            ).fetchone()
+        return self._district_from_row(row) if row is not None else None
+
+    async def update_district(self, *, district_id: int, name: str, slug: str) -> Optional[DistrictRecord]:
+        return await anyio.to_thread.run_sync(self._update_district_sync, int(district_id), name, slug)
+
     def _archive_district_sync(self, district_id: int) -> Optional[DistrictRecord]:
         now = datetime.now(timezone.utc).isoformat()
         with self._connect() as conn:

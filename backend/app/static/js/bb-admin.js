@@ -1181,3 +1181,255 @@ try {
     });
   })();
 } catch (e) { console.error('[BB] accountability', e); }
+
+// ── District Management ────────────────────────────────────────────────────────
+try {
+  (function() {
+    // ── Modal helpers ──────────────────────────────────────────────────────────
+    window.bbCloseModal = function(id) {
+      var el = document.getElementById(id);
+      if (el) el.style.display = 'none';
+    };
+    function bbOpenModal(id) {
+      var el = document.getElementById(id);
+      if (el) el.style.display = 'flex';
+    }
+    function bbShowBanner(id, msg, isError) {
+      var el = document.getElementById(id);
+      if (!el) return;
+      el.textContent = msg;
+      el.className = 'bb-banner ' + (isError ? 'err' : 'ok');
+      el.style.display = 'block';
+    }
+    function bbClearBanner(id) {
+      var el = document.getElementById(id);
+      if (el) { el.style.display = 'none'; el.textContent = ''; }
+    }
+    function bbSetBtnLoading(btn, loading) {
+      if (!btn) return;
+      btn.disabled = loading;
+      btn._origText = btn._origText || btn.textContent;
+      btn.textContent = loading ? 'Saving…' : btn._origText;
+    }
+    function slugify(s) {
+      return s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+    }
+
+    // ── Create District ────────────────────────────────────────────────────────
+    window.bbOpenCreateDistrictModal = function() {
+      bbClearBanner('bb-create-district-banner');
+      var nameEl = document.getElementById('bb-create-district-name');
+      var slugEl = document.getElementById('bb-create-district-slug');
+      if (nameEl) nameEl.value = '';
+      if (slugEl) slugEl.value = '';
+
+      // Auto-slug from name
+      if (nameEl && slugEl) {
+        nameEl.oninput = function() {
+          if (!slugEl._userEdited) slugEl.value = slugify(nameEl.value);
+        };
+        slugEl.oninput = function() { slugEl._userEdited = true; };
+        slugEl._userEdited = false;
+      }
+
+      // Populate org select
+      var orgSel = document.getElementById('bb-create-district-org');
+      if (orgSel) {
+        orgSel.innerHTML = '<option value="">Loading…</option>';
+        fetch('/super-admin/organizations')
+          .then(function(r) { return r.json(); })
+          .then(function(data) {
+            var orgs = data.organizations || [];
+            if (!orgs.length) {
+              orgSel.innerHTML = '<option value="">No organizations found</option>';
+              document.getElementById('bb-create-org-field').style.display = 'none';
+              return;
+            }
+            orgSel.innerHTML = orgs.map(function(o) {
+              return '<option value="' + o.id + '">' + o.name + '</option>';
+            }).join('');
+            if (orgs.length === 1) {
+              document.getElementById('bb-create-org-field').style.display = 'none';
+            } else {
+              document.getElementById('bb-create-org-field').style.display = '';
+            }
+          })
+          .catch(function() {
+            orgSel.innerHTML = '<option value="">Could not load organizations</option>';
+          });
+      }
+      bbOpenModal('bb-create-district-modal');
+    };
+
+    window.bbSubmitCreateDistrict = function() {
+      var name = (document.getElementById('bb-create-district-name') || {}).value || '';
+      var slug = (document.getElementById('bb-create-district-slug') || {}).value || '';
+      var orgSel = document.getElementById('bb-create-district-org');
+      var orgId = orgSel ? orgSel.value : '';
+      if (!name.trim()) { bbShowBanner('bb-create-district-banner', 'District name is required.', true); return; }
+      if (!slug.trim()) { bbShowBanner('bb-create-district-banner', 'Slug is required.', true); return; }
+      var btn = document.getElementById('bb-create-district-btn');
+      bbSetBtnLoading(btn, true);
+      bbClearBanner('bb-create-district-banner');
+      var body = new URLSearchParams({ name: name.trim(), slug: slug.trim(), organization_id: orgId || '1' });
+      fetch('/super-admin/districts/create', { method: 'POST', body: body })
+        .then(function(r) { return r.ok ? r.json() : r.json().then(function(e) { throw new Error(e.detail || 'Failed'); }); })
+        .then(function(data) {
+          bbShowBanner('bb-create-district-banner', 'District "' + data.name + '" created. Reloading…', false);
+          setTimeout(function() { window.location.reload(); }, 1200);
+        })
+        .catch(function(e) {
+          bbShowBanner('bb-create-district-banner', e.message || 'Failed to create district.', true);
+          bbSetBtnLoading(btn, false);
+        });
+    };
+
+    // ── Edit District ──────────────────────────────────────────────────────────
+    var _editSlug = '';
+    window.bbOpenEditDistrictModal = function(slug, name) {
+      _editSlug = slug;
+      bbClearBanner('bb-edit-district-banner');
+      var nameEl = document.getElementById('bb-edit-district-name');
+      var slugEl = document.getElementById('bb-edit-district-slug');
+      if (nameEl) nameEl.value = name;
+      if (slugEl) slugEl.value = slug;
+      var btn = document.getElementById('bb-edit-district-btn');
+      bbSetBtnLoading(btn, false);
+      bbOpenModal('bb-edit-district-modal');
+    };
+
+    window.bbSubmitEditDistrict = function() {
+      var name = (document.getElementById('bb-edit-district-name') || {}).value || '';
+      var newSlug = (document.getElementById('bb-edit-district-slug') || {}).value || '';
+      if (!name.trim()) { bbShowBanner('bb-edit-district-banner', 'Name is required.', true); return; }
+      var btn = document.getElementById('bb-edit-district-btn');
+      bbSetBtnLoading(btn, true);
+      bbClearBanner('bb-edit-district-banner');
+      var body = new URLSearchParams({ name: name.trim(), new_slug: newSlug.trim() });
+      fetch('/super-admin/districts/' + encodeURIComponent(_editSlug) + '/update', { method: 'POST', body: body })
+        .then(function(r) { return r.ok ? r.json() : r.json().then(function(e) { throw new Error(e.detail || 'Failed'); }); })
+        .then(function(data) {
+          bbShowBanner('bb-edit-district-banner', 'Saved. Reloading…', false);
+          setTimeout(function() { window.location.reload(); }, 1000);
+        })
+        .catch(function(e) {
+          bbShowBanner('bb-edit-district-banner', e.message || 'Failed to save.', true);
+          bbSetBtnLoading(btn, false);
+        });
+    };
+
+    // ── Manage Schools (dual-list) ─────────────────────────────────────────────
+    var _manageSlug = '', _manageDistrictId = 0;
+
+    function bbRenderSchoolLists() {
+      var all = window._bbAllSchools || [];
+      var assigned = all.filter(function(s) { return s.district_id === _manageDistrictId; });
+      var available = all.filter(function(s) { return s.district_id === null || s.district_id === undefined; });
+
+      var aList = document.getElementById('bb-assigned-list');
+      var vList = document.getElementById('bb-available-list');
+
+      function schoolItem(s, btnCls, btnLabel, onclick) {
+        return '<div class="bb-school-item">' +
+          '<div><div class="bb-school-item-name">' + s.name + '</div>' +
+          '<div class="bb-school-item-slug">' + s.slug + '</div></div>' +
+          '<button class="bb-school-btn ' + btnCls + '" onclick="' + onclick + '">' + btnLabel + '</button>' +
+          '</div>';
+      }
+
+      if (aList) {
+        aList.innerHTML = assigned.length
+          ? assigned.map(function(s) {
+              return schoolItem(s, 'remove', 'Remove', 'bbRemoveSchoolFromDistrict(' + JSON.stringify(s.slug) + ')');
+            }).join('')
+          : '<div class="bb-empty-state">No schools assigned yet.</div>';
+      }
+      if (vList) {
+        vList.innerHTML = available.length
+          ? available.map(function(s) {
+              return schoolItem(s, 'add', 'Assign', 'bbAssignSchoolToDistrict(' + JSON.stringify(s.slug) + ',' + _manageDistrictId + ')');
+            }).join('')
+          : '<div class="bb-empty-state">All unassigned schools are in this district.</div>';
+      }
+    }
+
+    window.bbOpenManageSchoolsModal = function(slug, name, districtId) {
+      _manageSlug = slug;
+      _manageDistrictId = districtId;
+      bbClearBanner('bb-manage-schools-banner');
+      var titleEl = document.getElementById('bb-manage-schools-title');
+      if (titleEl) titleEl.textContent = 'Manage Schools — ' + name;
+      bbRenderSchoolLists();
+      bbOpenModal('bb-manage-schools-modal');
+    };
+
+    window.bbAssignSchoolToDistrict = function(schoolSlug, districtId) {
+      var body = new URLSearchParams({ district_id: districtId });
+      fetch('/super-admin/schools/' + encodeURIComponent(schoolSlug) + '/assign-district', { method: 'POST', body: body })
+        .then(function(r) { return r.ok ? r.json() : r.json().then(function(e) { throw new Error(e.detail || 'Failed'); }); })
+        .then(function() {
+          // Update local state
+          var all = window._bbAllSchools || [];
+          for (var i = 0; i < all.length; i++) {
+            if (all[i].slug === schoolSlug) { all[i].district_id = districtId; break; }
+          }
+          bbRenderSchoolLists();
+          bbShowBanner('bb-manage-schools-banner', 'School assigned.', false);
+        })
+        .catch(function(e) { bbShowBanner('bb-manage-schools-banner', e.message || 'Failed to assign.', true); });
+    };
+
+    window.bbRemoveSchoolFromDistrict = function(schoolSlug) {
+      fetch('/super-admin/schools/' + encodeURIComponent(schoolSlug) + '/remove-district', { method: 'POST' })
+        .then(function(r) { return r.ok ? r.json() : r.json().then(function(e) { throw new Error(e.detail || 'Failed'); }); })
+        .then(function() {
+          var all = window._bbAllSchools || [];
+          for (var i = 0; i < all.length; i++) {
+            if (all[i].slug === schoolSlug) { all[i].district_id = null; break; }
+          }
+          bbRenderSchoolLists();
+          bbShowBanner('bb-manage-schools-banner', 'School removed from district.', false);
+        })
+        .catch(function(e) { bbShowBanner('bb-manage-schools-banner', e.message || 'Failed to remove.', true); });
+    };
+
+    // ── License form AJAX (Phase 13 — inline save, no page reload) ────────────
+    document.addEventListener('DOMContentLoaded', function() {
+      document.addEventListener('submit', function(ev) {
+        var form = ev.target;
+        if (!form.closest('.district-billing-expand')) return;
+        ev.preventDefault();
+        var btn = form.querySelector('button[type="submit"]');
+        var origLabel = btn ? btn.textContent : '';
+        if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
+
+        var data = new URLSearchParams(new FormData(form));
+        fetch(form.action, { method: form.method || 'POST', body: data })
+          .then(function(r) {
+            // Backend redirects with 303 — treat any non-500 as success
+            if (r.status >= 500) throw new Error('Server error');
+            return r;
+          })
+          .then(function() {
+            // Show inline success chip next to button
+            var chip = document.createElement('span');
+            chip.className = 'status-pill ok';
+            chip.style.cssText = 'font-size:0.7rem;padding:2px 8px;margin-left:6px;';
+            chip.textContent = 'Saved';
+            if (btn) { btn.after(chip); setTimeout(function() { chip.remove(); }, 3000); }
+          })
+          .catch(function() {
+            var chip = document.createElement('span');
+            chip.className = 'status-pill danger';
+            chip.style.cssText = 'font-size:0.7rem;padding:2px 8px;margin-left:6px;';
+            chip.textContent = 'Failed';
+            if (btn) { btn.after(chip); setTimeout(function() { chip.remove(); }, 3000); }
+          })
+          .finally(function() {
+            if (btn) { btn.disabled = false; btn.textContent = origLabel; }
+          });
+      });
+    });
+
+  })();
+} catch (e) { console.error('[BB] district-mgmt', e); }

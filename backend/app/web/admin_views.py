@@ -3491,7 +3491,8 @@ def render_super_admin_page(
 
     def _district_card(d: Mapping[str, object], bills: Sequence[Mapping[str, object]]) -> str:
         did = int(d.get("id") or 0)
-        name = escape(str(d.get("name", "")))
+        raw_name = str(d.get("name", ""))
+        name = escape(raw_name)
         slug_raw = str(d.get("slug", ""))
         slug = escape(slug_raw)
         school_count = int(d.get("school_count") or 0)
@@ -3606,6 +3607,26 @@ def render_super_admin_page(
                 f'</form>'
             )
 
+        # Edit + Manage Schools buttons (districts only)
+        edit_btn = ""
+        manage_schools_btn = ""
+        if did and is_district:
+            js_slug = json.dumps(slug_raw)
+            js_name = json.dumps(raw_name)
+            js_did  = str(did)
+            edit_btn = (
+                f'<button class="button button-secondary" type="button"'
+                f' style="font-size:0.75rem;padding:5px 12px;"'
+                f' onclick="bbOpenEditDistrictModal({js_slug},{js_name})">'
+                f'Edit</button>'
+            )
+            manage_schools_btn = (
+                f'<button class="button button-secondary" type="button"'
+                f' style="font-size:0.75rem;padding:5px 12px;"'
+                f' onclick="bbOpenManageSchoolsModal({js_slug},{js_name},{js_did})">'
+                f'Manage Schools</button>'
+            )
+
         # Archive button (only for real districts with an id)
         archive_btn = ""
         if did and is_district:
@@ -3638,6 +3659,8 @@ def render_super_admin_page(
             f'{lic_meta_html}'
             f'</div>'
             f'<div class="district-card-actions">'
+            f'{edit_btn}'
+            f'{manage_schools_btn}'
             f'{enter_buttons}'
             f'{archive_btn}'
             f'</div>'
@@ -3649,6 +3672,18 @@ def render_super_admin_page(
     _active_msp = [d for d in msp_districts if not bool(d.get("is_archived"))]
     _district_cards_html = "".join(_district_card(d, billing_rows) for d in _active_msp) or \
         '<p class="card-copy">No districts or schools provisioned yet. Use <strong>Create School</strong> to get started.</p>'
+
+    # School data for manage-schools JS modal (slug, name, district_id from msp_districts)
+    _bb_schools_js: str = json.dumps(
+        [
+            {"slug": str(s.get("slug", "")), "name": str(s.get("name", "")), "district_id": int(d.get("id") or 0)}
+            for d in msp_districts if d.get("is_district") and not d.get("is_archived")
+            for s in (d.get("schools") or [])
+        ] + [
+            {"slug": str(d.get("slug", "")), "name": str(d.get("name", "")), "district_id": None}
+            for d in msp_districts if not d.get("is_district") and not d.get("is_archived")
+        ]
+    )
 
     # Build archived section
     _archived_districts = [d for d in msp_districts if bool(d.get("is_archived")) and bool(d.get("is_district"))]
@@ -4340,6 +4375,7 @@ def render_super_admin_page(
               <span class="status-pill ok"><strong>Domain</strong>{escape(base_domain)}</span>
               <span class="status-pill"><strong>Districts</strong>{len([d for d in msp_districts if d.get("is_district")])}</span>
               <span class="status-pill"><strong>Schools</strong>{len(_active_school_rows)}</span>
+              <button class="button button-primary" type="button" onclick="bbOpenCreateDistrictModal()" style="font-size:0.8rem;padding:6px 16px;margin-left:8px;">+ Create District</button>
             </div>
           </div>
           {security_feedback}
@@ -4348,6 +4384,7 @@ def render_super_admin_page(
           </div>
           {_archived_section_html}
           <script>
+          window._bbAllSchools = {_bb_schools_js};
           window.bbConfirmPurge = function(form, name) {{
             var input = form.querySelector('input[name="confirm_name"]');
             if (!input || input.value.trim().toLowerCase() !== name.trim().toLowerCase()) {{
@@ -4357,6 +4394,102 @@ def render_super_admin_page(
             return confirm('PERMANENTLY DELETE ' + name + '? This cannot be undone.');
           }};
           </script>
+
+          <!-- ── District Management Modals ──────────────────────────────── -->
+          <style>
+          .bb-modal-overlay{{position:fixed;inset:0;background:rgba(10,18,40,0.55);z-index:9000;display:flex;align-items:center;justify-content:center;padding:16px;}}
+          .bb-modal{{background:var(--card);border:1px solid var(--border);border-radius:20px;padding:28px 28px 24px;max-width:520px;width:100%;box-shadow:0 8px 40px rgba(10,18,40,0.18);position:relative;max-height:90vh;overflow-y:auto;}}
+          .bb-modal-wide{{max-width:760px;}}
+          .bb-modal-title{{font-size:1.1rem;font-weight:700;color:var(--text);margin:0 0 18px;}}
+          .bb-modal-close{{position:absolute;top:16px;right:18px;background:none;border:none;font-size:1.3rem;cursor:pointer;color:var(--muted);line-height:1;}}
+          .bb-modal-close:hover{{color:var(--text);}}
+          .bb-field{{display:flex;flex-direction:column;gap:4px;margin-bottom:14px;}}
+          .bb-field label{{font-size:0.78rem;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:0.06em;}}
+          .bb-field input,.bb-field select{{padding:8px 12px;border-radius:10px;border:1.5px solid var(--border);background:var(--card);color:var(--text);font-size:0.9rem;width:100%;box-sizing:border-box;}}
+          .bb-field input:focus,.bb-field select:focus{{outline:none;border-color:var(--accent);}}
+          .bb-banner{{padding:9px 14px;border-radius:10px;font-size:0.82rem;font-weight:500;margin-bottom:14px;display:none;}}
+          .bb-banner.ok{{background:#f0fdf4;color:#166534;border:1px solid #bbf7d0;}}
+          .bb-banner.err{{background:#fef2f2;color:#dc2626;border:1px solid #fecaca;}}
+          .bb-dual-list{{display:grid;grid-template-columns:1fr 1fr;gap:16px;}}
+          .bb-dual-col{{display:flex;flex-direction:column;gap:0;}}
+          .bb-dual-col-title{{font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:var(--muted);margin-bottom:8px;}}
+          .bb-school-list{{border:1.5px solid var(--border);border-radius:12px;min-height:180px;max-height:280px;overflow-y:auto;background:var(--card);}}
+          .bb-school-item{{display:flex;align-items:center;justify-content:space-between;padding:9px 12px;border-bottom:1px solid var(--border);font-size:0.84rem;gap:8px;}}
+          .bb-school-item:last-child{{border-bottom:none;}}
+          .bb-school-item-name{{flex:1;color:var(--text);font-weight:500;}}
+          .bb-school-item-slug{{font-size:0.72rem;color:var(--muted);font-family:monospace;}}
+          .bb-school-btn{{border:none;border-radius:8px;padding:4px 10px;font-size:0.75rem;font-weight:600;cursor:pointer;transition:opacity 0.15s;}}
+          .bb-school-btn:disabled{{opacity:0.45;cursor:default;}}
+          .bb-school-btn.remove{{background:#fee2e2;color:#dc2626;}}
+          .bb-school-btn.add{{background:#dbeafe;color:#1d4ed8;}}
+          .bb-empty-state{{padding:24px;text-align:center;color:var(--muted);font-size:0.83rem;}}
+          </style>
+
+          <!-- Create District Modal -->
+          <div id="bb-create-district-modal" class="bb-modal-overlay" style="display:none;" onclick="if(event.target===this)bbCloseModal('bb-create-district-modal')">
+            <div class="bb-modal">
+              <button class="bb-modal-close" onclick="bbCloseModal('bb-create-district-modal')">&times;</button>
+              <p class="bb-modal-title">Create District</p>
+              <div id="bb-create-district-banner" class="bb-banner"></div>
+              <div class="bb-field">
+                <label>District Name</label>
+                <input id="bb-create-district-name" type="text" placeholder="e.g. Maryville R-II School District" />
+              </div>
+              <div class="bb-field">
+                <label>Slug <span style="font-weight:400;text-transform:none;letter-spacing:0;">(auto-generated, can edit)</span></label>
+                <input id="bb-create-district-slug" type="text" placeholder="maryville-r-ii" />
+              </div>
+              <div class="bb-field" id="bb-create-org-field">
+                <label>Organization</label>
+                <select id="bb-create-district-org"><option value="">Loading…</option></select>
+              </div>
+              <div style="display:flex;gap:10px;margin-top:6px;">
+                <button class="button button-primary" onclick="bbSubmitCreateDistrict()" id="bb-create-district-btn">Create District</button>
+                <button class="button button-secondary" onclick="bbCloseModal('bb-create-district-modal')">Cancel</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Edit District Modal -->
+          <div id="bb-edit-district-modal" class="bb-modal-overlay" style="display:none;" onclick="if(event.target===this)bbCloseModal('bb-edit-district-modal')">
+            <div class="bb-modal">
+              <button class="bb-modal-close" onclick="bbCloseModal('bb-edit-district-modal')">&times;</button>
+              <p class="bb-modal-title">Edit District</p>
+              <div id="bb-edit-district-banner" class="bb-banner"></div>
+              <div class="bb-field">
+                <label>District Name</label>
+                <input id="bb-edit-district-name" type="text" />
+              </div>
+              <div class="bb-field">
+                <label>Slug</label>
+                <input id="bb-edit-district-slug" type="text" />
+              </div>
+              <div style="display:flex;gap:10px;margin-top:6px;">
+                <button class="button button-primary" onclick="bbSubmitEditDistrict()" id="bb-edit-district-btn">Save Changes</button>
+                <button class="button button-secondary" onclick="bbCloseModal('bb-edit-district-modal')">Cancel</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Manage Schools Modal -->
+          <div id="bb-manage-schools-modal" class="bb-modal-overlay" style="display:none;" onclick="if(event.target===this)bbCloseModal('bb-manage-schools-modal')">
+            <div class="bb-modal bb-modal-wide">
+              <button class="bb-modal-close" onclick="bbCloseModal('bb-manage-schools-modal')">&times;</button>
+              <p class="bb-modal-title" id="bb-manage-schools-title">Manage Schools</p>
+              <div id="bb-manage-schools-banner" class="bb-banner"></div>
+              <div class="bb-dual-list">
+                <div class="bb-dual-col">
+                  <p class="bb-dual-col-title">Assigned to this district</p>
+                  <div class="bb-school-list" id="bb-assigned-list"><div class="bb-empty-state">Loading…</div></div>
+                </div>
+                <div class="bb-dual-col">
+                  <p class="bb-dual-col-title">Available (unassigned)</p>
+                  <div class="bb-school-list" id="bb-available-list"><div class="bb-empty-state">Loading…</div></div>
+                </div>
+              </div>
+              <p style="font-size:0.75rem;color:var(--muted);margin-top:12px;">Changes apply immediately. Refresh the page to see updated school counts on district cards.</p>
+            </div>
+          </div>
         </section>
         <section class="panel command-section" id="schools"{_section_style("schools")}>
           <div class="panel-header hero-band">

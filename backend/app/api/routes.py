@@ -2855,6 +2855,63 @@ async def super_admin_purge_district(
     return RedirectResponse(url=_super_admin_url("districts"), status_code=status.HTTP_303_SEE_OTHER)
 
 
+# ── District management (list / update / remove-school) ───────────────────────
+
+
+@router.get("/super-admin/districts", include_in_schema=False)
+async def super_admin_list_districts(request: Request) -> JSONResponse:
+    """Return all non-archived districts as JSON for the district management UI."""
+    _require_super_admin(request)
+    districts = await _schools(request).list_districts()
+    return JSONResponse({
+        "districts": [
+            {
+                "id": d.id,
+                "name": d.name,
+                "slug": d.slug,
+                "is_active": d.is_active,
+                "is_archived": d.is_archived,
+                "organization_id": d.organization_id,
+            }
+            for d in districts
+            if not d.is_archived
+        ]
+    })
+
+
+@router.post("/super-admin/districts/{slug}/update", include_in_schema=False)
+async def super_admin_update_district(
+    request: Request,
+    slug: str,
+    name: str = Form(...),
+    new_slug: str = Form(default=""),
+) -> JSONResponse:
+    """Rename a district (name and optionally slug). Returns updated record."""
+    _require_super_admin(request)
+    district = await _schools(request).get_district_by_slug(slug.strip().lower())
+    if district is None:
+        raise HTTPException(status_code=404, detail="District not found")
+    final_slug = new_slug.strip().lower() if new_slug.strip() else slug.strip().lower()
+    updated = await _schools(request).update_district(
+        district_id=district.id, name=name.strip(), slug=final_slug
+    )
+    if updated is None:
+        raise HTTPException(status_code=400, detail="Update failed — district may be archived")
+    return JSONResponse({"ok": True, "id": updated.id, "name": updated.name, "slug": updated.slug})
+
+
+@router.post("/super-admin/schools/{slug}/remove-district", include_in_schema=False)
+async def super_admin_remove_school_from_district(request: Request, slug: str) -> JSONResponse:
+    """Explicitly remove a school from its district (sets district_id = NULL)."""
+    _require_super_admin(request)
+    school = await _schools(request).assign_to_district(
+        school_slug=slug.strip().lower(), district_id=None
+    )
+    if school is None:
+        raise HTTPException(status_code=404, detail="School not found")
+    return JSONResponse({"ok": True, "slug": school.slug, "district_id": None})
+
+
 # ── District analytics ─────────────────────────────────────────────────────────
 
 
