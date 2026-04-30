@@ -29,8 +29,13 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.*
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -275,6 +280,12 @@ private fun canAccessDistrictSettings(role: String): Boolean =
     role.equals("district_admin", ignoreCase = true) ||
     role.equals("super_admin", ignoreCase = true) ||
     role.equals("platform_super_admin", ignoreCase = true)
+
+/** Returns true if the role can approve/deny quiet period requests. */
+private fun isAdminRole(role: String): Boolean =
+    role.equals("admin", ignoreCase = true) ||
+    role.equals("building_admin", ignoreCase = true) ||
+    role.equals("district_admin", ignoreCase = true)
 private fun getServerUrl(ctx: Context): String {
     val stored = prefs(ctx).getString(KEY_SERVER_URL, "") ?: ""
     if (stored.isBlank()) return stored
@@ -515,6 +526,16 @@ data class AdminQuietPeriodRequest(
     val scheduledEndAt: String? = null,
 )
 
+data class AdminQuietModalEvent(
+    val id: String,
+    val requestId: Int,
+    val userName: String,
+    val userRole: String,
+    val reason: String?,
+    val requestedAt: String?,
+    val tenantSlug: String?,
+)
+
 data class DistrictQuietPeriodItem(
     val requestId: Int,
     val userId: Int,
@@ -710,6 +731,7 @@ data class UiState(
     val teamAssistActionRecipients: List<TeamAssistActionRecipient> = emptyList(),
     val adminQuietPeriodRequests: List<AdminQuietPeriodRequest> = emptyList(),
     val pendingAdminEvents: List<AdminEvent> = emptyList(),
+    val pendingAdminQuietModals: List<AdminQuietModalEvent> = emptyList(),
     val isWsConnected: Boolean = false,
     val pushDeliveryStats: PushDeliveryStats? = null,
     val auditLog: List<AuditLogEntry> = emptyList(),
@@ -744,6 +766,7 @@ class MainViewModel : ViewModel() {
     private var wsPingJob: Job? = null
     private val wsGeneration = AtomicInteger(0)
     private var cachedUserId: Int? = null
+    private var cachedUserRole: String = ""
     private var cachedHomeSlug: String = ""
     private val processedEventIds = LinkedHashSet<String>(200)
     @Volatile private var pendingAck = false
@@ -762,6 +785,7 @@ class MainViewModel : ViewModel() {
     fun init(ctx: Context) {
         if (client != null) return
         cachedUserId = getUserId(ctx).toIntOrNull()
+        cachedUserRole = getUserRole(ctx)
         val serverUrl = getServerUrl(ctx)
         val savedSlug = getSelectedTenantSlug(ctx)
         val savedName = getSelectedTenantName(ctx)
@@ -1058,6 +1082,20 @@ class MainViewModel : ViewModel() {
 
     fun dismissAdminEvent(id: String) {
         _state.update { it.copy(pendingAdminEvents = it.pendingAdminEvents.filterNot { e -> e.id == id }) }
+    }
+
+    fun enqueueAdminQuietModal(event: AdminQuietModalEvent) {
+        if (_state.value.pendingAdminQuietModals.none { it.id == event.id }) {
+            _state.update { it.copy(pendingAdminQuietModals = it.pendingAdminQuietModals + event) }
+        }
+    }
+
+    fun dequeueAdminQuietModal(id: String) {
+        _state.update { it.copy(pendingAdminQuietModals = it.pendingAdminQuietModals.filterNot { e -> e.id == id }) }
+    }
+
+    fun clearAdminQuietModalsForRequest(requestId: Int) {
+        _state.update { it.copy(pendingAdminQuietModals = it.pendingAdminQuietModals.filterNot { e -> e.requestId == requestId }) }
     }
 
     fun refreshPushDeliveryStats(ctx: Context) {
@@ -1660,13 +1698,33 @@ class MainViewModel : ViewModel() {
                 }
                 if (event == "quiet_request_created") {
                     val requesterName = j.optString("user_name").ifBlank { "A team member" }
+                    val requesterRole = j.optString("user_role").ifBlank { "user" }
                     val reason = j.optString("reason").ifBlank { null }
+                    val requestId = j.optInt("request_id", -1).takeIf { it > 0 }
+                    val tenantSlug = eventSlug.ifBlank { null }
+                    // Toast notification for all users.
                     enqueueAdminEvent(AdminEvent(
                         id = "quiet_created_${System.currentTimeMillis()}",
                         type = AdminEventType.QUIET_PENDING,
                         title = "$requesterName requested quiet time",
                         body = if (reason != null) "“$reason”" else "Awaiting admin approval.",
                     ))
+                    // Rich actionable modal for admins only.
+                    if (requestId != null && isAdminRole(cachedUserRole)) {
+                        enqueueAdminQuietModal(AdminQuietModalEvent(
+                            id = "qm_${requestId}",
+                            requestId = requestId,
+                            userName = requesterName,
+                            userRole = snakeToTitle(requesterRole),
+                            reason = reason,
+                            requestedAt = null,
+                            tenantSlug = tenantSlug,
+                        ))
+                    }
+                } else {
+                    // quiet_request_updated — clear any open modal for this request.
+                    val requestId = j.optInt("request_id", -1).takeIf { it > 0 }
+                    if (requestId != null) clearAdminQuietModalsForRequest(requestId)
                 }
             }
             "message_received" -> {
@@ -3034,6 +3092,32 @@ private fun MainScreen(
                 onDismiss = { id -> vm.dismissAdminEvent(id) },
             )
 
+            val currentQuietModal = state.pendingAdminQuietModals.firstOrNull()
+            if (currentQuietModal != null && !state.alarm.isActive) {
+                AdminQuietRequestModal(
+                    event = currentQuietModal,
+                    onApprove = {
+                        quietActionPendingId = currentQuietModal.requestId
+                        quietActionPendingIsApprove = true
+                        vm.dequeueAdminQuietModal(currentQuietModal.id)
+                    },
+                    onDeny = {
+                        quietActionPendingId = currentQuietModal.requestId
+                        quietActionPendingIsApprove = false
+                        vm.dequeueAdminQuietModal(currentQuietModal.id)
+                    },
+                    onView = {
+                        activePanel = DashboardPanel.QuietPeriod
+                        showSettingsScreen = false
+                        showDistrictView = false
+                        vm.dequeueAdminQuietModal(currentQuietModal.id)
+                    },
+                    onDismiss = {
+                        vm.dequeueAdminQuietModal(currentQuietModal.id)
+                    },
+                )
+            }
+
             if (alertFeedbackState.screenFlashAlpha > 0f) {
                 Box(
                     modifier = Modifier
@@ -4186,6 +4270,115 @@ private fun AdminEventModal(
                         .size(18.dp)
                         .clickable { onDismiss(event.id) },
                 )
+            }
+        }
+    }
+}
+
+@Composable
+private fun AdminQuietRequestModal(
+    event: AdminQuietModalEvent,
+    onApprove: () -> Unit,
+    onDeny: () -> Unit,
+    onView: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var visible by remember { mutableStateOf(false) }
+    LaunchedEffect(event.id) { visible = true }
+
+    AnimatedVisibility(
+        visible = visible,
+        enter = fadeIn(animationSpec = tween(180)) + scaleIn(initialScale = 0.94f, animationSpec = tween(180)),
+        exit = fadeOut(animationSpec = tween(120)) + scaleOut(targetScale = 0.96f, animationSpec = tween(120)),
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .zIndex(10f),
+            contentAlignment = Alignment.Center,
+        ) {
+            // Scrim — tap outside to dismiss.
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.35f))
+                    .clickable(onClick = onDismiss),
+            )
+            Surface(
+                shape = RoundedCornerShape(22.dp),
+                color = SurfaceMain,
+                shadowElevation = 10.dp,
+                border = BorderStroke(1.dp, QuietPurple.copy(alpha = 0.25f)),
+                modifier = Modifier
+                    .padding(horizontal = 24.dp)
+                    .clickable(enabled = false) {},
+            ) {
+                Column(
+                    modifier = Modifier.padding(20.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(36.dp)
+                                .background(QuietPurple.copy(alpha = 0.15f), CircleShape),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text("🌙", fontSize = 18.sp)
+                        }
+                        Text(
+                            "Quiet Request Pending",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 16.sp,
+                            color = TextPri,
+                        )
+                    }
+                    Text(
+                        "${event.userName} • ${event.userRole}",
+                        fontSize = 13.sp,
+                        color = TextMuted,
+                    )
+                    event.reason?.let { reason ->
+                        Text(
+                            "“$reason”",
+                            fontSize = 13.sp,
+                            color = TextMuted,
+                            fontStyle = androidx.compose.ui.text.font.FontStyle.Italic,
+                        )
+                    }
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Button(
+                            onClick = onApprove,
+                            modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.buttonColors(containerColor = QuietPurple),
+                            shape = RoundedCornerShape(10.dp),
+                        ) {
+                            Text("Approve", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                        }
+                        Button(
+                            onClick = onDeny,
+                            modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626)),
+                            shape = RoundedCornerShape(10.dp),
+                        ) {
+                            Text("Deny", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                        }
+                        OutlinedButton(
+                            onClick = onView,
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(10.dp),
+                            border = BorderStroke(1.dp, QuietPurple.copy(alpha = 0.5f)),
+                        ) {
+                            Text("View", fontSize = 12.sp, color = QuietPurple)
+                        }
+                    }
+                }
             }
         }
     }
