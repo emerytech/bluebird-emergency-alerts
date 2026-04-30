@@ -3683,6 +3683,7 @@ def _render_email_delivery_section(
     from_name = _v("FROM_NAME") or _v("SMTP_FROM_NAME", "BlueBird Alerts")
     reply_to = _v("REPLY_TO_EMAIL")
     notify_email = _v("INQUIRY_NOTIFY_EMAIL", "taylor@emerytechsolutions.com")
+    inbox_filter_to = _v("INBOX_FILTER_TO")
     sg_set = _v("SENDGRID_API_KEY_ENCRYPTED")
     ar_enabled = _ar("enabled", "0") == "1"
     ar_subject = escape(_ar("subject", "Thanks for your interest in BlueBird Alerts"))
@@ -3715,6 +3716,8 @@ def _render_email_delivery_section(
         f'<input name="reply_to_email" value="{reply_to}" placeholder="Reply-to (optional)" style="font-size:0.83rem;" />'
         f'<input name="inquiry_notify_email" type="email" value="{notify_email}" placeholder="Inquiry notification email" style="font-size:0.83rem;" />'
         f'<p style="font-size:0.72rem;color:var(--muted);margin:0;">Inquiry notifications are sent here.</p>'
+        f'<input name="inbox_filter_to" type="email" value="{inbox_filter_to}" placeholder="Sales inbox filter — e.g. sales@bluebird-alerts.com" style="font-size:0.83rem;margin-top:4px;" />'
+        f'<p style="font-size:0.72rem;color:var(--muted);margin:0;">Only sync emails addressed to this address. Leave blank to sync all.</p>'
         f'<hr style="margin:8px 0;border-color:var(--border);" />'
         f'<label style="font-size:0.78rem;">SendGrid API Key {sendgrid_hint}</label>'
         f'<input name="sendgrid_api_key" type="password" placeholder="Leave blank to keep existing" style="font-size:0.83rem;" />'

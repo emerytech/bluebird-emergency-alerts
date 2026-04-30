@@ -11514,6 +11514,7 @@ async def super_admin_save_email_delivery_settings(
     from_name: str = Form(default="BlueBird Alerts"),
     reply_to_email: str = Form(default=""),
     inquiry_notify_email: str = Form(default=""),
+    inbox_filter_to: str = Form(default=""),
     sendgrid_api_key: str = Form(default=""),
 ) -> RedirectResponse:
     _require_super_admin(request)
@@ -11525,6 +11526,7 @@ async def super_admin_save_email_delivery_settings(
             from_name=from_name.strip(),
             reply_to_email=reply_to_email.strip(),
             inquiry_notify_email=inquiry_notify_email.strip(),
+            inbox_filter_to=inbox_filter_to.strip().lower(),
             sendgrid_api_key=sendgrid_api_key.strip() or None,
         )
         msg = "Email delivery settings saved."

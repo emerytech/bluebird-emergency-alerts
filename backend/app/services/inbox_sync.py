@@ -116,6 +116,7 @@ class InboxSyncService:
         username = creds["username"]
         password = creds["password"]
 
+        filter_to = creds.get("filter_to", "").strip().lower()
         new_count = 0
         try:
             with imaplib.IMAP4_SSL(host, port) as imap:
@@ -130,7 +131,7 @@ class InboxSyncService:
                 for uid_bytes in reversed(uids[-50:]):
                     uid = uid_bytes.decode()
                     try:
-                        new_count += self._process_message(imap, uid)
+                        new_count += self._process_message(imap, uid, filter_to=filter_to)
                     except Exception:
                         logger.exception("InboxSync: error processing UID %s", uid)
         except imaplib.IMAP4.error as exc:
@@ -139,7 +140,7 @@ class InboxSyncService:
             logger.exception("InboxSync: unexpected error during sync")
         return new_count
 
-    def _process_message(self, imap: imaplib.IMAP4_SSL, uid: str) -> int:
+    def _process_message(self, imap: imaplib.IMAP4_SSL, uid: str, *, filter_to: str = "") -> int:
         """Fetch a single message, store it if new. Returns 1 if stored, 0 if skipped."""
         _st, msg_data = imap.fetch(uid, "(RFC822)")
         if _st != "OK" or not msg_data or msg_data[0] is None:
@@ -164,6 +165,10 @@ class InboxSyncService:
         from_name, from_email = parseaddr(from_raw)
         to_raw = _decode_header_value(msg.get("To") or "")
         _, to_email = parseaddr(to_raw)
+
+        # Only store messages addressed to the configured inbox address
+        if filter_to and to_email.strip().lower() != filter_to:
+            return 0
         thread_id = _decode_header_value(msg.get("References") or msg.get("In-Reply-To") or "").split()[0] if msg.get("References") or msg.get("In-Reply-To") else None
 
         # Parse date

@@ -762,6 +762,7 @@ class EmailService:
         from_name: str,
         reply_to_email: str = "",
         inquiry_notify_email: str = "",
+        inbox_filter_to: str = "",
         sendgrid_api_key: Optional[str] = None,
     ) -> None:
         """Save provider-level and general email delivery settings."""
@@ -776,6 +777,7 @@ class EmailService:
             "INQUIRY_NOTIFY_EMAIL": (
                 inquiry_notify_email.strip() or DEFAULT_INQUIRY_NOTIFY_EMAIL
             ),
+            "INBOX_FILTER_TO": inbox_filter_to.strip().lower(),
         }
         if sendgrid_api_key and sendgrid_api_key.strip():
             updates["SENDGRID_API_KEY_ENCRYPTED"] = encrypt_secret(
@@ -1304,11 +1306,13 @@ class EmailService:
         username = (values.get("SMTP_USERNAME") or "").strip()
         imap_host = (values.get("IMAP_HOST") or "imap.gmail.com").strip()
         imap_port = int(values.get("IMAP_PORT") or 993)
+        inbox_filter_to = (values.get("INBOX_FILTER_TO") or "").strip().lower()
         return {
             "host": imap_host,
             "port": str(imap_port),
             "username": username,
             "password": password,
+            "filter_to": inbox_filter_to,
         }
 
     async def get_imap_credentials(self) -> Dict[str, str]:
