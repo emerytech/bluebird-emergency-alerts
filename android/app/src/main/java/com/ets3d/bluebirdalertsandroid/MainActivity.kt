@@ -147,6 +147,7 @@ private const val KEY_BIOMETRICS_ALLOWED = "biometrics_allowed"
 private const val KEY_HAPTIC_ALERTS_ENABLED = "haptic_alerts_enabled"
 private const val KEY_FLASHLIGHT_ALERTS_ENABLED = "flashlight_alerts_enabled"
 private const val KEY_SCREEN_FLASH_ALERTS_ENABLED = "screen_flash_alerts_enabled"
+private const val KEY_DARK_MODE = "dark_mode_enabled"
 private const val TAG_ACTIVATION = "BluebirdActivation"
 internal const val EXTRA_OPEN_ALARM = "bluebird_open_alarm"
 internal const val EXTRA_ALARM_TITLE = "bluebird_alarm_title"
@@ -290,6 +291,10 @@ private fun setFlashlightAlertsEnabled(ctx: Context, enabled: Boolean) {
 private fun screenFlashAlertsEnabled(ctx: Context) = prefs(ctx).getBoolean(KEY_SCREEN_FLASH_ALERTS_ENABLED, true)
 private fun setScreenFlashAlertsEnabled(ctx: Context, enabled: Boolean) {
     prefs(ctx).edit().putBoolean(KEY_SCREEN_FLASH_ALERTS_ENABLED, enabled).apply()
+}
+private fun loadDarkModeSetting(ctx: Context) = prefs(ctx).getBoolean(KEY_DARK_MODE, false)
+private fun saveDarkModeSetting(ctx: Context, enabled: Boolean) {
+    prefs(ctx).edit().putBoolean(KEY_DARK_MODE, enabled).apply()
 }
 private fun getSelectedTenantSlug(ctx: Context) = prefs(ctx).getString(KEY_SELECTED_TENANT_SLUG, "") ?: ""
 private fun getSelectedTenantName(ctx: Context) = prefs(ctx).getString(KEY_SELECTED_TENANT_NAME, "") ?: ""
@@ -1724,8 +1729,16 @@ class MainActivity : FragmentActivity() {
         ensureNotificationChannel(this)
         askNotificationPermission()
         setContent {
-            BlueBirdTheme {
-                App()
+            val ctx = LocalContext.current
+            var darkModeEnabled by remember { mutableStateOf(loadDarkModeSetting(ctx)) }
+            BlueBirdTheme(darkTheme = darkModeEnabled) {
+                App(
+                    darkModeEnabled = darkModeEnabled,
+                    onDarkModeChanged = { enabled ->
+                        darkModeEnabled = enabled
+                        saveDarkModeSetting(ctx, enabled)
+                    },
+                )
             }
         }
     }
@@ -1784,18 +1797,22 @@ private fun BlueBirdLogo(modifier: Modifier = Modifier) {
 
 // ── Root ───────────────────────────────────────────────────────────────────────
 @Composable
-private fun App() {
+private fun App(darkModeEnabled: Boolean, onDarkModeChanged: (Boolean) -> Unit) {
     val ctx = LocalContext.current
     var setupDone by remember { mutableStateOf(isSetupDone(ctx)) }
 
     if (!setupDone) {
         LoginScreen(onDone = { setupDone = true })
     } else {
-        MainScreen(onLogout = {
-            val savedServerUrl = getServerUrl(ctx)
-            prefs(ctx).edit().clear().putString(KEY_SERVER_URL, savedServerUrl).apply()
-            setupDone = false
-        })
+        MainScreen(
+            onLogout = {
+                val savedServerUrl = getServerUrl(ctx)
+                prefs(ctx).edit().clear().putString(KEY_SERVER_URL, savedServerUrl).apply()
+                setupDone = false
+            },
+            darkModeEnabled = darkModeEnabled,
+            onDarkModeChanged = onDarkModeChanged,
+        )
     }
 }
 
@@ -2186,7 +2203,12 @@ private enum class DashboardPanel {
 
 @Composable
 @OptIn(ExperimentalMaterial3Api::class)
-private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
+private fun MainScreen(
+    onLogout: () -> Unit,
+    darkModeEnabled: Boolean,
+    onDarkModeChanged: (Boolean) -> Unit,
+    vm: MainViewModel = viewModel(),
+) {
     val ctx = LocalContext.current
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
@@ -2237,6 +2259,7 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
     var hapticAlertsOn by remember { mutableStateOf(hapticAlertsEnabled(ctx)) }
     var flashlightAlertsOn by remember { mutableStateOf(flashlightAlertsEnabled(ctx)) }
     var screenFlashAlertsOn by remember { mutableStateOf(screenFlashAlertsEnabled(ctx)) }
+    // darkModeEnabled and onDarkModeChanged are hoisted from setContent / App()
     val safetyActions = remember(state.featureLabels) { buildSafetyActions(state.featureLabels) }
     val holdDurationMs = (state.tenantSettings.alerts.holdSeconds.toLong() * 1000L).coerceAtLeast(1000L)
     val requestHelpLabel = AppLabels.labelForFeatureKey(AppLabels.KEY_REQUEST_HELP, state.featureLabels)
@@ -2529,6 +2552,7 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                     hapticAlertsEnabled = hapticAlertsOn,
                     flashlightAlertsEnabled = flashlightAlertsOn,
                     screenFlashAlertsEnabled = screenFlashAlertsOn,
+                    darkModeEnabled = darkModeEnabled,
                     onBiometricsChanged = { enabled ->
                         biometricsEnabled = enabled
                         setBiometricsAllowed(ctx, enabled)
@@ -2552,6 +2576,7 @@ private fun MainScreen(onLogout: () -> Unit, vm: MainViewModel = viewModel()) {
                         screenFlashAlertsOn = enabled
                         setScreenFlashAlertsEnabled(ctx, enabled)
                     },
+                    onDarkModeChanged = onDarkModeChanged,
                 )
             } else if (showDistrictView) {
                 DistrictOverviewScreen(
@@ -6137,10 +6162,12 @@ private fun SettingsScreen(
     hapticAlertsEnabled: Boolean,
     flashlightAlertsEnabled: Boolean,
     screenFlashAlertsEnabled: Boolean,
+    darkModeEnabled: Boolean,
     onBiometricsChanged: (Boolean) -> Unit,
     onHapticAlertsChanged: (Boolean) -> Unit,
     onFlashlightAlertsChanged: (Boolean) -> Unit,
     onScreenFlashAlertsChanged: (Boolean) -> Unit,
+    onDarkModeChanged: (Boolean) -> Unit,
 ) {
     val ctx = LocalContext.current
     val userName = remember { getUserName(ctx) }
@@ -6254,6 +6281,29 @@ private fun SettingsScreen(
                         "Enable LED Flash Alerts in device settings for enhanced visibility.",
                         color = TextMuted,
                         fontSize = 12.sp,
+                    )
+                }
+            }
+        }
+
+        // Appearance card
+        item {
+            Surface(
+                color = SurfaceMain,
+                shape = RoundedCornerShape(20.dp),
+                shadowElevation = 4.dp,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Column(
+                    modifier = Modifier.padding(horizontal = 18.dp, vertical = 14.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp),
+                ) {
+                    Text("Appearance", color = TextPri, fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
+                    SettingsToggleRow(
+                        title = "Dark Mode",
+                        subtitle = "Override the system theme and force dark mode.",
+                        checked = darkModeEnabled,
+                        onCheckedChange = onDarkModeChanged,
                     )
                 }
             }
