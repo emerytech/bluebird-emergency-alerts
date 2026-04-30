@@ -481,6 +481,11 @@ def _super_admin_url(section: str, anchor: Optional[str] = None) -> str:
     return f"/super-admin?section={resolved}#{suffix}"
 
 
+def _is_xhr(request: Request) -> bool:
+    """Return True for AJAX calls from bb-admin.js (XMLHttpRequest header)."""
+    return request.headers.get("x-requested-with") == "XMLHttpRequest"
+
+
 def _quiet_hidden_ids(request: Request) -> set[int]:
     raw = request.session.get("admin_quiet_period_hidden_ids", [])
     if not isinstance(raw, list):
@@ -5055,7 +5060,11 @@ async def super_admin_district_generate_license(
         actor=actor,
         detail="plan=" + plan_type.strip().lower() + " key=..." + new_key[-9:],
     )
-    _set_flash(request, message=f"District license generated for {district.name}: {new_key}")
+    msg = f"District license generated for {district.name}: {new_key}"
+    _set_flash(request, message=msg)
+    if _is_xhr(request):
+        return JSONResponse({"ok": True, "message": msg, "license_key": new_key,
+                             "billing_status": new_status, "plan_type": plan_type.strip().lower()})
     return RedirectResponse(url=_super_admin_url("billing"), status_code=status.HTTP_303_SEE_OTHER)
 
 
@@ -5090,7 +5099,10 @@ async def super_admin_district_set_billing_status(
         actor=actor,
         detail=existing.billing_status + " → " + clean_status,
     )
-    _set_flash(request, message=f"District billing status for {district.name} set to '{clean_status}'.")
+    msg = f"District billing status for {district.name} set to '{clean_status}'."
+    _set_flash(request, message=msg)
+    if _is_xhr(request):
+        return JSONResponse({"ok": True, "message": msg, "billing_status": clean_status})
     return RedirectResponse(url=_super_admin_url("billing"), status_code=status.HTTP_303_SEE_OTHER)
 
 
@@ -5116,7 +5128,10 @@ async def super_admin_district_set_billing_plan(
         district_id=int(district.id),
         plan_type=clean_plan,
     )
-    _set_flash(request, message=f"District plan for {district.name} set to '{clean_plan}'.")
+    msg = f"District plan for {district.name} set to '{clean_plan}'."
+    _set_flash(request, message=msg)
+    if _is_xhr(request):
+        return JSONResponse({"ok": True, "message": msg, "plan_type": clean_plan})
     return RedirectResponse(url=_super_admin_url("billing"), status_code=status.HTTP_303_SEE_OTHER)
 
 
@@ -5148,7 +5163,10 @@ async def super_admin_district_update_billing_details(
         renewal_date=renewal_date.strip() or None,
         internal_notes=internal_notes.strip() or None,
     )
-    _set_flash(request, message=f"District billing details updated for {district.name}.")
+    msg = f"District billing details updated for {district.name}."
+    _set_flash(request, message=msg)
+    if _is_xhr(request):
+        return JSONResponse({"ok": True, "message": msg})
     return RedirectResponse(url=_super_admin_url("billing"), status_code=status.HTTP_303_SEE_OTHER)
 
 
@@ -5183,7 +5201,10 @@ async def super_admin_district_toggle_billing_override(
         detail=override_reason.strip() or None,
     )
     state = "enabled" if new_override else "disabled"
-    _set_flash(request, message=f"District manual override {state} for {district.name}.")
+    msg = f"District manual override {state} for {district.name}."
+    _set_flash(request, message=msg)
+    if _is_xhr(request):
+        return JSONResponse({"ok": True, "message": msg, "override_enabled": new_override})
     return RedirectResponse(url=_super_admin_url("billing"), status_code=status.HTTP_303_SEE_OTHER)
 
 
@@ -5220,7 +5241,10 @@ async def super_admin_district_start_trial(
         actor=actor,
         detail=str(int(duration_days)) + " days",
     )
-    _set_flash(request, message=f"Started {int(duration_days)}-day district trial for {district.name}.")
+    msg = f"Started {int(duration_days)}-day district trial for {district.name}."
+    _set_flash(request, message=msg)
+    if _is_xhr(request):
+        return JSONResponse({"ok": True, "message": msg, "billing_status": "trial", "trial_ends_at": trial_end})
     return RedirectResponse(url=_super_admin_url("billing"), status_code=status.HTTP_303_SEE_OTHER)
 
 
@@ -5250,7 +5274,10 @@ async def super_admin_district_archive_billing(request: Request, slug: str) -> R
         actor=actor,
         detail="status_at_archive=" + existing.billing_status,
     )
-    _set_flash(request, message=f"District license for {district.name} archived.")
+    msg = f"District license for {district.name} archived."
+    _set_flash(request, message=msg)
+    if _is_xhr(request):
+        return JSONResponse({"ok": True, "message": msg})
     return RedirectResponse(url=_super_admin_url("billing"), status_code=status.HTTP_303_SEE_OTHER)
 
 
@@ -5276,7 +5303,10 @@ async def super_admin_district_restore_billing(request: Request, slug: str) -> R
         event_type="license_restored",
         actor=actor,
     )
-    _set_flash(request, message=f"District license for {district.name} restored.")
+    msg = f"District license for {district.name} restored."
+    _set_flash(request, message=msg)
+    if _is_xhr(request):
+        return JSONResponse({"ok": True, "message": msg})
     return RedirectResponse(url=_super_admin_url("billing"), status_code=status.HTTP_303_SEE_OTHER)
 
 
@@ -5307,7 +5337,10 @@ async def super_admin_district_delete_billing(request: Request, slug: str) -> Re
         actor=actor,
         detail="final_status=" + existing.billing_status,
     )
-    _set_flash(request, message=f"District license for {district.name} permanently deleted.")
+    msg = f"District license for {district.name} permanently deleted."
+    _set_flash(request, message=msg)
+    if _is_xhr(request):
+        return JSONResponse({"ok": True, "message": msg})
     return RedirectResponse(url=_super_admin_url("billing"), status_code=status.HTTP_303_SEE_OTHER)
 
 

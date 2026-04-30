@@ -3551,7 +3551,7 @@ def render_super_admin_page(
             override_btn_cls = "button-danger-outline" if lic_override else "button-primary"
             override_btn_lbl = "Disable Override" if lic_override else "Enable Override"
             manage_license_details = (
-                f'<details class="district-billing-expand">'
+                f'<details class="district-billing-expand" data-district-slug="{slug}">'
                 f'<summary>Manage District License</summary>'
                 f'<div class="district-billing-form" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:10px;">'
                 f'<div style="padding:10px;background:var(--card);border:1px solid var(--border);border-radius:8px;">'
@@ -3583,16 +3583,31 @@ def render_super_admin_page(
                 f'<p style="font-size:0.73rem;font-weight:600;margin-bottom:6px;">Override</p>'
                 f'<form method="post" action="{tog_ov}" class="stack" style="gap:5px;">'
                 f'<input name="override_reason" placeholder="Reason" value="{override_reason}" style="font-size:0.78rem;" />'
-                f'<button class="button {override_btn_cls}" type="submit" style="font-size:0.73rem;">{override_btn_lbl}</button>'
+                f'<button class="button {override_btn_cls}" type="submit" style="font-size:0.73rem;" data-override-btn>{override_btn_lbl}</button>'
                 f'</form></div>'
                 f'</div></details>'
             )
         elif is_district:
+            gen_lic_url = escape(f"/super-admin/districts/{slug_raw}/billing/generate-license")
+            plan_opts_nl = "".join(f'<option value="{p}">{p.title()}</option>' for p in ("trial", "basic", "pro", "enterprise"))
+            try:
+                from datetime import date as _date2
+                today_nl = str(_date2.today())
+            except Exception:
+                today_nl = ""
             manage_license_details = (
-                f'<details class="district-billing-expand">'
+                f'<details class="district-billing-expand" data-district-slug="{slug}">'
                 f'<summary>Manage District License</summary>'
                 f'<div class="district-billing-form" style="padding:8px 0;">'
-                f'<p style="font-size:0.78rem;color:var(--muted);">No district license record yet. <a href="/super-admin?section=billing#billing">Open Licensing</a> to set one up.</p>'
+                f'<p style="font-size:0.78rem;color:var(--muted);margin-bottom:10px;">No license yet. Generate one to activate district billing.</p>'
+                f'<form method="post" action="{gen_lic_url}" class="stack" style="gap:5px;max-width:280px;">'
+                f'<select name="plan_type" style="font-size:0.78rem;">{plan_opts_nl}</select>'
+                f'<input name="starts_at" type="date" value="{today_nl}" style="font-size:0.78rem;" />'
+                f'<input name="current_period_end" type="date" placeholder="Period end (optional)" style="font-size:0.78rem;" />'
+                f'<input name="customer_name" placeholder="Customer name" style="font-size:0.78rem;" />'
+                f'<input name="customer_email" type="email" placeholder="Email" style="font-size:0.78rem;" />'
+                f'<button class="button button-primary" type="submit" style="font-size:0.73rem;">Generate License</button>'
+                f'</form>'
                 f'</div></details>'
             )
 
@@ -3646,7 +3661,7 @@ def render_super_admin_page(
         school_label = "schools" if school_count != 1 else "school"
         district_or_school = "District" if is_district else "School"
         return (
-            f'<div class="district-card">'
+            f'<div class="district-card" data-district-slug="{slug}">'
             f'<div class="district-card-header">'
             f'<div>'
             f'<p class="district-card-name">{name}</p>'
@@ -3656,7 +3671,7 @@ def render_super_admin_page(
             f'</div>'
             f'<div class="district-card-meta">'
             f'<span><strong>{school_count}</strong> {school_label}</span>'
-            f'{lic_meta_html}'
+            f'<span data-billing-meta style="display:contents;">{lic_meta_html}</span>'
             f'</div>'
             f'<div class="district-card-actions">'
             f'{edit_btn}'

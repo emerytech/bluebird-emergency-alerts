@@ -1393,40 +1393,101 @@ try {
         .catch(function(e) { bbShowBanner('bb-manage-schools-banner', e.message || 'Failed to remove.', true); });
     };
 
-    // ── License form AJAX (Phase 13 — inline save, no page reload) ────────────
+    // ── License form AJAX (Phase 13 — XHR-aware, inline DOM update) ─────────
+    function bbBillingChip(btn, text, isError) {
+      var chip = document.createElement('span');
+      chip.className = 'status-pill ' + (isError ? 'danger' : 'ok');
+      chip.style.cssText = 'font-size:0.7rem;padding:2px 8px;margin-left:6px;';
+      chip.textContent = text;
+      if (btn) { btn.after(chip); setTimeout(function() { chip.remove(); }, 3500); }
+    }
+
+    function bbBillingMetaHtml(info) {
+      var eff = info.effective_status || info.billing_status || 'unknown';
+      var pillCls = ['active','trial','free','manual_override'].indexOf(eff) >= 0 ? 'ok' : 'danger';
+      var plan = (info.plan_type || 'trial');
+      var days = info.days_remaining;
+      var daysHtml = '';
+      if (days !== null && days !== undefined) {
+        var color = days < 0 ? '#dc2626' : (days <= 7 ? '#d97706' : '#059669');
+        var label = days < 0 ? ('Exp ' + Math.abs(days) + 'd ago') : (days + 'd left');
+        daysHtml = '<span style="font-size:0.72rem;color:' + color + ';font-weight:600;">' + label + '</span>';
+      }
+      var ovHtml = info.override_enabled
+        ? '<span class="status-pill ok" style="font-size:0.68rem;">Override</span>'
+        : '';
+      return (
+        '<span><span class="status-pill ' + pillCls + '" style="font-size:0.68rem;">' + eff + '</span></span>' +
+        '<span style="font-size:0.78rem;color:var(--muted);">' + plan + ' plan</span>' +
+        daysHtml + ovHtml
+      );
+    }
+
+    function bbRefreshBillingCard(slug) {
+      fetch('/super-admin/districts/' + slug + '/billing/info', {
+        headers: { 'X-Requested-With': 'XMLHttpRequest' }
+      })
+        .then(function(r) { return r.json(); })
+        .then(function(info) {
+          if (!info.exists) return;
+          var card = document.querySelector('[data-district-slug="' + slug + '"].district-card');
+          if (!card) return;
+
+          // Update meta row (status pill, plan, days, override badge)
+          var metaEl = card.querySelector('[data-billing-meta]');
+          if (metaEl) metaEl.innerHTML = bbBillingMetaHtml(info);
+
+          // Update override button label + class
+          var ovBtn = card.querySelector('[data-override-btn]');
+          if (ovBtn) {
+            var enabled = !!info.override_enabled;
+            ovBtn.textContent = enabled ? 'Disable Override' : 'Enable Override';
+            ovBtn.className = ovBtn.className
+              .replace(/button-primary|button-danger-outline/g, '')
+              .trim() + ' ' + (enabled ? 'button-danger-outline' : 'button-primary');
+          }
+        })
+        .catch(function() {});
+    }
+
     document.addEventListener('DOMContentLoaded', function() {
       document.addEventListener('submit', function(ev) {
         var form = ev.target;
-        if (!form.closest('.district-billing-expand')) return;
+        var expand = form.closest('.district-billing-expand');
+        if (!expand) return;
         ev.preventDefault();
+
+        var slug = expand.getAttribute('data-district-slug') || '';
         var btn = form.querySelector('button[type="submit"]');
         var origLabel = btn ? btn.textContent : '';
         if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
 
         var data = new URLSearchParams(new FormData(form));
-        fetch(form.action, { method: form.method || 'POST', body: data })
+        fetch(form.action, {
+          method: form.method || 'POST',
+          body: data,
+          headers: { 'X-Requested-With': 'XMLHttpRequest' },
+          redirect: 'follow',
+        })
           .then(function(r) {
-            // Backend redirects with 303 — treat any non-500 as success
-            if (r.status >= 500) throw new Error('Server error');
-            return r;
+            if (!r.ok && r.status >= 500) throw new Error('Server error (' + r.status + ')');
+            return r.json().catch(function() { return { ok: false, message: 'Unexpected response' }; });
           })
-          .then(function() {
-            // Show inline success chip next to button
-            var chip = document.createElement('span');
-            chip.className = 'status-pill ok';
-            chip.style.cssText = 'font-size:0.7rem;padding:2px 8px;margin-left:6px;';
-            chip.textContent = 'Saved';
-            if (btn) { btn.after(chip); setTimeout(function() { chip.remove(); }, 3000); }
+          .then(function(json) {
+            if (json.ok) {
+              bbBillingChip(btn, 'Saved', false);
+              if (slug) bbRefreshBillingCard(slug);
+            } else {
+              bbBillingChip(btn, json.message || json.error || 'Error', true);
+            }
           })
-          .catch(function() {
-            var chip = document.createElement('span');
-            chip.className = 'status-pill danger';
-            chip.style.cssText = 'font-size:0.7rem;padding:2px 8px;margin-left:6px;';
-            chip.textContent = 'Failed';
-            if (btn) { btn.after(chip); setTimeout(function() { chip.remove(); }, 3000); }
+          .catch(function(e) {
+            bbBillingChip(btn, e.message || 'Failed', true);
           })
           .finally(function() {
             if (btn) { btn.disabled = false; btn.textContent = origLabel; }
+            // Keep details open
+            if (expand.tagName === 'DETAILS') expand.open = true;
           });
       });
     });
