@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import sqlite3
 import time
 from dataclasses import dataclass
@@ -7,6 +8,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 import anyio
+
+logger = logging.getLogger("bluebird.health_monitor")
 
 
 @dataclass(frozen=True)
@@ -134,8 +137,8 @@ class HealthMonitor:
                 timestamp, status, response_time_ms,
                 db_ok, ws_connections, apns_configured, fcm_configured, error_note,
             )
-        except Exception:
-            pass  # never crash the background task
+        except Exception as exc:
+            logger.warning("record_heartbeat DB write failed: %s", exc)
 
     # ── Read ───────────────────────────────────────────────────────────────────
 

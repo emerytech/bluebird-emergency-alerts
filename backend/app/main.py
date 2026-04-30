@@ -46,9 +46,15 @@ async def _health_check_loop(app: FastAPI, interval: int) -> None:
     """
     Background heartbeat loop — runs health checks every `interval` seconds.
     Completely read-only: never writes to alert tables or triggers notifications.
+
+    Runs the first check immediately on startup (no leading sleep), then waits
+    `interval` seconds between subsequent checks.  Crashes are caught, logged,
+    and retried after a short back-off so a transient error never silences the
+    monitor permanently.
     """
+    _RETRY_DELAY = 5  # seconds before retrying after an unexpected error
+    logger.info("Health check loop starting (interval=%ds)", interval)
     while True:
-        await asyncio.sleep(interval)
         try:
             health_monitor: HealthMonitor = app.state.health_monitor
             email_service: EmailService = app.state.email_service
@@ -61,6 +67,11 @@ async def _health_check_loop(app: FastAPI, interval: int) -> None:
                 apns_configured=bool(checks["apns_configured"]),
                 fcm_configured=bool(checks["fcm_configured"]),
                 error_note=str(checks["error_note"]) if checks.get("error_note") else None,
+            )
+            logger.debug(
+                "Heartbeat recorded: status=%s rt=%.1fms ws=%d db=%s",
+                checks["status"], checks["response_time_ms"],
+                checks["ws_connections"], checks["db_ok"],
             )
             # Automated email on degradation/error (respects cooldown)
             if checks["status"] in ("error", "degraded") and email_service.is_configured():
@@ -77,14 +88,55 @@ async def _health_check_loop(app: FastAPI, interval: int) -> None:
                             event_type="health_auto",
                         )
                         logger.warning("Health auto-email sent to %d admin(s): status=%s", len(admins), checks["status"])
-            elif checks["status"] == "ok" and email_service.is_configured():
-                # Recovery email — only if a health_auto cooldown was recently consumed
-                # (check_cooldown would have reset it; we only send recovery if previously degraded)
-                pass
         except asyncio.CancelledError:
-            break
+            logger.info("Health check loop cancelled")
+            return
         except Exception as exc:
-            logger.warning("Health check loop error: %s", exc)
+            logger.warning("Health check loop error (will retry in %ds): %s", _RETRY_DELAY, exc, exc_info=True)
+            try:
+                await asyncio.sleep(_RETRY_DELAY)
+            except asyncio.CancelledError:
+                logger.info("Health check loop cancelled during retry back-off")
+                return
+            continue  # skip the normal interval sleep; retry immediately
+
+        try:
+            await asyncio.sleep(interval)
+        except asyncio.CancelledError:
+            logger.info("Health check loop cancelled during sleep")
+            return
+
+
+async def _health_watchdog(app: FastAPI, interval: int) -> None:
+    """
+    Monitors the health check task and restarts it if it exits unexpectedly.
+    Checks every `interval` seconds (same cadence as the health loop).
+    """
+    _CHECK_INTERVAL = max(interval, 30)
+    logger.debug("Health watchdog started (check interval=%ds)", _CHECK_INTERVAL)
+    while True:
+        try:
+            await asyncio.sleep(_CHECK_INTERVAL)
+        except asyncio.CancelledError:
+            return
+        try:
+            task: asyncio.Task = app.state.health_task  # type: ignore[attr-defined]
+            if task.done():
+                exc = None
+                try:
+                    exc = task.exception()
+                except (asyncio.CancelledError, asyncio.InvalidStateError):
+                    pass
+                if not task.cancelled():
+                    logger.warning(
+                        "Health check task exited unexpectedly (exc=%s) — restarting", exc
+                    )
+                    new_task = asyncio.create_task(_health_check_loop(app, interval))
+                    app.state.health_task = new_task  # type: ignore[attr-defined]
+        except asyncio.CancelledError:
+            return
+        except Exception as exc2:
+            logger.debug("Health watchdog check error: %s", exc2)
 
 
 async def _quiet_period_expiry_loop(app: FastAPI, interval: float = 45.0) -> None:
@@ -667,6 +719,10 @@ async def lifespan(app: FastAPI):
     health_task = asyncio.create_task(
         _health_check_loop(app, settings.HEALTH_CHECK_INTERVAL)
     )
+    app.state.health_task = health_task  # exposed so watchdog can replace it
+    health_watchdog_task = asyncio.create_task(
+        _health_watchdog(app, settings.HEALTH_CHECK_INTERVAL)
+    )
     qp_expiry_task = asyncio.create_task(
         _quiet_period_expiry_loop(app, interval=45.0)
     )
@@ -693,14 +749,21 @@ async def lifespan(app: FastAPI):
 
     await app.state.demo_live_engine.disable_all()
     await push_queue.stop()
-    health_task.cancel()
+    health_watchdog_task.cancel()
+    # Cancel whatever health_task is current (watchdog may have replaced the original)
+    current_health_task: asyncio.Task = app.state.health_task  # type: ignore[attr-defined]
+    current_health_task.cancel()
     qp_expiry_task.cancel()
     wal_checkpoint_task.cancel()
     auto_reminder_task.cancel()
     auto_archive_task.cancel()
     ack_reminder_task.cancel()
     try:
-        await health_task
+        await health_watchdog_task
+    except asyncio.CancelledError:
+        pass
+    try:
+        await current_health_task
     except asyncio.CancelledError:
         pass
     try:
