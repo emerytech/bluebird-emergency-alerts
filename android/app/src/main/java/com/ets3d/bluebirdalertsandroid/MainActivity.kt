@@ -536,6 +536,15 @@ data class DistrictQuietPeriodItem(
     val tenantName: String,
 )
 
+enum class AdminEventType { QUIET_PENDING, QUIET_APPROVED, ADMIN_MESSAGE }
+
+data class AdminEvent(
+    val id: String,
+    val type: AdminEventType,
+    val title: String,
+    val body: String,
+)
+
 private data class SafetyAction(
     val key: String,
     val title: String,
@@ -700,6 +709,8 @@ data class UiState(
     val isRefreshingFeed: Boolean = false,
     val teamAssistActionRecipients: List<TeamAssistActionRecipient> = emptyList(),
     val adminQuietPeriodRequests: List<AdminQuietPeriodRequest> = emptyList(),
+    val pendingAdminEvents: List<AdminEvent> = emptyList(),
+    val isWsConnected: Boolean = false,
     val pushDeliveryStats: PushDeliveryStats? = null,
     val auditLog: List<AuditLogEntry> = emptyList(),
     val featureLabels: Map<String, String> = AppLabels.DEFAULT_FEATURE_LABELS,
@@ -730,6 +741,7 @@ class MainViewModel : ViewModel() {
     private var districtWsJob: Job? = null
     private val districtWsGeneration = AtomicInteger(0)
     private var wsJob: Job? = null
+    private var wsPingJob: Job? = null
     private val wsGeneration = AtomicInteger(0)
     private var cachedUserId: Int? = null
     private var cachedHomeSlug: String = ""
@@ -1038,6 +1050,14 @@ class MainViewModel : ViewModel() {
                     _state.update { it.copy(adminQuietPeriodRequests = requests.filter { req -> req.userId != adminUserId }) }
                 }
         }
+    }
+
+    fun enqueueAdminEvent(event: AdminEvent) {
+        _state.update { it.copy(pendingAdminEvents = it.pendingAdminEvents + event) }
+    }
+
+    fun dismissAdminEvent(id: String) {
+        _state.update { it.copy(pendingAdminEvents = it.pendingAdminEvents.filterNot { e -> e.id == id }) }
     }
 
     fun refreshPushDeliveryStats(ctx: Context) {
@@ -1472,8 +1492,10 @@ class MainViewModel : ViewModel() {
 
     private fun startAlarmWebSocket(ctx: Context) {
         wsJob?.cancel()
+        wsPingJob?.cancel()
         alarmWs?.close(1000, "restart")
         alarmWs = null
+        _state.update { it.copy(isWsConnected = false) }
         val myGen = wsGeneration.incrementAndGet()
         val serverUrl = getServerUrl(ctx)
         val slug = _state.value.selectedTenantSlug.ifBlank { extractSchoolSlug(serverUrl) }
@@ -1495,7 +1517,28 @@ class MainViewModel : ViewModel() {
                     object : okhttp3.WebSocketListener() {
                         override fun onOpen(ws: okhttp3.WebSocket, response: okhttp3.Response) {
                             backoffMs = 2_000L
+                            _state.update { it.copy(isWsConnected = true) }
                             Log.d("BluebirdWS", "WS connected: $wsUrl gen=$myGen")
+                            // Reconcile state on (re)connect, then maintain presence with pings.
+                            wsPingJob?.cancel()
+                            wsPingJob = viewModelScope.launch(Dispatchers.IO) {
+                                // Sync on reconnect — best-effort.
+                                val uid = cachedUserId
+                                runCatching { client!!.syncState(uid) }
+                                    .onSuccess { sync ->
+                                        _state.update { s ->
+                                            s.copy(
+                                                alarm = sync.alarm,
+                                                quietPeriodStatus = sync.quietPeriod ?: s.quietPeriodStatus,
+                                            )
+                                        }
+                                    }
+                                // Ping every 25 s — keeps presence updated + detects dead connections.
+                                while (isActive && wsGeneration.get() == myGen) {
+                                    delay(25_000L)
+                                    if (!ws.send("""{"type":"ping"}""")) break
+                                }
+                            }
                         }
                         override fun onMessage(ws: okhttp3.WebSocket, text: String) {
                             backoffMs = 2_000L
@@ -1505,12 +1548,16 @@ class MainViewModel : ViewModel() {
                         }
                         override fun onFailure(ws: okhttp3.WebSocket, t: Throwable, response: okhttp3.Response?) {
                             Log.w("BluebirdWS", "WS failure: ${t.message} gen=$myGen")
+                            wsPingJob?.cancel()
+                            _state.update { it.copy(isWsConnected = false) }
                             alarmWs = null
                             closed.complete(Unit)
                         }
                         override fun onClosed(ws: okhttp3.WebSocket, code: Int, reason: String) {
                             Log.d("BluebirdWS", "WS closed: code=$code reason=$reason gen=$myGen")
                             closeCode.set(code)
+                            wsPingJob?.cancel()
+                            _state.update { it.copy(isWsConnected = false) }
                             alarmWs = null
                             closed.complete(Unit)
                         }
@@ -1558,6 +1605,8 @@ class MainViewModel : ViewModel() {
 
     private fun handleWsMessage(text: String) {
         val j = runCatching { JSONObject(text) }.getOrNull() ?: return
+        // Silently discard server pongs.
+        if (j.optString("type") == "pong") return
         val event = j.optString("event")
         val eventId = j.optString("event_id").trim()
         if (isDuplicateEvent(eventId)) {
@@ -1609,12 +1658,32 @@ class MainViewModel : ViewModel() {
                     runCatching { client!!.listAdminQuietPeriodRequests(adminUserId = uid) }
                         .onSuccess { requests -> _state.update { it.copy(adminQuietPeriodRequests = requests) } }
                 }
+                if (event == "quiet_request_created") {
+                    val requesterName = j.optString("user_name").ifBlank { "A team member" }
+                    val reason = j.optString("reason").ifBlank { null }
+                    enqueueAdminEvent(AdminEvent(
+                        id = "quiet_created_${System.currentTimeMillis()}",
+                        type = AdminEventType.QUIET_PENDING,
+                        title = "$requesterName requested quiet time",
+                        body = if (reason != null) "“$reason”" else "Awaiting admin approval.",
+                    ))
+                }
             }
             "message_received" -> {
                 val uid = cachedUserId ?: return
                 viewModelScope.launch(Dispatchers.IO) {
                     runCatching { client!!.messageInbox(userId = uid) }
                         .onSuccess { inbox -> _state.update { it.copy(adminInbox = inbox.messages, unreadAdminMessages = inbox.unreadCount) } }
+                }
+                val msgText = j.optString("message").ifBlank { null }
+                val senderLabel = j.optString("sender_label").ifBlank { null } ?: "Admin"
+                if (msgText != null) {
+                    enqueueAdminEvent(AdminEvent(
+                        id = "msg_${System.currentTimeMillis()}",
+                        type = AdminEventType.ADMIN_MESSAGE,
+                        title = "Message from $senderLabel",
+                        body = msgText,
+                    ))
                 }
             }
             "tenant_acknowledgement_updated" -> {
@@ -2960,6 +3029,11 @@ private fun MainScreen(
                 }
             }
 
+            AdminEventModal(
+                events = state.pendingAdminEvents,
+                onDismiss = { id -> vm.dismissAdminEvent(id) },
+            )
+
             if (alertFeedbackState.screenFlashAlpha > 0f) {
                 Box(
                     modifier = Modifier
@@ -4025,6 +4099,93 @@ private fun QuietPeriodStatusBanner(
                         fontWeight = FontWeight.SemiBold,
                     )
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AdminEventModal(
+    events: List<AdminEvent>,
+    onDismiss: (String) -> Unit,
+) {
+    if (events.isEmpty()) return
+    val event = events.first()
+
+    val scale by animateFloatAsState(
+        targetValue = 1f,
+        animationSpec = tween(durationMillis = 200, easing = FastOutSlowInEasing),
+        label = "admin_modal_scale",
+    )
+    val alpha by animateFloatAsState(
+        targetValue = 1f,
+        animationSpec = tween(durationMillis = 180),
+        label = "admin_modal_alpha",
+    )
+
+    val icon = when (event.type) {
+        AdminEventType.QUIET_PENDING  -> "⏸"
+        AdminEventType.QUIET_APPROVED -> "✓"
+        AdminEventType.ADMIN_MESSAGE  -> "✉"
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = 20.dp, vertical = 72.dp)
+            .zIndex(10f),
+        contentAlignment = Alignment.TopCenter,
+    ) {
+        Surface(
+            shape = RoundedCornerShape(16.dp),
+            color = SurfaceMain,
+            shadowElevation = 16.dp,
+            modifier = Modifier
+                .fillMaxWidth()
+                .graphicsLayer { scaleX = scale; scaleY = scale; this.alpha = alpha }
+                .clickable { onDismiss(event.id) },
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(40.dp)
+                        .background(QuietPurple.copy(alpha = 0.15f), CircleShape),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(icon, fontSize = 18.sp)
+                }
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                ) {
+                    Text(
+                        event.title,
+                        color = TextPri,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 14.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        event.body,
+                        color = TextMuted,
+                        fontSize = 13.sp,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                Icon(
+                    Icons.Default.Close,
+                    contentDescription = "Dismiss",
+                    tint = TextMuted,
+                    modifier = Modifier
+                        .size(18.dp)
+                        .clickable { onDismiss(event.id) },
+                )
             }
         }
     }
@@ -6916,6 +7077,61 @@ internal class BackendClient(baseUrl: String, private val apiKey: String) {
                 alertId                 = if (j.has("current_alert_id") && !j.isNull("current_alert_id"))
                     j.optInt("current_alert_id") else null,
             )
+        }
+    }
+
+    data class SyncStateResult(val alarm: AlarmStatus, val quietPeriod: QuietPeriodMobileStatus?)
+
+    fun syncState(userId: Int?): SyncStateResult {
+        val url = if (userId != null) "$base/sync/state?user_id=$userId" else "$base/sync/state"
+        val req = Request.Builder().url(url).withAuth().get().build()
+        http.newCall(req).execute().use { res ->
+            val body = requireSuccess(res)
+            val root = JSONObject(body)
+            val aj = root.optJSONObject("alarm") ?: JSONObject()
+            val broadcastsJson = aj.optJSONArray("broadcasts")
+            val broadcasts = buildList {
+                if (broadcastsJson != null) {
+                    for (i in 0 until broadcastsJson.length()) {
+                        val item = broadcastsJson.optJSONObject(i) ?: continue
+                        add(BroadcastUpdate(
+                            updateId = item.optInt("update_id"),
+                            createdAt = item.optString("created_at"),
+                            adminUserId = null,
+                            adminLabel = item.optString("admin_label").ifBlank { null },
+                            message = item.optString("message"),
+                        ))
+                    }
+                }
+            }
+            val alarm = AlarmStatus(
+                isActive                = aj.optBoolean("is_active"),
+                message                 = aj.optString("message").ifBlank { null },
+                isTraining              = aj.optBoolean("is_training"),
+                trainingLabel           = aj.optString("training_label").ifBlank { null },
+                activatedAt             = aj.optString("activated_at").ifBlank { null },
+                activatedByLabel        = aj.optString("activated_by_label").ifBlank { null },
+                broadcasts              = broadcasts,
+                acknowledgementCount    = aj.optInt("acknowledgement_count", 0),
+                expectedUserCount       = aj.optInt("expected_user_count", 0),
+                acknowledgementPercentage = aj.optDouble("acknowledgement_percentage", 0.0).toFloat(),
+                currentUserAcknowledged = aj.optBoolean("current_user_acknowledged", false),
+                alertId                 = if (aj.has("current_alert_id") && !aj.isNull("current_alert_id"))
+                    aj.optInt("current_alert_id") else null,
+            )
+            val qj = root.optJSONObject("quiet_period")
+            val quiet = if (qj != null) QuietPeriodMobileStatus(
+                requestId    = if (qj.has("request_id") && !qj.isNull("request_id")) qj.optInt("request_id") else null,
+                status       = qj.optNullableString("status"),
+                reason       = qj.optNullableString("reason"),
+                requestedAt  = qj.optNullableString("requested_at"),
+                approvedAt   = qj.optNullableString("approved_at"),
+                approvedByLabel = qj.optNullableString("approved_by_label"),
+                expiresAt    = qj.optNullableString("expires_at"),
+                scheduledStartAt = qj.optNullableString("scheduled_start_at"),
+                scheduledEndAt   = qj.optNullableString("scheduled_end_at"),
+            ) else null
+            return SyncStateResult(alarm = alarm, quietPeriod = quiet)
         }
     }
 

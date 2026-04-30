@@ -75,6 +75,65 @@ private struct SafetyActionItem: Identifiable {
     let message: String
 }
 
+private enum AdminEventType { case quietPending, quietApproved, adminMessage }
+
+private struct AdminEvent: Identifiable {
+    let id: String
+    let type: AdminEventType
+    let title: String
+    let body: String
+}
+
+private struct AdminEventModalView: View {
+    let event: AdminEvent
+    let onDismiss: () -> Void
+
+    private var icon: String {
+        switch event.type {
+        case .quietPending:  return "pause.circle.fill"
+        case .quietApproved: return "checkmark.circle.fill"
+        case .adminMessage:  return "envelope.fill"
+        }
+    }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            ZStack {
+                Circle()
+                    .fill(DSColor.quietAccent.opacity(0.15))
+                    .frame(width: 40, height: 40)
+                Image(systemName: icon)
+                    .foregroundColor(DSColor.quietAccent)
+                    .font(.system(size: 18))
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                Text(event.title)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundColor(DSColor.textPrimary)
+                    .lineLimit(1)
+                Text(event.body)
+                    .font(.system(size: 13))
+                    .foregroundColor(DSColor.textSecondary)
+                    .lineLimit(2)
+            }
+            Spacer()
+            Button(action: onDismiss) {
+                Image(systemName: "xmark")
+                    .foregroundColor(DSColor.textSecondary)
+                    .font(.system(size: 13, weight: .medium))
+                    .padding(6)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+        .background(DSColor.card)
+        .clipShape(RoundedRectangle(cornerRadius: 16))
+        .shadow(color: .black.opacity(0.14), radius: 10, x: 0, y: 4)
+        .contentShape(Rectangle())
+        .onTapGesture { onDismiss() }
+    }
+}
+
 private enum HoldActivationState {
     case idle
     case holding
@@ -594,6 +653,8 @@ struct ContentView: View {
     @State private var showDistrictView = false
     @State private var districtTenants: [TenantOverviewItem] = []
     @State private var wsReconnectGeneration: Int = 0
+    @State private var pendingAdminEvents: [AdminEvent] = []
+    @State private var isWsConnected: Bool = false
 
     private var api: APIClient {
         APIClient(baseURL: appState.selectedTenantURL, apiKey: Config.backendApiKey)
@@ -709,6 +770,20 @@ struct ContentView: View {
                         }
                     }
                     .allowsHitTesting(false)
+                }
+
+                if let adminEvent = pendingAdminEvents.first {
+                    VStack {
+                        AdminEventModalView(event: adminEvent) {
+                            pendingAdminEvents.removeFirst()
+                        }
+                        .padding(.horizontal, 20)
+                        .padding(.top, 72)
+                        .transition(.scale(scale: 0.92).combined(with: .opacity))
+                        Spacer()
+                    }
+                    .zIndex(10)
+                    .animation(.easeOut(duration: 0.2), value: pendingAdminEvents.isEmpty)
                 }
 
                 if alertFeedbackController.screenFlashOpacity > 0 {
@@ -2873,6 +2948,13 @@ struct ContentView: View {
         }
     }
 
+    private func syncStateOnReconnect() async {
+        // Pull current truth for alarm, incidents, and quiet period after a WS gap.
+        await refreshIncidentFeed()
+        await loadMyQuietRequest()
+        if isAdminSession { await loadAdminQuietPeriodRequests() }
+    }
+
     private func loadPushDeliveryStats() async {
         guard isAdminSession, let adminUserID = appState.userID else { return }
         pushDeliveryStats = try? await api.alarmPushStats(userID: adminUserID)
@@ -3215,23 +3297,39 @@ struct ContentView: View {
             let wsTask = URLSession.shared.webSocketTask(with: wsURL)
             wsTask.resume()
             var connectedOnce = false
+
+            // Ping loop — runs concurrently with the receive loop.
+            let pingTask = Task {
+                while !Task.isCancelled {
+                    try? await Task.sleep(nanoseconds: 25_000_000_000)
+                    guard !Task.isCancelled else { break }
+                    try? await wsTask.send(.string(#"{"type":"ping"}"#))
+                }
+            }
+
             receiveLoop: while !Task.isCancelled {
                 do {
                     let msg = try await wsTask.receive()
                     if !connectedOnce {
                         connectedOnce = true
-                        delay = 2_000_000_000  // reset backoff on successful connection
+                        delay = 2_000_000_000
+                        isWsConnected = true
                         #if DEBUG
                         print("[WS] Connected: \(slug)")
                         #endif
+                        // Reconcile full state on (re)connect.
+                        Task { await syncStateOnReconnect() }
                     }
-                    if case .string(let text) = msg,
-                       let data = text.data(using: .utf8),
-                       let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                        #if DEBUG
-                        print("[WS] Event: \(json["event"] as? String ?? "unknown")")
-                        #endif
-                        handleAlarmWebSocketEvent(json)
+                    if case .string(let text) = msg {
+                        // Silently discard server pongs.
+                        if text.contains("\"pong\"") { continue receiveLoop }
+                        if let data = text.data(using: .utf8),
+                           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                            #if DEBUG
+                            print("[WS] Event: \(json["event"] as? String ?? "unknown")")
+                            #endif
+                            handleAlarmWebSocketEvent(json)
+                        }
                     }
                 } catch {
                     #if DEBUG
@@ -3240,7 +3338,8 @@ struct ContentView: View {
                     break receiveLoop
                 }
             }
-            // Always close the task cleanly, even if Swift cancelled the outer Task.
+            pingTask.cancel()
+            isWsConnected = false
             wsTask.cancel(with: .normalClosure, reason: nil)
             guard !Task.isCancelled else { return }
             #if DEBUG
@@ -3365,9 +3464,28 @@ struct ContentView: View {
         case "quiet_request_created", "quiet_request_updated":
             if isAdminSession { Task { await loadAdminQuietPeriodRequests() } }
             Task { await loadMyQuietRequest() }
+            if event == "quiet_request_created", isAdminSession {
+                let requesterName = json["user_name"] as? String ?? "A team member"
+                let reason = json["reason"] as? String
+                let body = reason.map { ""\($0)"" } ?? "Awaiting admin approval."
+                pendingAdminEvents.append(AdminEvent(
+                    id: "quiet_created_\(Date().timeIntervalSince1970)",
+                    type: .quietPending,
+                    title: "\(requesterName) requested quiet time",
+                    body: body
+                ))
+            }
 
         case "message_received", "new_user_message", "admin_reply":
-            break
+            if let msgText = json["message"] as? String, !msgText.isEmpty {
+                let senderLabel = json["sender_label"] as? String ?? "Admin"
+                pendingAdminEvents.append(AdminEvent(
+                    id: "msg_\(Date().timeIntervalSince1970)",
+                    type: .adminMessage,
+                    title: "Message from \(senderLabel)",
+                    body: msgText
+                ))
+            }
 
         case "help_request_acknowledged", "help_request_resolved":
             Task { await refreshIncidentFeed() }

@@ -142,6 +142,18 @@ struct APIClient: Sendable {
         try requireSuccess(response: response, data: data)
     }
 
+    func syncState(userID: Int?) async throws -> [String: Any] {
+        var components = URLComponents(url: baseURL.appendingPathComponent("sync/state"), resolvingAgainstBaseURL: false)!
+        if let uid = userID {
+            components.queryItems = [URLQueryItem(name: "user_id", value: String(uid))]
+        }
+        var request = URLRequest(url: components.url!)
+        withAPIKey(&request)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try requireSuccess(response: response, data: data)
+        return (try? JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]
+    }
+
     func activeRequestHelp() async throws -> TeamAssistListResponse {
         let url = baseURL.appendingPathComponent("team-assist/active")
         var request = URLRequest(url: url)

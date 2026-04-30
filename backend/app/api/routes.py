@@ -1978,7 +1978,13 @@ async def alerts_websocket(websocket: WebSocket, tenant_slug: str) -> None:
 
     try:
         while True:
-            await websocket.receive_text()
+            msg = await websocket.receive_text()
+            # Respond to client pings so the WS stays alive and presence updates.
+            if msg.strip() in ('{"type":"ping"}', "ping"):
+                try:
+                    await websocket.send_text('{"type":"pong"}')
+                except Exception:
+                    pass
             if ws_device_id is not None or ws_user_id is not None:
                 try:
                     await _ws_registry.touch_ws(device_id=ws_device_id, user_id=ws_user_id)
@@ -2179,6 +2185,80 @@ async def alarm_status(
         state_version=int(_state_field(state, "version", 0)),
         server_ts=datetime.now(timezone.utc).isoformat(),
     )
+
+
+@router.get("/sync/state", dependencies=[Depends(require_api_key)])
+async def sync_state(
+    request: Request,
+    user_id: Optional[int] = Query(default=None),
+) -> JSONResponse:
+    """Lightweight full-state snapshot for WebSocket reconnect reconciliation."""
+    state = await _alarm_store(request).get_state()
+    try:
+        broadcasts = await _reports(request).list_broadcast_updates(limit=5)
+    except Exception:
+        broadcasts = []
+    current_alert_id, ack_count, user_acked, expected_count = await _active_alert_metadata(
+        request, user_id=user_id
+    )
+    ack_pct = round((ack_count / expected_count * 100) if expected_count > 0 else 0.0, 1)
+
+    alarm: dict[str, object] = {
+        "is_active": bool(_state_field(state, "is_active", False)),
+        "message": _state_field(state, "message", None),
+        "is_training": bool(_state_field(state, "is_training", False)),
+        "training_label": _state_field(state, "training_label", None),
+        "silent_audio": bool(_state_field(state, "silent_audio", False)),
+        "current_alert_id": current_alert_id,
+        "acknowledgement_count": ack_count,
+        "expected_user_count": expected_count,
+        "acknowledgement_percentage": ack_pct,
+        "current_user_acknowledged": user_acked,
+        "activated_at": _state_field(state, "activated_at", None),
+        "activated_by_label": _state_field(state, "activated_by_label", None),
+        "state_version": int(_state_field(state, "version", 0)),
+        "broadcasts": [
+            {
+                "update_id": b.id,
+                "message": b.message,
+                "admin_label": b.admin_label,
+                "created_at": b.created_at,
+            }
+            for b in broadcasts
+        ],
+    }
+
+    quiet: Optional[dict[str, object]] = None
+    if user_id is not None:
+        user = await _users(request).get_user(user_id)
+        if user and user.is_active:
+            record = await _quiet_periods(request).latest_for_user(user_id=user_id)
+            if record is not None:
+                from app.services.quiet_period_store import compute_countdown
+                countdown_target_at, countdown_mode = compute_countdown(record)
+                quiet = {
+                    "request_id": record.id,
+                    "user_id": user_id,
+                    "status": record.status,
+                    "reason": record.reason,
+                    "quiet_mode_active": await _is_effective_quiet_user(request, user_id=user_id),
+                    "expires_at": record.expires_at,
+                    "scheduled_start_at": getattr(record, "scheduled_start_at", None),
+                    "scheduled_end_at": getattr(record, "scheduled_end_at", None),
+                    "countdown_target_at": countdown_target_at,
+                    "countdown_mode": countdown_mode,
+                }
+            else:
+                quiet = {
+                    "user_id": user_id,
+                    "quiet_mode_active": await _is_effective_quiet_user(request, user_id=user_id),
+                }
+
+    return JSONResponse({
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "alarm": alarm,
+        "quiet_period": quiet,
+    })
 
 
 @router.get("/alarm/push-stats", response_model=PushDeliveryStatsResponse)
