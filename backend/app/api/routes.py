@@ -2912,13 +2912,16 @@ async def super_admin_list_organizations(request: Request) -> JSONResponse:
 async def super_admin_create_district(
     request: Request,
     name: str = Form(...),
-    slug: str = Form(...),
-    organization_id: int = Form(...),
+    slug: str = Form(default=""),
+    organization_id: Optional[int] = Form(default=None),
 ) -> JSONResponse:
     _require_super_admin(request)
-    district = await _schools(request).create_district(
-        name=name.strip(), slug=slug.strip().lower(), organization_id=int(organization_id)
-    )
+    name = name.strip()
+    if not name:
+        return JSONResponse({"ok": False, "detail": "District name is required."}, status_code=422)
+    import re as _re_mod
+    clean_slug = slug.strip().lower() if slug.strip() else _re_mod.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+    district = await _schools(request).create_district(name=name, slug=clean_slug, organization_id=organization_id)
     return JSONResponse({"ok": True, "id": district.id, "slug": district.slug, "name": district.name})
 
 
@@ -11190,7 +11193,7 @@ async def super_admin_convert_inquiry_to_district(
         school_registry: SchoolRegistry = request.app.state.school_registry
         existing = await school_registry.get_district_by_slug(raw_slug)
         if existing is None:
-            district = await school_registry.create_district(name=name, slug=raw_slug, organization_id=1)
+            district = await school_registry.create_district(name=name, slug=raw_slug)
         else:
             district = existing
         billing_store = request.app.state.tenant_billing_store
@@ -12248,7 +12251,7 @@ async def super_admin_convert_demo_request(
         school_registry: SchoolRegistry = request.app.state.school_registry
         existing = await school_registry.get_district_by_slug(raw_slug)
         if existing is None:
-            district = await school_registry.create_district(name=name, slug=raw_slug, organization_id=1)
+            district = await school_registry.create_district(name=name, slug=raw_slug)
         else:
             district = existing
         billing_store = request.app.state.tenant_billing_store

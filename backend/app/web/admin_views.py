@@ -5680,28 +5680,6 @@ def render_super_admin_page(
             document.getElementById('bb-create-district-btn').disabled = false;
             document.getElementById('bb-create-district-btn').textContent = 'Create District';
             document.getElementById('bb-create-district-modal').style.display = 'flex';
-            /* Load orgs and pre-select the only one if possible */
-            var sel = document.getElementById('bb-create-district-org');
-            sel.innerHTML = '<option value="">Loading…</option>';
-            document.getElementById('bb-create-org-field').style.display = '';
-            fetch('/super-admin/organizations', {{headers:{{'X-Requested-With':'XMLHttpRequest'}}}})
-              .then(function(r){{return r.json();}})
-              .then(function(d){{
-                var orgs = d.organizations || [];
-                if (orgs.length === 1) {{
-                  /* Only one org — auto-select and hide the field */
-                  sel.innerHTML = '<option value="' + orgs[0].id + '">' + orgs[0].name + '</option>';
-                  document.getElementById('bb-create-org-field').style.display = 'none';
-                }} else {{
-                  sel.innerHTML = '<option value="">Select organization…</option>' +
-                    orgs.map(function(o){{return '<option value="'+o.id+'">'+o.name+'</option>';}}).join('');
-                }}
-              }})
-              .catch(function(){{
-                /* Fallback: default org_id=1 */
-                sel.innerHTML = '<option value="1">Default Organization</option>';
-                document.getElementById('bb-create-org-field').style.display = 'none';
-              }});
             document.getElementById('bb-create-district-name').focus();
           }}
 
@@ -5723,14 +5701,12 @@ def render_super_admin_page(
           function bbSubmitCreateDistrict() {{
             var name = document.getElementById('bb-create-district-name').value.trim();
             var slug = document.getElementById('bb-create-district-slug').value.trim();
-            var orgId = document.getElementById('bb-create-district-org').value;
             if (!name) {{ bbShowBanner('bb-create-district-banner', 'District name is required.', true); return; }}
-            if (!slug) {{ bbShowBanner('bb-create-district-banner', 'Slug is required.', true); return; }}
-            if (!orgId) {{ bbShowBanner('bb-create-district-banner', 'Select an organization.', true); return; }}
             var btn = document.getElementById('bb-create-district-btn');
             btn.disabled = true; btn.textContent = 'Creating…';
             var fd = new FormData();
-            fd.append('name', name); fd.append('slug', slug); fd.append('organization_id', orgId);
+            fd.append('name', name);
+            if (slug) fd.append('slug', slug);
             fetch('/super-admin/districts/create', {{method:'POST', body:fd,
               headers:{{'X-Requested-With':'XMLHttpRequest'}}}})
               .then(function(r){{return r.json();}})
@@ -5903,10 +5879,6 @@ def render_super_admin_page(
               <div class="bb-field">
                 <label>Slug <span style="font-weight:400;text-transform:none;letter-spacing:0;">(auto-generated, can edit)</span></label>
                 <input id="bb-create-district-slug" type="text" placeholder="maryville-r-ii" />
-              </div>
-              <div class="bb-field" id="bb-create-org-field">
-                <label>Organization</label>
-                <select id="bb-create-district-org"><option value="">Loading…</option></select>
               </div>
               <div style="display:flex;gap:10px;margin-top:6px;">
                 <button class="button button-primary" onclick="bbSubmitCreateDistrict()" id="bb-create-district-btn">Create District</button>

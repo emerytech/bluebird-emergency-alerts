@@ -33,7 +33,7 @@ class DistrictRecord:
     created_at: str
     name: str
     slug: str
-    organization_id: int
+    organization_id: Optional[int]  # nullable — organization grouping is optional
     is_active: bool
     accent: Optional[str] = None
     accent_strong: Optional[str] = None
@@ -138,7 +138,7 @@ class SchoolRegistry:
                     created_at      TEXT    NOT NULL,
                     name            TEXT    NOT NULL,
                     slug            TEXT    NOT NULL UNIQUE,
-                    organization_id INTEGER NOT NULL REFERENCES organizations(id),
+                    organization_id INTEGER NULL REFERENCES organizations(id),
                     is_active       INTEGER NOT NULL DEFAULT 1
                 );
                 """
@@ -239,6 +239,8 @@ class SchoolRegistry:
 
     def _migrate_districts_table(self, conn: sqlite3.Connection) -> None:
         cols = {str(row[1]) for row in conn.execute("PRAGMA table_info(districts);").fetchall()}
+
+        # Step 1: add any missing columns first (so they exist before the table-copy migration).
         for col, ddl in [
             ("accent",              "ALTER TABLE districts ADD COLUMN accent TEXT NULL;"),
             ("accent_strong",       "ALTER TABLE districts ADD COLUMN accent_strong TEXT NULL;"),
@@ -253,6 +255,61 @@ class SchoolRegistry:
         ]:
             if col not in cols:
                 conn.execute(ddl)
+
+        # Step 2: if organization_id is still NOT NULL, make it nullable via table-copy migration.
+        # SQLite does not support ALTER COLUMN DROP NOT NULL, so we recreate the table.
+        org_col_info = [
+            r for r in conn.execute("PRAGMA table_info(districts);").fetchall()
+            if str(r[1]) == "organization_id"
+        ]
+        if org_col_info and int(org_col_info[0][3]) == 1:  # notnull == 1
+            conn.execute("PRAGMA foreign_keys = OFF;")
+            conn.execute(
+                """
+                CREATE TABLE districts_new (
+                    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created_at         TEXT    NOT NULL,
+                    name               TEXT    NOT NULL,
+                    slug               TEXT    NOT NULL UNIQUE,
+                    organization_id    INTEGER NULL REFERENCES organizations(id),
+                    is_active          INTEGER NOT NULL DEFAULT 1,
+                    accent             TEXT    NULL,
+                    accent_strong      TEXT    NULL,
+                    sidebar_start      TEXT    NULL,
+                    sidebar_end        TEXT    NULL,
+                    logo_path          TEXT    NULL,
+                    brand_lock_enabled INTEGER NOT NULL DEFAULT 0,
+                    is_test            INTEGER NOT NULL DEFAULT 0,
+                    source_district_id INTEGER NULL,
+                    is_archived        INTEGER NOT NULL DEFAULT 0,
+                    archived_at        TEXT    NULL
+                );
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO districts_new (
+                    id, created_at, name, slug, organization_id, is_active,
+                    accent, accent_strong, sidebar_start, sidebar_end, logo_path,
+                    brand_lock_enabled, is_test, source_district_id, is_archived, archived_at
+                )
+                SELECT
+                    id, created_at, name, slug, organization_id, is_active,
+                    COALESCE(accent, NULL), COALESCE(accent_strong, NULL),
+                    COALESCE(sidebar_start, NULL), COALESCE(sidebar_end, NULL),
+                    COALESCE(logo_path, NULL),
+                    COALESCE(brand_lock_enabled, 0), COALESCE(is_test, 0),
+                    COALESCE(source_district_id, NULL),
+                    COALESCE(is_archived, 0), COALESCE(archived_at, NULL)
+                FROM districts;
+                """
+            )
+            conn.execute("DROP TABLE districts;")
+            conn.execute("ALTER TABLE districts_new RENAME TO districts;")
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_districts_slug ON districts(slug);"
+            )
+            conn.execute("PRAGMA foreign_keys = ON;")
 
     def _migrate_schools_table(self, conn: sqlite3.Connection) -> None:
         cols = {str(row[1]) for row in conn.execute("PRAGMA table_info(schools);").fetchall()}
@@ -333,7 +390,7 @@ class SchoolRegistry:
             created_at=str(row[1]),
             name=str(row[2]),
             slug=str(row[3]),
-            organization_id=int(row[4]),
+            organization_id=int(row[4]) if row[4] is not None else None,
             is_active=bool(int(row[5])),
             accent=str(row[6]) if len(row) > 6 and row[6] is not None else None,
             accent_strong=str(row[7]) if len(row) > 7 and row[7] is not None else None,
@@ -600,7 +657,7 @@ class SchoolRegistry:
 
     # ── Districts ─────────────────────────────────────────────────────────────
 
-    def _create_district_sync(self, name: str, slug: str, organization_id: int) -> DistrictRecord:
+    def _create_district_sync(self, name: str, slug: str, organization_id: Optional[int] = None) -> DistrictRecord:
         normalized_slug = slug.strip().lower()
         with self._connect() as conn:
             cur = conn.execute(
@@ -608,7 +665,7 @@ class SchoolRegistry:
                 INSERT INTO districts (created_at, name, slug, organization_id, is_active)
                 VALUES (?, ?, ?, ?, 1);
                 """,
-                (datetime.now(timezone.utc).isoformat(), name.strip(), normalized_slug, int(organization_id)),
+                (datetime.now(timezone.utc).isoformat(), name.strip(), normalized_slug, organization_id),
             )
             row = conn.execute(
                 f"SELECT {_DISTRICT_COLS} FROM districts WHERE id = ? LIMIT 1;",
@@ -617,8 +674,8 @@ class SchoolRegistry:
         assert row is not None
         return self._district_from_row(row)
 
-    async def create_district(self, *, name: str, slug: str, organization_id: int) -> DistrictRecord:
-        return await anyio.to_thread.run_sync(self._create_district_sync, name, slug, int(organization_id))
+    async def create_district(self, *, name: str, slug: str, organization_id: Optional[int] = None) -> DistrictRecord:
+        return await anyio.to_thread.run_sync(lambda: self._create_district_sync(name, slug, organization_id))
 
     def _get_district_sync(self, district_id: int) -> Optional[DistrictRecord]:
         with self._connect() as conn:
