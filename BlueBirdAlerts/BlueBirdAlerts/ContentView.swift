@@ -6,6 +6,7 @@ import AVFoundation
 import Foundation
 import Combine
 import MediaPlayer
+import CoreLocation
 
 private let appBg = DSColor.background
 private let appBgDeep = DSColor.backgroundDeep
@@ -132,6 +133,10 @@ private struct AdminEventModalView: View {
         .contentShape(Rectangle())
         .onTapGesture { onDismiss() }
     }
+}
+
+private enum LocationShareStatus {
+    case idle, sharing, shared, denied, error
 }
 
 private enum HoldActivationState {
@@ -617,6 +622,10 @@ struct ContentView: View {
     @State private var showTeamAssistPicker = false
     @State private var showMessagingCenter = false
     @State private var showRosterView = false
+    @State private var locationShareStatus: LocationShareStatus = .idle
+    @State private var autoShareLocationEnabled = false
+    @State private var autoShareTimer: Timer? = nil
+    @State private var show911Confirm = false
     @State private var showQuietPeriodCenter = false
     @State private var quietPeriodReason = ""
     @State private var scheduleForLater = false
@@ -1006,6 +1015,12 @@ struct ContentView: View {
             syncAlarmAudio()
             updateAlertFeedbackState()
             appState.alarmIsActive = isActive  // keeps LearningCenter screens in sync
+            if !isActive {
+                locationShareStatus = .idle
+                autoShareLocationEnabled = false
+                autoShareTimer?.invalidate()
+                autoShareTimer = nil
+            }
         }
         .onChange(of: alarmSilentAudio) { _, _ in
             syncAlarmAudio()
@@ -1384,6 +1399,52 @@ struct ContentView: View {
                         }
                         .buttonStyle(PressableScaleButtonStyle())
 
+                        // ── Share Location ────────────────────────────────
+                        if let alertId = alarmAlertId, let userID = appState.userID {
+                            Button {
+                                Task { await shareMyLocation(alertId: alertId, userID: userID) }
+                            } label: {
+                                HStack(spacing: 8) {
+                                    switch locationShareStatus {
+                                    case .sharing:
+                                        ProgressView().tint(Color(red: 0.98, green: 0.75, blue: 0.14))
+                                            .scaleEffect(0.85)
+                                    case .shared:
+                                        Image(systemName: "checkmark.circle.fill")
+                                            .foregroundStyle(Color(red: 0.98, green: 0.75, blue: 0.14))
+                                    default:
+                                        Image(systemName: "location.fill")
+                                            .foregroundStyle(Color(red: 0.98, green: 0.75, blue: 0.14))
+                                    }
+                                    Text(locationShareStatus == .sharing ? "Sharing…"
+                                         : locationShareStatus == .shared ? "Location Shared"
+                                         : locationShareStatus == .denied ? "Location Permission Denied"
+                                         : locationShareStatus == .error ? "Location Unavailable"
+                                         : "Share My Location")
+                                        .font(.headline.weight(.bold))
+                                        .foregroundStyle(Color(red: 0.98, green: 0.75, blue: 0.14))
+                                }
+                                .frame(maxWidth: .infinity, minHeight: 52)
+                                .background(Color.white.opacity(0.12))
+                                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                            }
+                            .buttonStyle(PressableScaleButtonStyle())
+                            .disabled(locationShareStatus == .sharing)
+                        }
+
+                        // ── Call 911 ──────────────────────────────────────
+                        Button {
+                            show911Confirm = true
+                        } label: {
+                            Label("Call 911", systemImage: "phone.fill")
+                                .font(.headline.weight(.bold))
+                                .foregroundStyle(Color(red: 0.94, green: 0.27, blue: 0.27))
+                                .frame(maxWidth: .infinity, minHeight: 52)
+                                .background(Color.white.opacity(0.12))
+                                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                        }
+                        .buttonStyle(PressableScaleButtonStyle())
+
                         if appState.canDeactivateAlarm {
                             Button {
                                 Task { await authenticateThenDeactivateAlarm() }
@@ -1425,6 +1486,39 @@ struct ContentView: View {
             alarmAcknowledgementCount = max(0, alarmAcknowledgementCount - 1)
         }
         pendingAck = false
+    }
+
+    private func shareMyLocation(alertId: Int, userID: Int) async {
+        locationShareStatus = .sharing
+        let manager = CLLocationManager()
+        let status = manager.authorizationStatus
+        if status == .denied || status == .restricted {
+            locationShareStatus = .denied
+            return
+        }
+        if status == .notDetermined {
+            manager.requestWhenInUseAuthorization()
+        }
+        guard let loc = manager.location else {
+            locationShareStatus = .error
+            return
+        }
+        do {
+            let api = APIClient(baseURL: appState.serverURL, apiKey: Config.backendApiKey)
+            try await api.shareLocation(
+                alertId: alertId,
+                userID: userID,
+                latitude: loc.coordinate.latitude,
+                longitude: loc.coordinate.longitude,
+                accuracy: loc.horizontalAccuracy > 0 ? loc.horizontalAccuracy : nil
+            )
+            locationShareStatus = .shared
+            try? await api.recordAnalyticsEvent(alertId: alertId, userID: userID, eventType: "location_shared")
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            if locationShareStatus == .shared { locationShareStatus = .idle }
+        } catch {
+            locationShareStatus = .error
+        }
     }
 
     private func sendAlertMessageFromOverlay(alertId: Int) async {
@@ -2565,6 +2659,23 @@ struct ContentView: View {
             if let alertId = alarmAlertId, let userID = appState.userID {
                 RosterView(alertId: alertId, userID: userID, api: api)
             }
+        }
+        .confirmationDialog("Call 911?", isPresented: $show911Confirm, titleVisibility: .visible) {
+            Button("Call 911", role: .destructive) {
+                if let alertId = alarmAlertId {
+                    Task { try? await api.recordAnalyticsEvent(alertId: alertId, userID: appState.userID, eventType: "call_911_confirmed") }
+                }
+                if let url = URL(string: "tel://911") {
+                    UIApplication.shared.open(url)
+                }
+            }
+            Button("Cancel", role: .cancel) {
+                if let alertId = alarmAlertId {
+                    Task { try? await api.recordAnalyticsEvent(alertId: alertId, userID: appState.userID, eventType: "call_911_cancelled") }
+                }
+            }
+        } message: {
+            Text("This will open the phone dialer to call 911.")
         }
     }
 

@@ -157,6 +157,7 @@ from app.services.onboarding_pdf import (
 from app.services.device_registry import DeviceRegistry, compute_device_status
 from app.services.fcm import FCMClient
 from app.services.incident_store import IncidentStore
+from app.services.emergency_action_store import EmergencyActionStore
 from app.services.permissions import (
     ALARM_TRIGGER_ROLES,
     CODEGEN_ALLOWED_ROLES,
@@ -500,6 +501,10 @@ def _message_store(req: Request):
 
 def _roster_store(req: Request):
     return _tenant(req).roster_store  # type: ignore[attr-defined]
+
+
+def _ea_store(req: Request):
+    return _tenant(req).emergency_action_store  # type: ignore[attr-defined]
 
 
 def _session_user_id(request: Request) -> Optional[int]:
@@ -6711,6 +6716,26 @@ async def admin_remind_all(alert_id: int, request: Request) -> JSONResponse:
     return JSONResponse({"reminded_count": reminded, "skipped_no_device": skipped})
 
 
+@router.get("/admin/alerts/recent", include_in_schema=False)
+async def list_recent_alerts_for_analytics(request: Request) -> JSONResponse:
+    await _require_dashboard_admin(request)
+    alerts = await _alert_log(request).list_recent(limit=10)
+    return JSONResponse({
+        "ok": True,
+        "alerts": [
+            {
+                "id": a.id,
+                "alert_id": a.id,
+                "alert_type": getattr(a, "alert_type", "emergency"),
+                "message": getattr(a, "message", None),
+                "activated_at": getattr(a, "created_at", None),
+                "is_training": getattr(a, "is_training", False),
+            }
+            for a in alerts
+        ],
+    })
+
+
 @router.get("/admin/alerts/{alert_id}/unacknowledged", include_in_schema=False)
 async def get_unacknowledged_users(alert_id: int, request: Request) -> JSONResponse:
     """Returns active users who have not yet acknowledged the given alert. Admin-gated."""
@@ -12777,3 +12802,125 @@ async def get_roster_claim_history(
             for r in records
         ]
     )
+
+
+# ── Emergency Actions: Location + Analytics ───────────────────────────────────
+
+import json as _json_mod
+
+
+class _ShareLocationBody(BaseModel):
+    user_id: int
+    latitude: float
+    longitude: float
+    accuracy: Optional[float] = None
+    auto: bool = False
+
+
+class _AnalyticsEventBody(BaseModel):
+    user_id: Optional[int] = None
+    event_type: str
+    metadata: Optional[dict] = None
+
+
+@router.post("/alerts/{alert_id}/location", include_in_schema=False)
+async def share_location(
+    alert_id: int,
+    body: _ShareLocationBody,
+    request: Request,
+    _: None = Depends(require_api_key),
+) -> JSONResponse:
+    _assert_tenant_resolved(request)
+    await _require_active_user(_users(request), body.user_id)
+
+    loc = await _ea_store(request).record_location(
+        user_id=body.user_id,
+        incident_id=alert_id,
+        latitude=body.latitude,
+        longitude=body.longitude,
+        accuracy=body.accuracy,
+    )
+
+    event_type = "location_auto_shared" if body.auto else "location_shared"
+    await _ea_store(request).record_event(
+        event_type=event_type,
+        user_id=body.user_id,
+        incident_id=alert_id,
+    )
+
+    await _publish_alert_event(request, event="location_updated", extra={
+        "user_id": body.user_id,
+        "latitude": body.latitude,
+        "longitude": body.longitude,
+        "accuracy": body.accuracy,
+        "location_id": loc.id,
+        "alert_id": alert_id,
+    })
+
+    return JSONResponse({"ok": True, "location_id": loc.id})
+
+
+@router.get("/alerts/{alert_id}/locations", include_in_schema=False)
+async def get_live_locations(
+    alert_id: int,
+    request: Request,
+    user_id: int = Query(...),
+    _: None = Depends(require_api_key),
+) -> JSONResponse:
+    _assert_tenant_resolved(request)
+    await _require_active_user_with_permission(_users(request), user_id, permission=PERM_ROSTER_VIEW)
+
+    locs = await _ea_store(request).list_locations_for_incident(alert_id)
+    return JSONResponse({
+        "ok": True,
+        "locations": [
+            {
+                "user_id": loc.user_id,
+                "latitude": loc.latitude,
+                "longitude": loc.longitude,
+                "accuracy": loc.accuracy,
+                "updated_at": loc.created_at,
+            }
+            for loc in locs
+        ],
+    })
+
+
+@router.post("/alerts/{alert_id}/analytics-event", include_in_schema=False)
+async def record_analytics_event(
+    alert_id: int,
+    body: _AnalyticsEventBody,
+    request: Request,
+    _: None = Depends(require_api_key),
+) -> JSONResponse:
+    _assert_tenant_resolved(request)
+
+    allowed_events = {
+        "call_911_initiated",
+        "call_911_confirmed",
+        "call_911_cancelled",
+        "location_shared",
+        "location_auto_shared",
+    }
+    if body.event_type not in allowed_events:
+        raise HTTPException(status_code=400, detail=f"Unknown event_type: {body.event_type}")
+
+    meta_str = _json_mod.dumps(body.metadata) if body.metadata else None
+    await _ea_store(request).record_event(
+        event_type=body.event_type,
+        user_id=body.user_id,
+        incident_id=alert_id,
+        metadata=meta_str,
+    )
+    return JSONResponse({"ok": True})
+
+
+@router.get("/alerts/{alert_id}/emergency-analytics", include_in_schema=False)
+async def get_emergency_analytics(
+    alert_id: int,
+    request: Request,
+) -> JSONResponse:
+    _assert_tenant_resolved(request)
+    await _require_dashboard_admin(request)
+    summary = await _ea_store(request).event_summary_for_incident(alert_id)
+    return JSONResponse({"ok": True, "alert_id": alert_id, **summary})

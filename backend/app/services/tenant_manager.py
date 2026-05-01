@@ -24,6 +24,7 @@ from app.services.tenant_settings_store import TenantSettingsStore
 from app.services.user_store import UserStore
 from app.services.session_store import SessionStore
 from app.services.roster_store import RosterStore
+from app.services.emergency_action_store import EmergencyActionStore
 
 
 _SLUG_RE = re.compile(r"[^a-z0-9-]+")
@@ -53,6 +54,7 @@ class TenantContext:
     settings_store: TenantSettingsStore
     message_store: AlertMessageStore
     roster_store: RosterStore
+    emergency_action_store: EmergencyActionStore
 
 
 class TenantManager:
@@ -136,6 +138,7 @@ class TenantManager:
                 settings_store=TenantSettingsStore(db_path),
                 message_store=AlertMessageStore(db_path),
                 roster_store=RosterStore(db_path),
+                emergency_action_store=EmergencyActionStore(db_path),
             )
             self._cache[normalized] = tenant
             return tenant

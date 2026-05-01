@@ -1496,4 +1496,37 @@ extension APIClient {
         try requireSuccess(response: response, data: data)
         return try JSONDecoder().decode(RosterIncidentRow.self, from: data)
     }
+
+    // ── Emergency Actions ──────────────────────────────────────────────────────
+
+    func shareLocation(alertId: Int, userID: Int, latitude: Double, longitude: Double, accuracy: Double?, auto: Bool = false) async throws {
+        let url = baseURL.appendingPathComponent("alerts/\(alertId)/location")
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        withAPIKey(&request)
+        let body: [String: Any?] = [
+            "user_id": userID,
+            "latitude": latitude,
+            "longitude": longitude,
+            "accuracy": accuracy,
+            "auto": auto,
+        ]
+        request.httpBody = try JSONSerialization.data(withJSONObject: body.compactMapValues { $0 })
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try requireSuccess(response: response, data: data)
+    }
+
+    func recordAnalyticsEvent(alertId: Int, userID: Int?, eventType: String) async throws {
+        let url = baseURL.appendingPathComponent("alerts/\(alertId)/analytics-event")
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        withAPIKey(&request)
+        var body: [String: Any] = ["event_type": eventType]
+        if let uid = userID { body["user_id"] = uid }
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try requireSuccess(response: response, data: data)
+    }
 }

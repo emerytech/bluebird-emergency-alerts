@@ -109,6 +109,8 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import android.location.Location
+import android.location.LocationManager
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -1036,6 +1038,54 @@ class MainViewModel : ViewModel() {
                 .onFailure { e ->
                     android.util.Log.d("BlueBird", "sendAlertMessage failed: ${e.message}")
                 }
+        }
+    }
+
+    fun shareLocation(ctx: Context, alertId: Int?, onLabel: (String) -> Unit) {
+        if (alertId == null) return
+        val userId = getUserId(ctx).toIntOrNull() ?: return
+        val lm = ctx.getSystemService(Context.LOCATION_SERVICE) as? LocationManager ?: return
+        val hasPerm = ContextCompat.checkSelfPermission(ctx, Manifest.permission.ACCESS_FINE_LOCATION) ==
+            PackageManager.PERMISSION_GRANTED ||
+            ContextCompat.checkSelfPermission(ctx, Manifest.permission.ACCESS_COARSE_LOCATION) ==
+            PackageManager.PERMISSION_GRANTED
+        if (!hasPerm) {
+            onLabel("📍 Location Permission Required")
+            return
+        }
+        val loc: Location? = runCatching {
+            lm.getLastKnownLocation(LocationManager.GPS_PROVIDER)
+                ?: lm.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
+                ?: lm.getLastKnownLocation(LocationManager.PASSIVE_PROVIDER)
+        }.getOrNull()
+        if (loc == null) {
+            onLabel("📍 Location Unavailable")
+            return
+        }
+        onLabel("📍 Sharing…")
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                client!!.shareLocation(
+                    alertId = alertId,
+                    userId = userId,
+                    latitude = loc.latitude,
+                    longitude = loc.longitude,
+                    accuracy = if (loc.hasAccuracy()) loc.accuracy.toDouble() else null,
+                )
+                client!!.recordAnalyticsEvent(alertId = alertId, userId = userId, eventType = "location_shared")
+            }.onSuccess {
+                onLabel("✓ Location Shared")
+            }.onFailure {
+                onLabel("📍 Share Failed")
+            }
+        }
+    }
+
+    fun recordAnalyticsEvent(ctx: Context, alertId: Int, eventType: String) {
+        val userId = getUserId(ctx).toIntOrNull()
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { client!!.recordAnalyticsEvent(alertId = alertId, userId = userId, eventType = eventType) }
+                .onFailure { android.util.Log.d("BlueBird", "analytics event failed: ${it.message}") }
         }
     }
 
@@ -2479,6 +2529,8 @@ private fun MainScreen(
     val keyboardController = LocalSoftwareKeyboardController.current
     val state by vm.state.collectAsState()
     var showDeactivateDialog by remember { mutableStateOf(false) }
+    var show911Dialog by remember { mutableStateOf(false) }
+    var locationShareLabel by remember { mutableStateOf("📍 Share My Location") }
     var showAuditLogModal by remember { mutableStateOf(false) }
     var showReportDialog by remember { mutableStateOf(false) }
     var showSettingsScreen by remember { mutableStateOf(false) }
@@ -3271,6 +3323,12 @@ private fun MainScreen(
                     onAcknowledge = {
                         vm.acknowledgeAlarm(ctx)
                     },
+                    onShareLocation = {
+                        vm.shareLocation(ctx, state.alarm.alertId, onLabel = { locationShareLabel = it })
+                    },
+                    onCall911 = {
+                        show911Dialog = true
+                    },
                     onSendMessage = { message ->
                         vm.sendAlertMessageFromOverlay(ctx, message)
                     },
@@ -3448,6 +3506,32 @@ private fun MainScreen(
                 }
             },
             onDismiss = { quietActionPendingId = null },
+        )
+    }
+
+    if (show911Dialog) {
+        AlertDialog(
+            onDismissRequest = { show911Dialog = false },
+            containerColor = DSColor.Card,
+            title = { Text("Call 911?", color = DSColor.TextPrimary, fontWeight = FontWeight.Bold) },
+            text = { Text("This will open the phone dialer to call 911. Your location will not be shared automatically.", color = DSColor.TextSecondary) },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        show911Dialog = false
+                        state.alarm.alertId?.let { vm.recordAnalyticsEvent(ctx, it, "call_911_confirmed") }
+                        val intent = Intent(Intent.ACTION_DIAL, Uri.parse("tel:911"))
+                        ctx.startActivity(intent)
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFEF4444)),
+                ) { Text("Call 911", color = Color.White, fontWeight = FontWeight.Bold) }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    show911Dialog = false
+                    state.alarm.alertId?.let { vm.recordAnalyticsEvent(ctx, it, "call_911_cancelled") }
+                }) { Text("Cancel", color = DSColor.TextSecondary) }
+            },
         )
     }
 
@@ -5306,6 +5390,8 @@ private fun EmergencyAlarmTakeover(
     isBusy: Boolean,
     onDeactivate: () -> Unit,
     onAcknowledge: () -> Unit,
+    onShareLocation: (() -> Unit)? = null,
+    onCall911: (() -> Unit)? = null,
     onSendMessage: ((message: String) -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
@@ -5636,6 +5722,36 @@ private fun EmergencyAlarmTakeover(
                         fontWeight = FontWeight.Black,
                         fontSize = 17.sp,
                     )
+                }
+
+                // Share Location
+                if (onShareLocation != null) {
+                    OutlinedButton(
+                        onClick = onShareLocation,
+                        modifier = Modifier.fillMaxWidth().height(52.dp),
+                        shape = RoundedCornerShape(16.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            contentColor = Color(0xFFFBBF24),
+                        ),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFFBBF24).copy(alpha = 0.5f)),
+                    ) {
+                        Text("📍 Share My Location", fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                    }
+                }
+
+                // Call 911
+                if (onCall911 != null) {
+                    OutlinedButton(
+                        onClick = onCall911,
+                        modifier = Modifier.fillMaxWidth().height(52.dp),
+                        shape = RoundedCornerShape(16.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            contentColor = Color(0xFFEF4444),
+                        ),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFEF4444).copy(alpha = 0.5f)),
+                    ) {
+                        Text("☎ Call 911", fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                    }
                 }
 
                 if (canDeactivate) {
@@ -8474,6 +8590,28 @@ internal class BackendClient(baseUrl: String, private val apiKey: String) {
         http.newCall(req).execute().use { res ->
             return parseIncidentRow(JSONObject(requireSuccess(res)))
         }
+    }
+
+    fun shareLocation(alertId: Int, userId: Int, latitude: Double, longitude: Double, accuracy: Double?) {
+        val body = JSONObject()
+            .put("user_id", userId)
+            .put("latitude", latitude)
+            .put("longitude", longitude)
+            .put("auto", false)
+        if (accuracy != null) body.put("accuracy", accuracy)
+        val req = Request.Builder()
+            .url("$base/alerts/$alertId/location")
+            .withAuth().post(body.toString().toRequestBody(json)).build()
+        http.newCall(req).execute().use { requireSuccess(it) }
+    }
+
+    fun recordAnalyticsEvent(alertId: Int, userId: Int?, eventType: String) {
+        val body = JSONObject().put("event_type", eventType)
+        if (userId != null) body.put("user_id", userId)
+        val req = Request.Builder()
+            .url("$base/alerts/$alertId/analytics-event")
+            .withAuth().post(body.toString().toRequestBody(json)).build()
+        http.newCall(req).execute().use { requireSuccess(it) }
     }
 
     private fun parseClaimOut(j: JSONObject?): RosterClaimOut? {

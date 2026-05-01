@@ -39,6 +39,8 @@
 	</dict>
 	<key>NSFaceIDUsageDescription</key>
 	<string>BlueBird Alerts uses Face ID to confirm emergency actions and admin security tasks.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>BlueBird Alerts uses your location during active emergencies so your school's safety team can coordinate a response. Location is never tracked outside of an active alert.</string>
 	<key>NSCameraUsageDescription</key>
 	<string>BlueBird Alerts uses the camera flash as a visual emergency signal while an alert screen is active.</string>
 	<key>UIApplicationSceneManifest</key>

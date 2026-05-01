@@ -10301,6 +10301,86 @@ def render_admin_page(
             <div id="analytics-cards" class="um-health-bar" style="flex-wrap:wrap;gap:14px;">
               <span class="mini-copy">Loading analytics…</span>
             </div>
+
+            <!-- Emergency Actions Analytics -->
+            <div style="margin-top:32px;">
+              <div class="panel-header" style="margin-bottom:12px;">
+                <div>
+                  <p class="eyebrow">Emergency Actions</p>
+                  <h3 style="font-size:1.05rem;font-weight:700;margin:0;">Location Shares &amp; 911 Calls</h3>
+                  <p class="card-copy" style="margin-top:4px;">Per-incident activity for the most recent active alerts.</p>
+                </div>
+                <button class="button button-secondary" onclick="bbLoadEmergencyAnalytics()" style="font-size:0.78rem;padding:0 12px;min-height:30px;">Refresh</button>
+              </div>
+              <div id="bb-ea-cards" style="display:flex;flex-wrap:wrap;gap:14px;">
+                <span class="mini-copy" id="bb-ea-loading">Loading…</span>
+              </div>
+            </div>
+            <script>
+            (function(){{
+              function bbLoadEmergencyAnalytics(){{
+                var el=document.getElementById('bb-ea-cards');
+                if(!el)return;
+                el.innerHTML='<span class="mini-copy">Loading…</span>';
+                fetch('{prefix}/admin/alerts/recent',{{headers:{{'X-Requested-With':'XMLHttpRequest'}}}})
+                  .then(function(r){{return r.json();}})
+                  .then(function(d){{
+                    var alerts=d.alerts||[];
+                    if(!alerts.length){{el.innerHTML='<span class="mini-copy">No recent alerts found.</span>';return;}}
+                    var pending=alerts.length;
+                    var cards=[];
+                    function maybeRender(){{
+                      if(pending>0)return;
+                      if(!cards.length){{el.innerHTML='<span class="mini-copy">No emergency action data yet.</span>';return;}}
+                      el.innerHTML=cards.join('');
+                    }}
+                    alerts.forEach(function(alert){{
+                      var aid=alert.id||alert.alert_id;
+                      if(!aid){{pending--;maybeRender();return;}}
+                      fetch('{prefix}/alerts/'+aid+'/emergency-analytics',{{headers:{{'X-Requested-With':'XMLHttpRequest'}}}})
+                        .then(function(r){{return r.json();}})
+                        .then(function(ea){{
+                          var dt=alert.activated_at?new Date(alert.activated_at).toLocaleDateString():'Unknown';
+                          cards.push(
+                            '<div style="background:var(--card);border-radius:10px;padding:16px;min-width:260px;max-width:340px;flex:1;">'
+                            +'<p style="font-weight:700;font-size:0.88rem;margin:0 0 4px;color:var(--text-primary);">Alert #'+aid+' &mdash; '+dt+'</p>'
+                            +'<p style="font-size:0.75rem;color:var(--muted);margin:0 0 10px;">'+(alert.message||alert.alert_type||'Emergency')+'</p>'
+                            +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">'
+                            +'<div style="background:var(--bg);border-radius:6px;padding:8px;text-align:center;">'
+                            +'<p style="font-size:1.3rem;font-weight:800;color:#FBBF24;margin:0;">'+ea.location_shares_users+'</p>'
+                            +'<p style="font-size:0.68rem;color:var(--muted);margin:0;">Users Shared Location</p>'
+                            +'</div>'
+                            +'<div style="background:var(--bg);border-radius:6px;padding:8px;text-align:center;">'
+                            +'<p style="font-size:1.3rem;font-weight:800;color:#FBBF24;margin:0;">'+ea.location_shares_total+'</p>'
+                            +'<p style="font-size:0.68rem;color:var(--muted);margin:0;">Total Location Updates</p>'
+                            +'</div>'
+                            +'<div style="background:var(--bg);border-radius:6px;padding:8px;text-align:center;">'
+                            +'<p style="font-size:1.3rem;font-weight:800;color:#EF4444;margin:0;">'+ea.call_911_initiated+'</p>'
+                            +'<p style="font-size:0.68rem;color:var(--muted);margin:0;">911 Calls Initiated</p>'
+                            +'</div>'
+                            +'<div style="background:var(--bg);border-radius:6px;padding:8px;text-align:center;">'
+                            +'<p style="font-size:1.3rem;font-weight:800;color:#EF4444;margin:0;">'+ea.call_911_confirmed+'</p>'
+                            +'<p style="font-size:0.68rem;color:var(--muted);margin:0;">911 Confirmed</p>'
+                            +'</div>'
+                            +'</div>'
+                            +(ea.first_location_at?'<p style="font-size:0.7rem;color:var(--muted);margin:8px 0 0;">First location: '+new Date(ea.first_location_at).toLocaleTimeString()+'</p>':'')
+                            +'</div>'
+                          );
+                        }})
+                        .catch(function(){{cards.push('<span class="mini-copy">Could not load alert #'+aid+'</span>');}})
+                        .finally(function(){{pending--;maybeRender();}});
+                    }});
+                  }})
+                  .catch(function(){{el.innerHTML='<span class="mini-copy" style="color:var(--danger);">Failed to load emergency analytics.</span>';}});
+              }}
+              window.bbLoadEmergencyAnalytics=bbLoadEmergencyAnalytics;
+              /* Auto-load when the analytics section becomes visible */
+              document.addEventListener('DOMContentLoaded',function(){{
+                var sec=document.getElementById('analytics');
+                if(sec&&sec.style.display!=='none'){{bbLoadEmergencyAnalytics();}}
+              }});
+            }})();
+            </script>
           </section>
 
           <!-- 9.3: District reports dashboard (lazy-loaded, district_admin/super_admin only) -->
