@@ -1265,6 +1265,126 @@ struct CreateDistrictAdminRequest: Encodable {
     }
 }
 
+// MARK: - Roster models
+
+struct RosterClaimOut: Decodable, Identifiable {
+    let id: Int
+    let alertId: Int?
+    let studentId: Int?
+    let additionId: Int?
+    let claimedByUserId: Int
+    let claimedByLabel: String
+    let status: String
+    let claimedAt: String
+    let lastUpdatedAt: String
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case alertId = "alert_id"
+        case studentId = "student_id"
+        case additionId = "addition_id"
+        case claimedByUserId = "claimed_by_user_id"
+        case claimedByLabel = "claimed_by_label"
+        case status
+        case claimedAt = "claimed_at"
+        case lastUpdatedAt = "last_updated_at"
+    }
+}
+
+struct RosterIncidentRow: Decodable, Identifiable {
+    let studentId: Int?
+    let additionId: Int?
+    let firstName: String
+    let lastName: String
+    let gradeLevel: String
+    let studentRef: String?
+    let note: String?
+    let isAddition: Bool
+    let claim: RosterClaimOut?
+
+    var id: String { "\(studentId.map { "s\($0)" } ?? "")\(additionId.map { "a\($0)" } ?? "")" }
+    var fullName: String { "\(firstName) \(lastName)" }
+
+    enum CodingKeys: String, CodingKey {
+        case studentId = "student_id"
+        case additionId = "addition_id"
+        case firstName = "first_name"
+        case lastName = "last_name"
+        case gradeLevel = "grade_level"
+        case studentRef = "student_ref"
+        case note
+        case isAddition = "is_addition"
+        case claim
+    }
+}
+
+struct IncidentRosterSummary: Decodable {
+    let total: Int
+    let unclaimed: Int
+    let presentWithMe: Int
+    let absent: Int
+    let missing: Int
+    let injured: Int
+    let released: Int
+
+    enum CodingKeys: String, CodingKey {
+        case total, unclaimed, absent, missing, injured, released
+        case presentWithMe = "present_with_me"
+    }
+}
+
+struct IncidentRoster: Decodable {
+    let alertId: Int
+    let students: [RosterIncidentRow]
+    let summary: IncidentRosterSummary
+
+    enum CodingKeys: String, CodingKey {
+        case alertId = "alert_id"
+        case students, summary
+    }
+}
+
+struct RosterClaimResult: Decodable {
+    let ok: Bool
+    let action: String?
+    let claim: RosterClaimOut?
+    let conflict: Bool
+    let conflictClaimedByLabel: String?
+    let conflictClaimedSecondsAgo: Double?
+
+    enum CodingKeys: String, CodingKey {
+        case ok, action, claim, conflict
+        case conflictClaimedByLabel = "conflict_claimed_by_label"
+        case conflictClaimedSecondsAgo = "conflict_claimed_seconds_ago"
+    }
+}
+
+private struct RosterClaimRequest: Encodable {
+    let userID: Int
+    let status: String
+    let takeoverConfirmed: Bool
+    enum CodingKeys: String, CodingKey {
+        case status
+        case userID = "user_id"
+        case takeoverConfirmed = "takeover_confirmed"
+    }
+}
+
+private struct AddIncidentStudentRequest: Encodable {
+    let userID: Int
+    let firstName: String
+    let lastName: String
+    let gradeLevel: String
+    let note: String?
+    enum CodingKeys: String, CodingKey {
+        case note
+        case userID = "user_id"
+        case firstName = "first_name"
+        case lastName = "last_name"
+        case gradeLevel = "grade_level"
+    }
+}
+
 // MARK: - Onboarding API methods (platform-level — use Config.backendBaseURL as baseURL)
 
 extension APIClient {
@@ -1314,5 +1434,66 @@ extension APIClient {
         let (data, response) = try await URLSession.shared.data(for: request)
         try requireSuccess(response: response, data: data)
         return try JSONDecoder().decode(ValidateSetupCodeResponse.self, from: data)
+    }
+
+    // ── Roster ─────────────────────────────────────────────────────────────────
+
+    func fetchIncidentRoster(alertId: Int, userID: Int) async throws -> IncidentRoster {
+        var comps = URLComponents(url: baseURL.appendingPathComponent("alerts/\(alertId)/roster"), resolvingAgainstBaseURL: false)!
+        comps.queryItems = [URLQueryItem(name: "user_id", value: String(userID))]
+        var request = URLRequest(url: comps.url!)
+        withAPIKey(&request)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try requireSuccess(response: response, data: data)
+        return try JSONDecoder().decode(IncidentRoster.self, from: data)
+    }
+
+    func claimStudent(alertId: Int, studentId: Int, userID: Int, status: String, takeoverConfirmed: Bool = false) async throws -> RosterClaimResult {
+        var comps = URLComponents(url: baseURL.appendingPathComponent("alerts/\(alertId)/roster/students/\(studentId)/claim"), resolvingAgainstBaseURL: false)!
+        comps.queryItems = []
+        var request = URLRequest(url: comps.url!)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        withAPIKey(&request)
+        request.httpBody = try JSONEncoder().encode(RosterClaimRequest(userID: userID, status: status, takeoverConfirmed: takeoverConfirmed))
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try requireSuccess(response: response, data: data)
+        return try JSONDecoder().decode(RosterClaimResult.self, from: data)
+    }
+
+    func claimAddition(alertId: Int, additionId: Int, userID: Int, status: String, takeoverConfirmed: Bool = false) async throws -> RosterClaimResult {
+        var comps = URLComponents(url: baseURL.appendingPathComponent("alerts/\(alertId)/roster/additions/\(additionId)/claim"), resolvingAgainstBaseURL: false)!
+        comps.queryItems = []
+        var request = URLRequest(url: comps.url!)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        withAPIKey(&request)
+        request.httpBody = try JSONEncoder().encode(RosterClaimRequest(userID: userID, status: status, takeoverConfirmed: takeoverConfirmed))
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try requireSuccess(response: response, data: data)
+        return try JSONDecoder().decode(RosterClaimResult.self, from: data)
+    }
+
+    func releaseRosterClaim(alertId: Int, claimId: Int, userID: Int) async throws {
+        var comps = URLComponents(url: baseURL.appendingPathComponent("alerts/\(alertId)/roster/claims/\(claimId)"), resolvingAgainstBaseURL: false)!
+        comps.queryItems = [URLQueryItem(name: "user_id", value: String(userID))]
+        var request = URLRequest(url: comps.url!)
+        request.httpMethod = "DELETE"
+        withAPIKey(&request)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try requireSuccess(response: response, data: data)
+    }
+
+    func addIncidentStudent(alertId: Int, userID: Int, firstName: String, lastName: String, gradeLevel: String, note: String? = nil) async throws -> RosterIncidentRow {
+        var comps = URLComponents(url: baseURL.appendingPathComponent("alerts/\(alertId)/roster/students"), resolvingAgainstBaseURL: false)!
+        comps.queryItems = []
+        var request = URLRequest(url: comps.url!)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        withAPIKey(&request)
+        request.httpBody = try JSONEncoder().encode(AddIncidentStudentRequest(userID: userID, firstName: firstName, lastName: lastName, gradeLevel: gradeLevel, note: note))
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try requireSuccess(response: response, data: data)
+        return try JSONDecoder().decode(RosterIncidentRow.self, from: data)
     }
 }

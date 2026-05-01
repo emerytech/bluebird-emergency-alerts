@@ -904,3 +904,194 @@ class HelpRequestCancellationAnalyticsResponse(BaseModel):
     cancelled: int
     cancellation_rate: float
     breakdown_by_category: List[HelpRequestCancellationCategoryBreakdown]
+
+
+# ── Roster schemas ─────────────────────────────────────────────────────────────
+
+_ALLOWED_GRADES = {"PreK", "K", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "Other"}
+_ALLOWED_CLAIM_STATUSES = {"present_with_me", "absent", "missing", "injured", "released", "unknown"}
+
+
+class StudentSummary(BaseModel):
+    student_id: int
+    first_name: str
+    last_name: str
+    grade_level: str
+    student_ref: Optional[str] = None
+
+
+class StudentDetail(StudentSummary):
+    created_at: str
+    updated_at: str
+
+
+class StudentListResponse(BaseModel):
+    students: List[StudentSummary]
+    total: int
+
+
+class CreateStudentRequest(BaseModel):
+    first_name: str = Field(..., min_length=1, max_length=80)
+    last_name: str = Field(..., min_length=1, max_length=80)
+    grade_level: str = Field(..., min_length=1, max_length=20)
+    student_ref: Optional[str] = Field(default=None, max_length=80)
+
+    @field_validator("grade_level")
+    @classmethod
+    def validate_grade(cls, v: str) -> str:
+        if v not in _ALLOWED_GRADES:
+            raise ValueError(f"grade_level must be one of: {', '.join(sorted(_ALLOWED_GRADES))}")
+        return v
+
+
+class UpdateStudentRequest(BaseModel):
+    first_name: Optional[str] = Field(default=None, min_length=1, max_length=80)
+    last_name: Optional[str] = Field(default=None, min_length=1, max_length=80)
+    grade_level: Optional[str] = Field(default=None, min_length=1, max_length=20)
+    student_ref: Optional[str] = Field(default=None, max_length=80)
+
+    @field_validator("grade_level")
+    @classmethod
+    def validate_grade(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and v not in _ALLOWED_GRADES:
+            raise ValueError(f"grade_level must be one of: {', '.join(sorted(_ALLOWED_GRADES))}")
+        return v
+
+
+class RosterClaimOut(BaseModel):
+    id: int
+    alert_id: Optional[int] = None
+    student_id: Optional[int] = None
+    addition_id: Optional[int] = None
+    claimed_by_user_id: int
+    claimed_by_label: str
+    status: str
+    claimed_at: str
+    last_updated_at: str
+
+
+class IncidentRosterRow(BaseModel):
+    student_id: Optional[int] = None
+    addition_id: Optional[int] = None
+    first_name: str
+    last_name: str
+    grade_level: str
+    student_ref: Optional[str] = None
+    note: Optional[str] = None
+    is_addition: bool = False
+    claim: Optional[RosterClaimOut] = None
+
+
+class IncidentRosterSummary(BaseModel):
+    total: int
+    unclaimed: int
+    present_with_me: int
+    absent: int
+    missing: int
+    injured: int
+    released: int
+
+
+class IncidentRoster(BaseModel):
+    alert_id: int
+    students: List[IncidentRosterRow]
+    summary: IncidentRosterSummary
+
+
+class ImportPreviewRowOut(BaseModel):
+    line: int
+    first_name: str
+    last_name: str
+    grade_level: str
+    student_ref: Optional[str] = None
+
+
+class ImportErrorRowOut(BaseModel):
+    line: int
+    error: str
+    raw: str
+
+
+class ImportPreviewOut(BaseModel):
+    session_token: str
+    valid_rows: List[ImportPreviewRowOut]
+    error_rows: List[ImportErrorRowOut]
+    duplicate_refs: List[Dict]
+    valid_count: int
+    error_count: int
+
+
+class ImportCommitRequest(BaseModel):
+    session_token: str
+    conflict_strategy: str = Field(default="skip")
+
+    @field_validator("conflict_strategy")
+    @classmethod
+    def validate_strategy(cls, v: str) -> str:
+        if v not in {"skip", "overwrite"}:
+            raise ValueError("conflict_strategy must be 'skip' or 'overwrite'")
+        return v
+
+
+class ImportResultOut(BaseModel):
+    inserted: int
+    skipped: int
+
+
+class ClaimRequest(BaseModel):
+    user_id: int
+    status: str = Field(..., description="present_with_me | absent | missing | injured | released | unknown")
+    takeover_confirmed: bool = Field(default=False)
+
+    @field_validator("status")
+    @classmethod
+    def validate_status(cls, v: str) -> str:
+        if v not in _ALLOWED_CLAIM_STATUSES:
+            raise ValueError(f"status must be one of: {', '.join(sorted(_ALLOWED_CLAIM_STATUSES))}")
+        return v
+
+
+class ClaimResultOut(BaseModel):
+    ok: bool
+    action: Optional[str] = None  # "claim" | "status_change" | "takeover"
+    claim: Optional[RosterClaimOut] = None
+    conflict: bool = False
+    conflict_claimed_by_label: Optional[str] = None
+    conflict_claimed_seconds_ago: Optional[float] = None
+
+
+class AddIncidentStudentRequest(BaseModel):
+    user_id: int
+    first_name: str = Field(..., min_length=1, max_length=80)
+    last_name: str = Field(..., min_length=1, max_length=80)
+    grade_level: str = Field(..., min_length=1, max_length=20)
+    note: Optional[str] = Field(default=None, max_length=500)
+
+    @field_validator("grade_level")
+    @classmethod
+    def validate_grade(cls, v: str) -> str:
+        if v not in _ALLOWED_GRADES:
+            raise ValueError(f"grade_level must be one of: {', '.join(sorted(_ALLOWED_GRADES))}")
+        return v
+
+
+class RosterClaimHistoryOut(BaseModel):
+    id: int
+    alert_id: int
+    student_id: Optional[int] = None
+    addition_id: Optional[int] = None
+    change_type: str
+    changed_by_user_id: int
+    changed_by_label: str
+    previous_claimed_by_user_id: Optional[int] = None
+    previous_claimed_by_label: Optional[str] = None
+    new_claimed_by_user_id: Optional[int] = None
+    new_claimed_by_label: Optional[str] = None
+    previous_status: Optional[str] = None
+    new_status: str
+    note: Optional[str] = None
+    changed_at: str
+
+
+class RosterClaimHistoryResponse(BaseModel):
+    history: List[RosterClaimHistoryOut]

@@ -744,6 +744,61 @@ data class UiState(
     val districtQuietRequests: List<DistrictQuietPeriodItem> = emptyList(),
     val districtAuditLog: List<AuditLogEntry> = emptyList(),
     val tenantSettings: TenantSettings = TenantSettings(),
+    val incidentRoster: IncidentRoster? = null,
+    val isLoadingRoster: Boolean = false,
+)
+
+// ── Roster data classes ─────────────────────────────────────────────────────────
+data class RosterClaimOut(
+    val id: Int,
+    val alertId: Int?,
+    val studentId: Int?,
+    val additionId: Int?,
+    val claimedByUserId: Int,
+    val claimedByLabel: String,
+    val status: String,
+    val claimedAt: String,
+    val lastUpdatedAt: String,
+)
+
+data class RosterIncidentRow(
+    val studentId: Int?,
+    val additionId: Int?,
+    val firstName: String,
+    val lastName: String,
+    val gradeLevel: String,
+    val studentRef: String?,
+    val note: String?,
+    val isAddition: Boolean,
+    val claim: RosterClaimOut?,
+) {
+    val fullName: String get() = "$firstName $lastName"
+    val rowId: String get() = studentId?.let { "s$it" } ?: additionId?.let { "a$it" } ?: ""
+}
+
+data class IncidentRosterSummary(
+    val total: Int,
+    val unclaimed: Int,
+    val presentWithMe: Int,
+    val absent: Int,
+    val missing: Int,
+    val injured: Int,
+    val released: Int,
+)
+
+data class IncidentRoster(
+    val alertId: Int,
+    val students: List<RosterIncidentRow>,
+    val summary: IncidentRosterSummary,
+)
+
+data class RosterClaimResult(
+    val ok: Boolean,
+    val action: String?,
+    val claim: RosterClaimOut?,
+    val conflict: Boolean,
+    val conflictClaimedByLabel: String?,
+    val conflictClaimedSecondsAgo: Double?,
 )
 
 // ── ViewModel ──────────────────────────────────────────────────────────────────
@@ -1409,6 +1464,56 @@ class MainViewModel : ViewModel() {
         }
     }
 
+    // ── Roster ──────────────────────────────────────────────────────────────────
+
+    fun loadIncidentRoster(ctx: Context, alertId: Int) {
+        val userId = getUserId(ctx).toIntOrNull() ?: return
+        _state.update { it.copy(isLoadingRoster = true) }
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { client!!.getIncidentRoster(alertId, userId) }
+                .onSuccess { roster -> _state.update { it.copy(incidentRoster = roster, isLoadingRoster = false) } }
+                .onFailure { e -> _state.update { it.copy(errorMsg = e.message ?: "Failed to load roster.", isLoadingRoster = false) } }
+        }
+    }
+
+    fun claimRosterStudent(ctx: Context, alertId: Int, studentId: Int?, additionId: Int?, status: String, takeoverConfirmed: Boolean = false, onConflict: (String) -> Unit) {
+        val userId = getUserId(ctx).toIntOrNull() ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                if (studentId != null) client!!.claimStudent(alertId, studentId, userId, status, takeoverConfirmed)
+                else client!!.claimAddition(alertId, additionId!!, userId, status, takeoverConfirmed)
+            }
+                .onSuccess { result ->
+                    if (result.conflict) {
+                        val who = result.conflictClaimedByLabel ?: "someone"
+                        val secs = result.conflictClaimedSecondsAgo?.toInt() ?: 0
+                        onConflict("$who claimed this ${secs}s ago. Confirm takeover?")
+                    } else {
+                        loadIncidentRoster(ctx, alertId)
+                    }
+                }
+                .onFailure { e -> _state.update { it.copy(errorMsg = e.message ?: "Failed to update claim.") } }
+        }
+    }
+
+    fun releaseRosterClaim(ctx: Context, alertId: Int, claimId: Int) {
+        val userId = getUserId(ctx).toIntOrNull() ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { client!!.releaseRosterClaim(alertId, claimId, userId) }
+                .onSuccess { loadIncidentRoster(ctx, alertId) }
+                .onFailure { e -> _state.update { it.copy(errorMsg = e.message ?: "Failed to release claim.") } }
+        }
+    }
+
+    fun addIncidentStudent(ctx: Context, alertId: Int, firstName: String, lastName: String, gradeLevel: String, note: String?) {
+        val userId = getUserId(ctx).toIntOrNull() ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { client!!.addIncidentStudent(alertId, userId, firstName, lastName, gradeLevel, note) }
+                .onSuccess { loadIncidentRoster(ctx, alertId) }
+                .onFailure { e -> _state.update { it.copy(errorMsg = e.message ?: "Failed to add student.") } }
+        }
+    }
+
     fun loadDistrictOverview(ctx: Context) {
         val userId = getUserId(ctx).toIntOrNull() ?: return
         viewModelScope.launch(Dispatchers.IO) {
@@ -1771,6 +1876,17 @@ class MainViewModel : ViewModel() {
                 }
             }
             "new_user_message", "admin_reply" -> { /* handled server-side, no client action needed */ }
+            "roster.claim.updated" -> {
+                val currentRoster = _state.value.incidentRoster
+                val uid = cachedUserId ?: 0
+                if (currentRoster != null && uid > 0) {
+                    val alertId = obj.optInt("alert_id").takeIf { it != 0 } ?: currentRoster.alertId
+                    viewModelScope.launch(Dispatchers.IO) {
+                        runCatching { client!!.getIncidentRoster(alertId, uid) }
+                            .onSuccess { roster -> _state.update { it.copy(incidentRoster = roster) } }
+                    }
+                }
+            }
             "help_request_acknowledged", "help_request_resolved" -> {
                 viewModelScope.launch(Dispatchers.IO) {
                     runCatching { client!!.activeRequestHelp() }
@@ -2347,6 +2463,7 @@ private enum class DashboardPanel {
     Home,
     Messaging,
     QuietPeriod,
+    Roster,
 }
 
 @Composable
@@ -2809,6 +2926,8 @@ private fun MainScreen(
                     AlarmBanner(
                         alarm = state.alarm,
                         schoolName = effectiveSchoolName,
+                        unreadMessageCount = state.unreadAdminMessages,
+                        onOpenMessaging = { activePanel = DashboardPanel.Messaging },
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(horizontal = 20.dp, vertical = 8.dp),
@@ -2965,6 +3084,18 @@ private fun MainScreen(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .padding(horizontal = 20.dp, vertical = 4.dp),
+                            )
+                        }
+                    }
+
+                    if (activePanel == DashboardPanel.Roster && state.alarm.isActive) {
+                        val alertId = state.alarm.currentAlertId ?: 0
+                        if (alertId > 0) {
+                            RosterScreen(
+                                alertId = alertId,
+                                ctx = ctx,
+                                onDismiss = { activePanel = DashboardPanel.Home },
+                                vm = vm,
                             )
                         }
                     }
@@ -3719,6 +3850,18 @@ private fun DashboardPanelTabsCard(
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
+                }
+
+                Button(
+                    onClick = { onSelectPanel(DashboardPanel.Roster) },
+                    modifier = Modifier.weight(1f).height(44.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (activePanel == DashboardPanel.Roster) Color(0xFF065F46) else SurfaceSoft,
+                        contentColor = if (activePanel == DashboardPanel.Roster) Color(0xFF4ADE80) else TextPri,
+                    ),
+                    shape = RoundedCornerShape(16.dp),
+                ) {
+                    Text("Roster", fontWeight = FontWeight.SemiBold, fontSize = 13.sp, maxLines = 1)
                 }
             }
         }
@@ -4984,7 +5127,15 @@ private fun QuietPeriodDeleteConfirmOverlay(
 }
 
 @Composable
-private fun AlarmBanner(alarm: AlarmStatus, schoolName: String = "", modifier: Modifier = Modifier) {
+private fun AlarmBanner(
+    alarm: AlarmStatus,
+    schoolName: String = "",
+    unreadMessageCount: Int = 0,
+    onOpenMessaging: (() -> Unit)? = null,
+    // TODO: wire onOpenAccountability once the accountability dashboard is built
+    onOpenAccountability: (() -> Unit)? = null,
+    modifier: Modifier = Modifier,
+) {
     val pulse = rememberInfiniteTransition(label = "pulse")
     val pulseAlpha by pulse.animateFloat(
         initialValue = 1f,
@@ -5053,13 +5204,94 @@ private fun AlarmBanner(alarm: AlarmStatus, schoolName: String = "", modifier: M
                 alarm.activatedAt?.let {
                     Text("Activated: $it", fontSize = 12.sp, color = Color(0xFFFFCDD2))
                 }
-                if (alarm.acknowledgementCount > 0) {
-                    Text(
-                        "✓ ${alarm.acknowledgementCount} acknowledged",
-                        fontSize = 12.sp,
-                        color = Color(0xFFA7F3D0),
-                        fontWeight = FontWeight.SemiBold,
-                    )
+                // ── Live status row ───────────────────────────────────
+                // Color intelligence
+                val isFullyAcked = alarm.expectedUserCount > 0
+                    && alarm.acknowledgementCount >= alarm.expectedUserCount
+                val ackColor = if (isFullyAcked) Color(0xFF4ADE80) else Color(0xFFA7F3D0)
+                // Any unread message during an active alarm is treated as urgent
+                val hasCritical = unreadMessageCount > 0
+                val msgColor = if (hasCritical) Color(0xFFFF9800) else Color(0xFF90CAF9)
+
+                val animAckCount by animateIntAsState(alarm.acknowledgementCount, label = "ackCount")
+
+                // One-shot bounce when a new message arrives
+                var prevMsgCount by remember { mutableIntStateOf(unreadMessageCount) }
+                var msgPulse by remember { mutableStateOf(false) }
+                LaunchedEffect(unreadMessageCount) {
+                    if (unreadMessageCount > prevMsgCount) {
+                        msgPulse = true
+                        kotlinx.coroutines.delay(600)
+                        msgPulse = false
+                    }
+                    prevMsgCount = unreadMessageCount
+                }
+                val msgBounceScale by animateFloatAsState(
+                    targetValue = if (msgPulse) 1.18f else 1f,
+                    animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy),
+                    label = "msgBounce",
+                )
+
+                // Continuous alpha pulse while critical messages are unread
+                val criticalPulse = rememberInfiniteTransition(label = "criticalMsg")
+                val criticalAlpha by criticalPulse.animateFloat(
+                    initialValue = 1f,
+                    targetValue = if (hasCritical) 0.50f else 1f,
+                    animationSpec = infiniteRepeatable(
+                        animation = tween(820, easing = EaseInOut),
+                        repeatMode = RepeatMode.Reverse,
+                    ),
+                    label = "criticalAlpha",
+                )
+
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    // 👥 Acknowledgements
+                    // TODO: add onOpenAccountability click once accountability dashboard is built
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        Text("👥", fontSize = 14.sp, color = ackColor)
+                        Text(
+                            if (alarm.expectedUserCount > 0)
+                                "$animAckCount / ${alarm.expectedUserCount}"
+                            else
+                                "$animAckCount acknowledged",
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = ackColor,
+                        )
+                        if (isFullyAcked) {
+                            Text("✓", fontSize = 11.sp, fontWeight = FontWeight.Black, color = ackColor)
+                        }
+                    }
+
+                    // 💬 Unread messages — tap to open Messaging panel
+                    if (unreadMessageCount > 0) {
+                        Row(
+                            modifier = Modifier
+                                .graphicsLayer {
+                                    scaleX = msgBounceScale; scaleY = msgBounceScale
+                                    alpha = criticalAlpha
+                                }
+                                .clickable(enabled = onOpenMessaging != null) {
+                                    onOpenMessaging?.invoke()
+                                },
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        ) {
+                            Text("💬", fontSize = 14.sp, color = msgColor)
+                            Text(
+                                "$unreadMessageCount new",
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = msgColor,
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -8188,6 +8420,123 @@ internal class BackendClient(baseUrl: String, private val apiKey: String) {
                 ),
             )
         }
+    }
+
+    // ── Roster ──────────────────────────────────────────────────────────────────
+
+    fun getIncidentRoster(alertId: Int, userId: Int): IncidentRoster {
+        val req = Request.Builder()
+            .url("$base/alerts/$alertId/roster?user_id=$userId")
+            .withAuth().get().build()
+        http.newCall(req).execute().use { res ->
+            val j = JSONObject(requireSuccess(res))
+            return parseIncidentRoster(j)
+        }
+    }
+
+    fun claimStudent(alertId: Int, studentId: Int, userId: Int, status: String, takeoverConfirmed: Boolean = false): RosterClaimResult {
+        val body = JSONObject().put("user_id", userId).put("status", status).put("takeover_confirmed", takeoverConfirmed)
+        val req = Request.Builder()
+            .url("$base/alerts/$alertId/roster/students/$studentId/claim")
+            .withAuth().post(body.toString().toRequestBody(json)).build()
+        http.newCall(req).execute().use { res ->
+            return parseClaimResult(JSONObject(requireSuccess(res)))
+        }
+    }
+
+    fun claimAddition(alertId: Int, additionId: Int, userId: Int, status: String, takeoverConfirmed: Boolean = false): RosterClaimResult {
+        val body = JSONObject().put("user_id", userId).put("status", status).put("takeover_confirmed", takeoverConfirmed)
+        val req = Request.Builder()
+            .url("$base/alerts/$alertId/roster/additions/$additionId/claim")
+            .withAuth().post(body.toString().toRequestBody(json)).build()
+        http.newCall(req).execute().use { res ->
+            return parseClaimResult(JSONObject(requireSuccess(res)))
+        }
+    }
+
+    fun releaseRosterClaim(alertId: Int, claimId: Int, userId: Int) {
+        val req = Request.Builder()
+            .url("$base/alerts/$alertId/roster/claims/$claimId?user_id=$userId")
+            .withAuth().delete().build()
+        http.newCall(req).execute().use { res -> requireSuccess(res) }
+    }
+
+    fun addIncidentStudent(alertId: Int, userId: Int, firstName: String, lastName: String, gradeLevel: String, note: String?): RosterIncidentRow {
+        val body = JSONObject()
+            .put("user_id", userId)
+            .put("first_name", firstName.trim())
+            .put("last_name", lastName.trim())
+            .put("grade_level", gradeLevel)
+        if (note != null) body.put("note", note)
+        val req = Request.Builder()
+            .url("$base/alerts/$alertId/roster/students")
+            .withAuth().post(body.toString().toRequestBody(json)).build()
+        http.newCall(req).execute().use { res ->
+            return parseIncidentRow(JSONObject(requireSuccess(res)))
+        }
+    }
+
+    private fun parseClaimOut(j: JSONObject?): RosterClaimOut? {
+        if (j == null || j.isNull("id")) return null
+        return RosterClaimOut(
+            id = j.getInt("id"),
+            alertId = if (j.isNull("alert_id")) null else j.optInt("alert_id").takeIf { it != 0 },
+            studentId = if (j.isNull("student_id")) null else j.optInt("student_id").takeIf { it != 0 },
+            additionId = if (j.isNull("addition_id")) null else j.optInt("addition_id").takeIf { it != 0 },
+            claimedByUserId = j.getInt("claimed_by_user_id"),
+            claimedByLabel = j.optString("claimed_by_label"),
+            status = j.optString("status"),
+            claimedAt = j.optString("claimed_at"),
+            lastUpdatedAt = j.optString("last_updated_at"),
+        )
+    }
+
+    private fun parseIncidentRow(j: JSONObject): RosterIncidentRow {
+        val claimObj = if (j.isNull("claim")) null else j.optJSONObject("claim")
+        return RosterIncidentRow(
+            studentId = if (j.isNull("student_id")) null else j.optInt("student_id").takeIf { it != 0 },
+            additionId = if (j.isNull("addition_id")) null else j.optInt("addition_id").takeIf { it != 0 },
+            firstName = j.optString("first_name"),
+            lastName = j.optString("last_name"),
+            gradeLevel = j.optString("grade_level"),
+            studentRef = j.optNullableString("student_ref"),
+            note = j.optNullableString("note"),
+            isAddition = j.optBoolean("is_addition"),
+            claim = parseClaimOut(claimObj),
+        )
+    }
+
+    private fun parseIncidentRoster(j: JSONObject): IncidentRoster {
+        val rows = j.optJSONArray("students")
+        val students = buildList {
+            if (rows != null) for (i in 0 until rows.length()) add(parseIncidentRow(rows.getJSONObject(i)))
+        }
+        val s = j.optJSONObject("summary") ?: JSONObject()
+        return IncidentRoster(
+            alertId = j.getInt("alert_id"),
+            students = students,
+            summary = IncidentRosterSummary(
+                total = s.optInt("total"),
+                unclaimed = s.optInt("unclaimed"),
+                presentWithMe = s.optInt("present_with_me"),
+                absent = s.optInt("absent"),
+                missing = s.optInt("missing"),
+                injured = s.optInt("injured"),
+                released = s.optInt("released"),
+            ),
+        )
+    }
+
+    private fun parseClaimResult(j: JSONObject): RosterClaimResult {
+        val claimObj = if (j.isNull("claim")) null else j.optJSONObject("claim")
+        return RosterClaimResult(
+            ok = j.optBoolean("ok"),
+            action = j.optNullableString("action"),
+            claim = parseClaimOut(claimObj),
+            conflict = j.optBoolean("conflict"),
+            conflictClaimedByLabel = j.optNullableString("conflict_claimed_by_label"),
+            conflictClaimedSecondsAgo = if (j.isNull("conflict_claimed_seconds_ago")) null else j.optDouble("conflict_claimed_seconds_ago").takeIf { !it.isNaN() },
+        )
     }
 
     private fun requireSuccess(res: okhttp3.Response): String {

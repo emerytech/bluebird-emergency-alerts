@@ -23,6 +23,7 @@ from app.services.alert_message_store import AlertMessageStore
 from app.services.tenant_settings_store import TenantSettingsStore
 from app.services.user_store import UserStore
 from app.services.session_store import SessionStore
+from app.services.roster_store import RosterStore
 
 
 _SLUG_RE = re.compile(r"[^a-z0-9-]+")
@@ -51,6 +52,7 @@ class TenantContext:
     drill_report_service: DrillReportService
     settings_store: TenantSettingsStore
     message_store: AlertMessageStore
+    roster_store: RosterStore
 
 
 class TenantManager:
@@ -133,6 +135,7 @@ class TenantManager:
                 drill_report_service=DrillReportService(db_path),
                 settings_store=TenantSettingsStore(db_path),
                 message_store=AlertMessageStore(db_path),
+                roster_store=RosterStore(db_path),
             )
             self._cache[normalized] = tenant
             return tenant

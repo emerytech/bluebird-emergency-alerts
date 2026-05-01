@@ -115,6 +115,25 @@ from app.models.schemas import (
     UnacknowledgedUserOut,
     AlertAccountabilityResponse,
     AlertRemindResponse,
+    StudentSummary,
+    StudentDetail,
+    StudentListResponse,
+    CreateStudentRequest,
+    UpdateStudentRequest,
+    RosterClaimOut,
+    IncidentRosterRow,
+    IncidentRosterSummary,
+    IncidentRoster,
+    ImportPreviewOut,
+    ImportPreviewRowOut,
+    ImportErrorRowOut,
+    ImportCommitRequest,
+    ImportResultOut,
+    ClaimRequest,
+    ClaimResultOut,
+    AddIncidentStudentRequest,
+    RosterClaimHistoryOut,
+    RosterClaimHistoryResponse,
 )
 from app.services.access_code_service import AccessCodeService
 from app.services.demo_live_engine import DemoLiveEngine
@@ -151,6 +170,9 @@ from app.services.permissions import (
     PERM_MANAGE_ASSIGNED_TENANTS,
     PERM_MANAGE_OWN_TENANT_USERS,
     PERM_REQUEST_HELP,
+    PERM_ROSTER_CLAIM,
+    PERM_ROSTER_MANAGE,
+    PERM_ROSTER_VIEW,
     PERM_SUBMIT_QUIET_REQUEST,
     PERM_TRIGGER_OWN_TENANT_ALERTS,
     ROLE_ADMIN,
@@ -476,6 +498,10 @@ def _message_store(req: Request):
     return _tenant(req).message_store  # type: ignore[attr-defined]
 
 
+def _roster_store(req: Request):
+    return _tenant(req).roster_store  # type: ignore[attr-defined]
+
+
 def _session_user_id(request: Request) -> Optional[int]:
     value = request.session.get("admin_user_id")
     return int(value) if isinstance(value, int) or isinstance(value, str) and str(value).isdigit() else None
@@ -526,7 +552,7 @@ def _pop_flash(request: Request) -> tuple[Optional[str], Optional[str]]:
 
 def _admin_section(value: Optional[str]) -> str:
     normalized = str(value or "").strip().lower()
-    if normalized in {"dashboard", "user-management", "access-codes", "quiet-periods", "audit-logs", "settings", "drill-reports", "district", "devices", "analytics", "district-reports"}:
+    if normalized in {"dashboard", "user-management", "access-codes", "quiet-periods", "audit-logs", "settings", "drill-reports", "district", "devices", "analytics", "district-reports", "roster"}:
         return normalized
     return "dashboard"
 
@@ -2733,6 +2759,10 @@ async def admin_dashboard(
     _ws_user_id = int(getattr(request.state.admin_user, "id", 0) or 0)
     _ws_home_tenant_slug = str(request.state.school.slug)
 
+    _roster_students: list = []
+    if selected_section == "roster":
+        _roster_students = await _roster_store(request).list_students()
+
     _settings_history: list = []
     _effective_settings = None
     _can_edit_tenant_settings = False
@@ -2818,6 +2848,7 @@ async def admin_dashboard(
         effective_settings=_effective_settings,
         can_edit_tenant_settings=_can_edit_tenant_settings,
         billing_banner=_billing_banner,
+        roster_students=_roster_students,
     )
     return HTMLResponse(content=html)
 
@@ -12263,3 +12294,457 @@ async def super_admin_training_completion(request: Request, tenant: Optional[str
     else:
         records = []
     return JSONResponse({"ok": True, "records": [r.to_dict() for r in records]})
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Roster — master student list (CRUD + CSV import)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _claim_record_to_out(c) -> RosterClaimOut:
+    """Convert a RosterClaimRecord (from upsert_claim) to RosterClaimOut."""
+    return RosterClaimOut(
+        id=c.id,
+        alert_id=c.alert_id,
+        student_id=c.student_id,
+        addition_id=c.addition_id,
+        claimed_by_user_id=c.claimed_by_user_id,
+        claimed_by_label=c.claimed_by_label,
+        status=c.status,
+        claimed_at=c.claimed_at,
+        last_updated_at=c.last_updated_at,
+    )
+
+
+def _claim_dict_to_out(d: dict) -> RosterClaimOut:
+    """Convert the dict from list_incident_roster_sync._claim_to_dict to RosterClaimOut."""
+    return RosterClaimOut(
+        id=d["id"],
+        claimed_by_user_id=d["claimed_by_user_id"],
+        claimed_by_label=d["claimed_by_label"],
+        status=d["status"],
+        claimed_at=d["claimed_at"],
+        last_updated_at=d["last_updated_at"],
+    )
+
+
+@router.get("/roster/students", response_model=StudentListResponse)
+async def list_students(
+    request: Request,
+    user_id: int = Query(...),
+    grade_level: Optional[str] = Query(default=None),
+    q: Optional[str] = Query(default=None),
+    include_archived: bool = Query(default=False),
+    _: None = Depends(require_api_key),
+) -> StudentListResponse:
+    _assert_tenant_resolved(request)
+    await _require_active_user_with_permission(_users(request), user_id, permission=PERM_ROSTER_VIEW)
+    records = await _roster_store(request).list_students(
+        grade=grade_level, q=q, include_archived=include_archived
+    )
+    return StudentListResponse(
+        students=[
+            StudentSummary(
+                student_id=r.id,
+                first_name=r.first_name,
+                last_name=r.last_name,
+                grade_level=r.grade_level,
+                student_ref=r.student_ref,
+            )
+            for r in records
+        ],
+        total=len(records),
+    )
+
+
+@router.get("/roster/students/{student_id}", response_model=StudentDetail)
+async def get_student(
+    student_id: int,
+    request: Request,
+    user_id: int = Query(...),
+    _: None = Depends(require_api_key),
+) -> StudentDetail:
+    _assert_tenant_resolved(request)
+    await _require_active_user_with_permission(_users(request), user_id, permission=PERM_ROSTER_VIEW)
+    record = await _roster_store(request).get_student(student_id)
+    if record is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Student not found")
+    return StudentDetail(
+        student_id=record.id,
+        first_name=record.first_name,
+        last_name=record.last_name,
+        grade_level=record.grade_level,
+        student_ref=record.student_ref,
+        created_at=record.created_at,
+        updated_at=record.updated_at,
+    )
+
+
+@router.post("/roster/students", response_model=StudentDetail, status_code=201)
+async def create_student(
+    body: CreateStudentRequest,
+    request: Request,
+    user_id: int = Query(...),
+    _: None = Depends(require_api_key),
+) -> StudentDetail:
+    _assert_tenant_resolved(request)
+    await _require_active_user_with_permission(_users(request), user_id, permission=PERM_ROSTER_MANAGE)
+    record = await _roster_store(request).create_student(
+        first_name=body.first_name,
+        last_name=body.last_name,
+        grade_level=body.grade_level,
+        student_ref=body.student_ref,
+    )
+    return StudentDetail(
+        student_id=record.id,
+        first_name=record.first_name,
+        last_name=record.last_name,
+        grade_level=record.grade_level,
+        student_ref=record.student_ref,
+        created_at=record.created_at,
+        updated_at=record.updated_at,
+    )
+
+
+@router.patch("/roster/students/{student_id}", response_model=StudentDetail)
+async def update_student(
+    student_id: int,
+    body: UpdateStudentRequest,
+    request: Request,
+    user_id: int = Query(...),
+    _: None = Depends(require_api_key),
+) -> StudentDetail:
+    _assert_tenant_resolved(request)
+    await _require_active_user_with_permission(_users(request), user_id, permission=PERM_ROSTER_MANAGE)
+    record = await _roster_store(request).update_student(
+        student_id,
+        first_name=body.first_name,
+        last_name=body.last_name,
+        grade_level=body.grade_level,
+        student_ref=body.student_ref,
+    )
+    if record is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Student not found")
+    return StudentDetail(
+        student_id=record.id,
+        first_name=record.first_name,
+        last_name=record.last_name,
+        grade_level=record.grade_level,
+        student_ref=record.student_ref,
+        created_at=record.created_at,
+        updated_at=record.updated_at,
+    )
+
+
+@router.delete("/roster/students/{student_id}", status_code=204)
+async def archive_student(
+    student_id: int,
+    request: Request,
+    user_id: int = Query(...),
+    _: None = Depends(require_api_key),
+) -> None:
+    _assert_tenant_resolved(request)
+    await _require_active_user_with_permission(_users(request), user_id, permission=PERM_ROSTER_MANAGE)
+    ok = await _roster_store(request).archive_student(student_id)
+    if not ok:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Student not found")
+
+
+# ── CSV import ────────────────────────────────────────────────────────────────
+
+@router.post("/roster/students/import/preview", response_model=ImportPreviewOut)
+async def roster_import_preview(
+    request: Request,
+    user_id: int = Query(...),
+    file: UploadFile = File(...),
+    _: None = Depends(require_api_key),
+) -> ImportPreviewOut:
+    _assert_tenant_resolved(request)
+    await _require_active_user_with_permission(_users(request), user_id, permission=PERM_ROSTER_MANAGE)
+    raw = await file.read()
+    preview = await _roster_store(request).parse_csv_preview(csv_bytes=raw)
+    return ImportPreviewOut(
+        session_token=preview.session_token,
+        valid_rows=[
+            ImportPreviewRowOut(
+                line=r.line,
+                first_name=r.first_name,
+                last_name=r.last_name,
+                grade_level=r.grade_level,
+                student_ref=r.student_ref,
+            )
+            for r in preview.valid_rows
+        ],
+        error_rows=[
+            ImportErrorRowOut(line=e.line, error=e.error, raw=e.raw)
+            for e in preview.error_rows
+        ],
+        duplicate_refs=preview.duplicate_refs,
+        valid_count=len(preview.valid_rows),
+        error_count=len(preview.error_rows),
+    )
+
+
+@router.post("/roster/students/import/commit", response_model=ImportResultOut)
+async def roster_import_commit(
+    body: ImportCommitRequest,
+    request: Request,
+    user_id: int = Query(...),
+    _: None = Depends(require_api_key),
+) -> ImportResultOut:
+    _assert_tenant_resolved(request)
+    await _require_active_user_with_permission(_users(request), user_id, permission=PERM_ROSTER_MANAGE)
+    try:
+        result = await _roster_store(request).commit_import(
+            session_token=body.session_token,
+            conflict_strategy=body.conflict_strategy,
+        )
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid or expired import session")
+    return ImportResultOut(inserted=result.inserted, skipped=result.skipped_duplicates)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Roster — incident roster (per active alert)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.get("/alerts/{alert_id}/roster", response_model=IncidentRoster)
+async def get_incident_roster(
+    alert_id: int,
+    request: Request,
+    user_id: int = Query(...),
+    _: None = Depends(require_api_key),
+) -> IncidentRoster:
+    _assert_tenant_resolved(request)
+    await _require_active_user_with_permission(_users(request), user_id, permission=PERM_ROSTER_VIEW)
+    alert = await _alert_log(request).get_alert(alert_id)
+    if alert is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Alert not found")
+    result = await _roster_store(request).list_incident_roster(alert_id=alert_id)
+    rows = [
+        IncidentRosterRow(
+            student_id=r["student_id"],
+            addition_id=r["addition_id"],
+            first_name=r["first_name"],
+            last_name=r["last_name"],
+            grade_level=r["grade_level"],
+            student_ref=r.get("student_ref"),
+            note=r.get("note"),
+            is_addition=(r.get("source") == "incident_addition"),
+            claim=_claim_dict_to_out(r["claim"]) if r.get("claim") else None,
+        )
+        for r in result["students"]
+    ]
+    s = result["summary"]
+    summary = IncidentRosterSummary(
+        total=s["total"],
+        unclaimed=s["unclaimed"],
+        present_with_me=s["present_with_me"],
+        absent=s["absent"],
+        missing=s["missing"],
+        injured=s["injured"],
+        released=s["released"],
+    )
+    return IncidentRoster(alert_id=alert_id, students=rows, summary=summary)
+
+
+@router.post("/alerts/{alert_id}/roster/students", response_model=IncidentRosterRow, status_code=201)
+async def add_incident_student(
+    alert_id: int,
+    body: AddIncidentStudentRequest,
+    request: Request,
+    _: None = Depends(require_api_key),
+) -> IncidentRosterRow:
+    _assert_tenant_resolved(request)
+    user = await _users(request).get_user(body.user_id)
+    if user is None or not user.is_active:
+        raise HTTPException(status_code=403, detail="Active user required")
+    if not can_any(user.role, {PERM_ROSTER_CLAIM, PERM_ROSTER_MANAGE}):
+        raise HTTPException(status_code=403, detail="Permission denied")
+    alert = await _alert_log(request).get_alert(alert_id)
+    if alert is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Alert not found")
+    claimer_label = user.login_name or user.name or f"user:{user.id}"
+    addition, claim = await _roster_store(request).add_incident_student(
+        alert_id,
+        first_name=body.first_name,
+        last_name=body.last_name,
+        grade_level=body.grade_level,
+        note=body.note,
+        added_by_user_id=body.user_id,
+        added_by_label=claimer_label,
+    )
+    await _publish_simple_event(
+        request,
+        event="roster.claim.updated",
+        extra={"alert_id": alert_id, "addition_id": addition.id},
+    )
+    return IncidentRosterRow(
+        student_id=None,
+        addition_id=addition.id,
+        first_name=addition.first_name,
+        last_name=addition.last_name,
+        grade_level=addition.grade_level,
+        note=addition.note,
+        is_addition=True,
+        claim=_claim_record_to_out(claim) if claim else None,
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Roster — claims
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.post("/alerts/{alert_id}/roster/students/{student_id}/claim", response_model=ClaimResultOut)
+async def claim_student(
+    alert_id: int,
+    student_id: int,
+    body: ClaimRequest,
+    request: Request,
+    _: None = Depends(require_api_key),
+) -> ClaimResultOut:
+    _assert_tenant_resolved(request)
+    user = await _users(request).get_user(body.user_id)
+    if user is None or not user.is_active:
+        raise HTTPException(status_code=403, detail="Active user required")
+    if not can_any(user.role, {PERM_ROSTER_CLAIM, PERM_ROSTER_MANAGE}):
+        raise HTTPException(status_code=403, detail="Permission denied")
+    alert = await _alert_log(request).get_alert(alert_id)
+    if alert is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Alert not found")
+    claimer_label = user.login_name or user.name or f"user:{user.id}"
+    result = await _roster_store(request).upsert_claim(
+        alert_id,
+        student_id=student_id,
+        status=body.status,
+        claimant_user_id=body.user_id,
+        claimant_label=claimer_label,
+        takeover_confirmed=body.takeover_confirmed,
+    )
+    if result.conflict is not None:
+        return ClaimResultOut(
+            ok=False,
+            conflict=True,
+            conflict_claimed_by_label=result.conflict.was_claimed_by_label,
+            conflict_claimed_seconds_ago=result.conflict.claimed_seconds_ago,
+        )
+    await _publish_simple_event(
+        request,
+        event="roster.claim.updated",
+        extra={"alert_id": alert_id, "student_id": student_id},
+    )
+    return ClaimResultOut(
+        ok=True,
+        action=result.history_id and "claim" or "claim",
+        claim=_claim_record_to_out(result.claim),
+    )
+
+
+@router.post("/alerts/{alert_id}/roster/additions/{addition_id}/claim", response_model=ClaimResultOut)
+async def claim_addition(
+    alert_id: int,
+    addition_id: int,
+    body: ClaimRequest,
+    request: Request,
+    _: None = Depends(require_api_key),
+) -> ClaimResultOut:
+    _assert_tenant_resolved(request)
+    user = await _users(request).get_user(body.user_id)
+    if user is None or not user.is_active:
+        raise HTTPException(status_code=403, detail="Active user required")
+    if not can_any(user.role, {PERM_ROSTER_CLAIM, PERM_ROSTER_MANAGE}):
+        raise HTTPException(status_code=403, detail="Permission denied")
+    alert = await _alert_log(request).get_alert(alert_id)
+    if alert is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Alert not found")
+    claimer_label = user.login_name or user.name or f"user:{user.id}"
+    result = await _roster_store(request).upsert_claim(
+        alert_id,
+        addition_id=addition_id,
+        status=body.status,
+        claimant_user_id=body.user_id,
+        claimant_label=claimer_label,
+        takeover_confirmed=body.takeover_confirmed,
+    )
+    if result.conflict is not None:
+        return ClaimResultOut(
+            ok=False,
+            conflict=True,
+            conflict_claimed_by_label=result.conflict.was_claimed_by_label,
+            conflict_claimed_seconds_ago=result.conflict.claimed_seconds_ago,
+        )
+    await _publish_simple_event(
+        request,
+        event="roster.claim.updated",
+        extra={"alert_id": alert_id, "addition_id": addition_id},
+    )
+    return ClaimResultOut(
+        ok=True,
+        action="claim",
+        claim=_claim_record_to_out(result.claim),
+    )
+
+
+@router.delete("/alerts/{alert_id}/roster/claims/{claim_id}", status_code=204)
+async def release_roster_claim(
+    alert_id: int,
+    claim_id: int,
+    request: Request,
+    user_id: int = Query(...),
+    _: None = Depends(require_api_key),
+) -> None:
+    _assert_tenant_resolved(request)
+    user = await _users(request).get_user(user_id)
+    if user is None or not user.is_active:
+        raise HTTPException(status_code=403, detail="Active user required")
+    if not can_any(user.role, {PERM_ROSTER_CLAIM, PERM_ROSTER_MANAGE}):
+        raise HTTPException(status_code=403, detail="Permission denied")
+    actor_label = user.login_name or user.name or f"user:{user.id}"
+    ok = await _roster_store(request).release_claim(
+        alert_id, claim_id,
+        released_by_user_id=user_id,
+        released_by_label=actor_label,
+    )
+    if not ok:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Claim not found")
+    await _publish_simple_event(
+        request,
+        event="roster.claim.updated",
+        extra={"alert_id": alert_id, "claim_id": claim_id},
+    )
+
+
+@router.get("/alerts/{alert_id}/roster/history", response_model=RosterClaimHistoryResponse)
+async def get_roster_claim_history(
+    alert_id: int,
+    request: Request,
+    user_id: int = Query(...),
+    _: None = Depends(require_api_key),
+) -> RosterClaimHistoryResponse:
+    _assert_tenant_resolved(request)
+    await _require_active_user_with_permission(_users(request), user_id, permission=PERM_ROSTER_MANAGE)
+    alert = await _alert_log(request).get_alert(alert_id)
+    if alert is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Alert not found")
+    records = await _roster_store(request).list_claim_history(alert_id=alert_id)
+    return RosterClaimHistoryResponse(
+        history=[
+            RosterClaimHistoryOut(
+                id=r.id,
+                alert_id=r.alert_id,
+                student_id=r.student_id,
+                addition_id=r.addition_id,
+                change_type=r.change_type,
+                changed_by_user_id=r.changed_by_user_id,
+                changed_by_label=r.changed_by_label,
+                previous_claimed_by_user_id=r.previous_claimed_by_user_id,
+                previous_claimed_by_label=r.previous_claimed_by_label,
+                new_claimed_by_user_id=r.new_claimed_by_user_id,
+                new_claimed_by_label=r.new_claimed_by_label,
+                previous_status=r.previous_status,
+                new_status=r.new_status,
+                note=r.note,
+                changed_at=r.changed_at,
+            )
+            for r in records
+        ]
+    )

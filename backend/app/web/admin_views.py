@@ -6994,6 +6994,7 @@ def _render_school_cards(items: Sequence[Mapping[str, object]], school_path_pref
             ack_html = f'<span class="status-pill danger">{ack_count}/{expected_users} ({ack_rate:.0f}%)</span>'
 
         manage_url = f"{prefix}/admin?tenant={escape(slug)}&section=dashboard"
+        roster_url = f"{prefix}/admin?tenant={escape(slug)}&section=roster"
         cards.append(
             f"<div class='school-card {card_mod}' draggable='true'"
             f" data-slug='{escape(slug)}' data-tenant-slug='{escape(slug)}'"
@@ -7007,6 +7008,10 @@ def _render_school_cards(items: Sequence[Mapping[str, object]], school_path_pref
             f"  <div class='school-card-footer'>"
             f"    <span class='school-card-last'>&#128337; {last_alert_str} UTC</span>"
             f"    {ack_html}"
+            f"  </div>"
+            f"  <div style='padding:8px 12px 10px;border-top:1px solid var(--border,#e5e7eb);display:flex;gap:6px;'>"
+            f"    <a class='button button-secondary' style='font-size:11px;padding:4px 10px;min-height:auto;' href='{manage_url}' onclick='event.stopPropagation()'>Manage</a>"
+            f"    <a class='button button-secondary' style='font-size:11px;padding:4px 10px;min-height:auto;' href='{roster_url}' onclick='event.stopPropagation()'>&#128100; Roster</a>"
             f"  </div>"
             f"</div>"
         )
@@ -8111,6 +8116,451 @@ def _render_settings_panels(
         </section>"""
 
 
+def _render_roster_section(
+    students: "Sequence[object]",
+    prefix: str,
+    section_style: str,
+    api_key: str,
+    alarm_active: bool = False,
+    alert_id: Optional[int] = None,
+) -> str:
+    _grade_order = ["PreK", "K"] + [str(i) for i in range(1, 13)] + ["Other"]
+    _GRADE_OPTS = "".join(f'<option value="{g}">{g}</option>' for g in _grade_order)
+    _GRADE_FILTER = '<option value="">All grades</option>' + "".join(
+        f'<option value="{g}">{g}</option>' for g in _grade_order
+    )
+    _student_list = list(students)
+    _total = len(_student_list)
+    _grade_counts = Counter(getattr(s, "grade_level", "?") for s in _student_list)
+
+    # Grade stats chips (only non-zero grades)
+    _stats_chips = "".join(
+        f'<div style="text-align:center;padding:0 12px;">'
+        f'<div style="font-size:1.15rem;font-weight:700;">{_grade_counts[g]}</div>'
+        f'<div style="font-size:0.7rem;color:var(--text-muted,#94a3b8);">Grade {g}</div>'
+        f'</div>'
+        for g in _grade_order if _grade_counts.get(g, 0) > 0
+    )
+
+    # Table rows
+    _rows = "".join(
+        f'<tr data-sid="{getattr(s,"id","")}"'
+        f' data-name="{escape(getattr(s,"first_name",""))} {escape(getattr(s,"last_name",""))}"'
+        f' data-grade="{escape(getattr(s,"grade_level",""))}"'
+        f' data-ref="{escape(getattr(s,"student_ref","") or "")}">'
+        f'<td>{escape(getattr(s,"first_name",""))} {escape(getattr(s,"last_name",""))}</td>'
+        f'<td>{escape(getattr(s,"grade_level",""))}</td>'
+        f'<td>{escape(getattr(s,"student_ref","") or "—")}</td>'
+        f'<td>'
+        f'<button class="button button-small" onclick="rosterOpenEdit({getattr(s,"id","")}'
+        f',{json.dumps(getattr(s,"first_name",""))}'
+        f',{json.dumps(getattr(s,"last_name",""))}'
+        f',{json.dumps(getattr(s,"grade_level",""))}'
+        f',{json.dumps(getattr(s,"student_ref","") or "")})">Edit</button> '
+        f'<button class="button button-small button-danger"'
+        f' onclick="rosterArchiveStudent({getattr(s,"id","")},'
+        f'{json.dumps(getattr(s,"first_name","") + " " + getattr(s,"last_name",""))})">Archive</button>'
+        f'</td>'
+        f'</tr>'
+        for s in _student_list
+    ) or '<tr><td colspan="4" class="empty-state">No students yet. Add one or import a CSV.</td></tr>'
+
+    _alert_id_js = "null" if not alert_id else str(int(alert_id))
+
+    # Tab bar (only when alarm is active and we have an alert_id)
+    _tab_bar = ""
+    _incident_section = ""
+    if alarm_active and alert_id:
+        _tab_bar = (
+            '<div style="display:flex;gap:0;border-bottom:1px solid var(--border,#e2e8f0);margin-bottom:16px;">'
+            '<button id="roster-tab-master" class="roster-tab" onclick="rosterTab(\'master\')"'
+            ' style="padding:8px 18px;background:none;border:none;border-bottom:2px solid var(--primary,#3b82f6);'
+            'color:var(--primary,#3b82f6);font-weight:600;cursor:pointer;font-size:0.9rem;">&#128203; Master Roster</button>'
+            '<button id="roster-tab-incident" class="roster-tab" onclick="rosterTab(\'incident\')"'
+            ' style="padding:8px 18px;background:none;border:none;border-bottom:2px solid transparent;'
+            'color:var(--muted,#64748b);cursor:pointer;font-size:0.9rem;">&#128680; Incident View</button>'
+            '</div>'
+        )
+        _incident_section = (
+            '<div id="roster-incident-view" style="display:none;">'
+            '<div id="roster-incident-summary" style="display:flex;gap:0;flex-wrap:wrap;'
+            'background:var(--bg-alt,#f1f5f9);border-radius:8px;padding:14px 20px;margin-bottom:16px;'
+            'align-items:center;"></div>'
+            '<table class="admin-table" style="width:100%;">'
+            '<thead><tr><th>Name</th><th>Grade</th><th>Status</th><th>Claimed By</th></tr></thead>'
+            '<tbody id="roster-incident-tbody">'
+            '<tr><td colspan="4" class="empty-state">Click Incident View tab to load live data.</td></tr>'
+            '</tbody></table></div>'
+        )
+
+    return f"""
+<section class="panel command-section" id="roster"{section_style}>
+  <div class="panel-header">
+    <div>
+      <p class="eyebrow">Student Management</p>
+      <h2>Student Roster</h2>
+      <p class="card-copy">Manage your school&#8217;s student list. During an active alert, staff use the mobile app to claim and track student whereabouts.</p>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-self:flex-start;">
+      <button class="button" onclick="rosterOpenAdd()">+ Add Student</button>
+      <button class="button button-secondary" onclick="rosterShowImport()">&#128203; Import CSV</button>
+      <button class="button button-secondary" onclick="rosterExportCsv()">&#11015; Export CSV</button>
+    </div>
+  </div>
+
+  <div style="display:flex;gap:0;flex-wrap:wrap;align-items:center;background:var(--bg-alt,#f1f5f9);border-radius:8px;padding:12px 20px;margin-bottom:20px;">
+    <div style="text-align:center;padding:0 20px 0 0;margin-right:20px;border-right:1px solid var(--border,#e2e8f0);">
+      <div style="font-size:1.6rem;font-weight:700;color:var(--primary,#3b82f6);">{_total}</div>
+      <div style="font-size:0.75rem;color:var(--text-muted,#94a3b8);">Total</div>
+    </div>
+    {_stats_chips}
+  </div>
+
+  {_tab_bar}
+
+  <div id="roster-master-view">
+    <div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;">
+      <input id="roster-search" type="search" class="field" placeholder="Search by name or ref&#8230;"
+        oninput="rosterFilter()" style="flex:1;min-width:180px;max-width:320px;" />
+      <select id="roster-grade-filter" class="field" onchange="rosterFilter()" style="min-width:130px;">
+        {_GRADE_FILTER}
+      </select>
+    </div>
+    <table class="admin-table" style="width:100%;">
+      <thead><tr><th>Name</th><th>Grade</th><th>Student Ref</th><th style="width:160px;">Actions</th></tr></thead>
+      <tbody id="roster-tbody">
+        {_rows}
+      </tbody>
+    </table>
+    <p id="roster-count-label" class="mini-copy" style="margin-top:8px;">{_total} student(s)</p>
+  </div>
+
+  {_incident_section}
+
+  <div id="roster-import-panel" style="display:none;background:var(--bg-alt,#f8f9fa);border-radius:8px;padding:16px;margin-top:20px;border:1px solid var(--border,#e2e8f0);">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+      <h3 style="margin:0;font-size:1rem;">Import from CSV</h3>
+      <button class="button button-secondary" style="padding:4px 12px;min-height:auto;" onclick="document.getElementById('roster-import-panel').style.display='none'">&times; Close</button>
+    </div>
+    <p class="mini-copy" style="margin:0 0 12px;">Required headers: <code>first_name, last_name, grade_level</code> &mdash; optional: <code>student_ref</code></p>
+    <input type="file" id="roster-csv-file" accept=".csv" class="field" style="margin-bottom:10px;width:100%;box-sizing:border-box;" />
+    <div style="display:flex;gap:8px;margin-bottom:10px;">
+      <button class="button" onclick="rosterCsvPreview()">Preview</button>
+    </div>
+    <div id="roster-preview-area" style="display:none;">
+      <div id="roster-preview-summary" style="font-size:0.9rem;margin-bottom:8px;padding:8px 12px;background:var(--bg,#fff);border-radius:6px;border:1px solid var(--border,#e2e8f0);"></div>
+      <pre id="roster-preview-errors" style="color:var(--red,#dc2626);font-size:0.82rem;margin:0 0 10px;white-space:pre-wrap;max-height:120px;overflow-y:auto;padding:8px;background:var(--bg,#fff);border-radius:6px;border:1px solid var(--border,#e2e8f0);"></pre>
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+        <label style="font-size:0.85rem;font-weight:600;">Conflict strategy:</label>
+        <select id="roster-conflict-strategy" class="field" style="width:auto;">
+          <option value="skip">Skip duplicates</option>
+          <option value="overwrite">Overwrite duplicates</option>
+        </select>
+        <button class="button" onclick="rosterCsvCommit()">Commit Import</button>
+      </div>
+    </div>
+    <p id="roster-import-status" style="margin-top:8px;font-size:0.9rem;"></p>
+  </div>
+</section>
+
+<div id="roster-add-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:1100;align-items:center;justify-content:center;" onclick="if(event.target===this)rosterCloseAdd()">
+  <div style="background:var(--card,#fff);border-radius:12px;padding:24px 28px;max-width:500px;width:calc(100% - 32px);max-height:90vh;overflow-y:auto;box-shadow:0 8px 40px rgba(0,0,0,.25);">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px;">
+      <strong style="font-size:1.05rem;">Add Student</strong>
+      <button onclick="rosterCloseAdd()" style="background:none;border:none;font-size:1.4rem;cursor:pointer;color:var(--muted,#64748b);line-height:1;">&times;</button>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px;">
+      <div>
+        <label class="field-label" style="font-size:0.8rem;font-weight:600;display:block;margin-bottom:4px;">First Name *</label>
+        <input id="roster-add-fn" type="text" class="field" placeholder="First name" style="width:100%;box-sizing:border-box;" />
+      </div>
+      <div>
+        <label class="field-label" style="font-size:0.8rem;font-weight:600;display:block;margin-bottom:4px;">Last Name *</label>
+        <input id="roster-add-ln" type="text" class="field" placeholder="Last name" style="width:100%;box-sizing:border-box;" />
+      </div>
+      <div>
+        <label class="field-label" style="font-size:0.8rem;font-weight:600;display:block;margin-bottom:4px;">Grade</label>
+        <select id="roster-add-gl" class="field" style="width:100%;box-sizing:border-box;">{_GRADE_OPTS}</select>
+      </div>
+      <div>
+        <label class="field-label" style="font-size:0.8rem;font-weight:600;display:block;margin-bottom:4px;">Student Ref</label>
+        <input id="roster-add-ref" type="text" class="field" placeholder="Optional ID / SIS ref" style="width:100%;box-sizing:border-box;" />
+      </div>
+    </div>
+    <p id="roster-add-err" style="color:var(--red,#dc2626);font-size:0.85rem;display:none;margin-bottom:10px;"></p>
+    <div style="display:flex;gap:8px;justify-content:flex-end;">
+      <button class="button button-secondary" onclick="rosterCloseAdd()">Cancel</button>
+      <button class="button" onclick="rosterAddStudent()">Add Student</button>
+    </div>
+  </div>
+</div>
+
+<div id="roster-edit-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:1100;align-items:center;justify-content:center;" onclick="if(event.target===this)rosterCloseEdit()">
+  <div style="background:var(--card,#fff);border-radius:12px;padding:24px 28px;max-width:500px;width:calc(100% - 32px);max-height:90vh;overflow-y:auto;box-shadow:0 8px 40px rgba(0,0,0,.25);">
+    <input type="hidden" id="roster-edit-sid" />
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px;">
+      <strong style="font-size:1.05rem;">Edit Student</strong>
+      <button onclick="rosterCloseEdit()" style="background:none;border:none;font-size:1.4rem;cursor:pointer;color:var(--muted,#64748b);line-height:1;">&times;</button>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px;">
+      <div>
+        <label class="field-label" style="font-size:0.8rem;font-weight:600;display:block;margin-bottom:4px;">First Name *</label>
+        <input id="roster-edit-fn" type="text" class="field" style="width:100%;box-sizing:border-box;" />
+      </div>
+      <div>
+        <label class="field-label" style="font-size:0.8rem;font-weight:600;display:block;margin-bottom:4px;">Last Name *</label>
+        <input id="roster-edit-ln" type="text" class="field" style="width:100%;box-sizing:border-box;" />
+      </div>
+      <div>
+        <label class="field-label" style="font-size:0.8rem;font-weight:600;display:block;margin-bottom:4px;">Grade</label>
+        <select id="roster-edit-gl" class="field" style="width:100%;box-sizing:border-box;">{_GRADE_OPTS}</select>
+      </div>
+      <div>
+        <label class="field-label" style="font-size:0.8rem;font-weight:600;display:block;margin-bottom:4px;">Student Ref</label>
+        <input id="roster-edit-ref" type="text" class="field" placeholder="Optional ID / SIS ref" style="width:100%;box-sizing:border-box;" />
+      </div>
+    </div>
+    <p id="roster-edit-err" style="color:var(--red,#dc2626);font-size:0.85rem;display:none;margin-bottom:10px;"></p>
+    <div style="display:flex;gap:8px;justify-content:flex-end;">
+      <button class="button button-secondary" onclick="rosterCloseEdit()">Cancel</button>
+      <button class="button" onclick="rosterSaveEdit()">Save Changes</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(function() {{
+  const _apiKey = {json.dumps(api_key)};
+  const _prefix = {json.dumps(prefix)};
+  const _alertId = {_alert_id_js};
+
+  function _uid() {{ return (typeof BB_USER_ID !== 'undefined' ? BB_USER_ID : 0); }}
+  function _hdr() {{ return {{'Content-Type': 'application/json', 'X-API-Key': _apiKey}}; }}
+
+  // ── Tabs ──────────────────────────────────────────────────────────────
+  window.rosterTab = function(tab) {{
+    const mv = document.getElementById('roster-master-view');
+    const iv = document.getElementById('roster-incident-view');
+    if (mv) mv.style.display = tab === 'master' ? '' : 'none';
+    if (iv) iv.style.display = tab === 'incident' ? '' : 'none';
+    document.querySelectorAll('.roster-tab').forEach(function(btn) {{
+      const active = btn.id === 'roster-tab-' + tab;
+      btn.style.borderBottomColor = active ? 'var(--primary,#3b82f6)' : 'transparent';
+      btn.style.color = active ? 'var(--primary,#3b82f6)' : 'var(--muted,#64748b)';
+      btn.style.fontWeight = active ? '600' : 'normal';
+    }});
+    if (tab === 'incident') rosterLoadIncident();
+  }};
+
+  // ── Search / filter ────────────────────────────────────────────────────
+  window.rosterFilter = function() {{
+    const q = (document.getElementById('roster-search').value || '').toLowerCase();
+    const grade = document.getElementById('roster-grade-filter').value;
+    let shown = 0, total = 0;
+    document.querySelectorAll('#roster-tbody tr[data-name]').forEach(function(row) {{
+      total++;
+      const nameOk = !q || row.dataset.name.toLowerCase().includes(q) || (row.dataset.ref || '').toLowerCase().includes(q);
+      const gradeOk = !grade || row.dataset.grade === grade;
+      row.style.display = nameOk && gradeOk ? '' : 'none';
+      if (nameOk && gradeOk) shown++;
+    }});
+    const lbl = document.getElementById('roster-count-label');
+    if (lbl) lbl.textContent = shown === total ? total + ' student(s)' : 'Showing ' + shown + ' of ' + total + ' student(s)';
+  }};
+
+  // ── Add modal ─────────────────────────────────────────────────────────
+  window.rosterOpenAdd = function() {{
+    ['roster-add-fn','roster-add-ln','roster-add-ref'].forEach(function(id) {{ document.getElementById(id).value = ''; }});
+    document.getElementById('roster-add-gl').value = 'K';
+    document.getElementById('roster-add-err').style.display = 'none';
+    document.getElementById('roster-add-modal').style.display = 'flex';
+    setTimeout(function() {{ document.getElementById('roster-add-fn').focus(); }}, 60);
+  }};
+  window.rosterCloseAdd = function() {{ document.getElementById('roster-add-modal').style.display = 'none'; }};
+  window.rosterAddStudent = async function() {{
+    const fn = document.getElementById('roster-add-fn').value.trim();
+    const ln = document.getElementById('roster-add-ln').value.trim();
+    const gl = document.getElementById('roster-add-gl').value;
+    const ref = document.getElementById('roster-add-ref').value.trim() || null;
+    const errEl = document.getElementById('roster-add-err');
+    errEl.style.display = 'none';
+    if (!fn || !ln) {{ errEl.textContent = 'First and last name are required.'; errEl.style.display = ''; return; }}
+    const r = await fetch(_prefix + '/api/v1/roster/students?user_id=' + _uid(), {{
+      method: 'POST', headers: _hdr(),
+      body: JSON.stringify({{first_name: fn, last_name: ln, grade_level: gl, student_ref: ref}})
+    }});
+    if (r.ok) {{ window.location.reload(); }}
+    else {{ const d = await r.json().catch(function() {{ return {{}}; }}); errEl.textContent = d.detail || 'Error adding student.'; errEl.style.display = ''; }}
+  }};
+
+  // ── Edit modal ────────────────────────────────────────────────────────
+  window.rosterOpenEdit = function(sid, fn, ln, gl, ref) {{
+    document.getElementById('roster-edit-sid').value = sid;
+    document.getElementById('roster-edit-fn').value = fn;
+    document.getElementById('roster-edit-ln').value = ln;
+    document.getElementById('roster-edit-gl').value = gl;
+    document.getElementById('roster-edit-ref').value = ref || '';
+    document.getElementById('roster-edit-err').style.display = 'none';
+    document.getElementById('roster-edit-modal').style.display = 'flex';
+    setTimeout(function() {{ document.getElementById('roster-edit-fn').focus(); }}, 60);
+  }};
+  window.rosterCloseEdit = function() {{ document.getElementById('roster-edit-modal').style.display = 'none'; }};
+  window.rosterSaveEdit = async function() {{
+    const sid = document.getElementById('roster-edit-sid').value;
+    const fn = document.getElementById('roster-edit-fn').value.trim();
+    const ln = document.getElementById('roster-edit-ln').value.trim();
+    const gl = document.getElementById('roster-edit-gl').value;
+    const ref = document.getElementById('roster-edit-ref').value.trim() || null;
+    const errEl = document.getElementById('roster-edit-err');
+    errEl.style.display = 'none';
+    if (!fn || !ln) {{ errEl.textContent = 'Name is required.'; errEl.style.display = ''; return; }}
+    const r = await fetch(_prefix + '/api/v1/roster/students/' + sid + '?user_id=' + _uid(), {{
+      method: 'PATCH', headers: _hdr(),
+      body: JSON.stringify({{first_name: fn, last_name: ln, grade_level: gl, student_ref: ref}})
+    }});
+    if (r.ok) {{ window.location.reload(); }}
+    else {{ const d = await r.json().catch(function() {{ return {{}}; }}); errEl.textContent = d.detail || 'Error saving.'; errEl.style.display = ''; }}
+  }};
+
+  // ── Archive ───────────────────────────────────────────────────────────
+  window.rosterArchiveStudent = async function(sid, name) {{
+    if (!confirm('Archive "' + name + '"? They will be removed from the active roster.')) return;
+    const r = await fetch(_prefix + '/api/v1/roster/students/' + sid + '?user_id=' + _uid(), {{
+      method: 'DELETE', headers: {{'X-API-Key': _apiKey}}
+    }});
+    if (r.ok || r.status === 204) {{
+      const row = document.querySelector('#roster-tbody tr[data-sid="' + sid + '"]');
+      if (row) row.remove();
+      const rows = document.querySelectorAll('#roster-tbody tr[data-name]');
+      const lbl = document.getElementById('roster-count-label');
+      if (lbl) lbl.textContent = rows.length + ' student(s)';
+    }} else {{ alert('Failed to archive student.'); }}
+  }};
+
+  // ── Export CSV ────────────────────────────────────────────────────────
+  window.rosterExportCsv = async function() {{
+    const r = await fetch(_prefix + '/api/v1/roster/students?user_id=' + _uid(), {{
+      headers: {{'X-API-Key': _apiKey}}
+    }});
+    if (!r.ok) {{ alert('Export failed.'); return; }}
+    const d = await r.json();
+    const csvRows = (d.students || []).map(function(s) {{
+      return [s.first_name, s.last_name, s.grade_level, s.student_ref || '']
+        .map(function(v) {{ return '"' + String(v).replace(/"/g, '""') + '"'; }}).join(',');
+    }});
+    const csv = 'first_name,last_name,grade_level,student_ref\n' + csvRows.join('\n');
+    const blob = new Blob([csv], {{type: 'text/csv'}});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = 'roster.csv';
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(function() {{ URL.revokeObjectURL(url); }}, 1000);
+  }};
+
+  // ── Import CSV ────────────────────────────────────────────────────────
+  var _importSession = null;
+  window.rosterShowImport = function() {{
+    document.getElementById('roster-import-panel').style.display = '';
+    document.getElementById('roster-preview-area').style.display = 'none';
+    document.getElementById('roster-import-status').textContent = '';
+    _importSession = null;
+  }};
+  window.rosterCsvPreview = async function() {{
+    const file = document.getElementById('roster-csv-file').files[0];
+    if (!file) {{ alert('Select a CSV file first.'); return; }}
+    const fd = new FormData(); fd.append('file', file);
+    const r = await fetch(_prefix + '/api/v1/roster/students/import/preview?user_id=' + _uid(), {{
+      method: 'POST', headers: {{'X-API-Key': _apiKey}}, body: fd
+    }});
+    const d = await r.json().catch(function() {{ return {{}}; }});
+    if (!r.ok) {{ alert(d.detail || 'Preview failed.'); return; }}
+    _importSession = d.session_token;
+    document.getElementById('roster-preview-area').style.display = '';
+    document.getElementById('roster-preview-summary').innerHTML =
+      '<strong>' + (d.valid_count || 0) + '</strong> valid &nbsp;|&nbsp; ' +
+      '<strong>' + (d.error_count || 0) + '</strong> errors &nbsp;|&nbsp; ' +
+      '<strong>' + ((d.duplicate_refs || []).length) + '</strong> duplicate refs';
+    const errEl = document.getElementById('roster-preview-errors');
+    errEl.textContent = (d.error_rows && d.error_rows.length)
+      ? d.error_rows.map(function(e) {{ return 'Row ' + e.line + ': ' + e.error; }}).join('\n') : '';
+    errEl.style.display = d.error_rows && d.error_rows.length ? '' : 'none';
+  }};
+  window.rosterCsvCommit = async function() {{
+    if (!_importSession) {{ alert('Preview the file first.'); return; }}
+    const strategy = document.getElementById('roster-conflict-strategy').value;
+    const statusEl = document.getElementById('roster-import-status');
+    statusEl.textContent = 'Importing…';
+    const r = await fetch(_prefix + '/api/v1/roster/students/import/commit?user_id=' + _uid(), {{
+      method: 'POST', headers: _hdr(),
+      body: JSON.stringify({{session_token: _importSession, conflict_strategy: strategy}})
+    }});
+    const d = await r.json().catch(function() {{ return {{}}; }});
+    if (r.ok) {{
+      statusEl.textContent = '✓ Imported: ' + (d.inserted || 0) + ' added, ' + (d.skipped || 0) + ' skipped.';
+      statusEl.style.color = 'var(--green,#16a34a)';
+      setTimeout(function() {{ window.location.reload(); }}, 1500);
+    }} else {{
+      statusEl.textContent = d.detail || 'Import failed.';
+      statusEl.style.color = 'var(--red,#dc2626)';
+    }}
+  }};
+
+  // ── Incident view ─────────────────────────────────────────────────────
+  var _incidentLoaded = false;
+  function rosterLoadIncident() {{
+    if (_incidentLoaded || !_alertId) return;
+    _incidentLoaded = true;
+    const tbody = document.getElementById('roster-incident-tbody');
+    const sumEl = document.getElementById('roster-incident-summary');
+    if (!tbody) return;
+    tbody.innerHTML = '<tr><td colspan="4" class="empty-state">Loading…</td></tr>';
+    fetch(_prefix + '/api/v1/alerts/' + _alertId + '/roster?user_id=' + _uid(), {{
+      headers: {{'X-API-Key': _apiKey}}
+    }}).then(function(r) {{
+      if (!r.ok) {{ tbody.innerHTML = '<tr><td colspan="4" class="empty-state">Failed to load incident data.</td></tr>'; return; }}
+      return r.json();
+    }}).then(function(d) {{
+      if (!d) return;
+      const s = d.summary || {{}};
+      const chips = [
+        ['Total', s.total, '#64748b'],
+        ['With Me', s.present_with_me, '#16a34a'],
+        ['Missing', s.missing, '#dc2626'],
+        ['Injured', s.injured, '#ea580c'],
+        ['Absent', s.absent, '#d97706'],
+        ['Released', s.released, '#2563eb'],
+        ['Unclaimed', s.unclaimed, '#94a3b8'],
+      ];
+      if (sumEl) sumEl.innerHTML = chips.map(function(c) {{
+        return '<div style="text-align:center;padding:0 12px;">'
+          + '<div style="font-size:1.2rem;font-weight:700;color:' + c[2] + '">' + (c[1]||0) + '</div>'
+          + '<div style="font-size:0.72rem;color:var(--text-muted,#94a3b8)">' + c[0] + '</div></div>';
+      }}).join('');
+      const SC = {{
+        present_with_me:'#16a34a', missing:'#dc2626', injured:'#ea580c',
+        released:'#2563eb', absent:'#d97706', unknown:'#94a3b8'
+      }};
+      function esc(s) {{ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }}
+      tbody.innerHTML = (d.students || []).map(function(st) {{
+        const cls = st.claim ? st.claim.status : null;
+        const lbl = cls ? cls.replace(/_/g,' ').replace(/\\b\\w/g,function(c){{return c.toUpperCase();}}) : 'Unclaimed';
+        const col = SC[cls] || '#94a3b8';
+        const by = st.claim ? esc(st.claim.claimed_by_label) : '—';
+        const added = st.is_addition
+          ? '<span style="font-size:10px;background:#92400e;color:#fbbf24;border-radius:4px;padding:1px 5px;margin-left:4px;">added</span>' : '';
+        return '<tr><td>' + esc(st.first_name+' '+st.last_name) + added + '</td>'
+          + '<td>' + esc(st.grade_level) + '</td>'
+          + '<td><span style="color:' + col + ';font-weight:600;">' + lbl + '</span></td>'
+          + '<td>' + by + '</td></tr>';
+      }}).join('') || '<tr><td colspan="4" class="empty-state">No students in incident roster.</td></tr>';
+    }}).catch(function() {{
+      if (tbody) tbody.innerHTML = '<tr><td colspan="4" class="empty-state">Error loading incident roster.</td></tr>';
+    }});
+  }}
+}})();
+</script>
+"""
+
+
 def render_admin_page(
     *,
     school_name: str,
@@ -8166,6 +8616,7 @@ def render_admin_page(
     effective_settings: Optional[TenantSettings] = None,
     can_edit_tenant_settings: bool = False,
     billing_banner: Optional[dict] = None,
+    roster_students: Sequence[object] = (),
 ) -> str:
     prefix = escape(school_path_prefix)
     role_counts = Counter(user.role for user in users)
@@ -8182,7 +8633,7 @@ def render_admin_page(
     alarm_status_class = "danger" if alarm_state.is_active and not alarm_state.is_training else ("warn" if alarm_state.is_active else "ok")
     alarm_status_label = "TRAINING ACTIVE" if alarm_state.is_active and alarm_state.is_training else ("ALARM ACTIVE" if alarm_state.is_active else "Alarm clear")
     security_feedback = f"{_render_flash(flash_message, 'success')}{_render_flash(flash_error, 'error')}"
-    section = active_section if active_section in {"dashboard", "user-management", "access-codes", "quiet-periods", "audit-logs", "settings", "drill-reports", "district", "devices", "analytics", "district-reports", "demo-analytics"} else "dashboard"
+    section = active_section if active_section in {"dashboard", "user-management", "access-codes", "quiet-periods", "audit-logs", "settings", "drill-reports", "district", "devices", "analytics", "district-reports", "demo-analytics", "roster"} else "dashboard"
     _billing_banner_html = _render_billing_banner(billing_banner or {})
     _demo_banner_html = (
         '<div style="background:#fef3c7;border-bottom:2px solid #d97706;padding:8px 20px;'
@@ -9417,6 +9868,7 @@ def render_admin_page(
           <nav class="nav-list">
             {_nav_item("dashboard", "Dashboard")}
             {_nav_item("user-management", "User Management", str(_um_badge_count) if _um_badge_count else None)}
+            {_nav_item("roster", "Student Roster")}
             {_nav_item("drill-reports", "Drill Reports")}
             {_nav_item("audit-logs", "Audit Logs")}
             {_nav_item("analytics", "Analytics")}
@@ -9488,6 +9940,8 @@ def render_admin_page(
         {_da_cl_html if section == "dashboard" else ""}
 
         {_render_settings_panels(prefix, school_name, school_slug, settings_history, _section_style, effective_settings=effective_settings, can_edit=can_edit_tenant_settings, is_district_admin=is_district_admin)}
+
+        {_render_roster_section(roster_students, prefix, _section_style("roster"), ws_api_key, alarm_active=alarm_state.is_active, alert_id=current_alert_id)}
 
         <section class="panel command-section" id="security"{_section_style("settings")}>
           <div class="panel-header">

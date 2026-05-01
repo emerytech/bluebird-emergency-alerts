@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -67,6 +68,9 @@ enum LCStepKind {
     case info(imageName: String? = nil)
     case iconGrid(items: [(icon: String, label: String, color: Color)])
     case slideToConfirm(label: String, iconName: String)
+    case holdButton(emergencyType: String, color: Color)
+    case alarmTakeover(emergencyType: String)
+    case acknowledgeButton
     case mockNotification(appName: String, title: String, body: String)
     case visualCopy(placeholder: String)
 }
@@ -77,11 +81,19 @@ struct LCStep {
     let kind: LCStepKind
 }
 
-struct LCGuide: Identifiable {
+struct LCGuide: Identifiable, Hashable {
     let id: LCGuideID
     let steps: [LCStep]
     var title: String { id.title }
     var introDescription: String { id.introDescription }
+
+    static func == (lhs: LCGuide, rhs: LCGuide) -> Bool {
+        lhs.id == rhs.id
+    }
+
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(id)
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -105,14 +117,18 @@ let LC_ALL_GUIDES: [LCGuide] = [
         ),
         LCStep(
             title: "Hold to Activate",
-            description: "Hold the circular button for your school's configured duration (typically 3 seconds). The ring around the button fills as you hold. All staff receive an immediate alert the moment you release.",
-            kind: .slideToConfirm(label: "Slide to Simulate", iconName: "exclamationmark.triangle.fill")
+            description: "Hold the circular button for your school's configured duration (typically 3 seconds). The ring fills as you hold. All staff receive an immediate alert the moment you release.",
+            kind: .holdButton(emergencyType: "LOCKDOWN", color: DSColor.danger)
         ),
         LCStep(
             title: "Active Alert Screen",
-            description: "When an emergency activates, every staff device shows a full-screen takeover. Admins can send broadcast updates, view acknowledgements, and deactivate when the emergency is resolved.",
-            // TODO(LearningCenter): replace with real EmergencyAlarmTakeover(tutorialMode: true)
-            kind: .visualCopy(placeholder: "emergency_takeover")
+            description: "When an emergency activates, every staff device shows a full-screen takeover. The acknowledgement counter updates in real time as staff tap the button below.",
+            kind: .alarmTakeover(emergencyType: "LOCKDOWN")
+        ),
+        LCStep(
+            title: "Acknowledge the Alert",
+            description: "Tap Acknowledge to mark yourself safe. The counter above updates instantly. Administrators see who has and hasn't responded in real time.",
+            kind: .acknowledgeButton
         ),
         LCStep(
             title: "Push Notification",
@@ -238,6 +254,23 @@ enum LCAnalytics {
         // Events are buffered locally; the app may POST them to /{tenant}/api/training/event
         // when a network session is available.
         print("[LCAnalytics]", info)
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MARK: - Simulation State
+// ─────────────────────────────────────────────────────────────────────────────
+
+final class LCSimulationState: ObservableObject {
+    @Published var isActivated   = false
+    @Published var acknowledged  = false
+    @Published var ackCount      = 2
+    let totalUsers               = 14
+
+    func reset() {
+        isActivated  = false
+        acknowledged = false
+        ackCount     = 2
     }
 }
 
@@ -486,6 +519,7 @@ struct LCGuideStepView: View {
     @Environment(\.dismiss)       private var dismiss
     @EnvironmentObject             private var appState: AppState
     @StateObject                   private var store = LearningCenterStore.shared
+    @StateObject                   private var simState = LCSimulationState()
     @State                         private var currentStep: Int
     @State                         private var interactionDone = false
 
@@ -499,8 +533,10 @@ struct LCGuideStepView: View {
     private var isFirst: Bool      { currentStep == 0 }
     private var isLast: Bool       { currentStep == guide.steps.count - 1 }
     private var needsInteraction: Bool {
-        if case .slideToConfirm = step.kind { return true }
-        return false
+        switch step.kind {
+        case .slideToConfirm, .holdButton, .acknowledgeButton: return true
+        default: return false
+        }
     }
 
     var body: some View {
@@ -547,6 +583,7 @@ struct LCGuideStepView: View {
                         Button {
                             withAnimation(.easeInOut(duration: 0.2)) { currentStep -= 1 }
                             interactionDone = false
+                            simState.reset()
                         } label: {
                             Label("Back", systemImage: "chevron.left")
                                 .font(.subheadline.weight(.semibold))
@@ -570,6 +607,7 @@ struct LCGuideStepView: View {
                                 store.saveProgress(id: guide.id, step: currentStep + 1)
                                 withAnimation(.easeInOut(duration: 0.2)) { currentStep += 1 }
                                 interactionDone = false
+                                simState.reset()
                             }
                         } label: {
                             Label(isLast ? "Finish" : "Next",
@@ -610,6 +648,17 @@ struct LCGuideStepView: View {
             LCIconGridView(items: items)
         case .slideToConfirm(let label, let icon):
             LCSlideToConfirmView(label: label, iconName: icon) { interactionDone = true }
+        case .holdButton(let emergencyType, let color):
+            LCHoldButtonView(emergencyType: emergencyType, color: color, simState: simState) {
+                simState.isActivated = true
+                interactionDone = true
+            }
+        case .alarmTakeover(let emergencyType):
+            LCAlarmTakeoverView(emergencyType: emergencyType, simState: simState)
+        case .acknowledgeButton:
+            LCAcknowledgeStepView(simState: simState) {
+                interactionDone = true
+            }
         case .mockNotification(let app, let title, let body):
             LCMockNotificationView(appName: app, title: title, body: body)
         case .visualCopy(let placeholder):
@@ -766,7 +815,13 @@ private struct LCSlideToConfirmView: View {
 private struct LCMockNotificationView: View {
     let appName: String
     let title: String
-    let body: String
+    let message: String
+
+    init(appName: String, title: String, body: String) {
+        self.appName = appName
+        self.title = title
+        self.message = body
+    }
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
@@ -792,7 +847,7 @@ private struct LCMockNotificationView: View {
                 Text(title)
                     .font(.subheadline.weight(.bold))
                     .foregroundStyle(DSColor.textPrimary)
-                Text(body)
+                Text(message)
                     .font(.caption)
                     .foregroundStyle(DSColor.textSecondary)
                     .lineLimit(3)
@@ -855,6 +910,327 @@ private struct LCVisualCopyView: View {
             .padding(24)
         }
         .frame(height: 220)
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MARK: - LCHoldButtonView
+// TODO(LearningCenter): replace with real SafetyHoldButton(tutorialMode: true)
+// ─────────────────────────────────────────────────────────────────────────────
+
+private final class LCHoldController: ObservableObject {
+    @Published var holdProgress: Double = 0
+    @Published var isHolding = false
+    @Published var completed = false
+
+    private var timer: Timer?
+
+    func beginHold(duration: Double, onComplete: @escaping () -> Void) {
+        guard !completed else { return }
+        isHolding = true
+        let step = 0.05 / duration
+        timer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] t in
+            guard let self else { t.invalidate(); return }
+            self.holdProgress = min(self.holdProgress + step, 1.0)
+            if self.holdProgress >= 1.0 {
+                t.invalidate()
+                self.completed = true
+                self.isHolding = false
+                onComplete()
+            }
+        }
+    }
+
+    func cancelHold() {
+        timer?.invalidate()
+        timer = nil
+        isHolding = false
+        withAnimation(.spring(response: 0.4)) { holdProgress = 0 }
+    }
+
+    func reset() {
+        timer?.invalidate()
+        timer = nil
+        isHolding = false
+        completed = false
+        holdProgress = 0
+    }
+}
+
+private struct LCHoldButtonView: View {
+    let emergencyType: String
+    let color: Color
+    let simState: LCSimulationState
+    let onComplete: () -> Void
+
+    @StateObject private var controller = LCHoldController()
+
+    private var ringColor: Color {
+        controller.holdProgress < 0.55 ? .white
+        : controller.holdProgress < 0.80 ? DSColor.warning
+        : DSColor.danger
+    }
+
+    private var holdScale: CGFloat {
+        controller.completed ? 1.12
+        : controller.isHolding ? CGFloat(0.97 + controller.holdProgress * 0.11)
+        : 1.0
+    }
+
+    private var holdText: String {
+        controller.completed ? "Activating…"
+        : controller.isHolding ? "Keep Holding…"
+        : "Hold to Activate"
+    }
+
+    var body: some View {
+        VStack(spacing: 16) {
+            HStack(spacing: 6) {
+                Image(systemName: "shield.fill")
+                Text("SIMULATION — no real alert sent")
+                    .font(.caption.weight(.bold))
+            }
+            .foregroundStyle(DSColor.warning)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 7)
+            .background(DSColor.warning.opacity(0.12), in: Capsule())
+
+            VStack(spacing: 6) {
+                ZStack {
+                    Circle()
+                        .stroke(Color.white.opacity(0.24), lineWidth: 10)
+                    Circle()
+                        .trim(from: 0, to: controller.holdProgress)
+                        .stroke(ringColor, style: StrokeStyle(lineWidth: 10, lineCap: .round))
+                        .shadow(color: Color.white.opacity(0.5), radius: 4)
+                        .rotationEffect(.degrees(-90))
+                        .animation(.linear(duration: 0.05), value: controller.holdProgress)
+
+                    Circle()
+                        .fill(color)
+                        .overlay {
+                            Image(systemName: "lock.fill")
+                                .foregroundStyle(.white)
+                                .font(.system(size: 30, weight: .bold))
+                        }
+                        .scaleEffect(holdScale)
+                        .shadow(color: color.opacity(0.1 + controller.holdProgress * 0.24), radius: 18)
+                        .animation(.easeOut(duration: 0.16), value: holdScale)
+                }
+                .frame(width: 122, height: 122)
+                .contentShape(Circle())
+                .onLongPressGesture(
+                    minimumDuration: 3.0,
+                    maximumDistance: 44,
+                    pressing: { pressing in
+                        if pressing {
+                            controller.beginHold(duration: 3.0, onComplete: onComplete)
+                        } else {
+                            if !controller.completed { controller.cancelHold() }
+                        }
+                    },
+                    perform: {}
+                )
+
+                Text(emergencyType)
+                    .font(.headline.weight(.bold))
+                    .foregroundStyle(color)
+                Text(holdText)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(Color.white.opacity(0.88))
+                Text("~3s")
+                    .font(.caption2)
+                    .foregroundStyle(Color.white.opacity(0.62))
+            }
+            .padding()
+            .background(DSColor.backgroundDeep, in: RoundedRectangle(cornerRadius: 20))
+            .overlay(RoundedRectangle(cornerRadius: 20).stroke(color.opacity(0.25), lineWidth: 1))
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MARK: - LCAlarmTakeoverView
+// TODO(LearningCenter): replace with real EmergencyAlarmTakeover(tutorialMode: true)
+// ─────────────────────────────────────────────────────────────────────────────
+
+private struct LCAlarmTakeoverView: View {
+    let emergencyType: String
+    @ObservedObject var simState: LCSimulationState
+
+    private let totalUsers = 14
+
+    private var ackPct: Double {
+        guard totalUsers > 0 else { return 0 }
+        return Double(simState.ackCount) / Double(totalUsers) * 100
+    }
+
+    private var ackColor: Color {
+        ackPct < 40 ? DSColor.danger : ackPct < 75 ? DSColor.warning : DSColor.success
+    }
+
+    var body: some View {
+        ZStack {
+            LinearGradient(
+                colors: [DSColor.danger, Color(red: 0.04, green: 0.06, blue: 0.10)],
+                startPoint: .topLeading, endPoint: .bottom
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 20))
+
+            VStack(spacing: 18) {
+                HStack(spacing: 6) {
+                    Image(systemName: "shield.fill")
+                    Text("SIMULATION — no real alert sent")
+                        .font(.caption.weight(.bold))
+                }
+                .foregroundStyle(DSColor.warning)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 7)
+                .background(DSColor.warning.opacity(0.15), in: Capsule())
+
+                ZStack {
+                    Circle()
+                        .stroke(Color.white.opacity(0.22), lineWidth: 9)
+                        .frame(width: 100, height: 100)
+                    Circle()
+                        .fill(Color.white.opacity(0.10))
+                        .frame(width: 84, height: 84)
+                    Image(systemName: "bell.and.waves.left.and.right.fill")
+                        .font(.system(size: 38, weight: .black))
+                        .foregroundStyle(.white)
+                }
+
+                VStack(spacing: 6) {
+                    Text("EMERGENCY ALERT")
+                        .font(.system(size: 22, weight: .black, design: .rounded))
+                        .foregroundStyle(.white)
+                        .tracking(1)
+                    Text("🔒 \(emergencyType)")
+                        .font(.title3.weight(.bold))
+                        .foregroundStyle(.white.opacity(0.92))
+                    Text("Lincoln Elementary")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.white.opacity(0.65))
+                }
+
+                Text("Follow school emergency procedures immediately.")
+                    .font(.subheadline.weight(.semibold))
+                    .multilineTextAlignment(.center)
+                    .foregroundStyle(.white.opacity(0.94))
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .frame(maxWidth: .infinity)
+                    .background(Color.white.opacity(0.13))
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+
+                VStack(spacing: 8) {
+                    HStack {
+                        Text("\(simState.ackCount) / \(totalUsers) acknowledged")
+                            .font(.subheadline.weight(.bold))
+                            .foregroundStyle(.white)
+                        Spacer()
+                        Text("\(Int(ackPct))%")
+                            .font(.subheadline.weight(.black))
+                            .foregroundStyle(ackColor)
+                    }
+                    GeometryReader { geo in
+                        ZStack(alignment: .leading) {
+                            Capsule().fill(Color.white.opacity(0.18)).frame(height: 8)
+                            Capsule()
+                                .fill(ackColor)
+                                .frame(width: geo.size.width * CGFloat(ackPct / 100), height: 8)
+                                .animation(.spring(response: 0.5, dampingFraction: 0.75), value: ackPct)
+                        }
+                    }
+                    .frame(height: 8)
+                }
+            }
+            .padding(20)
+        }
+        .onAppear {
+            // Simulate two more staff acknowledging after a short delay
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                withAnimation { simState.ackCount = min(simState.ackCount + 1, totalUsers - 1) }
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.4) {
+                withAnimation { simState.ackCount = min(simState.ackCount + 1, totalUsers - 1) }
+            }
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MARK: - LCAcknowledgeStepView
+// ─────────────────────────────────────────────────────────────────────────────
+
+private struct LCAcknowledgeStepView: View {
+    @ObservedObject var simState: LCSimulationState
+    let onComplete: () -> Void
+
+    private let totalUsers = 14
+
+    private var ackPct: Double {
+        guard totalUsers > 0 else { return 0 }
+        return Double(simState.ackCount) / Double(totalUsers) * 100
+    }
+
+    private var ackColor: Color {
+        ackPct < 40 ? DSColor.danger : ackPct < 75 ? DSColor.warning : DSColor.success
+    }
+
+    var body: some View {
+        VStack(spacing: 16) {
+            VStack(spacing: 8) {
+                HStack {
+                    Text("\(simState.ackCount) / \(totalUsers) acknowledged")
+                        .font(.subheadline.weight(.bold))
+                        .foregroundStyle(DSColor.textPrimary)
+                    Spacer()
+                    Text("\(Int(ackPct))%")
+                        .font(.subheadline.weight(.black))
+                        .foregroundStyle(ackColor)
+                }
+                GeometryReader { geo in
+                    ZStack(alignment: .leading) {
+                        Capsule().fill(DSColor.border).frame(height: 8)
+                        Capsule()
+                            .fill(ackColor)
+                            .frame(width: geo.size.width * CGFloat(ackPct / 100), height: 8)
+                            .animation(.spring(response: 0.5, dampingFraction: 0.75), value: ackPct)
+                    }
+                }
+                .frame(height: 8)
+            }
+            .padding(16)
+            .background(DSColor.card, in: RoundedRectangle(cornerRadius: 14))
+            .overlay(RoundedRectangle(cornerRadius: 14).stroke(DSColor.border, lineWidth: 1))
+
+            Button {
+                guard !simState.acknowledged else { return }
+                withAnimation(.spring(response: 0.3)) {
+                    simState.acknowledged = true
+                    simState.ackCount = min(simState.ackCount + 1, totalUsers)
+                }
+                onComplete()
+            } label: {
+                HStack(spacing: 8) {
+                    if simState.acknowledged {
+                        Image(systemName: "checkmark.circle.fill")
+                    }
+                    Text(simState.acknowledged ? "Acknowledged" : "Acknowledge")
+                        .font(.system(size: 17, weight: .black))
+                }
+                .foregroundStyle(simState.acknowledged
+                    ? Color.white.opacity(0.70)
+                    : Color(red: 0.02, green: 0.30, blue: 0.23))
+                .frame(maxWidth: .infinity, minHeight: 58)
+                .background(simState.acknowledged
+                    ? Color.white.opacity(0.20)
+                    : DSColor.success)
+                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            }
+            .disabled(simState.acknowledged)
+        }
     }
 }
 

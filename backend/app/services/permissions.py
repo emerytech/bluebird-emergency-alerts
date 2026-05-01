@@ -99,6 +99,11 @@ PERM_REPORTS_VIEW_BUILDING: Final[str] = "reports.view_building"
 PERM_REPORTS_VIEW_DISTRICT: Final[str] = "reports.view_district"
 PERM_REPORTS_EXPORT: Final[str] = "reports.export"
 
+# Roster
+PERM_ROSTER_VIEW: Final[str] = "roster.view"          # any authenticated user during active alert
+PERM_ROSTER_CLAIM: Final[str] = "roster.claim"        # claim / update student status
+PERM_ROSTER_MANAGE: Final[str] = "roster.manage"      # master student list CRUD + CSV import
+
 # Settings
 PERM_SETTINGS_VIEW: Final[str] = "settings.view"
 PERM_SETTINGS_EDIT_NOTIFICATIONS: Final[str] = "settings.edit_notification_settings"
@@ -137,6 +142,9 @@ _STANDARD_USER_PERMS: Final[set[str]] = {
     PERM_QUIET_PERIODS_CANCEL_OWN,
     PERM_QUIET_PERIODS_SCHEDULE,
     PERM_ALERTS_VIEW_STATUS,
+    # Roster
+    PERM_ROSTER_VIEW,
+    PERM_ROSTER_CLAIM,
 }
 
 # Permissions shared by building_admin and legacy admin alias
@@ -184,6 +192,10 @@ _BUILDING_ADMIN_PERMS: Final[set[str]] = {
     PERM_REPORTS_VIEW_BUILDING,
     # Phase 4 — settings (read-only for building admin)
     PERM_SETTINGS_VIEW,
+    # Roster
+    PERM_ROSTER_VIEW,
+    PERM_ROSTER_CLAIM,
+    PERM_ROSTER_MANAGE,
 }
 
 _ROLE_PERMISSIONS: Final[dict[str, set[str]]] = {

@@ -616,6 +616,7 @@ struct ContentView: View {
     @State private var overlayMessageSentFeedback = false
     @State private var showTeamAssistPicker = false
     @State private var showMessagingCenter = false
+    @State private var showRosterView = false
     @State private var showQuietPeriodCenter = false
     @State private var quietPeriodReason = ""
     @State private var scheduleForLater = false
@@ -1371,6 +1372,18 @@ struct ContentView: View {
                         .buttonStyle(PressableScaleButtonStyle())
                         .disabled(alarmCurrentUserAcknowledged || isUpdatingAlarm || alarmAlertId == nil)
 
+                        Button {
+                            showRosterView = true
+                        } label: {
+                            Label("Student Roster", systemImage: "person.3.fill")
+                                .font(.headline.weight(.bold))
+                                .foregroundStyle(Color(red: 0.26, green: 0.87, blue: 0.50))
+                                .frame(maxWidth: .infinity, minHeight: 52)
+                                .background(Color.white.opacity(0.12))
+                                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                        }
+                        .buttonStyle(PressableScaleButtonStyle())
+
                         if appState.canDeactivateAlarm {
                             Button {
                                 Task { await authenticateThenDeactivateAlarm() }
@@ -1561,10 +1574,49 @@ struct ContentView: View {
                                 .foregroundStyle(textMuted)
                                 .lineLimit(2)
                         }
-                        if alarmAcknowledgementCount > 0 {
-                            Text("✓ \(alarmAcknowledgementCount) acknowledged")
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(DSColor.success)
+                        // ── Live status row ──────────────────────────────
+                        let isFullyAcked = alarmExpectedUserCount > 0
+                            && alarmAcknowledgementCount >= alarmExpectedUserCount
+                        let ackRowColor: Color = isFullyAcked ? DSColor.success : Color.white.opacity(0.88)
+                        // Any admin broadcast during an active alarm is treated as urgent
+                        let hasCritical = !alarmBroadcasts.isEmpty
+                        let msgRowColor: Color = hasCritical
+                            ? Color(red: 1, green: 0.60, blue: 0)
+                            : DSColor.primary
+
+                        HStack(spacing: 14) {
+                            // 👥 Acknowledgements
+                            // TODO: tap → accountability dashboard once that view is built
+                            HStack(spacing: 4) {
+                                Text("👥").font(.caption).foregroundStyle(ackRowColor)
+                                Text(alarmExpectedUserCount > 0
+                                     ? "\(alarmAcknowledgementCount) / \(alarmExpectedUserCount)"
+                                     : "\(alarmAcknowledgementCount) acknowledged")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(ackRowColor)
+                                    .contentTransition(.numericText())
+                                    .animation(.spring(response: 0.35), value: alarmAcknowledgementCount)
+                                if isFullyAcked {
+                                    Text("✓")
+                                        .font(.caption2.weight(.black))
+                                        .foregroundStyle(ackRowColor)
+                                }
+                            }
+
+                            // 💬 Admin updates — tap to open Messaging
+                            if !alarmBroadcasts.isEmpty {
+                                HStack(spacing: 4) {
+                                    Text("💬").font(.caption).foregroundStyle(msgRowColor)
+                                    Text("\(alarmBroadcasts.count) update\(alarmBroadcasts.count == 1 ? "" : "s")")
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(msgRowColor)
+                                        .contentTransition(.numericText())
+                                        .animation(.spring(response: 0.35), value: alarmBroadcasts.count)
+                                }
+                                .scaleEffect(alarmBroadcasts.count > 0 ? 1.0 : 0.85)
+                                .animation(.spring(response: 0.3, dampingFraction: 0.55), value: alarmBroadcasts.count)
+                                .onTapGesture { showMessagingCenter = true }
+                            }
                         }
                     }
                     Divider()
@@ -2508,6 +2560,11 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showAuditLogModal) {
             AuditLogsModal(api: api, userID: appState.userID ?? 0)
+        }
+        .sheet(isPresented: $showRosterView) {
+            if let alertId = alarmAlertId, let userID = appState.userID {
+                RosterView(alertId: alertId, userID: userID, api: api)
+            }
         }
     }
 

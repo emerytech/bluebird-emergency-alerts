@@ -1,3 +1,5 @@
+@file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+
 package com.ets3d.bluebirdalertsandroid
 
 import android.content.Context
@@ -100,6 +102,9 @@ sealed class LCStepKind {
     object Info : LCStepKind()
     data class IconGrid(val items: List<Triple<ImageVector, String, Color>>) : LCStepKind()
     data class SlideToConfirm(val label: String, val icon: ImageVector) : LCStepKind()
+    data class HoldButton(val emergencyType: String, val color: Color) : LCStepKind()
+    object AlarmTakeover : LCStepKind()
+    object AcknowledgeButton : LCStepKind()
     data class MockNotification(val appName: String, val title: String, val body: String) : LCStepKind()
     data class VisualCopy(val placeholder: String) : LCStepKind()
 }
@@ -137,16 +142,17 @@ val LC_ALL_GUIDES: List<LCGuide> = listOf(
         LCStep(
             title = "Hold to Activate",
             description = "Hold the circular button for your school's configured duration. The ring fills as you hold. All staff receive an immediate alert the moment you release.",
-            kind = LCStepKind.SlideToConfirm(
-                label = "Slide to Simulate",
-                icon = Icons.Filled.Warning,
-            ),
+            kind = LCStepKind.HoldButton("LOCKDOWN", LCRed),
         ),
         LCStep(
             title = "Active Alert Screen",
-            description = "When an emergency activates, every staff device shows a full-screen takeover. Admins can send broadcast updates, view acknowledgements, and deactivate when resolved.",
-            // TODO(LearningCenter): replace with real EmergencyAlarmTakeover(tutorialMode = true)
-            kind = LCStepKind.VisualCopy("emergency_takeover"),
+            description = "When an emergency activates, every staff device shows a full-screen takeover. The acknowledgement counter updates in real time as staff tap the button below.",
+            kind = LCStepKind.AlarmTakeover,
+        ),
+        LCStep(
+            title = "Acknowledge the Alert",
+            description = "Tap Acknowledge to mark yourself safe. The counter above updates instantly. Administrators see who has and hasn't responded in real time.",
+            kind = LCStepKind.AcknowledgeButton,
         ),
         LCStep(
             title = "Push Notification",
@@ -564,10 +570,17 @@ private fun LCGuideStepScreen(
 ) {
     var currentStep by remember { mutableIntStateOf(startStep) }
     var interactionDone by remember { mutableStateOf(false) }
+    // Simulation state — shared across hold/takeover/ack steps within this guide run
+    var simActivated   by remember { mutableStateOf(false) }
+    var simAcknowledged by remember { mutableStateOf(false) }
+    var simAckCount    by remember { mutableIntStateOf(2) }
+    val simTotalUsers  = 14
     val step = guide.steps[currentStep]
     val isFirst = currentStep == 0
     val isLast  = currentStep == guide.steps.size - 1
     val needsInteraction = step.kind is LCStepKind.SlideToConfirm
+        || step.kind is LCStepKind.HoldButton
+        || step.kind is LCStepKind.AcknowledgeButton
 
     LaunchedEffect(isAlarmActive) { if (isAlarmActive) onDone() }
 
@@ -627,6 +640,7 @@ private fun LCGuideStepScreen(
                         onClick = {
                             currentStep--
                             interactionDone = false
+                            simActivated = false; simAcknowledged = false; simAckCount = 2
                         },
                         enabled = !isFirst,
                         modifier = Modifier.weight(1f).height(50.dp),
@@ -652,6 +666,7 @@ private fun LCGuideStepScreen(
                                 store.saveProgress(guide.id, currentStep + 1)
                                 currentStep++
                                 interactionDone = false
+                                simActivated = false; simAcknowledged = false; simAckCount = 2
                             }
                         },
                         enabled = !(needsInteraction && !interactionDone),
@@ -683,7 +698,21 @@ private fun LCGuideStepScreen(
             Spacer(Modifier.height(24.dp))
 
             Box(modifier = Modifier.padding(horizontal = 20.dp)) {
-                LCStepContent(step = step, onInteractionComplete = { interactionDone = true }, guideColor = guide.id.color)
+                LCStepContent(
+                    step = step,
+                    guideColor = guide.id.color,
+                    simActivated = simActivated,
+                    simAcknowledged = simAcknowledged,
+                    simAckCount = simAckCount,
+                    simTotalUsers = simTotalUsers,
+                    onInteractionComplete = { interactionDone = true },
+                    onSimActivate = { simActivated = true },
+                    onSimAcknowledge = {
+                        simAcknowledged = true
+                        simAckCount = (simAckCount + 1).coerceAtMost(simTotalUsers)
+                    },
+                    onSimAckCountChange = { simAckCount = it },
+                )
             }
 
             Spacer(Modifier.height(24.dp))
@@ -720,15 +749,38 @@ private fun LCGuideStepScreen(
 @Composable
 private fun LCStepContent(
     step: LCStep,
-    onInteractionComplete: () -> Unit,
     guideColor: Color,
+    simActivated: Boolean,
+    simAcknowledged: Boolean,
+    simAckCount: Int,
+    simTotalUsers: Int,
+    onInteractionComplete: () -> Unit,
+    onSimActivate: () -> Unit,
+    onSimAcknowledge: () -> Unit,
+    onSimAckCountChange: (Int) -> Unit,
 ) {
     when (val kind = step.kind) {
-        is LCStepKind.Info            -> LCInfoStep(guideColor)
-        is LCStepKind.IconGrid        -> LCIconGridStep(kind.items)
-        is LCStepKind.SlideToConfirm  -> LCSlideToConfirmStep(kind.label, kind.icon, onInteractionComplete)
+        is LCStepKind.Info             -> LCInfoStep(guideColor)
+        is LCStepKind.IconGrid         -> LCIconGridStep(kind.items)
+        is LCStepKind.SlideToConfirm   -> LCSlideToConfirmStep(kind.label, kind.icon, onInteractionComplete)
+        is LCStepKind.HoldButton       -> LCHoldButtonStep(
+            emergencyType = kind.emergencyType,
+            color = kind.color,
+            onComplete = { onSimActivate(); onInteractionComplete() },
+        )
+        is LCStepKind.AlarmTakeover    -> LCAlarmTakeoverStep(
+            ackCount = simAckCount,
+            totalUsers = simTotalUsers,
+            onAckCountChange = onSimAckCountChange,
+        )
+        is LCStepKind.AcknowledgeButton -> LCAcknowledgeButtonStep(
+            acknowledged = simAcknowledged,
+            ackCount = simAckCount,
+            totalUsers = simTotalUsers,
+            onAcknowledge = { onSimAcknowledge(); onInteractionComplete() },
+        )
         is LCStepKind.MockNotification -> LCMockNotificationStep(kind.appName, kind.title, kind.body)
-        is LCStepKind.VisualCopy      -> LCVisualCopyStep(kind.placeholder)
+        is LCStepKind.VisualCopy       -> LCVisualCopyStep(kind.placeholder)
     }
 }
 
@@ -881,6 +933,354 @@ private fun LCSlideToConfirmStep(label: String, icon: ImageVector, onComplete: (
                     )
                 }
             }
+        }
+    }
+}
+
+// TODO(LearningCenter): replace with real CircularEmergencyButton(tutorialMode = true)
+@Composable
+private fun LCHoldButtonStep(
+    emergencyType: String,
+    color: Color,
+    onComplete: () -> Unit,
+) {
+    var holdProgress by remember { mutableFloatStateOf(0f) }
+    var isHolding by remember { mutableStateOf(false) }
+    var completed by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        // Safety badge
+        Row(
+            modifier = Modifier
+                .clip(RoundedCornerShape(50))
+                .background(LCAmber.copy(alpha = 0.12f))
+                .padding(horizontal = 14.dp, vertical = 7.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(Icons.Filled.Shield, contentDescription = null, tint = LCAmber, modifier = Modifier.size(14.dp))
+            Text("SIMULATION — no real alert sent", color = LCAmber, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+        }
+
+        Surface(
+            color = Color(0xFF0D1424),
+            shape = RoundedCornerShape(20.dp),
+            border = BorderStroke(1.dp, color.copy(alpha = 0.25f)),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Column(
+                modifier = Modifier.padding(24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Box(contentAlignment = Alignment.Center, modifier = Modifier.size(130.dp)) {
+                    val animProgress by animateFloatAsState(holdProgress, label = "ring")
+                    Canvas(modifier = Modifier.fillMaxSize()) {
+                        val stroke = androidx.compose.ui.graphics.drawscope.Stroke(
+                            width = 10.dp.toPx(),
+                            cap = androidx.compose.ui.graphics.StrokeCap.Round,
+                        )
+                        // Background ring
+                        drawArc(
+                            color = androidx.compose.ui.graphics.Color.White.copy(alpha = 0.24f),
+                            startAngle = -90f, sweepAngle = 360f, useCenter = false, style = stroke,
+                        )
+                        // Progress ring
+                        val ringColor = when {
+                            animProgress < 0.55f -> androidx.compose.ui.graphics.Color.White
+                            animProgress < 0.80f -> LCAmber
+                            else -> LCRed
+                        }
+                        drawArc(
+                            color = ringColor,
+                            startAngle = -90f, sweepAngle = 360f * animProgress, useCenter = false, style = stroke,
+                        )
+                    }
+                    // Inner circle
+                    val scale by animateFloatAsState(
+                        if (completed) 1.12f else if (isHolding) 0.97f + holdProgress * 0.11f else 1f,
+                        label = "scale",
+                    )
+                    Box(
+                        modifier = Modifier
+                            .size(108.dp)
+                            .graphicsLayer { scaleX = scale; scaleY = scale }
+                            .clip(CircleShape)
+                            .background(color)
+                            .pointerInput(completed) {
+                                if (completed) return@pointerInput
+                                androidx.compose.ui.input.pointer.PointerInputScope::class
+                                awaitPointerEventScope {
+                                    while (true) {
+                                        val event = awaitPointerEvent()
+                                        // Handled by press detection below
+                                    }
+                                }
+                            },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            Icons.Filled.Lock, contentDescription = null,
+                            tint = androidx.compose.ui.graphics.Color.White,
+                            modifier = Modifier.size(30.dp),
+                        )
+                    }
+                }
+
+                Text(
+                    emergencyType,
+                    color = color,
+                    fontWeight = FontWeight.ExtraBold,
+                    fontSize = 16.sp,
+                )
+                Text(
+                    when {
+                        completed -> "Activating…"
+                        isHolding -> "Keep Holding…"
+                        else -> "Hold to Activate"
+                    },
+                    color = androidx.compose.ui.graphics.Color.White.copy(alpha = 0.88f),
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text("~3s", color = androidx.compose.ui.graphics.Color.White.copy(alpha = 0.62f), fontSize = 11.sp)
+            }
+        }
+
+        // Tap-and-hold simulation button (simpler than gesture on canvas)
+        Button(
+            onClick = {},
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(52.dp)
+                .pointerInput(completed) {
+                    if (completed) return@pointerInput
+                    detectTapGestures(
+                        onPress = {
+                            isHolding = true
+                            val startTime = System.currentTimeMillis()
+                            val duration = 3000L
+                            scope.launch {
+                                while (isHolding && !completed) {
+                                    val elapsed = System.currentTimeMillis() - startTime
+                                    holdProgress = (elapsed / duration.toFloat()).coerceAtMost(1f)
+                                    if (holdProgress >= 1f) {
+                                        completed = true
+                                        isHolding = false
+                                        onComplete()
+                                        break
+                                    }
+                                    kotlinx.coroutines.delay(50)
+                                }
+                            }
+                            val released = tryAwaitRelease()
+                            if (!completed) {
+                                isHolding = false
+                                holdProgress = 0f
+                            }
+                        },
+                    )
+                },
+            enabled = !completed,
+            shape = RoundedCornerShape(12.dp),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = if (completed) LCGreen else color,
+                disabledContainerColor = LCGreen,
+            ),
+        ) {
+            Text(
+                if (completed) "Simulated ✓" else "Hold Here to Simulate",
+                fontWeight = FontWeight.Bold,
+                color = androidx.compose.ui.graphics.Color.White,
+            )
+        }
+    }
+}
+
+// TODO(LearningCenter): replace with real EmergencyAlarmTakeover(tutorialMode = true)
+@Composable
+private fun LCAlarmTakeoverStep(
+    ackCount: Int,
+    totalUsers: Int,
+    onAckCountChange: (Int) -> Unit,
+) {
+    val ackPct = if (totalUsers > 0) ackCount.toFloat() / totalUsers else 0f
+    val ackColor = when {
+        ackPct < 0.40f -> LCRed
+        ackPct < 0.75f -> LCAmber
+        else -> LCGreen
+    }
+    val animPct by animateFloatAsState(ackPct, animationSpec = spring(dampingRatio = 0.75f), label = "ack")
+
+    LaunchedEffect(Unit) {
+        kotlinx.coroutines.delay(1200)
+        onAckCountChange((ackCount + 1).coerceAtMost(totalUsers - 1))
+        kotlinx.coroutines.delay(1200)
+        onAckCountChange((ackCount + 2).coerceAtMost(totalUsers - 1))
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(20.dp))
+            .background(
+                Brush.verticalGradient(listOf(LCRed, Color(0xFF0A0F1A)))
+            ),
+    ) {
+        Column(
+            modifier = Modifier.padding(20.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            // Safety badge
+            Row(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(50))
+                    .background(LCAmber.copy(alpha = 0.18f))
+                    .padding(horizontal = 14.dp, vertical = 7.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(Icons.Filled.Shield, contentDescription = null, tint = LCAmber, modifier = Modifier.size(13.dp))
+                Text("SIMULATION — no real alert sent", color = LCAmber, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+            }
+
+            // Icon
+            Box(contentAlignment = Alignment.Center) {
+                Box(
+                    modifier = Modifier
+                        .size(100.dp)
+                        .clip(CircleShape)
+                        .border(3.dp, Color.White.copy(alpha = 0.22f), CircleShape),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Box(
+                        modifier = Modifier.size(84.dp).clip(CircleShape).background(Color.White.copy(alpha = 0.10f)),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            Icons.Filled.Notifications, contentDescription = null,
+                            tint = Color.White, modifier = Modifier.size(38.dp),
+                        )
+                    }
+                }
+            }
+
+            // Title block
+            Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text("EMERGENCY ALERT", color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Black, letterSpacing = 1.sp)
+                Text("🔒 LOCKDOWN", color = Color.White.copy(alpha = 0.92f), fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                Text("Lincoln Elementary", color = Color.White.copy(alpha = 0.65f), fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+            }
+
+            // Instructions card
+            Text(
+                "Follow school emergency procedures immediately.",
+                color = Color.White.copy(alpha = 0.94f),
+                fontSize = 13.sp,
+                fontWeight = FontWeight.SemiBold,
+                textAlign = TextAlign.Center,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(Color.White.copy(alpha = 0.13f))
+                    .padding(horizontal = 14.dp, vertical = 10.dp),
+            )
+
+            // Ack progress
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text("$ackCount / $totalUsers acknowledged", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                    Text("${(ackPct * 100).toInt()}%", color = ackColor, fontSize = 14.sp, fontWeight = FontWeight.Black)
+                }
+                Box(
+                    modifier = Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(4.dp))
+                        .background(Color.White.copy(alpha = 0.18f)),
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth(animPct)
+                            .fillMaxHeight()
+                            .clip(RoundedCornerShape(4.dp))
+                            .background(ackColor),
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun LCAcknowledgeButtonStep(
+    acknowledged: Boolean,
+    ackCount: Int,
+    totalUsers: Int,
+    onAcknowledge: () -> Unit,
+) {
+    val ackPct = if (totalUsers > 0) ackCount.toFloat() / totalUsers else 0f
+    val ackColor = when {
+        ackPct < 0.40f -> LCRed
+        ackPct < 0.75f -> LCAmber
+        else -> LCGreen
+    }
+    val animPct by animateFloatAsState(ackPct, animationSpec = spring(dampingRatio = 0.75f), label = "ack")
+
+    Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        // Progress card
+        Surface(
+            color = Color(0xFF192132),
+            shape = RoundedCornerShape(14.dp),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text("$ackCount / $totalUsers acknowledged", color = Color(0xFFE8EEFF), fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                    Text("${(ackPct * 100).toInt()}%", color = ackColor, fontSize = 14.sp, fontWeight = FontWeight.Black)
+                }
+                Box(
+                    modifier = Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(4.dp))
+                        .background(Color(0xFF1E2D4A)),
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth(animPct)
+                            .fillMaxHeight()
+                            .clip(RoundedCornerShape(4.dp))
+                            .background(ackColor),
+                    )
+                }
+            }
+        }
+
+        // Acknowledge button — pixel copy of production
+        Button(
+            onClick = { if (!acknowledged) onAcknowledge() },
+            enabled = !acknowledged,
+            modifier = Modifier.fillMaxWidth().height(58.dp),
+            shape = RoundedCornerShape(16.dp),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = if (acknowledged) Color.White.copy(alpha = 0.20f) else LCGreen,
+                disabledContainerColor = Color.White.copy(alpha = 0.20f),
+                disabledContentColor = Color.White.copy(alpha = 0.70f),
+            ),
+        ) {
+            if (acknowledged) {
+                Icon(Icons.Filled.CheckCircle, contentDescription = null, modifier = Modifier.size(20.dp))
+                Spacer(Modifier.width(8.dp))
+            }
+            Text(
+                if (acknowledged) "Acknowledged" else "Acknowledge",
+                fontSize = 17.sp,
+                fontWeight = FontWeight.Black,
+                color = if (acknowledged) Color.White.copy(alpha = 0.70f) else Color(0xFF052A1D),
+            )
         }
     }
 }
