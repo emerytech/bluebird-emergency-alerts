@@ -559,6 +559,57 @@ data class DistrictQuietPeriodItem(
     val tenantName: String,
 )
 
+// ---------------------------------------------------------------------------
+// Notification classification — Phase 2
+// ---------------------------------------------------------------------------
+
+enum class NotificationType {
+    EMERGENCY_ALERT,
+    QUIET_REQUEST,
+    QUIET_APPROVED,
+    QUIET_DENIED,
+    MESSAGE,
+    TEAM_ASSIST,
+    SYSTEM,
+}
+
+enum class NotificationPriority { CRITICAL, HIGH, NORMAL, LOW }
+
+fun NotificationType.priority(): NotificationPriority = when (this) {
+    NotificationType.EMERGENCY_ALERT -> NotificationPriority.CRITICAL
+    NotificationType.QUIET_REQUEST,
+    NotificationType.QUIET_APPROVED,
+    NotificationType.QUIET_DENIED,
+    NotificationType.TEAM_ASSIST -> NotificationPriority.HIGH
+    NotificationType.MESSAGE -> NotificationPriority.NORMAL
+    NotificationType.SYSTEM -> NotificationPriority.LOW
+}
+
+fun pushTypeToNotificationType(pushType: String): NotificationType = when {
+    pushType.isBlank() || pushType in EMERGENCY_ALERT_TYPES -> NotificationType.EMERGENCY_ALERT
+    pushType == "quiet_request" -> NotificationType.QUIET_REQUEST
+    pushType in setOf("quiet_period_approved", "quiet_period_scheduled") -> NotificationType.QUIET_APPROVED
+    pushType == "quiet_period_denied" -> NotificationType.QUIET_DENIED
+    pushType == "help_request" -> NotificationType.TEAM_ASSIST
+    pushType in setOf("admin_message", "message") -> NotificationType.MESSAGE
+    else -> NotificationType.SYSTEM
+}
+
+fun logInvalidCriticalAttempt(
+    code: String,
+    notificationType: NotificationType,
+    source: String,
+    tenantSlug: String? = null,
+) {
+    android.util.Log.e(
+        "BlueBird",
+        "$code: type=$notificationType priority=${notificationType.priority()} " +
+            "source=$source tenant=${tenantSlug ?: "unknown"} blocked_by_fail_safe=true",
+    )
+}
+
+// ---------------------------------------------------------------------------
+
 enum class AdminEventType { QUIET_PENDING, QUIET_APPROVED, ADMIN_MESSAGE }
 
 data class AdminEvent(
@@ -757,6 +808,8 @@ data class UiState(
     val tenantSettings: TenantSettings = TenantSettings(),
     val incidentRoster: IncidentRoster? = null,
     val isLoadingRoster: Boolean = false,
+    // Non-null while a non-critical sound should be played; cleared immediately after.
+    val pendingNonCriticalSound: String? = null,
 )
 
 // ── Roster data classes ─────────────────────────────────────────────────────────
@@ -1211,6 +1264,14 @@ class MainViewModel : ViewModel() {
 
     fun clearAdminQuietModalsForRequest(requestId: Int) {
         _state.update { it.copy(pendingAdminQuietModals = it.pendingAdminQuietModals.filterNot { e -> e.requestId == requestId }) }
+    }
+
+    private fun triggerNonCriticalSound(soundKey: String) {
+        _state.update { it.copy(pendingNonCriticalSound = soundKey) }
+    }
+
+    fun consumeNonCriticalSound() {
+        _state.update { it.copy(pendingNonCriticalSound = null) }
     }
 
     fun refreshPushDeliveryStats(ctx: Context) {
@@ -1867,13 +1928,14 @@ class MainViewModel : ViewModel() {
                     val reason = j.optString("reason").ifBlank { null }
                     val requestId = j.optInt("request_id", -1).takeIf { it > 0 }
                     val tenantSlug = eventSlug.ifBlank { null }
-                    // Toast notification for all users.
+                    // Toast notification for all users + gentle sound/haptic.
                     enqueueAdminEvent(AdminEvent(
                         id = "quiet_created_${System.currentTimeMillis()}",
                         type = AdminEventType.QUIET_PENDING,
                         title = "$requesterName requested quiet time",
                         body = if (reason != null) "“$reason”" else "Awaiting admin approval.",
                     ))
+                    triggerNonCriticalSound("quiet_request")
                     // Rich actionable modal for admins only.
                     if (requestId != null && isAdminRole(cachedUserRole)) {
                         enqueueAdminQuietModal(AdminQuietModalEvent(
@@ -1907,6 +1969,7 @@ class MainViewModel : ViewModel() {
                         title = if (isScheduled) "Quiet Period Scheduled" else "Quiet Period Approved",
                         body = if (isScheduled) "Your quiet period has been scheduled." else "Your quiet period request has been approved.",
                     ))
+                    triggerNonCriticalSound("quiet_approved")
                 }
             }
             "quiet_period_denied" -> {
@@ -1923,6 +1986,7 @@ class MainViewModel : ViewModel() {
                         title = "Quiet Period Not Approved",
                         body = "Your quiet period request was not approved.",
                     ))
+                    triggerNonCriticalSound("quiet_approved")
                 }
             }
             "message_received" -> {
@@ -1940,6 +2004,7 @@ class MainViewModel : ViewModel() {
                         title = "Message from $senderLabel",
                         body = msgText,
                     ))
+                    triggerNonCriticalSound("message_received")
                 }
             }
             "tenant_acknowledgement_updated" -> {
@@ -1985,6 +2050,7 @@ class MainViewModel : ViewModel() {
                     runCatching { client!!.activeRequestHelp() }
                         .onSuccess { result -> _state.update { it.copy(activeTeamAssists = result) } }
                 }
+                triggerNonCriticalSound("team_assist")
             }
         }
     }
@@ -2713,7 +2779,12 @@ private fun MainScreen(
         // non-emergency types, but if it does (e.g., via onNewIntent path), block here.
         val isEmergencyEvent = event.type.isBlank() || event.type in EMERGENCY_ALERT_TYPES
         if (!isEmergencyEvent) {
-            android.util.Log.e("BlueBird", "INVALID_CRITICAL_TRIGGER_UI: type='${event.type}' reached alarm launch path — blocked")
+            logInvalidCriticalAttempt(
+                code = "INVALID_CRITICAL_TRIGGER_UI",
+                notificationType = pushTypeToNotificationType(event.type),
+                source = "AlarmLaunchCoordinator/LaunchedEffect",
+                tenantSlug = event.tenantSlug,
+            )
             vm.refreshIncidentFeeds()
             return@LaunchedEffect
         }
@@ -2734,6 +2805,37 @@ private fun MainScreen(
     }
     LaunchedEffect(state.isBusy) {
         if (!state.isBusy) activationInFlight = false
+    }
+
+    // Non-critical sound + haptic — Phase 10
+    // Plays once per WS event; never triggers during active emergencies.
+    val ncSound = state.pendingNonCriticalSound
+    val appCtxForSound = ctx.applicationContext
+    LaunchedEffect(ncSound) {
+        val key = ncSound ?: return@LaunchedEffect
+        if (!state.alarm.isValidEmergency) {
+            when (key) {
+                "quiet_request" -> {
+                    NonCriticalSoundController.playQuietRequest(appCtxForSound)
+                    performNonCriticalHaptic(appCtxForSound, longArrayOf(0L, 60L))
+                }
+                "quiet_approved" -> {
+                    NonCriticalSoundController.playQuietApproved(appCtxForSound)
+                    performNonCriticalHaptic(appCtxForSound, longArrayOf(0L, 40L))
+                }
+                "message_received" -> {
+                    NonCriticalSoundController.playMessageReceived(appCtxForSound)
+                }
+                "team_assist" -> {
+                    NonCriticalSoundController.playTeamAssist(appCtxForSound)
+                    performNonCriticalHaptic(appCtxForSound, longArrayOf(0L, 50L, 60L, 50L))
+                }
+                "system_notice" -> {
+                    NonCriticalSoundController.playSystemNotice(appCtxForSound)
+                }
+            }
+        }
+        vm.consumeNonCriticalSound()
     }
 
     AlarmSoundEffect(
@@ -7072,6 +7174,11 @@ private fun SettingsScreen(
             }
         }
 
+        // Notification Sound Preview — visible to all users (Phase 11)
+        item {
+            NotificationSoundPreviewCard(ctx = ctx)
+        }
+
         // Appearance card
         item {
             Surface(
@@ -7187,6 +7294,127 @@ private fun SettingsToggleRow(
             checked = checked,
             onCheckedChange = onCheckedChange,
         )
+    }
+}
+
+// ── Notification Sound Preview Panel — Phase 11 ─────────────────────────────
+
+private data class SoundPreviewRow(
+    val label: String,
+    val subtitle: String,
+    val notificationType: NotificationType,
+    val soundKey: String,
+    val hapticPattern: LongArray?,
+)
+
+@Composable
+private fun NotificationSoundPreviewCard(ctx: Context) {
+    val rows = remember {
+        listOf(
+            SoundPreviewRow("Quiet Request", "HIGH priority · non-critical", NotificationType.QUIET_REQUEST, "quiet_request", longArrayOf(0L, 60L)),
+            SoundPreviewRow("Quiet Approved", "HIGH priority · non-critical", NotificationType.QUIET_APPROVED, "quiet_approved", longArrayOf(0L, 40L)),
+            SoundPreviewRow("Message Received", "NORMAL priority · non-critical", NotificationType.MESSAGE, "message_received", null),
+            SoundPreviewRow("Team Assist", "HIGH priority · non-critical", NotificationType.TEAM_ASSIST, "team_assist", longArrayOf(0L, 50L, 60L, 50L)),
+            SoundPreviewRow("System Notice", "LOW priority · non-critical", NotificationType.SYSTEM, "system_notice", null),
+        )
+    }
+
+    Surface(
+        color = SurfaceMain,
+        shape = RoundedCornerShape(20.dp),
+        shadowElevation = 4.dp,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 18.dp, vertical = 14.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text("Notification Sounds", color = TextPri, fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
+                Surface(
+                    color = QuietPurple.copy(alpha = 0.15f),
+                    shape = RoundedCornerShape(6.dp),
+                ) {
+                    Text(
+                        "PREVIEW",
+                        color = QuietPurple,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 0.5.sp,
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                    )
+                }
+            }
+            Text(
+                "Preview notification sounds for non-critical events. These never play during active emergency alerts.",
+                color = TextMuted,
+                fontSize = 12.sp,
+            )
+            HorizontalDivider(color = BorderSoft)
+            rows.forEach { row ->
+                SoundPreviewRowItem(ctx = ctx, row = row)
+            }
+            HorizontalDivider(color = BorderSoft)
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Text("🚨", fontSize = 14.sp)
+                Text(
+                    "Emergency Alert uses the existing alarm sound and is not previewable here.",
+                    color = TextMuted,
+                    fontSize = 11.sp,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SoundPreviewRowItem(ctx: Context, row: SoundPreviewRow) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(row.label, color = TextPri, fontWeight = FontWeight.Medium, fontSize = 14.sp)
+            Text(row.subtitle, color = TextMuted, fontSize = 11.sp)
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            OutlinedButton(
+                onClick = {
+                    when (row.soundKey) {
+                        "quiet_request" -> NonCriticalSoundController.playQuietRequest(ctx)
+                        "quiet_approved" -> NonCriticalSoundController.playQuietApproved(ctx)
+                        "message_received" -> NonCriticalSoundController.playMessageReceived(ctx)
+                        "team_assist" -> NonCriticalSoundController.playTeamAssist(ctx)
+                        "system_notice" -> NonCriticalSoundController.playSystemNotice(ctx)
+                    }
+                },
+                shape = RoundedCornerShape(8.dp),
+                border = BorderStroke(1.dp, QuietPurple.copy(alpha = 0.4f)),
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                modifier = Modifier.height(32.dp),
+            ) {
+                Text("▶ Sound", fontSize = 11.sp, color = QuietPurple)
+            }
+            val hapticPattern = row.hapticPattern
+            if (hapticPattern != null) {
+                OutlinedButton(
+                    onClick = { performNonCriticalHaptic(ctx, hapticPattern) },
+                    shape = RoundedCornerShape(8.dp),
+                    border = BorderStroke(1.dp, BorderSoft),
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                    modifier = Modifier.height(32.dp),
+                ) {
+                    Text("Haptic", fontSize = 11.sp, color = TextMuted)
+                }
+            }
+        }
     }
 }
 
@@ -7354,6 +7582,57 @@ private object AlertFeedbackController {
         val manager = cameraManager ?: return
         val cameraId = torchCameraId ?: return
         runCatching { manager.setTorchMode(cameraId, enabled) }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Non-critical sound controller — Phase 10
+// Plays short one-shot notification sounds for quiet/message/team-assist events.
+// Never plays looping alarm sound. Never interferes with AlarmAudioController.
+// ---------------------------------------------------------------------------
+
+private object NonCriticalSoundController {
+    private const val TAG = "BlueBirdNCSound"
+
+    @Synchronized
+    fun play(ctx: Context, rawResId: Int) {
+        runCatching {
+            val mp = MediaPlayer.create(ctx.applicationContext, rawResId) ?: return
+            mp.setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_NOTIFICATION)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                    .build(),
+            )
+            mp.isLooping = false
+            mp.setVolume(0.7f, 0.7f)
+            mp.setOnCompletionListener { it.release() }
+            mp.setOnErrorListener { it, _, _ -> it.release(); true }
+            mp.start()
+        }.onFailure { Log.w(TAG, "play failed rawResId=$rawResId", it) }
+    }
+
+    fun playQuietRequest(ctx: Context) = play(ctx, R.raw.quiet_request)
+    fun playQuietApproved(ctx: Context) = play(ctx, R.raw.quiet_approved)
+    fun playMessageReceived(ctx: Context) = play(ctx, R.raw.message_received)
+    fun playTeamAssist(ctx: Context) = play(ctx, R.raw.team_assist)
+    fun playSystemNotice(ctx: Context) = play(ctx, R.raw.system_notice)
+}
+
+fun performNonCriticalHaptic(ctx: Context, pattern: LongArray = longArrayOf(0L, 60L)) {
+    runCatching {
+        val vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            (ctx.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as? VibratorManager)?.defaultVibrator
+        } else {
+            @Suppress("DEPRECATION")
+            ctx.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
+        } ?: return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            vibrator.vibrate(VibrationEffect.createWaveform(pattern, -1))
+        } else {
+            @Suppress("DEPRECATION")
+            vibrator.vibrate(pattern, -1)
+        }
     }
 }
 
