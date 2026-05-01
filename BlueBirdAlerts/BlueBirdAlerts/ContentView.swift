@@ -605,6 +605,7 @@ struct ContentView: View {
     @State private var alarmActivatedAt: String? = nil
     @State private var alarmActivatedByLabel: String? = nil
     @State private var alarmBroadcasts: [AlarmBroadcastUpdate] = []
+    @State private var rosterLiveSummary: IncidentRosterSummary? = nil
     @State private var showAlertTypeSheet = false
     @State private var isRefreshingIncidentFeed = false
     @State private var isUpdatingAlarm = false
@@ -1701,7 +1702,6 @@ struct ContentView: View {
 
                         HStack(spacing: 14) {
                             // 👥 Acknowledgements
-                            // TODO: tap → accountability dashboard once that view is built
                             HStack(spacing: 4) {
                                 Text("👥").font(.caption).foregroundStyle(ackRowColor)
                                 Text(alarmExpectedUserCount > 0
@@ -1716,6 +1716,24 @@ struct ContentView: View {
                                         .font(.caption2.weight(.black))
                                         .foregroundStyle(ackRowColor)
                                 }
+                            }
+
+                            // 🎒 Roster accountability — tap to open Roster
+                            if let rs = rosterLiveSummary, rs.total > 0 {
+                                let allAccounted = rs.unclaimed == 0
+                                let rosterColor: Color = allAccounted ? DSColor.success : Color(red: 0.98, green: 0.75, blue: 0.14)
+                                HStack(spacing: 4) {
+                                    Text("🎒").font(.caption)
+                                    Text(allAccounted ? "\(rs.total) accounted" : "\(rs.unclaimed) unaccounted")
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(rosterColor)
+                                        .contentTransition(.numericText())
+                                        .animation(.spring(response: 0.35), value: rs.unclaimed)
+                                    if allAccounted {
+                                        Text("✓").font(.caption2.weight(.black)).foregroundStyle(rosterColor)
+                                    }
+                                }
+                                .onTapGesture { showRosterView = true }
                             }
 
                             // 💬 Admin updates — tap to open Messaging
@@ -2886,6 +2904,15 @@ struct ContentView: View {
             anySuccess = true
         } catch {
             errors.append("Alarm status: \(error.localizedDescription)")
+        }
+
+        // Fetch lightweight roster summary during active alarms for minimized card
+        if alarmIsActive, let alertId = alarmAlertId, let userID = appState.userID {
+            if let summary = try? await feedAPI.fetchRosterSummary(alertId: alertId, userID: userID) {
+                rosterLiveSummary = summary
+            }
+        } else {
+            rosterLiveSummary = nil
         }
 
         appState.backendReachable = anySuccess

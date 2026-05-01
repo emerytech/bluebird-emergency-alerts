@@ -1448,6 +1448,16 @@ extension APIClient {
         return try JSONDecoder().decode(IncidentRoster.self, from: data)
     }
 
+    func fetchRosterSummary(alertId: Int, userID: Int) async throws -> IncidentRosterSummary {
+        var comps = URLComponents(url: baseURL.appendingPathComponent("alerts/\(alertId)/roster/summary"), resolvingAgainstBaseURL: false)!
+        comps.queryItems = [URLQueryItem(name: "user_id", value: String(userID))]
+        var request = URLRequest(url: comps.url!)
+        withAPIKey(&request)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try requireSuccess(response: response, data: data)
+        return try JSONDecoder().decode(IncidentRosterSummary.self, from: data)
+    }
+
     func claimStudent(alertId: Int, studentId: Int, userID: Int, status: String, takeoverConfirmed: Bool = false) async throws -> RosterClaimResult {
         var comps = URLComponents(url: baseURL.appendingPathComponent("alerts/\(alertId)/roster/students/\(studentId)/claim"), resolvingAgainstBaseURL: false)!
         comps.queryItems = []

@@ -29,6 +29,7 @@ struct RosterView: View {
     @State private var roster: IncidentRoster?
     @State private var isLoading = false
     @State private var searchQuery = ""
+    @State private var gradeFilter = ""   // "" = all grades
     @State private var showAddSheet = false
     @State private var conflictInfo: ConflictInfo?
 
@@ -38,12 +39,22 @@ struct RosterView: View {
         let status: String
     }
 
+    var availableGrades: [String] {
+        let all = roster?.students.map { $0.gradeLevel } ?? []
+        let unique = Array(Set(all))
+        return unique.sorted {
+            let li = gradeOptions.firstIndex(of: $0) ?? Int.max
+            let ri = gradeOptions.firstIndex(of: $1) ?? Int.max
+            return li < ri
+        }
+    }
+
     var filtered: [RosterIncidentRow] {
         guard let students = roster?.students else { return [] }
-        guard !searchQuery.isEmpty else { return students }
         return students.filter {
-            $0.fullName.localizedCaseInsensitiveContains(searchQuery) ||
-            $0.gradeLevel.localizedCaseInsensitiveContains(searchQuery)
+            let matchesSearch = searchQuery.isEmpty || $0.fullName.localizedCaseInsensitiveContains(searchQuery)
+            let matchesGrade = gradeFilter.isEmpty || $0.gradeLevel == gradeFilter
+            return matchesSearch && matchesGrade
         }
     }
 
@@ -54,26 +65,39 @@ struct RosterView: View {
                     summaryBar(summary)
                 }
 
-                HStack(spacing: 10) {
-                    HStack {
-                        Image(systemName: "magnifyingglass")
-                            .foregroundStyle(.secondary)
-                        TextField("Search students…", text: $searchQuery)
-                            .autocorrectionDisabled()
-                    }
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 8)
-                    .background(Color(.systemFill))
-                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                VStack(spacing: 8) {
+                    HStack(spacing: 10) {
+                        HStack {
+                            Image(systemName: "magnifyingglass")
+                                .foregroundStyle(.secondary)
+                            TextField("Search students…", text: $searchQuery)
+                                .autocorrectionDisabled()
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 8)
+                        .background(Color(.systemFill))
+                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
 
-                    Button { showAddSheet = true } label: {
-                        Text("+ Add")
-                            .font(.subheadline.weight(.semibold))
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 9)
-                            .background(Color.accentColor)
-                            .foregroundStyle(.white)
-                            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        Button { showAddSheet = true } label: {
+                            Text("+ Add")
+                                .font(.subheadline.weight(.semibold))
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 9)
+                                .background(Color.accentColor)
+                                .foregroundStyle(.white)
+                                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        }
+                    }
+
+                    if !availableGrades.isEmpty {
+                        Picker("Grade", selection: $gradeFilter) {
+                            Text("All Grades").tag("")
+                            ForEach(availableGrades, id: \.self) { g in
+                                Text("Grade \(g)").tag(g)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .frame(maxWidth: .infinity)
                     }
                 }
                 .padding(.horizontal, 16)
@@ -85,7 +109,12 @@ struct RosterView: View {
                     Spacer()
                 } else if filtered.isEmpty {
                     Spacer()
-                    Text(searchQuery.isEmpty ? "No students in roster." : "No results for \"\(searchQuery)\".")
+                    Text({
+                        if !searchQuery.isEmpty && !gradeFilter.isEmpty { return "No results for \"\(searchQuery)\" in Grade \(gradeFilter)." }
+                        if !searchQuery.isEmpty { return "No results for \"\(searchQuery)\"." }
+                        if !gradeFilter.isEmpty { return "No students in Grade \(gradeFilter)." }
+                        return "No students in roster."
+                    }())
                         .foregroundStyle(.secondary)
                         .padding()
                     Spacer()

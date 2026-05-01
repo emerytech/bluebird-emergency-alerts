@@ -808,6 +808,7 @@ data class UiState(
     val tenantSettings: TenantSettings = TenantSettings(),
     val incidentRoster: IncidentRoster? = null,
     val isLoadingRoster: Boolean = false,
+    val rosterLiveSummary: IncidentRosterSummary? = null,
     // Non-null while a non-critical sound should be played; cleared immediately after.
     val pendingNonCriticalSound: String? = null,
 )
@@ -971,6 +972,15 @@ class MainViewModel : ViewModel() {
                 }
                 if (refreshIncidentFeedsOnce()) {
                     cycleHadSuccess = true
+                }
+                // Fetch live roster summary during active alarms so AlarmBanner can show unclaimed count
+                val activeAlertId = _state.value.alarm.let { if (it.isActive) it.alertId else null }
+                if (activeAlertId != null && userId != null) {
+                    runCatching { client!!.getRosterSummary(activeAlertId, userId) }
+                        .onSuccess { summary -> _state.update { it.copy(rosterLiveSummary = summary) } }
+                        .onFailure { _state.update { it.copy(rosterLiveSummary = null) } }
+                } else {
+                    _state.update { it.copy(rosterLiveSummary = null) }
                 }
                 _state.update { it.copy(connected = cycleHadSuccess) }
                 tick += 1
@@ -3134,6 +3144,8 @@ private fun MainScreen(
                         schoolName = effectiveSchoolName,
                         unreadMessageCount = state.unreadAdminMessages,
                         onOpenMessaging = { activePanel = DashboardPanel.Messaging },
+                        rosterSummary = state.rosterLiveSummary,
+                        onOpenRoster = { activePanel = DashboardPanel.Roster },
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(horizontal = 20.dp, vertical = 8.dp),
@@ -5370,8 +5382,8 @@ private fun AlarmBanner(
     schoolName: String = "",
     unreadMessageCount: Int = 0,
     onOpenMessaging: (() -> Unit)? = null,
-    // TODO: wire onOpenAccountability once the accountability dashboard is built
-    onOpenAccountability: (() -> Unit)? = null,
+    rosterSummary: IncidentRosterSummary? = null,
+    onOpenRoster: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     val pulse = rememberInfiniteTransition(label = "pulse")
@@ -5487,7 +5499,6 @@ private fun AlarmBanner(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     // 👥 Acknowledgements
-                    // TODO: add onOpenAccountability click once accountability dashboard is built
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(4.dp),
@@ -5504,6 +5515,29 @@ private fun AlarmBanner(
                         )
                         if (isFullyAcked) {
                             Text("✓", fontSize = 11.sp, fontWeight = FontWeight.Black, color = ackColor)
+                        }
+                    }
+
+                    // 🎒 Roster accountability — tap to open Roster panel
+                    if (rosterSummary != null && rosterSummary.total > 0) {
+                        val allAccounted = rosterSummary.unclaimed == 0
+                        val rosterColor = if (allAccounted) Color(0xFF4ADE80) else Color(0xFFFBBF24)
+                        Row(
+                            modifier = Modifier.clickable(enabled = onOpenRoster != null) { onOpenRoster?.invoke() },
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        ) {
+                            Text("🎒", fontSize = 14.sp)
+                            val animUnclaimed by animateIntAsState(rosterSummary.unclaimed, label = "unclaimed")
+                            Text(
+                                if (allAccounted) "${rosterSummary.total} accounted" else "$animUnclaimed unaccounted",
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = rosterColor,
+                            )
+                            if (allAccounted) {
+                                Text("✓", fontSize = 11.sp, fontWeight = FontWeight.Black, color = rosterColor)
+                            }
                         }
                     }
 
@@ -8881,6 +8915,16 @@ internal class BackendClient(baseUrl: String, private val apiKey: String) {
         }
     }
 
+    fun getRosterSummary(alertId: Int, userId: Int): IncidentRosterSummary {
+        val req = Request.Builder()
+            .url("$base/alerts/$alertId/roster/summary?user_id=$userId")
+            .withAuth().get().build()
+        http.newCall(req).execute().use { res ->
+            val j = JSONObject(requireSuccess(res))
+            return parseRosterSummary(j)
+        }
+    }
+
     fun claimStudent(alertId: Int, studentId: Int, userId: Int, status: String, takeoverConfirmed: Boolean = false): RosterClaimResult {
         val body = JSONObject().put("user_id", userId).put("status", status).put("takeover_confirmed", takeoverConfirmed)
         val req = Request.Builder()
@@ -8975,6 +9019,17 @@ internal class BackendClient(baseUrl: String, private val apiKey: String) {
         )
     }
 
+    private fun parseRosterSummary(j: JSONObject): IncidentRosterSummary =
+        IncidentRosterSummary(
+            total = j.optInt("total"),
+            unclaimed = j.optInt("unclaimed"),
+            presentWithMe = j.optInt("present_with_me"),
+            absent = j.optInt("absent"),
+            missing = j.optInt("missing"),
+            injured = j.optInt("injured"),
+            released = j.optInt("released"),
+        )
+
     private fun parseIncidentRoster(j: JSONObject): IncidentRoster {
         val rows = j.optJSONArray("students")
         val students = buildList {
@@ -8984,15 +9039,7 @@ internal class BackendClient(baseUrl: String, private val apiKey: String) {
         return IncidentRoster(
             alertId = j.getInt("alert_id"),
             students = students,
-            summary = IncidentRosterSummary(
-                total = s.optInt("total"),
-                unclaimed = s.optInt("unclaimed"),
-                presentWithMe = s.optInt("present_with_me"),
-                absent = s.optInt("absent"),
-                missing = s.optInt("missing"),
-                injured = s.optInt("injured"),
-                released = s.optInt("released"),
-            ),
+            summary = parseRosterSummary(s),
         )
     }
 

@@ -55,6 +55,8 @@ fun RosterScreen(
     val isLoading = state.isLoadingRoster
 
     var searchQuery by remember { mutableStateOf("") }
+    var gradeFilter by remember { mutableStateOf("") }   // "" = all grades
+    var gradeFilterExpanded by remember { mutableStateOf(false) }
     var showAddSheet by remember { mutableStateOf(false) }
     var pendingClaimRow by remember { mutableStateOf<RosterIncidentRow?>(null) }
     var pendingClaimStatus by remember { mutableStateOf("present_with_me") }
@@ -63,12 +65,19 @@ fun RosterScreen(
 
     LaunchedEffect(alertId) { vm.loadIncidentRoster(ctx, alertId) }
 
-    val filtered = remember(roster, searchQuery) {
+    val filtered = remember(roster, searchQuery, gradeFilter) {
         roster?.students?.filter { row ->
-            searchQuery.isBlank() ||
-                row.fullName.contains(searchQuery, ignoreCase = true) ||
-                row.gradeLevel.contains(searchQuery, ignoreCase = true)
+            val matchesSearch = searchQuery.isBlank() || row.fullName.contains(searchQuery, ignoreCase = true)
+            val matchesGrade = gradeFilter.isBlank() || row.gradeLevel == gradeFilter
+            matchesSearch && matchesGrade
         } ?: emptyList()
+    }
+
+    // Unique grades present in the loaded roster for the dropdown
+    val availableGrades = remember(roster) {
+        roster?.students?.map { it.gradeLevel }?.distinct()
+            ?.sortedWith(compareBy { GRADE_OPTIONS.indexOf(it).takeIf { i -> i >= 0 } ?: Int.MAX_VALUE })
+            ?: emptyList()
     }
 
     Scaffold(
@@ -100,23 +109,58 @@ fun RosterScreen(
                 }
             }
 
-            // Search + Add button
-            Row(
+            // Search + grade filter + Add button
+            Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp, vertical = 8.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically,
+                verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                OutlinedTextField(
-                    value = searchQuery,
-                    onValueChange = { searchQuery = it },
-                    placeholder = { Text("Search students…") },
-                    modifier = Modifier.weight(1f),
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                )
-                Button(onClick = { showAddSheet = true }) { Text("+ Add") }
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    OutlinedTextField(
+                        value = searchQuery,
+                        onValueChange = { searchQuery = it },
+                        placeholder = { Text("Search students…") },
+                        modifier = Modifier.weight(1f),
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                    )
+                    Button(onClick = { showAddSheet = true }) { Text("+ Add") }
+                }
+                if (availableGrades.isNotEmpty()) {
+                    ExposedDropdownMenuBox(
+                        expanded = gradeFilterExpanded,
+                        onExpandedChange = { gradeFilterExpanded = it },
+                    ) {
+                        OutlinedTextField(
+                            value = if (gradeFilter.isBlank()) "All Grades" else "Grade $gradeFilter",
+                            onValueChange = {},
+                            readOnly = true,
+                            label = { Text("Grade Filter") },
+                            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = gradeFilterExpanded) },
+                            modifier = Modifier.fillMaxWidth().menuAnchor(),
+                            singleLine = true,
+                        )
+                        ExposedDropdownMenu(
+                            expanded = gradeFilterExpanded,
+                            onDismissRequest = { gradeFilterExpanded = false },
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("All Grades") },
+                                onClick = { gradeFilter = ""; gradeFilterExpanded = false },
+                            )
+                            availableGrades.forEach { g ->
+                                DropdownMenuItem(
+                                    text = { Text("Grade $g") },
+                                    onClick = { gradeFilter = g; gradeFilterExpanded = false },
+                                )
+                            }
+                        }
+                    }
+                }
             }
 
             if (isLoading && roster == null) {
@@ -154,7 +198,12 @@ fun RosterScreen(
                                 contentAlignment = Alignment.Center,
                             ) {
                                 Text(
-                                    if (searchQuery.isBlank()) "No students in roster." else "No results for \"$searchQuery\".",
+                                    when {
+                                        searchQuery.isNotBlank() && gradeFilter.isNotBlank() -> "No results for \"$searchQuery\" in Grade $gradeFilter."
+                                        searchQuery.isNotBlank() -> "No results for \"$searchQuery\"."
+                                        gradeFilter.isNotBlank() -> "No students in Grade $gradeFilter."
+                                        else -> "No students in roster."
+                                    },
                                     color = Color(0xFF94A3B8),
                                 )
                             }

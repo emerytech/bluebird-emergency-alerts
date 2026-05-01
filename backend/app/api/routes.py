@@ -12819,6 +12819,32 @@ async def get_incident_roster(
     return IncidentRoster(alert_id=alert_id, students=rows, summary=summary)
 
 
+@router.get("/alerts/{alert_id}/roster/summary", response_model=IncidentRosterSummary)
+async def get_incident_roster_summary(
+    alert_id: int,
+    request: Request,
+    user_id: int = Query(...),
+    _: None = Depends(require_api_key),
+) -> IncidentRosterSummary:
+    """Lightweight summary endpoint — returns counts only, no student rows."""
+    _assert_tenant_resolved(request)
+    await _require_active_user_with_permission(_users(request), user_id, permission=PERM_ROSTER_VIEW)
+    alert = await _alert_log(request).get_alert(alert_id)
+    if alert is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Alert not found")
+    result = await _roster_store(request).list_incident_roster(alert_id=alert_id)
+    s = result["summary"]
+    return IncidentRosterSummary(
+        total=s["total"],
+        unclaimed=s["unclaimed"],
+        present_with_me=s["present_with_me"],
+        absent=s["absent"],
+        missing=s["missing"],
+        injured=s["injured"],
+        released=s["released"],
+    )
+
+
 @router.post("/alerts/{alert_id}/roster/students", response_model=IncidentRosterRow, status_code=201)
 async def add_incident_student(
     alert_id: int,
