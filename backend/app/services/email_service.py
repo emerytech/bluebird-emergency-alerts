@@ -1505,6 +1505,21 @@ class EmailService:
     async def mark_replied(self, message_id: int) -> None:
         await anyio.to_thread.run_sync(lambda: self.mark_replied_sync(int(message_id)))
 
+    def delete_messages_sync(self, message_ids: list[int]) -> int:
+        if not message_ids:
+            return 0
+        safe_ids = [int(i) for i in message_ids]
+        placeholders = ",".join("?" * len(safe_ids))
+        with self._connect() as conn:
+            cur = conn.execute(
+                f"DELETE FROM email_messages WHERE id IN ({placeholders});",
+                safe_ids,
+            )
+            return cur.rowcount
+
+    async def delete_messages(self, message_ids: list[int]) -> int:
+        return await anyio.to_thread.run_sync(lambda: self.delete_messages_sync(message_ids))
+
     def message_id_exists_sync(self, provider_message_id: str) -> bool:
         with self._connect() as conn:
             row = conn.execute(

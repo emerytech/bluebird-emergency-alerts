@@ -11348,6 +11348,32 @@ async def super_admin_inbox_link_district(
     return JSONResponse({"ok": True})
 
 
+@router.delete("/super-admin/inbox/{message_id}", include_in_schema=False)
+async def super_admin_inbox_delete_one(
+    request: Request,
+    message_id: int,
+) -> JSONResponse:
+    _require_super_admin(request)
+    deleted = await _email_service(request).delete_messages([int(message_id)])
+    return JSONResponse({"ok": True, "deleted": deleted})
+
+
+@router.post("/super-admin/inbox/bulk-delete", include_in_schema=False)
+async def super_admin_inbox_bulk_delete(
+    request: Request,
+) -> JSONResponse:
+    _require_super_admin(request)
+    try:
+        body = await request.json()
+        ids = [int(i) for i in (body.get("ids") or [])]
+    except Exception:
+        return JSONResponse({"ok": False, "error": "Invalid request body."}, status_code=422)
+    if not ids:
+        return JSONResponse({"ok": False, "error": "No IDs provided."}, status_code=422)
+    deleted = await _email_service(request).delete_messages(ids)
+    return JSONResponse({"ok": True, "deleted": deleted})
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # SUPER ADMIN — CUSTOMERS (CRM)
 # ══════════════════════════════════════════════════════════════════════════════
