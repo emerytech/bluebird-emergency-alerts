@@ -3136,7 +3136,7 @@ def _render_sales_inbox_section(messages: object, section: str, unread_count: in
     )
 
 
-def _render_demo_requests_section(demo_requests: object, section: str) -> str:
+def _render_demo_requests_section(demo_requests: object, section: str) -> str:  # kept for compat — not called
     _style = "" if section == "demo-requests" else ' style="display:none;"'
     status_colors = {
         "new": "#2563eb",
@@ -3264,64 +3264,127 @@ function bbDemoConvert(id, org) {
     )
 
 
-def _render_inquiries_section(inquiries: object, section: str) -> str:
+def _render_inquiries_section(inquiries: object, section: str, demo_requests: object = None) -> str:
     _style = "" if section == "inquiries" else ' style="display:none;"'
     status_colors = {
         "new": "#2563eb",
         "contacted": "#d97706",
         "quoted": "#7c3aed",
-        "closed": "#059669",
+        "converted": "#059669",
+        "closed": "#6b7280",
     }
-    size_colors = {"small": "#6b7280", "medium": "#d97706", "large": "#dc2626", "unknown": "#6b7280"}
-    rows_html = ""
+
+    # Build unified lead list sorted newest-first
+    leads = []
     for inq in (inquiries or []):
-        inq_id = int(getattr(inq, "id", 0))
-        name = escape(str(getattr(inq, "name", "")))
-        email = escape(str(getattr(inq, "email", "")))
-        school = escape(str(getattr(inq, "school_or_district", "")))
-        students = str(getattr(inq, "estimated_students", "") or "—")
-        tag = str(getattr(inq, "size_tag", "unknown"))
-        st = str(getattr(inq, "status", "new"))
-        created = str(getattr(inq, "created_at", ""))[:10]
-        notes = escape(str(getattr(inq, "notes", "") or ""))
+        leads.append({
+            "type": "inquiry",
+            "id": int(getattr(inq, "id", 0)),
+            "name": str(getattr(inq, "name", "")),
+            "email": str(getattr(inq, "email", "")),
+            "org": str(getattr(inq, "school_or_district", "")),
+            "detail": (str(getattr(inq, "estimated_students", "") or "—") + " students"),
+            "status": str(getattr(inq, "status", "new")),
+            "date": str(getattr(inq, "created_at", ""))[:10],
+            "notes": str(getattr(inq, "notes", "") or ""),
+            "message": str(getattr(inq, "message", "") or ""),
+        })
+    for dr in (demo_requests or []):
+        role = str(getattr(dr, "role", "") or "")
+        sc = getattr(dr, "school_count", None)
+        detail = role + (f" · {sc} schools" if sc else "")
+        leads.append({
+            "type": "demo",
+            "id": int(getattr(dr, "id", 0)),
+            "name": str(getattr(dr, "name", "")),
+            "email": str(getattr(dr, "email", "")),
+            "org": str(getattr(dr, "organization", "")),
+            "detail": detail,
+            "status": str(getattr(dr, "status", "new")),
+            "date": str(getattr(dr, "created_at", ""))[:10],
+            "notes": str(getattr(dr, "notes", "") or ""),
+            "message": str(getattr(dr, "message", "") or ""),
+            "phone": str(getattr(dr, "phone", "") or ""),
+            "preferred_time": str(getattr(dr, "preferred_time", "") or ""),
+        })
+    leads.sort(key=lambda x: x["date"], reverse=True)
+
+    rows_html = ""
+    for lead in leads:
+        lid = lead["id"]
+        name = escape(lead["name"])
+        email = escape(lead["email"])
+        org = escape(lead["org"])
+        detail = escape(lead["detail"])
+        st = lead["status"]
+        date = lead["date"]
+        notes = escape(lead["notes"])
         st_color = status_colors.get(st, "#6b7280")
-        sz_color = size_colors.get(tag, "#6b7280")
+        ltype = lead["type"]
+        source_badge = (
+            '<span style="font-size:.7rem;font-weight:700;padding:2px 6px;border-radius:10px;'
+            'background:#dbeafe;color:#2563eb;">INQUIRY</span>'
+            if ltype == "inquiry" else
+            '<span style="font-size:.7rem;font-weight:700;padding:2px 6px;border-radius:10px;'
+            'background:#ede9fe;color:#7c3aed;">DEMO REQ</span>'
+        )
+        if ltype == "inquiry":
+            status_sel = (
+                f'<form method="post" action="/super-admin/inquiries/{lid}/status" style="display:inline;"'
+                f' onsubmit="event.preventDefault();bbUpdateInquiryStatus(this,{lid});">'
+                f'<select name="new_status" style="font-size:.72rem;padding:2px 6px;border-radius:4px;" onchange="this.form.requestSubmit();">'
+                + "".join(f'<option value="{s}"{" selected" if s == st else ""}>{s.title()}</option>' for s in ("new", "contacted", "quoted", "closed"))
+                + f'</select></form>'
+            )
+            action_btns = (
+                f' <button class="button button-outline" style="font-size:.72rem;padding:2px 8px;"'
+                f' onclick="bbInquiryConvert({lid},\'{org}\');" type="button">→ District</button>'
+                f' <button class="button button-outline" style="font-size:.72rem;padding:2px 8px;"'
+                f' onclick="bbInquiryToCustomer({lid},\'{name}\',\'{email}\',\'{org}\');" type="button">→ Customer</button>'
+            )
+            notes_cell = (
+                f'<form onsubmit="event.preventDefault();bbSaveInquiryNotes(this,{lid});" style="display:flex;gap:4px;align-items:flex-start;">'
+                f'<textarea name="notes" rows="2" style="flex:1;font-size:.72rem;border:1px solid var(--border);'
+                f'border-radius:4px;padding:4px;background:var(--bg);color:var(--text);resize:vertical;"'
+                f' placeholder="Internal notes…">{notes}</textarea>'
+                f'<button class="button button-outline" style="font-size:.72rem;padding:2px 8px;" type="submit">Save</button>'
+                f'</form>'
+            )
+        else:
+            status_sel = (
+                f'<select onchange="bbDemoStatus({lid},this.value)" style="font-size:.72rem;padding:2px 6px;border-radius:4px;">'
+                + "".join(f'<option value="{s}"{" selected" if s == st else ""}>{s.title()}</option>' for s in ("new", "contacted", "converted", "closed"))
+                + f'</select>'
+            )
+            convert_btn = (
+                f' <button class="button button-outline" style="font-size:.72rem;padding:2px 8px;"'
+                f' onclick="bbDemoConvert({lid},\'{org}\');" type="button">→ District</button>'
+                if st not in ("converted", "closed") else ""
+            )
+            action_btns = (
+                convert_btn +
+                f' <button class="button button-outline" style="font-size:.72rem;padding:2px 8px;'
+                f'border-color:#dc2626;color:#dc2626;" onclick="bbDemoDelete({lid});" type="button">Delete</button>'
+            )
+            notes_cell = (
+                f'<textarea id="dr-notes-{lid}" style="width:100%;font-size:.72rem;border:1px solid var(--border);'
+                f'border-radius:4px;padding:4px;background:var(--bg);color:var(--text);resize:vertical;min-height:48px;"'
+                f' placeholder="Internal notes…" onblur="bbDemoNotes({lid},this.value)">{notes}</textarea>'
+            )
         rows_html += (
             f'<tr>'
             f'<td style="font-weight:600;">{name}</td>'
             f'<td><a href="mailto:{email}" style="color:var(--accent);">{email}</a></td>'
-            f'<td>{school}</td>'
-            f'<td style="text-align:center;">{students}</td>'
-            f'<td style="text-align:center;"><span style="font-size:0.72rem;font-weight:700;color:{sz_color};">{tag.upper()}</span></td>'
-            f'<td style="text-align:center;"><span style="font-size:0.72rem;font-weight:700;color:{st_color};">{st.upper()}</span></td>'
-            f'<td style="font-size:0.75rem;color:var(--muted);">{created}</td>'
-            f'<td style="min-width:160px;">'
-            f'<form method="post" action="/super-admin/inquiries/{inq_id}/status" '
-            f'style="display:inline;" onsubmit="event.preventDefault();bbUpdateInquiryStatus(this,{inq_id});">'
-            f'<select name="new_status" style="font-size:0.72rem;padding:2px 6px;border-radius:4px;" onchange="this.form.requestSubmit();">'
-            + "".join(
-                f'<option value="{s}"{" selected" if s == st else ""}>{s.title()}</option>'
-                for s in ("new", "contacted", "quoted", "closed")
-            )
-            + f'</select></form>'
-            f' <button class="button button-outline" style="font-size:0.72rem;padding:2px 8px;" '
-            f'onclick="bbInquiryConvert({inq_id},\'{escape(school)}\');" type="button">→ District</button>'
-            f' <button class="button button-outline" style="font-size:0.72rem;padding:2px 8px;" '
-            f'onclick="bbInquiryToCustomer({inq_id},\'{escape(name)}\',\'{escape(email)}\',\'{escape(school)}\');" '
-            f'type="button">→ Customer</button>'
-            f'</td>'
-            f'<td style="min-width:180px;">'
-            f'<form onsubmit="event.preventDefault();bbSaveInquiryNotes(this,{inq_id});" style="display:flex;gap:4px;align-items:flex-start;">'
-            f'<textarea name="notes" rows="2" style="flex:1;font-size:0.72rem;border:1px solid var(--border);'
-            f'border-radius:4px;padding:4px;background:var(--bg);color:var(--text);resize:vertical;"'
-            f' placeholder="Internal notes…">{notes}</textarea>'
-            f'<button class="button button-outline" style="font-size:0.72rem;padding:2px 8px;" type="submit">Save</button>'
-            f'</form>'
-            f'</td>'
+            f'<td>{org}<br/><span style="font-size:.78rem;color:var(--muted);">{detail}</span></td>'
+            f'<td style="text-align:center;">{source_badge}</td>'
+            f'<td style="text-align:center;"><span style="font-size:.72rem;font-weight:700;color:{st_color};">{st.upper()}</span></td>'
+            f'<td style="font-size:.75rem;color:var(--muted);">{date}</td>'
+            f'<td style="min-width:200px;white-space:nowrap;">{status_sel}{action_btns}</td>'
+            f'<td style="min-width:160px;">{notes_cell}</td>'
             f'</tr>'
         )
     if not rows_html:
-        rows_html = '<tr><td colspan="9" style="text-align:center;color:var(--muted);padding:24px;">No inquiries yet. Submit the contact form on the marketing site to test.</td></tr>'
+        rows_html = '<tr><td colspan="8" style="text-align:center;color:var(--muted);padding:24px;">No leads yet. Inquiries and demo requests will appear here.</td></tr>'
 
     convert_modal = (
         '<div id="bb-convert-modal" style="display:none;position:fixed;inset:0;z-index:9998;'
@@ -3369,6 +3432,14 @@ def _render_inquiries_section(inquiries: object, section: str) -> str:
 
     inquiry_js = (
         '<script>'
+        'function bbUpdateInquiryStatus(form,id){'
+        '  var fd=new FormData(form);'
+        '  fetch("/super-admin/inquiries/"+id+"/status",{method:"POST",body:fd,'
+        '  headers:{"X-Requested-With":"XMLHttpRequest"}})'
+        '  .then(r=>r.json()).then(d=>{'
+        '    if(!d.ok)alert("Status update failed: "+(d.error||"unknown"));'
+        '  }).catch(()=>alert("Network error."));'
+        '}'
         'function bbSaveInquiryNotes(form,id){'
         '  var fd=new FormData(form);'
         '  fetch("/super-admin/inquiries/"+id+"/notes",{method:"POST",body:fd,'
@@ -3376,6 +3447,36 @@ def _render_inquiries_section(inquiries: object, section: str) -> str:
         '  .then(r=>r.json()).then(d=>{'
         '    if(!d.ok)alert("Save failed: "+(d.error||"unknown"));'
         '  }).catch(()=>alert("Network error."));'
+        '}'
+        'async function bbDemoStatus(id,status){'
+        '  if(!status)return;'
+        '  var fd=new FormData();fd.append("new_status",status);'
+        '  var r=await fetch("/super-admin/demo-requests/"+id+"/status",{method:"POST",body:fd});'
+        '  var d=await r.json();'
+        '  if(!d.ok)alert("Error: "+(d.error||"unknown"));'
+        '}'
+        'async function bbDemoNotes(id,notes){'
+        '  var fd=new FormData();fd.append("notes",notes);'
+        '  await fetch("/super-admin/demo-requests/"+id+"/notes",{method:"POST",body:fd});'
+        '}'
+        'async function bbDemoDelete(id){'
+        '  if(!confirm("Delete this demo request? This cannot be undone."))return;'
+        '  var r=await fetch("/super-admin/demo-requests/"+id,{method:"DELETE"});'
+        '  var d=await r.json();'
+        '  if(d.ok)location.reload();'
+        '  else alert("Error: "+(d.error||"unknown"));'
+        '}'
+        'function bbDemoConvert(id,org){'
+        '  var dname=prompt("District name:",org);'
+        '  if(!dname)return;'
+        '  var dslug=dname.toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-|-$/g,"");'
+        '  if(!confirm("Create district \\""+dname+"\\" (slug: "+dslug+")?"))return;'
+        '  var fd=new FormData();fd.append("district_name",dname);fd.append("district_slug",dslug);'
+        '  fetch("/super-admin/demo-requests/"+id+"/convert",{method:"POST",body:fd})'
+        '  .then(r=>r.json()).then(d=>{'
+        '    if(d.ok){alert("District \\""+d.district_name+"\\" created.");location.reload();}'
+        '    else alert("Error: "+(d.error||"unknown"));'
+        '  });'
         '}'
         'function bbInquiryConvert(id,schoolName){'
         '  document.getElementById("bb-convert-inq-id").value=id;'
@@ -3426,13 +3527,13 @@ def _render_inquiries_section(inquiries: object, section: str) -> str:
         f'{convert_modal}'
         f'{convert_customer_modal}'
         f'<div class="panel-header hero-band">'
-        f'<div><p class="eyebrow">Marketing</p><h1>Website Inquiries</h1>'
-        f'<p class="hero-copy">Leads submitted through the BlueBird Alerts marketing contact form.</p></div>'
+        f'<div><p class="eyebrow">Marketing</p><h1>Sales Leads</h1>'
+        f'<p class="hero-copy">All inbound inquiries and demo requests from the marketing site, newest first.</p></div>'
         f'</div>'
         f'<div style="overflow-x:auto;margin-top:16px;">'
         f'<table class="data-table" style="width:100%;font-size:0.82rem;">'
-        f'<thead><tr><th>Name</th><th>Email</th><th>School / District</th><th>Students</th>'
-        f'<th>Size</th><th>Status</th><th>Date</th><th>Actions</th><th>Notes</th></tr></thead>'
+        f'<thead><tr><th>Name</th><th>Email</th><th>Organization</th>'
+        f'<th>Source</th><th>Status</th><th>Date</th><th>Actions</th><th>Notes</th></tr></thead>'
         f'<tbody id="inquiry-table-body">{rows_html}</tbody>'
         f'</table></div>'
         f'{inquiry_js}'
@@ -4046,7 +4147,7 @@ def render_super_admin_page(
         for c in setup_codes
     ) or '<tr><td colspan="7" class="empty-state">No setup codes generated yet.</td></tr>'
 
-    section = active_section if active_section in {"districts", "schools", "billing", "platform-audit", "create-school", "security", "configuration", "server-tools", "health", "email-tool", "setup-codes", "noc", "msp", "platform-control", "sandbox", "ai-insights", "inquiries", "demo-requests", "sales-inbox", "customers"} else "districts"
+    section = active_section if active_section in {"districts", "schools", "billing", "platform-audit", "create-school", "security", "configuration", "server-tools", "health", "email-tool", "setup-codes", "noc", "msp", "platform-control", "sandbox", "ai-insights", "inquiries", "sales-inbox", "customers"} else "districts"
 
     def _section_style(name: str) -> str:
         return "" if section == name else ' style="display:none;"'
@@ -4660,6 +4761,12 @@ def render_super_admin_page(
     else:
         _archived_section_html = ""
 
+    # Count new leads across both inquiries and demo requests for nav badge
+    _new_leads_count = (
+        sum(1 for inq in (inquiries or []) if str(getattr(inq, "status", "")) == "new") +
+        sum(1 for dr in (demo_requests or []) if str(getattr(dr, "status", "")) == "new")
+    )
+
     # License summary for global header badge
     _all_billing = list(district_billing_rows) + list(archived_district_billing_rows)
     _lic_active = sum(1 for r in district_billing_rows if str(r.get("effective_status", "trial")) in {"active", "manual_override"})
@@ -4699,8 +4806,7 @@ def render_super_admin_page(
             {_nav_item("health", "System Health", None if (not health_status or health_status.overall == 'ok') else "!")}
             {_nav_item("email-tool", "Email Tool")}
             {_nav_item("sales-inbox", "Sales Inbox", str(inbox_unread_count) if inbox_unread_count else None)}
-            {_nav_item("inquiries", "Inquiries")}
-            {_nav_item("demo-requests", "Demo Requests", str(sum(1 for dr in demo_requests if getattr(dr, "status", "") == "new")) if any(getattr(dr, "status", "") == "new" for dr in demo_requests) else None)}
+            {_nav_item("inquiries", "Sales Leads", str(_new_leads_count) if _new_leads_count else None)}
             {_nav_item("customers", "Customers")}
             {_nav_item("configuration", "Configuration", None if email_configured else "!")}
             {_nav_item("setup-codes", "Setup Codes")}
@@ -5933,8 +6039,7 @@ def render_super_admin_page(
           </table></div>
         </section>
         {_render_sales_inbox_section(inbox_messages, section, inbox_unread_count)}
-        {_render_inquiries_section(inquiries, section)}
-        {_render_demo_requests_section(demo_requests, section)}
+        {_render_inquiries_section(inquiries, section, demo_requests=demo_requests)}
         {_render_customers_section(customers, section)}
         <section class="panel command-section" id="email-tool"{_section_style("email-tool")}>
           <div class="panel-header hero-band">
