@@ -1892,6 +1892,39 @@ class MainViewModel : ViewModel() {
                     if (requestId != null) clearAdminQuietModalsForRequest(requestId)
                 }
             }
+            "quiet_period_approved", "quiet_period_scheduled" -> {
+                val uid = cachedUserId ?: return
+                val requestedByUserId = j.optInt("user_id", -1).takeIf { it > 0 }
+                val isScheduled = event == "quiet_period_scheduled"
+                viewModelScope.launch(Dispatchers.IO) {
+                    runCatching { client!!.quietPeriodStatus(userId = uid) }
+                        .onSuccess { quiet -> _state.update { it.copy(quietPeriodStatus = quiet) } }
+                }
+                if (requestedByUserId == uid) {
+                    enqueueAdminEvent(AdminEvent(
+                        id = if (isScheduled) "quiet_scheduled_${System.currentTimeMillis()}" else "quiet_approved_${System.currentTimeMillis()}",
+                        type = AdminEventType.QUIET_APPROVED,
+                        title = if (isScheduled) "Quiet Period Scheduled" else "Quiet Period Approved",
+                        body = if (isScheduled) "Your quiet period has been scheduled." else "Your quiet period request has been approved.",
+                    ))
+                }
+            }
+            "quiet_period_denied" -> {
+                val uid = cachedUserId ?: return
+                val requestedByUserId = j.optInt("user_id", -1).takeIf { it > 0 }
+                viewModelScope.launch(Dispatchers.IO) {
+                    runCatching { client!!.quietPeriodStatus(userId = uid) }
+                        .onSuccess { quiet -> _state.update { it.copy(quietPeriodStatus = quiet) } }
+                }
+                if (requestedByUserId == uid) {
+                    enqueueAdminEvent(AdminEvent(
+                        id = "quiet_denied_${System.currentTimeMillis()}",
+                        type = AdminEventType.QUIET_APPROVED,
+                        title = "Quiet Period Not Approved",
+                        body = "Your quiet period request was not approved.",
+                    ))
+                }
+            }
             "message_received" -> {
                 val uid = cachedUserId ?: return
                 viewModelScope.launch(Dispatchers.IO) {

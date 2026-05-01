@@ -24,7 +24,8 @@ private const val HELP_REQUEST_NOTIF_CH = "bluebird_help_request"
 private const val NON_CRITICAL_NOTIF_CH = "non_critical_notifications"
 private const val NON_CRITICAL_NOTIF_ID = 1004
 private val NON_CRITICAL_TYPES = setOf(
-    "quiet_period_update", "quiet_request", "admin_message", "onboarding", "info"
+    "quiet_period_update", "quiet_period_approved", "quiet_period_denied", "quiet_period_scheduled",
+    "quiet_request", "admin_message", "onboarding", "info",
 )
 // Types that are real emergency alerts — the ONLY types that may trigger
 // EmergencyAlarmTakeover, alarm sound, and full-screen notification behavior.

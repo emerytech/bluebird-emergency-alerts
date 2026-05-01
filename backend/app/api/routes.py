@@ -6266,6 +6266,34 @@ async def admin_approve_quiet_period(
             source_request_id=int(record.id),
             approved_by_user_id=(_session_user_id(request) or 0),
         )
+    try:
+        _target_uid = int(record.user_id)
+        _push_apns = [d.token for d in await _registry(request).list_by_provider("apns") if d.user_id == _target_uid and d.is_valid]
+        _push_fcm = [d.token for d in await _registry(request).list_by_provider("fcm") if d.user_id == _target_uid and d.is_valid]
+        if record.status == "scheduled":
+            _push_title = "Quiet Period Scheduled"
+            _push_msg = f"Your quiet period has been scheduled for {record.scheduled_start_at or 'the requested time'}."
+        else:
+            _push_title = "Quiet Period Approved"
+            _push_msg = "Your quiet period request has been approved."
+        await _dispatch_quiet_period_push(
+            request,
+            apns_tokens=_push_apns,
+            fcm_tokens=_push_fcm,
+            title=_push_title,
+            message=_push_msg,
+            extra_data={"type": "quiet_period_update", "status": record.status, "quiet_period_id": str(record.id)},
+        )
+    except Exception:
+        logger.debug("quiet_period approve push (admin form) failed user_id=%s", record.user_id, exc_info=True)
+    ws_event = "quiet_period_approved" if record.status == "approved" else "quiet_period_scheduled"
+    await _publish_simple_event(request, event=ws_event, extra={
+        "request_id": record.id,
+        "user_id": record.user_id,
+        "expires_at": record.expires_at,
+        "scheduled_start_at": record.scheduled_start_at,
+        "event_id": f"qra_{record.id}",
+    })
     user = await _users(request).get_user(record.user_id)
     label = user.name if user else f"User #{record.user_id}"
     if record.status == "scheduled":
@@ -6290,6 +6318,25 @@ async def admin_deny_quiet_period(
         _set_flash(request, error="Quiet period request was not found or is no longer pending.")
         return RedirectResponse(url="/admin?section=quiet-periods#quiet-periods", status_code=status.HTTP_303_SEE_OTHER)
     await _deactivate_law_enforcement_quiet_state_for_user(request, user_id=int(record.user_id))
+    try:
+        _target_uid = int(record.user_id)
+        _push_apns = [d.token for d in await _registry(request).list_by_provider("apns") if d.user_id == _target_uid and d.is_valid]
+        _push_fcm = [d.token for d in await _registry(request).list_by_provider("fcm") if d.user_id == _target_uid and d.is_valid]
+        await _dispatch_quiet_period_push(
+            request,
+            apns_tokens=_push_apns,
+            fcm_tokens=_push_fcm,
+            title="Quiet Period Denied",
+            message="Your quiet period request has been denied.",
+            extra_data={"type": "quiet_period_update", "status": "denied", "quiet_period_id": str(record.id)},
+        )
+    except Exception:
+        logger.debug("quiet_period deny push (admin form) failed user_id=%s", record.user_id, exc_info=True)
+    await _publish_simple_event(request, event="quiet_period_denied", extra={
+        "request_id": record.id,
+        "user_id": record.user_id,
+        "event_id": f"qrd_{record.id}",
+    })
     user = await _users(request).get_user(record.user_id)
     label = user.name if user else f"User #{record.user_id}"
     _set_flash(request, message=f"Denied quiet period request for {label}.")
