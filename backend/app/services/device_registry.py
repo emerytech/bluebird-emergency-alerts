@@ -24,6 +24,9 @@ class RegisteredDevice:
     archived_at: str | None = None
     ws_connected: bool = False
     ws_last_seen_at: str | None = None
+    last_push_success_at: str | None = None
+    last_push_status: str = "unknown"  # success / failed / unknown
+    last_push_error: str | None = None
 
 
 class DeviceRegistry:
@@ -90,6 +93,12 @@ class DeviceRegistry:
                 conn.execute("ALTER TABLE registered_devices ADD COLUMN ws_connected INTEGER NOT NULL DEFAULT 0;")
             if "ws_last_seen_at" not in cols:
                 conn.execute("ALTER TABLE registered_devices ADD COLUMN ws_last_seen_at TEXT NULL;")
+            if "last_push_success_at" not in cols:
+                conn.execute("ALTER TABLE registered_devices ADD COLUMN last_push_success_at TEXT NULL;")
+            if "last_push_status" not in cols:
+                conn.execute("ALTER TABLE registered_devices ADD COLUMN last_push_status TEXT NOT NULL DEFAULT 'unknown';")
+            if "last_push_error" not in cols:
+                conn.execute("ALTER TABLE registered_devices ADD COLUMN last_push_error TEXT NULL;")
 
     def _register_sync(
         self,
@@ -194,7 +203,8 @@ class DeviceRegistry:
                     """
                     SELECT token, platform, push_provider, device_name, device_id,
                            user_id, first_user_id, last_seen_at, is_valid, is_active, archived_at,
-                           ws_connected, ws_last_seen_at
+                           ws_connected, ws_last_seen_at,
+                           last_push_success_at, last_push_status, last_push_error
                     FROM registered_devices
                     WHERE push_provider = ?
                       AND is_valid = 1
@@ -215,7 +225,8 @@ class DeviceRegistry:
                 query = """
                     SELECT token, platform, push_provider, device_name, device_id,
                            user_id, first_user_id, last_seen_at, is_valid, is_active, archived_at,
-                           ws_connected, ws_last_seen_at
+                           ws_connected, ws_last_seen_at,
+                           last_push_success_at, last_push_status, last_push_error
                     FROM registered_devices
                 """
                 if not include_archived:
@@ -439,6 +450,64 @@ class DeviceRegistry:
             functools.partial(self._touch_ws_sync, device_id=device_id, user_id=user_id)
         )
 
+    # ── Push delivery status ───────────────────────────────────────────────────
+
+    def _update_push_status_sync(
+        self, token: str, push_provider: str, ok: bool, error: Optional[str]
+    ) -> None:
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).isoformat()
+        with self._lock:
+            with self._connect() as conn:
+                if ok:
+                    conn.execute(
+                        """UPDATE registered_devices
+                           SET last_push_success_at = ?,
+                               last_push_status = 'success',
+                               last_push_error = NULL
+                           WHERE token = ? AND push_provider = ?;""",
+                        (now, token, push_provider),
+                    )
+                else:
+                    conn.execute(
+                        """UPDATE registered_devices
+                           SET last_push_status = 'failed',
+                               last_push_error = ?
+                           WHERE token = ? AND push_provider = ?;""",
+                        ((error or "unknown error")[:500], token, push_provider),
+                    )
+
+    async def update_push_status(
+        self, token: str, push_provider: str, ok: bool, error: Optional[str] = None
+    ) -> None:
+        """Record push delivery outcome per device. Call after every FCM/APNs attempt."""
+        import functools
+        await anyio.to_thread.run_sync(
+            functools.partial(self._update_push_status_sync, token, push_provider, ok, error)
+        )
+
+    def _get_by_token_sync(self, token: str, push_provider: str) -> Optional[RegisteredDevice]:
+        with self._lock:
+            with self._connect() as conn:
+                row = conn.execute(
+                    """SELECT token, platform, push_provider, device_name, device_id,
+                              user_id, first_user_id, last_seen_at, is_valid, is_active, archived_at,
+                              ws_connected, ws_last_seen_at,
+                              last_push_success_at, last_push_status, last_push_error
+                       FROM registered_devices
+                       WHERE token = ? AND push_provider = ?
+                       LIMIT 1;""",
+                    (token, push_provider),
+                ).fetchone()
+        return _row_to_device(row) if row else None
+
+    async def get_by_token(self, token: str, push_provider: str) -> Optional[RegisteredDevice]:
+        """Look up a single device by its push token and provider."""
+        import functools
+        return await anyio.to_thread.run_sync(
+            functools.partial(self._get_by_token_sync, token, push_provider)
+        )
+
 
 def compute_device_status(device: RegisteredDevice) -> str:
     """
@@ -477,7 +546,7 @@ def compute_device_status(device: RegisteredDevice) -> str:
 
 
 def _row_to_device(row: tuple) -> RegisteredDevice:
-    """Convert a DB row (11 or 13 columns) to RegisteredDevice."""
+    """Convert a DB row (11, 13, or 16 columns) to RegisteredDevice."""
     return RegisteredDevice(
         token=str(row[0]),
         platform=str(row[1]),
@@ -492,4 +561,7 @@ def _row_to_device(row: tuple) -> RegisteredDevice:
         archived_at=str(row[10]) if row[10] is not None else None,
         ws_connected=bool(row[11]) if len(row) > 11 else False,
         ws_last_seen_at=str(row[12]) if len(row) > 12 and row[12] is not None else None,
+        last_push_success_at=str(row[13]) if len(row) > 13 and row[13] is not None else None,
+        last_push_status=str(row[14]) if len(row) > 14 and row[14] is not None else "unknown",
+        last_push_error=str(row[15]) if len(row) > 15 and row[15] is not None else None,
     )

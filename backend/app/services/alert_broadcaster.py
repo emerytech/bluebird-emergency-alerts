@@ -89,6 +89,8 @@ class AlertBroadcaster:
                 status_code=r.status_code,
                 error=r.reason,
             )
+            if self._registry is not None:
+                await self._registry.update_push_status(r.token, "apns", r.ok, r.reason if not r.ok else None)
             if not r.ok and r.reason in _APNS_INVALID_REASONS and self._registry is not None:
                 await self._registry.mark_invalid(r.token, "apns")
 
@@ -113,6 +115,8 @@ class AlertBroadcaster:
                 status_code=r.status_code,
                 error=r.reason,
             )
+            if self._registry is not None:
+                await self._registry.update_push_status(r.token, "fcm", r.ok, r.reason if not r.ok else None)
             if not r.ok and r.reason in _FCM_INVALID_ERRORS and self._registry is not None:
                 await self._registry.mark_invalid(r.token, "fcm")
 

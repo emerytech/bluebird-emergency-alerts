@@ -8974,83 +8974,163 @@ def render_admin_page(
         except Exception:
             return ("Unknown", "warn")
 
-    _session_row_parts = []
-    for _sess in active_sessions:
-        _su = sessions_users_by_id.get(int(getattr(_sess, "user_id", 0)))
-        _slast = str(getattr(_sess, "last_seen_at", ""))
-        _slabel, _scls = _session_status_info(_slast)
-        _savatar = (
-            f'<span class="um-avatar ua-{escape(str(getattr(_su, "role", ""))[:20])}" style="width:28px;height:28px;font-size:11px;margin-right:8px;flex-shrink:0;">'
-            + escape("".join(w[0].upper() for w in str(getattr(_su, "name", "?")).split()[:2]))
-            + "</span>"
-            + escape(str(getattr(_su, "name", f"user #{getattr(_sess, 'user_id', '?')}")))
-        ) if _su else escape(f"user #{getattr(_sess, 'user_id', '?')}")
-        _session_row_parts.append(
-            "<tr>"
-            f"<td style='overflow:hidden;'>{_savatar}</td>"
-            f'<td><span class="role-badge {_client_type_class.get(str(getattr(_sess, "client_type", "mobile")), "rb-teacher")}">'
-            + escape(_client_type_label.get(str(getattr(_sess, "client_type", "mobile")), str(getattr(_sess, "client_type", ""))))
-            + "</span></td>"
-            f'<td class="mini-copy">{escape(str(getattr(_su, "role", "—") if _su else "—"))}</td>'
-            f'<td><span class="status-pill {_scls}" style="font-size:12px;">{_slabel}</span></td>'
-            f'<td class="mini-copy">{escape(_fmt_dt(_slast))}</td>'
-            f'<td class="mini-copy">{escape(_fmt_dt(str(getattr(_sess, "created_at", ""))))}</td>'
-            f'<td><form method="post" action="{prefix}/admin/devices/{int(getattr(_sess, "id", 0))}/revoke"'
-            f' onsubmit="return confirm(\'Force logout this device session?\');" style="margin:0;">'
-            f'<button class="button button-danger-outline" type="submit" style="font-size:12px;padding:4px 12px;min-height:auto;">Force Logout</button>'
-            f"</form></td>"
-            "</tr>"
-        )
-    _session_rows = "".join(_session_row_parts) or '<tr><td colspan="7" class="empty-state">No active device sessions.</td></tr>'
+    # ── Unified Devices & Sessions table ──────────────────────────────────────
+    _ds_user_lookup = {u.id: u for u in users}
+    _sessions_by_user: dict = {}
+    for _s in active_sessions:
+        _uid = int(getattr(_s, "user_id", 0) or 0)
+        _sessions_by_user.setdefault(_uid, []).append(_s)
 
-    _reg_device_row_parts = []
-    _reg_user_lookup = {u.id: u for u in users}
-    for _rd in devices:
-        _rdu = _reg_user_lookup.get(_rd.user_id) if _rd.user_id is not None else None
-        _rd_owner = (
-            escape(_rdu.login_name or _rdu.name) if _rdu
-            else (escape("Unassigned") if _rd.user_id is None else escape(f"User #{_rd.user_id}"))
+    def _push_status_badge(dev: object) -> str:
+        ps = str(getattr(dev, "last_push_status", "unknown") or "unknown")
+        psa = str(getattr(dev, "last_push_success_at", "") or "")
+        pse = str(getattr(dev, "last_push_error", "") or "")
+        if ps == "success":
+            age_label = ""
+            if psa:
+                try:
+                    from datetime import datetime, timezone
+                    dt = datetime.fromisoformat(psa.replace("Z", "+00:00"))
+                    if dt.tzinfo is None:
+                        from datetime import timezone
+                        dt = dt.replace(tzinfo=timezone.utc)
+                    secs = (datetime.now(timezone.utc) - dt).total_seconds()
+                    if secs < 3600:
+                        age_label = f"{int(secs // 60)}m ago"
+                    elif secs < 86400:
+                        age_label = f"{int(secs // 3600)}h ago"
+                    else:
+                        age_label = f"{int(secs // 86400)}d ago"
+                except Exception:
+                    pass
+            age_str = f" · {age_label}" if age_label else ""
+            return (
+                f'<span title="Last push: {escape(psa[:16])}" style="display:inline-flex;align-items:center;gap:5px;">'
+                f'<span style="width:9px;height:9px;border-radius:50%;background:#22c55e;flex-shrink:0;"></span>'
+                f'<span style="font-size:11px;color:var(--text-muted);">Success{escape(age_str)}</span></span>'
+            )
+        elif ps == "failed":
+            short_err = escape(pse[:60] + ("…" if len(pse) > 60 else ""))
+            return (
+                f'<span title="{escape(pse)}" style="display:inline-flex;align-items:center;gap:5px;">'
+                f'<span style="width:9px;height:9px;border-radius:50%;background:#ef4444;flex-shrink:0;"></span>'
+                f'<span style="font-size:11px;color:#ef4444;">Failed: {short_err}</span></span>'
+            )
+        else:
+            return (
+                '<span style="display:inline-flex;align-items:center;gap:5px;">'
+                '<span style="width:9px;height:9px;border-radius:50%;background:#eab308;flex-shrink:0;"></span>'
+                '<span style="font-size:11px;color:var(--text-muted);">No data yet</span></span>'
+            )
+
+    def _conn_status_badge(dev: object) -> str:
+        from app.services.device_registry import compute_device_status
+        cs = compute_device_status(dev)  # type: ignore[arg-type]
+        if cs == "online":
+            return '<span class="status-pill ok" style="font-size:11px;">Online</span>'
+        elif cs == "idle":
+            return '<span class="status-pill warn" style="font-size:11px;">Idle</span>'
+        return '<span class="status-pill" style="font-size:11px;background:var(--surface-alt);color:var(--text-muted);">Offline</span>'
+
+    _ds_rows_html_parts = []
+    for _dv in devices:
+        _dvu = _ds_user_lookup.get(_dv.user_id) if _dv.user_id is not None else None
+        _dv_owner_name = (
+            escape(_dvu.login_name or _dvu.name) if _dvu
+            else (escape("Unassigned") if _dv.user_id is None else escape(f"User #{_dv.user_id}"))
         )
-        _rd_archived = bool(getattr(_rd, "archived_at", None))
-        _rd_status = (
-            '<span class="status-pill" style="background:var(--surface-alt,#f3f4f6);color:var(--text-muted);font-size:11px;">Archived</span>'
-            if _rd_archived
-            else '<span class="status-pill ok" style="font-size:11px;">Active</span>'
+        _dv_initials = "".join(w[0].upper() for w in str(getattr(_dvu, "name", "?")).split()[:2]) if _dvu else "?"
+        _dv_av_role = escape(str(getattr(_dvu, "role", ""))[:20]) if _dvu else ""
+        _dv_name = escape(_dv.device_name or "Unnamed device")
+        _dv_archived = bool(getattr(_dv, "archived_at", None))
+        _dv_plat_cls = "rb-law_enforcement" if _dv.platform == "ios" else ("rb-admin" if _dv.platform == "android" else "rb-teacher")
+        _dv_last = escape(_fmt_dt(str(getattr(_dv, "last_seen_at", "") or ""))) or "—"
+        _dv_token_esc = escape(_dv.token)
+        _dv_prov_esc = escape(_dv.push_provider)
+        _dv_row_id = f"dv-{_dv.push_provider}-{_dv.token[-8:]}"
+        _dv_detail_id = f"dvd-{_dv.push_provider}-{_dv.token[-8:]}"
+
+        # Sessions sub-panel for this device's user
+        _dv_user_sessions = _sessions_by_user.get(_dv.user_id, []) if _dv.user_id is not None else []
+        _sess_count = len(_dv_user_sessions)
+        _sess_badge = (
+            f'<span class="status-pill ok" style="font-size:11px;">{_sess_count} active</span>'
+            if _sess_count > 0
+            else '<span style="font-size:11px;color:var(--text-muted);">No sessions</span>'
         )
-        _rd_row_style = ' style="opacity:0.6;"' if _rd_archived else ""
-        _rd_platform = escape(str(_rd.platform or "—"))
-        _rd_provider = escape(str(_rd.push_provider or "—"))
-        _rd_token_short = escape(_rd.token[-12:]) if _rd.token else "—"
-        _rd_name = escape(_rd.device_name or "Unnamed device")
-        _rd_plat_cls = "rb-law_enforcement" if _rd.platform == "ios" else ("rb-admin" if _rd.platform == "android" else "rb-teacher")
-        _rd_prov_cls = "rb-law_enforcement" if _rd.push_provider == "apns" else ("rb-admin" if _rd.push_provider == "fcm" else "rb-teacher")
-        _rd_last = escape(_fmt_dt(str(getattr(_rd, "last_seen_at", "") or ""))) or "—"
-        _rd_action = (
-            f'<form method="post" action="{prefix}/admin/devices/delete" onsubmit="bbConfirmSubmit(this,{{title:\'Remove device?\',body:\'This un-registers the device. The user will need to re-open the app to re-register.\',confirmLabel:\'Remove\',danger:true}});return false;" style="margin:0;">'
-            f'<input type="hidden" name="token" value="{escape(_rd.token)}" />'
-            f'<input type="hidden" name="push_provider" value="{escape(_rd.push_provider)}" />'
-            f'<button class="button button-danger-outline" type="submit" style="font-size:11px;padding:4px 10px;min-height:auto;">Remove</button>'
-            f'</form>'
-            if not _rd_archived
-            else '<span class="mini-copy" style="color:var(--text-muted);">Archived</span>'
-        )
-        _rd_initials = "".join(w[0].upper() for w in str(getattr(_rdu, "name", "?")).split()[:2]) if _rdu else "?"
-        _rd_av_role = escape(str(getattr(_rdu, "role", ""))[:20]) if _rdu else ""
-        _reg_device_row_parts.append(
-            f'<tr{_rd_row_style}>'
-            f'<td style="overflow:hidden;">'
-            f'<span class="um-avatar ua-{_rd_av_role}" style="width:26px;height:26px;font-size:10px;margin-right:6px;flex-shrink:0;">{_rd_initials}</span>'
-            f'{_rd_owner}</td>'
-            f'<td><div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;">{_rd_name}</div>'
-            f'<span class="role-badge {_rd_plat_cls}" style="font-size:10px;margin-top:2px;">{_rd_platform}</span></td>'
-            f'<td><span class="role-badge {_rd_prov_cls}" style="font-size:10px;">{_rd_provider}</span>'
-            f'<br><code style="font-size:10px;color:var(--text-muted);">…{_rd_token_short}</code></td>'
-            f'<td>{_rd_status}</td>'
-            f'<td class="mini-copy">{_rd_last}</td>'
-            f'<td>{_rd_action}</td>'
+
+        _sess_sub_rows = []
+        for _ss in _dv_user_sessions:
+            _ss_last = str(getattr(_ss, "last_seen_at", ""))
+            _sslabel, _sscls = _session_status_info(_ss_last)
+            _ss_ct = str(getattr(_ss, "client_type", "mobile"))
+            _sess_sub_rows.append(
+                f'<tr style="background:var(--surface-alt,#f9fafb);">'
+                f'<td colspan="2" style="padding-left:36px;font-size:11px;">'
+                f'<span class="role-badge {_client_type_class.get(_ss_ct, "rb-teacher")}" style="font-size:10px;">'
+                + escape(_client_type_label.get(_ss_ct, _ss_ct))
+                + f'</span></td>'
+                f'<td><span class="status-pill {_sscls}" style="font-size:11px;">{_sslabel}</span></td>'
+                f'<td class="mini-copy" colspan="2">{escape(_fmt_dt(_ss_last))}</td>'
+                f'<td colspan="2">'
+                f'<form method="post" action="{prefix}/admin/devices/{int(getattr(_ss, "id", 0))}/revoke"'
+                f' onsubmit="return confirm(\'Force logout this session?\');" style="margin:0;">'
+                f'<button class="button button-danger-outline" type="submit" style="font-size:11px;padding:3px 10px;min-height:auto;">Force Logout</button>'
+                f'</form></td>'
+                f'</tr>'
+            )
+        _sess_sub_html = "".join(_sess_sub_rows) or (
+            f'<tr style="background:var(--surface-alt,#f9fafb);">'
+            f'<td colspan="7" style="padding-left:36px;font-size:11px;color:var(--text-muted);">No active sessions for this user.</td>'
             f'</tr>'
         )
-    _reg_device_rows = "".join(_reg_device_row_parts) or '<tr><td colspan="6" class="empty-state">No registered devices.</td></tr>'
+
+        _actions_html = ""
+        if not _dv_archived:
+            _actions_html = (
+                f'<div style="display:flex;gap:6px;align-items:center;">'
+                f'<button class="button" style="font-size:11px;padding:4px 10px;min-height:auto;"'
+                f' data-token="{_dv_token_esc}" data-provider="{_dv_prov_esc}" data-prefix="{escape(prefix)}"'
+                f' onclick="bbTestPush(this)">Test Push</button>'
+                f'<form method="post" action="{prefix}/admin/devices/delete"'
+                f' onsubmit="bbConfirmSubmit(this,{{title:\'Remove device?\',body:\'This un-registers the device. The user will need to re-open the app to re-register.\',confirmLabel:\'Remove\',danger:true}});return false;"'
+                f' style="margin:0;">'
+                f'<input type="hidden" name="token" value="{_dv_token_esc}" />'
+                f'<input type="hidden" name="push_provider" value="{_dv_prov_esc}" />'
+                f'<button class="button button-danger-outline" type="submit" style="font-size:11px;padding:4px 10px;min-height:auto;">Remove</button>'
+                f'</form></div>'
+            )
+        else:
+            _actions_html = '<span class="mini-copy" style="color:var(--text-muted);">Archived</span>'
+
+        _dv_row_opacity = ' style="opacity:0.55;"' if _dv_archived else ""
+
+        _ds_rows_html_parts.append(
+            f'<tr id="{_dv_row_id}" class="ds-device-row" style="cursor:pointer;" onclick="bbDsToggle(\'{_dv_detail_id}\')"'
+            + (_dv_row_opacity.replace(" style=", " data-archived='1' style=") if _dv_archived else "")
+            + ">"
+            f'<td style="overflow:hidden;">'
+            f'<span class="um-avatar ua-{_dv_av_role}" style="width:26px;height:26px;font-size:10px;margin-right:6px;flex-shrink:0;">{_dv_initials}</span>'
+            f'{_dv_owner_name}</td>'
+            f'<td>'
+            f'<div style="font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{_dv_name}</div>'
+            f'<span class="role-badge {_dv_plat_cls}" style="font-size:10px;">{escape(_dv.platform or "—")}</span>'
+            f'<code style="font-size:10px;color:var(--text-muted);margin-left:4px;">…{escape(_dv.token[-8:] if _dv.token else "")}</code>'
+            f'</td>'
+            f'<td>{_conn_status_badge(_dv)}</td>'
+            f'<td class="mini-copy">{_dv_last}</td>'
+            f'<td id="ps-{_dv_row_id}">{_push_status_badge(_dv)}</td>'
+            f'<td>{_sess_badge}</td>'
+            f'<td onclick="event.stopPropagation();">{_actions_html}</td>'
+            f'</tr>'
+            f'<tr id="{_dv_detail_id}" style="display:none;">'
+            f'<td colspan="7" style="padding:0;">'
+            f'<table style="width:100%;border-collapse:collapse;">'
+            f'{_sess_sub_html}'
+            f'</table>'
+            f'</td></tr>'
+        )
+    _ds_rows_html = "".join(_ds_rows_html_parts) or '<tr><td colspan="7" class="empty-state">No registered devices.</td></tr>'
 
     def _section_style(name: str) -> str:
         return "" if section == name else ' style="display:none;"'
@@ -10904,77 +10984,92 @@ def render_admin_page(
               <article class="metric-card"><div class="meta">Android</div><div class="metric-value">{_android_count}</div></article>
             </div>
 
-            <div style="display:flex;gap:0;border-bottom:2px solid var(--border);margin-bottom:20px;">
-              <button id="dm-tab-sessions" onclick="bbDmTab('sessions')"
-                style="background:none;border:none;border-bottom:3px solid var(--accent,#3b82f6);margin-bottom:-2px;padding:8px 20px;font-size:14px;font-weight:600;color:var(--accent,#3b82f6);cursor:pointer;outline:none;">
-                Active Sessions
-              </button>
-              <button id="dm-tab-registered" onclick="bbDmTab('registered')"
-                style="background:none;border:none;border-bottom:3px solid transparent;margin-bottom:-2px;padding:8px 20px;font-size:14px;font-weight:600;color:var(--text-muted);cursor:pointer;outline:none;">
-                Registered Devices
-              </button>
+            <div class="table-search" style="margin-bottom:12px;">
+              <input type="search" id="ds-device-search" placeholder="Filter by user, device name, or platform…" style="width:100%;max-width:400px;" />
             </div>
 
-            <div id="dm-pane-sessions">
-              <p class="mini-copy" style="margin-bottom:10px;">Active login sessions. Force logout revokes immediately — device must re-authenticate on next use.</p>
-              <table class="data-table" style="width:100%;border-collapse:collapse;table-layout:fixed;">
-                <colgroup>
-                  <col style="width:24%"><col style="width:11%"><col style="width:13%">
-                  <col style="width:12%"><col style="width:15%"><col style="width:15%"><col style="width:10%">
-                </colgroup>
-                <thead>
-                  <tr>
-                    <th>User</th><th>Client</th><th>Role</th>
-                    <th>Status</th><th>Last Seen</th><th>Session Created</th><th>Action</th>
-                  </tr>
-                </thead>
-                <tbody>{_session_rows}</tbody>
-              </table>
-            </div>
+            <table class="data-table" id="ds-device-table" style="width:100%;border-collapse:collapse;table-layout:fixed;">
+              <colgroup>
+                <col style="width:20%"><col style="width:22%"><col style="width:11%">
+                <col style="width:12%"><col style="width:18%"><col style="width:9%"><col style="width:8%">
+              </colgroup>
+              <thead>
+                <tr>
+                  <th>User</th>
+                  <th>Device / Platform</th>
+                  <th>Online</th>
+                  <th>Last Seen</th>
+                  <th>Push Status</th>
+                  <th>Sessions</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>{_ds_rows_html}</tbody>
+            </table>
 
-            <div id="dm-pane-registered" style="display:none;">
-              <div class="table-search"><input type="search" id="reg-device-search" placeholder="Filter registered devices..." /></div>
-              <table class="data-table" style="width:100%;border-collapse:collapse;table-layout:fixed;" id="reg-device-table">
-                <colgroup>
-                  <col style="width:22%"><col style="width:22%"><col style="width:18%">
-                  <col style="width:11%"><col style="width:14%"><col style="width:13%">
-                </colgroup>
-                <thead>
-                  <tr>
-                    <th>User</th><th>Device / Platform</th><th>Push Token</th>
-                    <th>Status</th><th>Last Seen</th><th>Actions</th>
-                  </tr>
-                </thead>
-                <tbody>{_reg_device_rows}</tbody>
-              </table>
-            </div>
+            <p class="mini-copy" style="margin-top:10px;color:var(--text-muted);">
+              Click a row to expand active sessions for that user. Test Push sends a non-critical notification and updates push status live.
+            </p>
 
             <script>
             (function() {{
-              function bbDmTab(name) {{
-                ['sessions', 'registered'].forEach(function(p) {{
-                  var pane = document.getElementById('dm-pane-' + p);
-                  var tab = document.getElementById('dm-tab-' + p);
-                  if (!pane || !tab) return;
-                  var active = p === name;
-                  pane.style.display = active ? '' : 'none';
-                  tab.style.borderBottomColor = active ? 'var(--accent,#3b82f6)' : 'transparent';
-                  tab.style.color = active ? 'var(--accent,#3b82f6)' : 'var(--text-muted)';
-                  tab.style.fontWeight = active ? '700' : '600';
-                }});
+              function bbDsToggle(detailId) {{
+                var el = document.getElementById(detailId);
+                if (!el) return;
+                el.style.display = el.style.display === 'none' ? '' : 'none';
               }}
-              window.bbDmTab = bbDmTab;
-              if (window.location.hash === '#registered') bbDmTab('registered');
-              var rSearch = document.getElementById('reg-device-search');
-              if (rSearch) {{
-                rSearch.addEventListener('input', function() {{
+              window.bbDsToggle = bbDsToggle;
+
+              var dSearch = document.getElementById('ds-device-search');
+              if (dSearch) {{
+                dSearch.addEventListener('input', function() {{
                   var q = this.value.toLowerCase();
-                  var rows = document.querySelectorAll('#reg-device-table tbody tr');
+                  var rows = document.querySelectorAll('#ds-device-table tbody tr.ds-device-row');
                   rows.forEach(function(r) {{
-                    r.style.display = r.textContent.toLowerCase().includes(q) ? '' : 'none';
+                    var match = r.textContent.toLowerCase().includes(q);
+                    r.style.display = match ? '' : 'none';
+                    var detId = r.getAttribute('onclick') || '';
+                    var m = detId.match(/bbDsToggle\('([^']+)'\)/);
+                    if (m) {{
+                      var det = document.getElementById(m[1]);
+                      if (det && !match) det.style.display = 'none';
+                    }}
                   }});
                 }});
               }}
+
+              function bbTestPush(btn) {{
+                var token = btn.getAttribute('data-token');
+                var provider = btn.getAttribute('data-provider');
+                var pfx = btn.getAttribute('data-prefix') || '';
+                var origText = btn.textContent;
+                btn.disabled = true;
+                btn.textContent = 'Sending…';
+                var rowId = btn.closest('tr').id;
+                var psCell = document.getElementById('ps-' + rowId);
+                var fd = new FormData();
+                fd.append('token', token);
+                fd.append('push_provider', provider);
+                fetch(pfx + '/admin/devices/test-push', {{method: 'POST', body: fd}})
+                  .then(function(r) {{ return r.json(); }})
+                  .then(function(data) {{
+                    btn.textContent = origText;
+                    btn.disabled = false;
+                    if (data.success) {{
+                      if (psCell) psCell.innerHTML = '<span style="display:inline-flex;align-items:center;gap:5px;"><span style="width:9px;height:9px;border-radius:50%;background:#22c55e;flex-shrink:0;"></span><span style="font-size:11px;color:var(--text-muted);">Success · just now</span></span>';
+                      alert('Push delivered successfully ✓');
+                    }} else {{
+                      if (psCell) psCell.innerHTML = '<span style="display:inline-flex;align-items:center;gap:5px;"><span style="width:9px;height:9px;border-radius:50%;background:#ef4444;flex-shrink:0;"></span><span style="font-size:11px;color:#ef4444;">Failed: ' + (data.error || 'unknown') + '</span></span>';
+                      alert('Push failed: ' + (data.error || 'unknown error'));
+                    }}
+                  }})
+                  .catch(function(e) {{
+                    btn.textContent = origText;
+                    btn.disabled = false;
+                    alert('Network error: ' + e);
+                  }});
+              }}
+              window.bbTestPush = bbTestPush;
             }})();
             </script>
           </section>

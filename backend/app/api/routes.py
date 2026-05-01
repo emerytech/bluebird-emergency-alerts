@@ -6399,7 +6399,103 @@ async def admin_delete_device(
         _set_flash(request, message="Device registration deleted.")
     else:
         _set_flash(request, error="That device registration was not found.")
-    return RedirectResponse(url="/admin#devices", status_code=status.HTTP_303_SEE_OTHER)
+    return RedirectResponse(url="/admin?section=devices", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.post("/admin/devices/test-push", include_in_schema=False)
+async def admin_test_device_push(
+    request: Request,
+    token: str = Form(...),
+    push_provider: str = Form(...),
+) -> JSONResponse:
+    """Send a non-critical test push to a specific device and update its push status."""
+    await _require_dashboard_admin(request)
+    registry = _registry(request)
+    device = await registry.get_by_token(token=token, push_provider=push_provider)
+    if device is None:
+        return JSONResponse({"success": False, "error": "Device not found."}, status_code=404)
+
+    test_extra: dict = {
+        "type": "system_notice",
+        "title": "BlueBird Test Push",
+        "body": "Push delivery confirmed ✓",
+        "silent_for_sender": "0",
+    }
+    try:
+        if push_provider == "fcm":
+            results = await _fcm(request).send_bulk([token], "Push delivery confirmed ✓", extra_data=test_extra)
+        elif push_provider == "apns":
+            results = await _apns(request).send_bulk([token], "Push delivery confirmed ✓", extra_data=test_extra)
+        else:
+            return JSONResponse({"success": False, "error": f"Unknown provider: {push_provider}"}, status_code=400)
+
+        r = results[0] if results else None
+        ok = bool(r.ok) if r else False
+        err = str(r.reason) if r and not r.ok else None
+        await registry.update_push_status(token=token, push_provider=push_provider, ok=ok, error=err)
+        return JSONResponse({"success": ok, "error": err})
+    except Exception as exc:
+        err_msg = str(exc)[:200]
+        await registry.update_push_status(token=token, push_provider=push_provider, ok=False, error=err_msg)
+        return JSONResponse({"success": False, "error": err_msg}, status_code=500)
+
+
+@router.get("/devices-with-sessions", include_in_schema=False)
+async def get_devices_with_sessions(request: Request) -> JSONResponse:
+    """Device-centric view: each device with its user's active sessions attached."""
+    await _require_api_key(request)
+    devices = await _registry(request).list_devices(include_archived=False)
+    sessions = await _sessions(request).list_active()
+
+    from app.services.device_registry import compute_device_status
+    from datetime import datetime, timezone
+
+    def _age_secs(ts: str | None) -> float | None:
+        if not ts:
+            return None
+        try:
+            dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return (datetime.now(timezone.utc) - dt).total_seconds()
+        except Exception:
+            return None
+
+    sessions_by_user: dict[int, list] = {}
+    for sess in sessions:
+        uid = int(getattr(sess, "user_id", 0) or 0)
+        sessions_by_user.setdefault(uid, []).append(sess)
+
+    result = []
+    for dev in devices:
+        uid = dev.user_id
+        dev_sessions = sessions_by_user.get(uid, []) if uid is not None else []
+        age = _age_secs(dev.last_seen_at)
+        result.append({
+            "token_suffix": dev.token[-12:] if dev.token else "",
+            "push_provider": dev.push_provider,
+            "platform": dev.platform,
+            "device_name": dev.device_name,
+            "device_id": dev.device_id,
+            "user_id": uid,
+            "last_seen_at": dev.last_seen_at,
+            "last_seen_ago_secs": age,
+            "connection_status": compute_device_status(dev),
+            "last_push_status": dev.last_push_status,
+            "last_push_success_at": dev.last_push_success_at,
+            "last_push_error": dev.last_push_error,
+            "sessions": [
+                {
+                    "id": int(getattr(s, "id", 0)),
+                    "client_type": str(getattr(s, "client_type", "")),
+                    "status": "active" if getattr(s, "is_active", False) else "expired",
+                    "last_seen_at": str(getattr(s, "last_seen_at", "")),
+                    "created_at": str(getattr(s, "created_at", "")),
+                }
+                for s in dev_sessions
+            ],
+        })
+    return JSONResponse(result)
 
 
 @router.post("/admin/users/{user_id}/update", include_in_schema=False)
