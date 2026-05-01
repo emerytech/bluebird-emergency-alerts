@@ -127,6 +127,14 @@ class EmailMessage:
     linked_customer_id: Optional[int]
     linked_district_id: Optional[int]
     created_at: str
+    # CRM fields (added in v2)
+    source: str = "unknown"       # email | api | manual | import | unknown
+    crm_status: str = "new"       # new | contacted | qualified | converted | closed
+    is_deleted: bool = False
+    contact_name: Optional[str] = None
+    company: Optional[str] = None
+    notes: Optional[str] = None
+    updated_at: Optional[str] = None
 
     def to_dict(self) -> dict:
         return {
@@ -148,6 +156,13 @@ class EmailMessage:
             "linked_customer_id": self.linked_customer_id,
             "linked_district_id": self.linked_district_id,
             "created_at": self.created_at,
+            "source": self.source,
+            "crm_status": self.crm_status,
+            "is_deleted": self.is_deleted,
+            "contact_name": self.contact_name,
+            "company": self.company,
+            "notes": self.notes,
+            "updated_at": self.updated_at,
         }
 
     def to_full_dict(self) -> dict:
@@ -337,11 +352,27 @@ class EmailService:
             for col, typedef in (
                 ("linked_customer_id", "INTEGER NULL"),
                 ("linked_district_id", "INTEGER NULL"),
+                ("source", "TEXT NOT NULL DEFAULT 'unknown'"),
+                ("crm_status", "TEXT NOT NULL DEFAULT 'new'"),
+                ("is_deleted", "INTEGER NOT NULL DEFAULT 0"),
+                ("contact_name", "TEXT NULL"),
+                ("company", "TEXT NULL"),
+                ("notes", "TEXT NULL"),
+                ("updated_at", "TEXT NULL"),
             ):
                 try:
                     conn.execute(f"ALTER TABLE email_messages ADD COLUMN {col} {typedef};")
                 except Exception:
                     pass  # column already exists
+            for idx_sql in (
+                "CREATE INDEX IF NOT EXISTS idx_email_msg_source ON email_messages(source);",
+                "CREATE INDEX IF NOT EXISTS idx_email_msg_crm_status ON email_messages(crm_status);",
+                "CREATE INDEX IF NOT EXISTS idx_email_msg_deleted ON email_messages(is_deleted);",
+            ):
+                try:
+                    conn.execute(idx_sql)
+                except Exception:
+                    pass
 
             # Seed default plans if table is empty
             now = datetime.now(timezone.utc).isoformat()
@@ -1341,13 +1372,24 @@ class EmailService:
             linked_customer_id=int(row[15]) if row[15] is not None else None,
             linked_district_id=int(row[16]) if row[16] is not None else None,
             created_at=str(row[17]),
+            source=str(row[18]) if len(row) > 18 and row[18] is not None else "unknown",
+            crm_status=str(row[19]) if len(row) > 19 and row[19] is not None else "new",
+            is_deleted=bool(int(row[20])) if len(row) > 20 and row[20] is not None else False,
+            contact_name=str(row[21]) if len(row) > 21 and row[21] is not None else None,
+            company=str(row[22]) if len(row) > 22 and row[22] is not None else None,
+            notes=str(row[23]) if len(row) > 23 and row[23] is not None else None,
+            updated_at=str(row[24]) if len(row) > 24 and row[24] is not None else None,
         )
 
     _MSG_COLS = (
         "id, provider_message_id, thread_id, direction, from_email, from_name, "
         "to_email, subject, body_text, body_html, received_at, sent_at, "
-        "is_read, status, linked_inquiry_id, linked_customer_id, linked_district_id, created_at"
+        "is_read, status, linked_inquiry_id, linked_customer_id, linked_district_id, created_at, "
+        "source, crm_status, is_deleted, contact_name, company, notes, updated_at"
     )
+
+    _ALLOWED_CRM_STATUSES = frozenset({"new", "contacted", "qualified", "converted", "closed"})
+    _ALLOWED_SOURCES = frozenset({"email", "api", "manual", "import", "unknown"})
 
     def store_message_sync(
         self,
@@ -1365,11 +1407,13 @@ class EmailService:
         sent_at: Optional[str],
         is_read: bool = False,
         status: str = "new",
+        source: str = "unknown",
         linked_inquiry_id: Optional[int] = None,
         linked_customer_id: Optional[int] = None,
         linked_district_id: Optional[int] = None,
     ) -> Optional["EmailMessage"]:
         now = datetime.now(timezone.utc).isoformat()
+        safe_source = source if source in self._ALLOWED_SOURCES else "unknown"
         with self._connect() as conn:
             try:
                 cur = conn.execute(
@@ -1378,8 +1422,9 @@ class EmailService:
                         (provider_message_id, thread_id, direction, from_email, from_name,
                          to_email, subject, body_text, body_html, received_at, sent_at,
                          is_read, status, linked_inquiry_id, linked_customer_id,
-                         linked_district_id, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                         linked_district_id, created_at, source, crm_status, is_deleted,
+                         updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', 0, ?);
                     """,
                     (
                         provider_message_id[:2048], thread_id, direction,
@@ -1387,7 +1432,7 @@ class EmailService:
                         subject[:512], body_text[:65535], body_html[:131072],
                         received_at, sent_at, 1 if is_read else 0,
                         status, linked_inquiry_id, linked_customer_id,
-                        linked_district_id, now,
+                        linked_district_id, now, safe_source, now,
                     ),
                 )
                 row = conn.execute(
@@ -1406,15 +1451,24 @@ class EmailService:
         *,
         direction: Optional[str] = None,
         unread_only: bool = False,
+        source: Optional[str] = None,
+        crm_status: Optional[str] = None,
+        include_deleted: bool = False,
         limit: int = 100,
     ) -> List["EmailMessage"]:
-        clauses: list = []
+        clauses: list = ["is_deleted = 0"] if not include_deleted else []
         params: list = []
         if direction:
             clauses.append("direction = ?")
             params.append(direction)
         if unread_only:
             clauses.append("is_read = 0")
+        if source:
+            clauses.append("source = ?")
+            params.append(source)
+        if crm_status:
+            clauses.append("crm_status = ?")
+            params.append(crm_status)
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         with self._connect() as conn:
             rows = conn.execute(
@@ -1506,19 +1560,124 @@ class EmailService:
         await anyio.to_thread.run_sync(lambda: self.mark_replied_sync(int(message_id)))
 
     def delete_messages_sync(self, message_ids: list[int]) -> int:
+        """Soft-delete messages by ID (sets is_deleted=1)."""
         if not message_ids:
             return 0
+        now = datetime.now(timezone.utc).isoformat()
         safe_ids = [int(i) for i in message_ids]
         placeholders = ",".join("?" * len(safe_ids))
         with self._connect() as conn:
             cur = conn.execute(
-                f"DELETE FROM email_messages WHERE id IN ({placeholders});",
-                safe_ids,
+                f"UPDATE email_messages SET is_deleted = 1, updated_at = ? "
+                f"WHERE id IN ({placeholders}) AND is_deleted = 0;",
+                [now, *safe_ids],
             )
-            return cur.rowcount
+            return cur.rowcount or 0
 
     async def delete_messages(self, message_ids: list[int]) -> int:
         return await anyio.to_thread.run_sync(lambda: self.delete_messages_sync(message_ids))
+
+    def soft_delete_by_source_sync(self, source: str) -> int:
+        """Soft-delete all non-deleted messages with the given source."""
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            cur = conn.execute(
+                "UPDATE email_messages SET is_deleted = 1, updated_at = ? "
+                "WHERE source = ? AND is_deleted = 0;",
+                (now, str(source)),
+            )
+            return cur.rowcount or 0
+
+    async def soft_delete_by_source(self, source: str) -> int:
+        return await anyio.to_thread.run_sync(lambda: self.soft_delete_by_source_sync(source))
+
+    def soft_delete_all_sync(self) -> int:
+        """Soft-delete all inbound messages (clear-all)."""
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            cur = conn.execute(
+                "UPDATE email_messages SET is_deleted = 1, updated_at = ? "
+                "WHERE direction = 'inbound' AND is_deleted = 0;",
+                (now,),
+            )
+            return cur.rowcount or 0
+
+    async def soft_delete_all(self) -> int:
+        return await anyio.to_thread.run_sync(self.soft_delete_all_sync)
+
+    def restore_messages_sync(self, message_ids: list[int]) -> int:
+        if not message_ids:
+            return 0
+        now = datetime.now(timezone.utc).isoformat()
+        safe_ids = [int(i) for i in message_ids]
+        placeholders = ",".join("?" * len(safe_ids))
+        with self._connect() as conn:
+            cur = conn.execute(
+                f"UPDATE email_messages SET is_deleted = 0, updated_at = ? "
+                f"WHERE id IN ({placeholders}) AND is_deleted = 1;",
+                [now, *safe_ids],
+            )
+            return cur.rowcount or 0
+
+    async def restore_messages(self, message_ids: list[int]) -> int:
+        return await anyio.to_thread.run_sync(lambda: self.restore_messages_sync(message_ids))
+
+    def update_crm_status_sync(self, message_id: int, crm_status: str) -> bool:
+        if crm_status not in self._ALLOWED_CRM_STATUSES:
+            return False
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            cur = conn.execute(
+                "UPDATE email_messages SET crm_status = ?, updated_at = ? WHERE id = ?;",
+                (crm_status, now, int(message_id)),
+            )
+        return bool(cur.rowcount)
+
+    async def update_crm_status(self, message_id: int, crm_status: str) -> bool:
+        return await anyio.to_thread.run_sync(
+            lambda: self.update_crm_status_sync(int(message_id), crm_status)
+        )
+
+    def update_contact_info_sync(
+        self,
+        message_id: int,
+        contact_name: Optional[str],
+        company: Optional[str],
+        notes: Optional[str],
+    ) -> bool:
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            cur = conn.execute(
+                "UPDATE email_messages SET contact_name = ?, company = ?, notes = ?, updated_at = ? WHERE id = ?;",
+                (contact_name, company, notes, now, int(message_id)),
+            )
+        return bool(cur.rowcount)
+
+    async def update_contact_info(
+        self, message_id: int, contact_name: Optional[str], company: Optional[str], notes: Optional[str]
+    ) -> bool:
+        return await anyio.to_thread.run_sync(
+            lambda: self.update_contact_info_sync(int(message_id), contact_name, company, notes)
+        )
+
+    def get_pipeline_sync(self) -> dict:
+        """Return messages grouped by crm_status, excluding deleted."""
+        pipeline: dict = {s: [] for s in ("new", "contacted", "qualified", "converted", "closed")}
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"SELECT {self._MSG_COLS} FROM email_messages "
+                f"WHERE is_deleted = 0 AND direction = 'inbound' "
+                f"ORDER BY created_at DESC LIMIT 500;"
+            ).fetchall()
+        for row in rows:
+            msg = self._msg_row(row)
+            bucket = pipeline.get(msg.crm_status)
+            if bucket is not None:
+                bucket.append(msg.to_dict())
+        return pipeline
+
+    async def get_pipeline(self) -> dict:
+        return await anyio.to_thread.run_sync(self.get_pipeline_sync)
 
     def message_id_exists_sync(self, provider_message_id: str) -> bool:
         with self._connect() as conn:
@@ -1536,7 +1695,8 @@ class EmailService:
     def unread_count_sync(self) -> int:
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT COUNT(*) FROM email_messages WHERE direction = 'inbound' AND is_read = 0;"
+                "SELECT COUNT(*) FROM email_messages "
+                "WHERE direction = 'inbound' AND is_read = 0 AND is_deleted = 0;"
             ).fetchone()
         return int(row[0]) if row else 0
 

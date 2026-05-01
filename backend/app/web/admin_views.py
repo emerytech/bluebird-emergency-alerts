@@ -2970,6 +2970,21 @@ def _render_district_billing_section(district_billing_rows: Sequence[Mapping[str
 def _render_sales_inbox_section(messages: object, section: str, unread_count: int = 0) -> str:
     _style = "" if section == "sales-inbox" else ' style="display:none;"'
     status_icon = {"new": "🔵", "read": "⚪", "replied": "✅"}
+    _crm_colors = {
+        "new": ("#dbeafe", "#1d4ed8"),
+        "contacted": ("#fef9c3", "#854d0e"),
+        "qualified": ("#d1fae5", "#065f46"),
+        "converted": ("#ede9fe", "#5b21b6"),
+        "closed": ("#f1f5f9", "#475569"),
+    }
+    _source_colors = {
+        "email": ("#e0f2fe", "#0369a1"),
+        "api": ("#f0fdf4", "#15803d"),
+        "manual": ("#faf5ff", "#7e22ce"),
+        "import": ("#fef3c7", "#92400e"),
+        "unknown": ("#f1f5f9", "#64748b"),
+    }
+
     rows_html = ""
     for msg in (messages or []):
         msg_id = int(getattr(msg, "id", 0))
@@ -2977,6 +2992,8 @@ def _render_sales_inbox_section(messages: object, section: str, unread_count: in
         from_email = escape(str(getattr(msg, "from_email", "") or ""))
         subject = escape(str(getattr(msg, "subject", "") or "(no subject)"))
         status = str(getattr(msg, "status", "new"))
+        crm_status = str(getattr(msg, "crm_status", "new") or "new")
+        source = str(getattr(msg, "source", "unknown") or "unknown")
         is_read = bool(getattr(msg, "is_read", False))
         received = str(getattr(msg, "received_at", "") or getattr(msg, "created_at", ""))[:16].replace("T", " ")
         linked_customer_id = getattr(msg, "linked_customer_id", None)
@@ -2990,8 +3007,24 @@ def _render_sales_inbox_section(messages: object, section: str, unread_count: in
         if linked_district_id:
             link_badges += (f'<span style="font-size:0.67rem;background:#d1fae5;color:#065f46;'
                             f'border-radius:4px;padding:1px 5px;">D#{linked_district_id}</span>')
+        src_bg, src_fg = _source_colors.get(source, ("#f1f5f9", "#64748b"))
+        source_badge = (f'<span style="font-size:0.65rem;background:{src_bg};color:{src_fg};'
+                        f'border-radius:4px;padding:1px 5px;">{escape(source)}</span>')
+        crm_bg, crm_fg = _crm_colors.get(crm_status, ("#f1f5f9", "#475569"))
+        crm_sel = (
+            f'<select class="bb-crm-sel" data-mid="{msg_id}" '
+            f'style="font-size:0.7rem;padding:2px 4px;border-radius:4px;border:1px solid {crm_bg};'
+            f'background:{crm_bg};color:{crm_fg};cursor:pointer;" '
+            f'onchange="bbInboxSetCrmStatus(this)" onclick="event.stopPropagation();">'
+            + "".join(
+                f'<option value="{s}"{" selected" if s == crm_status else ""}>{s.replace("_"," ").title()}</option>'
+                for s in ("new", "contacted", "qualified", "converted", "closed")
+            )
+            + "</select>"
+        )
         rows_html += (
-            f'<tr data-mid="{msg_id}" style="cursor:pointer;" onclick="bbInboxRowClick(event,{msg_id});">'
+            f'<tr data-mid="{msg_id}" data-source="{escape(source)}" data-crm="{escape(crm_status)}" '
+            f'style="cursor:pointer;" onclick="bbInboxRowClick(event,{msg_id});">'
             f'<td style="width:36px;text-align:center;" onclick="event.stopPropagation();">'
             f'<input type="checkbox" class="bb-inbox-cb" value="{msg_id}" onchange="bbInboxSelChange();" '
             f'style="width:15px;height:15px;cursor:pointer;" /></td>'
@@ -3000,6 +3033,8 @@ def _render_sales_inbox_section(messages: object, section: str, unread_count: in
             f'{from_name or from_email}<br><span style="font-size:0.72rem;color:var(--muted);">{from_email}</span></td>'
             f'<td style="font-weight:{weight};">{subject}'
             f'{"<br>" + link_badges if link_badges else ""}</td>'
+            f'<td style="white-space:nowrap;">{source_badge}</td>'
+            f'<td onclick="event.stopPropagation();">{crm_sel}</td>'
             f'<td style="font-size:0.75rem;color:var(--muted);white-space:nowrap;">{received}</td>'
             f'<td style="text-align:right;white-space:nowrap;" onclick="event.stopPropagation();">'
             f'<button class="button button-outline" style="font-size:0.72rem;padding:2px 8px;" '
@@ -3010,7 +3045,7 @@ def _render_sales_inbox_section(messages: object, section: str, unread_count: in
             f'</tr>'
         )
     if not rows_html:
-        rows_html = ('<tr><td colspan="6" style="text-align:center;color:var(--muted);padding:24px;">'
+        rows_html = ('<tr><td colspan="8" style="text-align:center;color:var(--muted);padding:24px;">'
                      'No messages yet. Configure IMAP settings in Configuration to start syncing.</td></tr>')
 
     unread_badge = (f'<span style="display:inline-block;background:#2563eb;color:#fff;border-radius:999px;'
@@ -3201,6 +3236,59 @@ def _render_sales_inbox_section(messages: object, section: str, unread_count: in
         '    else alert("Sync failed: "+(d.error||"unknown"));'
         '  }).catch(()=>alert("Network error during sync."));'
         '}'
+
+        # CRM status update
+        'function bbInboxSetCrmStatus(sel){'
+        '  var mid=sel.getAttribute("data-mid");'
+        '  var st=sel.value;'
+        '  fetch("/super-admin/inbox/"+mid+"/crm-status",{'
+        '    method:"PATCH",'
+        '    headers:{"Content-Type":"application/json","X-Requested-With":"XMLHttpRequest"},'
+        '    body:JSON.stringify({crm_status:st})'
+        '  }).then(r=>r.json()).then(function(d){'
+        '    if(!d.ok)alert("Status update failed: "+(d.error||"unknown"));'
+        '    else{'
+        '      var row=sel.closest("tr");'
+        '      if(row)row.setAttribute("data-crm",st);'
+        '      bbInboxApplyFilters();'
+        '    }'
+        '  }).catch(()=>alert("Network error."));'
+        '}'
+
+        # Delete-by-source
+        'function bbInboxDeleteBySource(src){'
+        '  if(!confirm("Delete ALL emails with source \\""+src+"\\"? This cannot be undone."))return;'
+        '  fetch("/super-admin/inbox/delete-by-source",{'
+        '    method:"POST",'
+        '    headers:{"Content-Type":"application/json","X-Requested-With":"XMLHttpRequest"},'
+        '    body:JSON.stringify({source:src})'
+        '  }).then(r=>r.json()).then(function(d){'
+        '    if(d.ok)location.reload();'
+        '    else alert("Failed: "+(d.error||"unknown"));'
+        '  }).catch(()=>alert("Network error."));'
+        '}'
+
+        # Clear all
+        'function bbInboxClearAll(){'
+        '  if(!confirm("Soft-delete ALL messages in the inbox? You can restore them later."))return;'
+        '  fetch("/super-admin/inbox/clear-all",{method:"POST",headers:{"X-Requested-With":"XMLHttpRequest"}})'
+        '  .then(r=>r.json()).then(function(d){if(d.ok)location.reload();else alert("Failed: "+(d.error||"?"));});'
+        '}'
+
+        # Client-side filter
+        'function bbInboxApplyFilters(){'
+        '  var sf=document.getElementById("bb-inbox-src-filter").value;'
+        '  var cf=document.getElementById("bb-inbox-crm-filter").value;'
+        '  var qf=document.getElementById("bb-inbox-search").value.toLowerCase();'
+        '  var rows=document.querySelectorAll("#bb-inbox-tbody tr");'
+        '  rows.forEach(function(r){'
+        '    var src=r.getAttribute("data-source")||"";'
+        '    var crm=r.getAttribute("data-crm")||"";'
+        '    var txt=r.textContent.toLowerCase();'
+        '    var ok=(sf?src===sf:true)&&(cf?crm===cf:true)&&(!qf||txt.includes(qf));'
+        '    r.style.display=ok?"":"none";'
+        '  });'
+        '}'
         '</script>'
     )
 
@@ -3217,27 +3305,59 @@ def _render_sales_inbox_section(messages: object, section: str, unread_count: in
         '</div>'
     )
 
+    filter_bar = (
+        '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px;">'
+        '<input id="bb-inbox-search" type="search" placeholder="Search…" oninput="bbInboxApplyFilters();" '
+        'style="font-size:0.8rem;padding:5px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);width:180px;" />'
+        '<select id="bb-inbox-src-filter" onchange="bbInboxApplyFilters();" '
+        'style="font-size:0.8rem;padding:5px 8px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);">'
+        '<option value="">All Sources</option>'
+        '<option value="email">Email (IMAP)</option>'
+        '<option value="api">API</option>'
+        '<option value="manual">Manual</option>'
+        '<option value="import">Import</option>'
+        '<option value="unknown">Unknown</option>'
+        '</select>'
+        '<select id="bb-inbox-crm-filter" onchange="bbInboxApplyFilters();" '
+        'style="font-size:0.8rem;padding:5px 8px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);">'
+        '<option value="">All Stages</option>'
+        '<option value="new">New</option>'
+        '<option value="contacted">Contacted</option>'
+        '<option value="qualified">Qualified</option>'
+        '<option value="converted">Converted</option>'
+        '<option value="closed">Closed</option>'
+        '</select>'
+        '<div style="margin-left:auto;display:flex;gap:6px;">'
+        '<button class="button button-outline" style="font-size:0.75rem;padding:4px 10px;min-height:auto;" '
+        'onclick="bbInboxDeleteBySource(\'import\');">&#128465; Delete Imports</button>'
+        '<button class="button button-outline" style="font-size:0.75rem;padding:4px 10px;min-height:auto;color:#dc2626;border-color:#dc2626;" '
+        'onclick="bbInboxClearAll();">&#128465; Clear All</button>'
+        '</div>'
+        '</div>'
+    )
+
     return (
         f'<section class="panel command-section" id="sales-inbox"{_style}>'
         f'{reply_modal}'
         f'<div class="panel-header hero-band">'
         f'<div><p class="eyebrow">CRM</p><h1>Sales Inbox{unread_badge}</h1>'
-        f'<p class="hero-copy">Incoming emails received via IMAP. Sync every 3 minutes automatically.</p></div>'
+        f'<p class="hero-copy">Incoming emails. Synced via IMAP every 3 min. Deletes are soft — restorable via API.</p></div>'
         f'<div style="display:flex;gap:8px;align-items:center;">'
         f'<button id="bb-inbox-sync-btn" class="button button-outline" onclick="bbInboxSync();" type="button">'
         f'&#8635; Sync Now</button>'
         f'</div>'
         f'</div>'
+        f'{filter_bar}'
         f'{sel_bar}'
-        f'<div style="overflow-x:auto;margin-top:8px;">'
-        f'<table class="data-table" style="width:100%;font-size:0.82rem;">'
+        f'<div style="overflow-x:auto;margin-top:4px;">'
+        f'<table class="data-table" id="bb-inbox-table" style="width:100%;font-size:0.82rem;">'
         f'<thead><tr>'
         f'<th style="width:36px;text-align:center;">'
         f'<input type="checkbox" id="bb-inbox-sel-all" onchange="bbInboxSelectAll(this);" '
         f'style="width:15px;height:15px;cursor:pointer;" title="Select all" /></th>'
         f'<th style="width:28px;"></th><th>From</th><th>Subject</th>'
-        f'<th>Received</th><th></th></tr></thead>'
-        f'<tbody>{rows_html}</tbody>'
+        f'<th>Source</th><th>Pipeline</th><th>Received</th><th></th></tr></thead>'
+        f'<tbody id="bb-inbox-tbody">{rows_html}</tbody>'
         f'</table></div>'
         f'{inbox_js}'
         f'</section>'

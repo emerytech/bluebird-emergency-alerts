@@ -196,6 +196,7 @@ class InboxSyncService:
             sent_at=None,
             is_read=False,
             status="new",
+            source="email",
         )
         return 1 if stored else 0
 

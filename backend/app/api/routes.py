@@ -11545,6 +11545,81 @@ async def super_admin_inbox_bulk_delete(
     return JSONResponse({"ok": True, "deleted": deleted})
 
 
+@router.post("/super-admin/inbox/clear-all", include_in_schema=False)
+async def super_admin_inbox_clear_all(request: Request) -> JSONResponse:
+    """Soft-delete all inbound messages."""
+    _require_super_admin(request)
+    deleted = await _email_service(request).soft_delete_all()
+    return JSONResponse({"ok": True, "deleted": deleted})
+
+
+@router.post("/super-admin/inbox/delete-by-source", include_in_schema=False)
+async def super_admin_inbox_delete_by_source(request: Request) -> JSONResponse:
+    """Soft-delete all messages with a given source (e.g. 'import')."""
+    _require_super_admin(request)
+    try:
+        body = await request.json()
+        source = str(body.get("source") or "").strip()
+    except Exception:
+        return JSONResponse({"ok": False, "error": "Invalid request body."}, status_code=422)
+    if not source:
+        return JSONResponse({"ok": False, "error": "source is required."}, status_code=422)
+    deleted = await _email_service(request).soft_delete_by_source(source)
+    return JSONResponse({"ok": True, "deleted": deleted, "source": source})
+
+
+@router.post("/super-admin/inbox/restore/{message_id}", include_in_schema=False)
+async def super_admin_inbox_restore(request: Request, message_id: int) -> JSONResponse:
+    """Restore a soft-deleted message."""
+    _require_super_admin(request)
+    restored = await _email_service(request).restore_messages([int(message_id)])
+    return JSONResponse({"ok": True, "restored": restored})
+
+
+@router.patch("/super-admin/inbox/{message_id}/crm-status", include_in_schema=False)
+async def super_admin_inbox_update_crm_status(
+    request: Request,
+    message_id: int,
+) -> JSONResponse:
+    """Update CRM pipeline status for a message."""
+    _require_super_admin(request)
+    try:
+        body = await request.json()
+        crm_status = str(body.get("crm_status") or "").strip()
+    except Exception:
+        return JSONResponse({"ok": False, "error": "Invalid request body."}, status_code=422)
+    ok = await _email_service(request).update_crm_status(int(message_id), crm_status)
+    if not ok:
+        return JSONResponse({"ok": False, "error": "Invalid status or message not found."}, status_code=422)
+    return JSONResponse({"ok": True, "crm_status": crm_status})
+
+
+@router.patch("/super-admin/inbox/{message_id}/contact-info", include_in_schema=False)
+async def super_admin_inbox_update_contact_info(
+    request: Request,
+    message_id: int,
+) -> JSONResponse:
+    """Update CRM contact metadata for a message."""
+    _require_super_admin(request)
+    try:
+        body = await request.json()
+        contact_name = body.get("contact_name") or None
+        company = body.get("company") or None
+        notes = body.get("notes") or None
+    except Exception:
+        return JSONResponse({"ok": False, "error": "Invalid request body."}, status_code=422)
+    ok = await _email_service(request).update_contact_info(int(message_id), contact_name, company, notes)
+    return JSONResponse({"ok": ok})
+
+
+@router.get("/super-admin/inbox/pipeline", include_in_schema=False)
+async def super_admin_inbox_pipeline(request: Request) -> JSONResponse:
+    """Return all non-deleted inbound messages grouped by CRM status."""
+    _require_super_admin(request)
+    pipeline = await _email_service(request).get_pipeline()
+    return JSONResponse(pipeline)
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # SUPER ADMIN — CUSTOMERS (CRM)
 # ══════════════════════════════════════════════════════════════════════════════
