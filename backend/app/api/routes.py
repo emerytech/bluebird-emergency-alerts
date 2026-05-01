@@ -459,6 +459,10 @@ def _inbox_sync_service(req: Request):
     return req.app.state.inbox_sync_service  # type: ignore[attr-defined]
 
 
+def _training_store(req: Request):
+    return req.app.state.training_store  # type: ignore[attr-defined]
+
+
 def _access_codes(req: Request) -> AccessCodeService:
     return req.app.state.access_code_service  # type: ignore[attr-defined]
 
@@ -4296,6 +4300,7 @@ async def super_admin_dashboard(
             inbox_messages=await es.list_messages(limit=50),
             inbox_unread_count=await es.unread_count(),
             customers=await _customer_store(request).list_customers(limit=200),
+            training_records=await _training_store(request).list_tenant_progress(tenant_slug="platform"),
             email_delivery_settings=await es.get_delivery_settings(),
             auto_reply_settings=await es.get_auto_reply_settings(),
             stripe_settings=await es.get_stripe_settings(),
@@ -12210,3 +12215,51 @@ async def super_admin_convert_demo_request(
         logger.warning("convert_demo_request error req_id=%s: %s", req_id, exc)
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
     return JSONResponse({"ok": True, "district_slug": raw_slug, "district_name": name})
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Training / Learning Center
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.post("/{tenant}/api/training/event", include_in_schema=False)
+async def record_training_event(
+    request: Request,
+    tenant: str,
+    user_id: int = Form(...),
+    event_type: str = Form(...),
+    guide_id: Optional[str] = Form(default=None),
+    step: Optional[int] = Form(default=None),
+):
+    """Mobile clients POST here when a training event fires."""
+    store = _training_store(request)
+    ok = await store.record_event(
+        user_id=user_id,
+        tenant_slug=tenant,
+        event_type=event_type,
+        guide_id=guide_id,
+        step=step,
+    )
+    return JSONResponse({"ok": ok})
+
+
+@router.get("/{tenant}/api/training/progress", include_in_schema=False)
+async def get_my_training_progress(request: Request, tenant: str, user_id: int = 0):
+    """Returns the calling user's training progress for this tenant."""
+    if not user_id:
+        return JSONResponse({"ok": False, "error": "user_id required"}, status_code=400)
+    store = _training_store(request)
+    progress = await store.get_user_progress(user_id=user_id, tenant_slug=tenant)
+    return JSONResponse({"ok": True, "progress": progress.to_dict()})
+
+
+@router.get("/super-admin/training/completion", include_in_schema=False)
+async def super_admin_training_completion(request: Request, tenant: Optional[str] = None):
+    """Super-admin: all users' training progress, optionally filtered by tenant."""
+    if _super_admin_id(request) is None:
+        return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=403)
+    store = _training_store(request)
+    if tenant:
+        records = await store.list_tenant_progress(tenant_slug=tenant)
+    else:
+        records = []
+    return JSONResponse({"ok": True, "records": [r.to_dict() for r in records]})

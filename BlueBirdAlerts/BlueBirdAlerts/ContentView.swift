@@ -1004,6 +1004,7 @@ struct ContentView: View {
             UIApplication.shared.isIdleTimerDisabled = isActive
             syncAlarmAudio()
             updateAlertFeedbackState()
+            appState.alarmIsActive = isActive  // keeps LearningCenter screens in sync
         }
         .onChange(of: alarmSilentAudio) { _, _ in
             syncAlarmAudio()
@@ -3846,6 +3847,7 @@ private struct SettingsView: View {
     @State private var isRegistering = false
     @State private var isLoadingDebugData = false
     @AppStorage(DSThemePreference.storageKey) private var themeModeRaw = DSThemeMode.system.rawValue
+    @State private var showLearningCenter = false
 
     private var api: APIClient {
         APIClient(baseURL: appState.serverURL, apiKey: Config.backendApiKey)
@@ -3971,6 +3973,30 @@ private struct SettingsView: View {
                         }
                     }
 
+                    // Training
+                    settingsCard {
+                        VStack(alignment: .leading, spacing: 14) {
+                            Text("Training")
+                                .font(.headline)
+                                .foregroundStyle(DSColor.textPrimary)
+                            let store = LearningCenterStore.shared
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Learning Center")
+                                        .font(.subheadline.weight(.semibold))
+                                        .foregroundStyle(DSColor.textPrimary)
+                                    Text("\(store.completedCount) of \(store.totalCount) guides completed")
+                                        .font(.caption)
+                                        .foregroundStyle(DSColor.textSecondary)
+                                }
+                                Spacer()
+                                Button("Open") { showLearningCenter = true }
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(DSColor.primary)
+                            }
+                        }
+                    }
+
                     // Sign Out
                     Button {
                         onSignOut()
@@ -3990,6 +4016,9 @@ private struct SettingsView: View {
         }
         .navigationTitle("Settings")
         .navigationBarTitleDisplayMode(.inline)
+        .fullScreenCover(isPresented: $showLearningCenter) {
+            LearningCenterMenuView()
+        }
     }
 
     @ViewBuilder

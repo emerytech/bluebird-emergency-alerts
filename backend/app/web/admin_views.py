@@ -3969,6 +3969,73 @@ def _render_stripe_section(
     )
 
 
+def _render_training_section(training_records: object, section: str) -> str:
+    _style = "" if section == "training" else ' style="display:none;"'
+    _GUIDE_TITLES = {
+        "initiate_emergency":   "Initiate an Emergency",
+        "view_messages":        "View Messages",
+        "team_assist":          "Team Assist",
+        "account_for_yourself": "Account for Yourself",
+        "account_for_students": "Account for Students",
+        "reunification":        "Reunification",
+    }
+    _TOTAL_GUIDES = len(_GUIDE_TITLES)
+
+    rows_html = ""
+    for rec in (training_records or []):
+        user_id = int(getattr(rec, "user_id", 0))
+        completed = list(getattr(rec, "completed_guides", []) or [])
+        pct = float(getattr(rec, "completion_percentage", 0))
+        last_activity = str(getattr(rec, "last_activity", "") or "")[:10] or "—"
+        completed_count = len(completed)
+
+        guide_badges = " ".join(
+            f'<span style="font-size:.68rem;padding:2px 6px;border-radius:8px;'
+            f'background:#16653415;color:#166534;font-weight:700;">{escape(_GUIDE_TITLES.get(g, g))}</span>'
+            for g in completed
+        ) or '<span style="color:var(--muted);font-size:.78rem;">None yet</span>'
+
+        bar_color = "#166534" if pct >= 100 else ("#d97706" if pct >= 50 else "#2563eb")
+        rows_html += (
+            f'<tr>'
+            f'<td style="font-size:.8rem;color:var(--muted);">#{user_id}</td>'
+            f'<td style="font-size:.8rem;">{completed_count} / {_TOTAL_GUIDES}</td>'
+            f'<td style="min-width:120px;">'
+            f'<div style="height:6px;border-radius:3px;background:var(--border);overflow:hidden;">'
+            f'<div style="height:100%;width:{min(int(pct),100)}%;background:{bar_color};border-radius:3px;"></div>'
+            f'</div>'
+            f'<span style="font-size:.72rem;color:var(--muted);">{pct:.0f}%</span>'
+            f'</td>'
+            f'<td style="font-size:.78rem;">{guide_badges}</td>'
+            f'<td style="font-size:.75rem;color:var(--muted);">{last_activity}</td>'
+            f'</tr>'
+        )
+
+    if not rows_html:
+        rows_html = '<tr><td colspan="5" style="text-align:center;color:var(--muted);padding:24px;">No training activity yet. Events are recorded as users complete guides in the mobile app.</td></tr>'
+
+    total_users = len(list(training_records or []))
+    completed_all = sum(
+        1 for rec in (training_records or [])
+        if float(getattr(rec, "completion_percentage", 0)) >= 100
+    )
+    summary = f'{completed_all} of {total_users} user{"s" if total_users != 1 else ""} fully trained' if total_users else "No data yet"
+
+    return (
+        f'<section class="panel command-section" id="training"{_style}>'
+        f'<div class="panel-header hero-band">'
+        f'<div><p class="eyebrow">Compliance</p><h1>Training Completion</h1>'
+        f'<p class="hero-copy">{escape(summary)} · {_TOTAL_GUIDES} guides total</p></div>'
+        f'</div>'
+        f'<div style="overflow-x:auto;margin-top:16px;">'
+        f'<table class="data-table" style="width:100%;font-size:0.82rem;">'
+        f'<thead><tr><th>User ID</th><th>Progress</th><th>Completion</th><th>Guides Completed</th><th>Last Activity</th></tr></thead>'
+        f'<tbody>{rows_html}</tbody>'
+        f'</table></div>'
+        f'</section>'
+    )
+
+
 def render_super_admin_page(
     *,
     base_domain: str,
@@ -4008,6 +4075,7 @@ def render_super_admin_page(
     inbox_messages: Sequence[object] = (),
     inbox_unread_count: int = 0,
     customers: Sequence[object] = (),
+    training_records: Sequence[object] = (),
     email_delivery_settings: Mapping[str, str] = {},
     auto_reply_settings: Mapping[str, str] = {},
     stripe_settings: Mapping[str, str] = {},
@@ -4147,7 +4215,7 @@ def render_super_admin_page(
         for c in setup_codes
     ) or '<tr><td colspan="7" class="empty-state">No setup codes generated yet.</td></tr>'
 
-    section = active_section if active_section in {"districts", "schools", "billing", "platform-audit", "create-school", "security", "configuration", "server-tools", "health", "email-tool", "setup-codes", "noc", "msp", "platform-control", "sandbox", "ai-insights", "inquiries", "sales-inbox", "customers"} else "districts"
+    section = active_section if active_section in {"districts", "schools", "billing", "platform-audit", "create-school", "security", "configuration", "server-tools", "health", "email-tool", "setup-codes", "noc", "msp", "platform-control", "sandbox", "ai-insights", "inquiries", "sales-inbox", "customers", "training"} else "districts"
 
     def _section_style(name: str) -> str:
         return "" if section == name else ' style="display:none;"'
@@ -4808,6 +4876,7 @@ def render_super_admin_page(
             {_nav_item("sales-inbox", "Sales Inbox", str(inbox_unread_count) if inbox_unread_count else None)}
             {_nav_item("inquiries", "Sales Leads", str(_new_leads_count) if _new_leads_count else None)}
             {_nav_item("customers", "Customers")}
+            {_nav_item("training", "Training")}
             {_nav_item("configuration", "Configuration", None if email_configured else "!")}
             {_nav_item("setup-codes", "Setup Codes")}
             {_nav_item("security", "Security")}
@@ -6041,6 +6110,7 @@ def render_super_admin_page(
         {_render_sales_inbox_section(inbox_messages, section, inbox_unread_count)}
         {_render_inquiries_section(inquiries, section, demo_requests=demo_requests)}
         {_render_customers_section(customers, section)}
+        {_render_training_section(training_records, section)}
         <section class="panel command-section" id="email-tool"{_section_style("email-tool")}>
           <div class="panel-header hero-band">
             <div>

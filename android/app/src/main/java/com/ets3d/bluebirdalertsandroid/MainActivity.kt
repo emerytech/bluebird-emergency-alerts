@@ -2701,6 +2701,7 @@ private fun MainScreen(
                     flashlightAlertsEnabled = flashlightAlertsOn,
                     screenFlashAlertsEnabled = screenFlashAlertsOn,
                     darkModeEnabled = darkModeEnabled,
+                    isAlarmActive = state.alarm.isActive,
                     onBiometricsChanged = { enabled ->
                         biometricsEnabled = enabled
                         setBiometricsAllowed(ctx, enabled)
@@ -6538,6 +6539,7 @@ private fun SettingsScreen(
     flashlightAlertsEnabled: Boolean,
     screenFlashAlertsEnabled: Boolean,
     darkModeEnabled: Boolean,
+    isAlarmActive: Boolean = false,
     onBiometricsChanged: (Boolean) -> Unit,
     onHapticAlertsChanged: (Boolean) -> Unit,
     onFlashlightAlertsChanged: (Boolean) -> Unit,
@@ -6546,6 +6548,15 @@ private fun SettingsScreen(
 ) {
     val ctx = LocalContext.current
     val userName = remember { getUserName(ctx) }
+    var showLearningCenter by remember { mutableStateOf(false) }
+
+    if (showLearningCenter) {
+        LearningCenterScreen(
+            onDismiss = { showLearningCenter = false },
+            isAlarmActive = isAlarmActive,
+        )
+        return
+    }
     val loginName = remember { getLoginName(ctx) }
     val userRole = remember { getUserRole(ctx) }
     val userId = remember { getUserId(ctx) }
@@ -6680,6 +6691,41 @@ private fun SettingsScreen(
                         checked = darkModeEnabled,
                         onCheckedChange = onDarkModeChanged,
                     )
+                }
+            }
+        }
+
+        // Training card
+        item {
+            val store = remember { lcStore(ctx) }
+            Surface(
+                color = SurfaceMain,
+                shape = RoundedCornerShape(20.dp),
+                shadowElevation = 4.dp,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Column(
+                    modifier = Modifier.padding(horizontal = 18.dp, vertical = 14.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Text("Training", color = TextPri, fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text("Learning Center", color = TextPri, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                            Text(
+                                "${store.completedCount} of ${LC_ALL_GUIDES.size} guides completed",
+                                color = TextMuted,
+                                fontSize = 12.sp,
+                            )
+                        }
+                        TextButton(onClick = { showLearningCenter = true }) {
+                            Text("Open", color = BlueLight, fontWeight = FontWeight.SemiBold)
+                        }
+                    }
                 }
             }
         }

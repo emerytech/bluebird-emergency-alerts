@@ -125,6 +125,9 @@ final class AppState: ObservableObject {
         }
     }
 
+    // Synced from ContentView so Learning Center screens can dismiss on alarm.
+    @Published var alarmIsActive: Bool = false
+
     init() {
         let storedUserID = UserDefaults.standard.integer(forKey: Self.userIDKey)
         userID = storedUserID > 0 ? storedUserID : nil
