@@ -1898,7 +1898,8 @@ class MainViewModel : ViewModel() {
                 val a = alarm ?: return
                 val triggeredByUid = a.optInt("triggered_by_user_id", -1).takeIf { it > 0 }
                 val silentForSender = a.optBoolean("silent_for_sender", true)
-                val isSilentForMe = silentForSender && triggeredByUid != null && triggeredByUid == cachedUserId
+                val silentAudio = a.optBoolean("silent_audio", false)
+                val isSilentForMe = silentAudio || (silentForSender && triggeredByUid != null && triggeredByUid == cachedUserId)
                 _state.update { s ->
                     s.copy(alarm = s.alarm.copy(
                         isActive = a.optBoolean("is_active", true),
@@ -8677,6 +8678,7 @@ internal class BackendClient(baseUrl: String, private val apiKey: String) {
                 }
             }
         }
+        val silentAudio = j.optBoolean("silent_audio", false)
         return AlarmStatus(
             isActive                 = j.optBoolean("is_active"),
             message                  = j.optString("message").ifBlank { null },
@@ -8693,6 +8695,7 @@ internal class BackendClient(baseUrl: String, private val apiKey: String) {
             currentUserAcknowledged  = j.optBoolean("current_user_acknowledged", false),
             alertId                  = if (j.has("current_alert_id") && !j.isNull("current_alert_id"))
                 j.optInt("current_alert_id") else null,
+            isSilentForCurrentUser   = silentAudio,
         )
     }
 
