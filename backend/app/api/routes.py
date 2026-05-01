@@ -3062,6 +3062,154 @@ async def super_admin_purge_district(
     return RedirectResponse(url=_super_admin_url("districts"), status_code=status.HTTP_303_SEE_OTHER)
 
 
+# ── District / School AJAX endpoints (JSON, no redirect) ─────────────────────
+
+
+@router.post("/super-admin/districts/{district_id}/restore", include_in_schema=False)
+async def super_admin_restore_district(request: Request, district_id: int) -> JSONResponse:
+    _require_super_admin(request)
+    district = await _schools(request).get_district(district_id)
+    if district is None:
+        return JSONResponse({"ok": False, "detail": "District not found."}, status_code=404)
+    if not district.is_archived:
+        return JSONResponse({"ok": False, "detail": "District is not archived."}, status_code=400)
+    restored = await _schools(request).restore_district(district_id)
+    if restored is None:
+        return JSONResponse({"ok": False, "detail": "Restore failed."}, status_code=500)
+    return JSONResponse({"ok": True, "id": restored.id, "name": restored.name, "slug": restored.slug})
+
+
+@router.post("/super-admin/districts/{district_id}/archive-json", include_in_schema=False)
+async def super_admin_archive_district_json(request: Request, district_id: int) -> JSONResponse:
+    _require_super_admin(request)
+    district = await _schools(request).get_district(district_id)
+    if district is None:
+        return JSONResponse({"ok": False, "detail": "District not found."}, status_code=404)
+    if district.is_archived:
+        return JSONResponse({"ok": False, "detail": "District is already archived."}, status_code=400)
+    await _schools(request).archive_district(district_id)
+    return JSONResponse({"ok": True, "id": district_id, "name": district.name, "slug": district.slug})
+
+
+@router.post("/super-admin/districts/{district_id}/purge-json", include_in_schema=False)
+async def super_admin_purge_district_json(
+    request: Request,
+    district_id: int,
+    confirm_slug: str = Form(default=""),
+) -> JSONResponse:
+    _require_super_admin(request)
+    district = await _schools(request).get_district(district_id)
+    if district is None:
+        return JSONResponse({"ok": False, "detail": "District not found."}, status_code=404)
+    if not district.is_archived:
+        return JSONResponse({"ok": False, "detail": "District must be archived before deletion."}, status_code=400)
+    if confirm_slug.strip().lower() != district.slug.strip().lower():
+        return JSONResponse({"ok": False, "detail": "Slug confirmation did not match."}, status_code=400)
+    schools_to_purge = await _schools(request).list_schools_for_district(district_id)
+    from app.services.tenant_manager import TenantManager, normalize_school_slug
+    tenant_manager: TenantManager = request.app.state.tenant_manager  # type: ignore[attr-defined]
+    for school in schools_to_purge:
+        db_path = tenant_manager.db_path_for_slug(school.slug)
+        with tenant_manager._lock:
+            tenant_manager._cache.pop(normalize_school_slug(school.slug), None)
+        if os.path.exists(db_path):
+            try:
+                os.remove(db_path)
+            except OSError:
+                pass
+    await _schools(request).delete_district(district_id)
+    return JSONResponse({"ok": True, "deleted": district.name})
+
+
+@router.post("/super-admin/schools/create-json", include_in_schema=False)
+async def super_admin_create_school_json(
+    request: Request,
+    name: str = Form(...),
+    slug: str = Form(...),
+    district_id: Optional[int] = Form(default=None),
+) -> JSONResponse:
+    _require_super_admin(request)
+    from app.services.tenant_manager import normalize_school_slug
+
+    normalized_name = name.strip()
+    normalized_slug = normalize_school_slug(slug)
+    if not normalized_name:
+        return JSONResponse({"ok": False, "detail": "School name is required."}, status_code=400)
+    if not normalized_slug:
+        return JSONResponse({"ok": False, "detail": "School slug is required."}, status_code=400)
+    try:
+        school = await _schools(request).create_school(slug=normalized_slug, name=normalized_name)
+        await _tenant_billing(request).ensure_tenant_billing(tenant_id=int(school.id))
+        if district_id is not None:
+            await _schools(request).assign_to_district(school_slug=school.slug, district_id=int(district_id))
+    except Exception as exc:
+        return JSONResponse({"ok": False, "detail": str(exc)}, status_code=400)
+    base_domain = str(request.app.state.settings.BASE_DOMAIN).strip().lower()  # type: ignore[attr-defined]
+    return JSONResponse({
+        "ok": True,
+        "slug": school.slug,
+        "name": school.name,
+        "id": school.id,
+        "district_id": district_id,
+        "admin_url": f"https://{base_domain}/{school.slug}/admin",
+    })
+
+
+@router.post("/super-admin/schools/{slug}/archive-json", include_in_schema=False)
+async def super_admin_archive_school_json(request: Request, slug: str) -> JSONResponse:
+    _require_super_admin(request)
+    from app.services.tenant_manager import normalize_school_slug
+
+    school = await _schools(request).get_by_slug(normalize_school_slug(slug))
+    if school is None:
+        return JSONResponse({"ok": False, "detail": "School not found."}, status_code=404)
+    if getattr(school, "is_archived", False):
+        return JSONResponse({"ok": False, "detail": "School is already archived."}, status_code=400)
+    await _schools(request).archive_school(school.id)
+    return JSONResponse({"ok": True, "slug": school.slug, "name": school.name})
+
+
+@router.post("/super-admin/schools/{slug}/restore-json", include_in_schema=False)
+async def super_admin_restore_school_json(request: Request, slug: str) -> JSONResponse:
+    _require_super_admin(request)
+    from app.services.tenant_manager import normalize_school_slug
+
+    school = await _schools(request).get_by_slug(normalize_school_slug(slug))
+    if school is None or not getattr(school, "is_archived", False):
+        return JSONResponse({"ok": False, "detail": "Archived school not found."}, status_code=404)
+    await _schools(request).restore_school(school.id)
+    return JSONResponse({"ok": True, "slug": school.slug, "name": school.name})
+
+
+@router.post("/super-admin/schools/{slug}/delete-json", include_in_schema=False)
+async def super_admin_delete_school_json(
+    request: Request,
+    slug: str,
+    confirm_slug: str = Form(default=""),
+) -> JSONResponse:
+    _require_super_admin(request)
+    from app.services.tenant_manager import normalize_school_slug
+
+    normalized_slug = normalize_school_slug(slug)
+    school = await _schools(request).get_by_slug(normalized_slug)
+    if school is None or not getattr(school, "is_archived", False):
+        return JSONResponse({"ok": False, "detail": "Archived school not found."}, status_code=404)
+    if confirm_slug.strip().lower() != normalized_slug:
+        return JSONResponse({"ok": False, "detail": "Slug confirmation did not match."}, status_code=400)
+    tenant_manager = request.app.state.tenant_manager  # type: ignore[attr-defined]
+    db_path = tenant_manager.db_path_for_slug(normalized_slug)
+    from app.services.tenant_manager import normalize_school_slug as _nss
+    with tenant_manager._lock:
+        tenant_manager._cache.pop(_nss(normalized_slug), None)
+    if os.path.exists(db_path):
+        try:
+            os.remove(db_path)
+        except OSError:
+            pass
+    await _schools(request).delete_archived_school(school.id)
+    return JSONResponse({"ok": True, "deleted": school.name})
+
+
 # ── District management (list / update / remove-school) ───────────────────────
 
 
@@ -4168,7 +4316,7 @@ async def super_admin_dashboard(
             "is_archived": bool(getattr(_d, "is_archived", False)),
             "archived_at": str(getattr(_d, "archived_at", "") or ""),
             "is_district": True, "school_count": len(_ds),
-            "schools": [{"slug": str(getattr(s, "slug", "")), "name": str(getattr(s, "name", ""))} for s in _ds],
+            "schools": [{"slug": str(getattr(s, "slug", "")), "name": str(getattr(s, "name", "")), "id": int(getattr(s, "id", 0) or 0), "is_archived": bool(getattr(s, "is_archived", False)), "archived_at": str(getattr(s, "archived_at", "") or "")} for s in _ds],
             "alarm_count": _d_alarm, "ws_total": _d_ws, "last_activity": _d_last,
             "status": _d_status, "billing_ok": all(b in {"active", "trial", "free"} for b in _d_bills) if _d_bills else True,
             "push_failed_total": _d_push_failed,
@@ -4177,9 +4325,12 @@ async def super_admin_dashboard(
         _s_noc = _noc_by_slug.get(str(getattr(_s, "slug", "")), {})
         _s_bill = str(_billing_by_slug.get(str(getattr(_s, "slug", "")), {}).get("billing_status", "unknown") or "unknown")
         msp_districts.append({
-            "id": None, "name": str(getattr(_s, "name", "")), "slug": str(getattr(_s, "slug", "")),
+            "id": None, "school_id": int(getattr(_s, "id", 0) or 0),
+            "name": str(getattr(_s, "name", "")), "slug": str(getattr(_s, "slug", "")),
             "is_active": bool(getattr(_s, "is_active", True)), "is_district": False, "school_count": 1,
-            "schools": [{"slug": str(getattr(_s, "slug", "")), "name": str(getattr(_s, "name", ""))}],
+            "is_archived": bool(getattr(_s, "is_archived", False)),
+            "archived_at": str(getattr(_s, "archived_at", "") or ""),
+            "schools": [{"slug": str(getattr(_s, "slug", "")), "name": str(getattr(_s, "name", "")), "id": int(getattr(_s, "id", 0) or 0), "is_archived": bool(getattr(_s, "is_archived", False)), "archived_at": str(getattr(_s, "archived_at", "") or "")}],
             "alarm_count": 1 if _s_noc.get("alarm_active") else 0,
             "ws_total": int(_s_noc.get("ws_connections") or 0),
             "last_activity": _s_noc.get("last_alert_at") or "",

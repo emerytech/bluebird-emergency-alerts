@@ -5003,59 +5003,122 @@ def render_super_admin_page(
             f'</div>'
         )
 
-    # Build cards for active (non-archived) districts only
-    _active_msp = [d for d in msp_districts if not bool(d.get("is_archived"))]
+    # Build cards for active non-archived true districts only
+    _active_msp = [d for d in msp_districts if not bool(d.get("is_archived")) and bool(d.get("is_district"))]
     _district_cards_html = "".join(_district_card(d, billing_rows) for d in _active_msp) or \
-        '<p class="card-copy">No districts or schools provisioned yet. Use <strong>Create School</strong> to get started.</p>'
+        '<p class="card-copy">No districts provisioned yet. Use <strong>+ Create District</strong> to get started.</p>'
 
-    # School data for manage-schools JS modal (slug, name, district_id from msp_districts)
+    # School data for manage-schools JS modal (slug, name, district_id, id, is_archived)
     _bb_schools_js: str = json.dumps(
         [
-            {"slug": str(s.get("slug", "")), "name": str(s.get("name", "")), "district_id": int(d.get("id") or 0)}
+            {"slug": str(s.get("slug", "")), "name": str(s.get("name", "")),
+             "id": int(s.get("id") or 0), "district_id": int(d.get("id") or 0),
+             "is_archived": bool(s.get("is_archived", False))}
             for d in msp_districts if d.get("is_district") and not d.get("is_archived")
-            for s in (d.get("schools") or [])
+            for s in (d.get("schools") or []) if not s.get("is_archived")
         ] + [
-            {"slug": str(d.get("slug", "")), "name": str(d.get("name", "")), "district_id": None}
+            {"slug": str(d.get("slug", "")), "name": str(d.get("name", "")),
+             "id": int(d.get("school_id") or 0), "district_id": None, "is_archived": False}
             for d in msp_districts if not d.get("is_district") and not d.get("is_archived")
         ]
     )
 
     # Build archived section
     _archived_districts = [d for d in msp_districts if bool(d.get("is_archived")) and bool(d.get("is_district"))]
+    _archived_standalone = [d for d in msp_districts if bool(d.get("is_archived")) and not bool(d.get("is_district"))]
+    _unassigned_active = [d for d in msp_districts if not bool(d.get("is_district")) and not bool(d.get("is_archived"))]
 
-    def _archived_card(d: Mapping[str, object]) -> str:
+    def _archived_district_card(d: Mapping[str, object]) -> str:
         did = int(d.get("id") or 0)
         name = escape(str(d.get("name", "")))
-        slug = escape(str(d.get("slug", "")))
+        slug_raw = str(d.get("slug", ""))
+        slug = escape(slug_raw)
         school_count = int(d.get("school_count") or 0)
         archived_at_raw = str(d.get("archived_at", "") or "")
         archived_at_fmt = archived_at_raw[:10] if archived_at_raw else "unknown date"
-        raw_name_js = str(d.get("name", ""))
         return (
-            f'<div class="archived-card">'
+            f'<div class="archived-card" id="archived-district-{did}">'
             f'<p class="archived-card-name">{name}</p>'
             f'<p class="archived-card-meta">{slug} &nbsp;·&nbsp; {school_count} school{"s" if school_count != 1 else ""} &nbsp;·&nbsp; Archived {escape(archived_at_fmt)}</p>'
-            f'<form method="post" action="/super-admin/districts/{did}/purge"'
-            f' onsubmit="return bbConfirmPurge(this, {json.dumps(raw_name_js)});">'
-            f'<div class="purge-confirm-row">'
-            f'<input class="purge-confirm-input" name="confirm_name" placeholder="Type \'{name}\' to confirm" />'
-            f'<button class="button button-danger" type="submit" style="font-size:0.75rem;padding:5px 14px;">Purge Forever</button>'
+            f'<div style="display:flex;gap:8px;margin-bottom:8px;">'
+            f'<button class="button button-secondary" style="font-size:0.75rem;padding:5px 12px;"'
+            f' onclick="bbRestoreDistrict({did},{json.dumps(name)})">Restore</button>'
             f'</div>'
-            f'<p class="mini-copy" style="margin-top:4px;color:#dc2626;">This permanently deletes all schools, users, alerts, and data.</p>'
-            f'</form>'
+            f'<div class="purge-confirm-row">'
+            f'<input class="purge-confirm-input" id="purge-slug-{did}" placeholder="Type \'{slug}\' to purge" />'
+            f'<button class="button button-danger" style="font-size:0.75rem;padding:5px 14px;"'
+            f' onclick="bbPurgeDistrictAjax({did},{json.dumps(slug_raw)},\'purge-slug-{did}\')">Purge Forever</button>'
+            f'</div>'
+            f'<p class="mini-copy" style="margin-top:4px;color:#dc2626;">Purge permanently deletes all schools, users, alerts, and data.</p>'
             f'</div>'
         )
 
+    def _archived_school_card(d: Mapping[str, object]) -> str:
+        slug_raw = str(d.get("slug", ""))
+        slug = escape(slug_raw)
+        name = escape(str(d.get("name", "")))
+        archived_at_raw = str(d.get("archived_at", "") or "")
+        archived_at_fmt = archived_at_raw[:10] if archived_at_raw else "unknown date"
+        return (
+            f'<div class="archived-card" id="archived-school-{slug_raw}">'
+            f'<p class="archived-card-name">{name}</p>'
+            f'<p class="archived-card-meta">{slug} &nbsp;·&nbsp; Archived {escape(archived_at_fmt)}</p>'
+            f'<div style="display:flex;gap:8px;margin-bottom:8px;">'
+            f'<button class="button button-secondary" style="font-size:0.75rem;padding:5px 12px;"'
+            f' onclick="bbRestoreSchoolAjax({json.dumps(slug_raw)})">Restore</button>'
+            f'</div>'
+            f'<div class="purge-confirm-row">'
+            f'<input class="purge-confirm-input" id="purge-school-{slug_raw}" placeholder="Type \'{slug}\' to delete" />'
+            f'<button class="button button-danger" style="font-size:0.75rem;padding:5px 14px;"'
+            f' onclick="bbPurgeSchoolAjax({json.dumps(slug_raw)},\'purge-school-{slug_raw}\')">Delete Forever</button>'
+            f'</div>'
+            f'<p class="mini-copy" style="margin-top:4px;color:#dc2626;">Delete permanently removes all data for this school.</p>'
+            f'</div>'
+        )
+
+    def _unassigned_school_row(d: Mapping[str, object]) -> str:
+        slug_raw = str(d.get("slug", ""))
+        slug = escape(slug_raw)
+        name = escape(str(d.get("name", "")))
+        school_id = int(d.get("school_id") or 0)
+        return (
+            f'<div class="archived-card" id="unassigned-school-{slug_raw}" style="background:var(--card);">'
+            f'<p class="archived-card-name">{name}</p>'
+            f'<p class="archived-card-meta">{slug}</p>'
+            f'<div style="display:flex;gap:8px;flex-wrap:wrap;">'
+            f'<button class="button button-danger-outline" style="font-size:0.75rem;padding:5px 12px;"'
+            f' onclick="bbArchiveSchoolAjax({json.dumps(slug_raw)})">Archive</button>'
+            f'</div>'
+            f'</div>'
+        )
+
+    _archived_section_parts: list[str] = []
     if _archived_districts:
-        _archived_section_html = (
+        _archived_section_parts.append(
             f'<div class="archived-section">'
             f'<p class="archived-section-title">Archived Districts</p>'
-            f'<div class="archived-grid">'
-            + "".join(_archived_card(d) for d in _archived_districts)
+            f'<div class="archived-grid" id="archived-districts-grid">'
+            + "".join(_archived_district_card(d) for d in _archived_districts)
             + f'</div></div>'
         )
-    else:
-        _archived_section_html = ""
+    if _archived_standalone:
+        _archived_section_parts.append(
+            f'<div class="archived-section">'
+            f'<p class="archived-section-title">Archived Schools (Standalone)</p>'
+            f'<div class="archived-grid" id="archived-schools-grid">'
+            + "".join(_archived_school_card(d) for d in _archived_standalone)
+            + f'</div></div>'
+        )
+    if _unassigned_active:
+        _archived_section_parts.append(
+            f'<div class="archived-section">'
+            f'<p class="archived-section-title">Unassigned Schools</p>'
+            f'<p style="font-size:0.78rem;color:var(--muted);margin-bottom:12px;">These schools are not part of any district. Assign them via a district\'s Manage Schools modal, or archive to deactivate.</p>'
+            f'<div class="archived-grid" id="unassigned-schools-grid">'
+            + "".join(_unassigned_school_row(d) for d in _unassigned_active)
+            + f'</div></div>'
+        )
+    _archived_section_html = "".join(_archived_section_parts)
 
     # Count new leads across both inquiries and demo requests for nav badge
     _new_leads_count = (
@@ -5730,14 +5793,6 @@ def render_super_admin_page(
           {_archived_section_html}
           <script>
           window._bbAllSchools = {_bb_schools_js};
-          window.bbConfirmPurge = function(form, name) {{
-            var input = form.querySelector('input[name="confirm_name"]');
-            if (!input || input.value.trim().toLowerCase() !== name.trim().toLowerCase()) {{
-              alert('Type the district name exactly to confirm purge.');
-              return false;
-            }}
-            return confirm('PERMANENTLY DELETE ' + name + '? This cannot be undone.');
-          }};
           </script>
 
           <!-- ── District Management Modals ──────────────────────────────── -->
@@ -5930,19 +5985,25 @@ def render_super_admin_page(
             var assigned = all.filter(function(s){{ return s.district_id && s.district_id == districtId; }});
             var available = all.filter(function(s){{ return !s.district_id; }});
 
-            function schoolItem(s, btnClass, btnLabel, onclick) {{
+            function schoolItem(s, btnClass, btnLabel, onclick, extraBtn) {{
               return '<div class="bb-school-item">'
                 + '<div><span class="bb-school-item-name">' + s.name + '</span>'
                 + '<br><span class="bb-school-item-slug">' + s.slug + '</span></div>'
+                + '<div style="display:flex;gap:4px;">'
                 + '<button class="bb-school-btn ' + btnClass + '" onclick="' + onclick + '">' + btnLabel + '</button>'
+                + (extraBtn || '')
+                + '</div>'
                 + '</div>';
             }}
 
             var assignedList = document.getElementById('bb-assigned-list');
             var availableList = document.getElementById('bb-available-list');
             assignedList.innerHTML = assigned.length
-              ? assigned.map(function(s){{ return schoolItem(s,'remove','Remove',
-                  'bbSchoolAction(' + JSON.stringify(s.slug) + ',null,' + districtId + ')'); }}).join('')
+              ? assigned.map(function(s){{
+                  var archiveBtn = '<button class="bb-school-btn" style="background:#fee2e2;color:#dc2626;" onclick="bbArchiveSchoolAjax(' + JSON.stringify(s.slug) + ')">Archive</button>';
+                  return schoolItem(s,'remove','Remove',
+                    'bbSchoolAction(' + JSON.stringify(s.slug) + ',null,' + districtId + ')', archiveBtn);
+                }}).join('')
               : '<div class="bb-empty-state">No schools assigned yet.</div>';
             availableList.innerHTML = available.length
               ? available.map(function(s){{ return schoolItem(s,'add','Add',
@@ -5965,11 +6026,9 @@ def render_super_admin_page(
               .then(function(r){{return r.json();}})
               .then(function(d){{
                 if (d.ok) {{
-                  /* Update local school list */
                   var all = window._bbAllSchools || [];
                   all.forEach(function(s){{ if (s.slug === schoolSlug) s.district_id = newDistrictId; }});
                   bbRefreshSchoolLists(_bbManageDistrictId);
-                  /* Update school count badge on card */
                   var card = document.querySelector('[data-district-slug="' + _bbManageSlug + '"]');
                   if (card) {{
                     var metaEl = card.querySelector('.district-card-meta strong');
@@ -5984,6 +6043,180 @@ def render_super_admin_page(
               }})
               .catch(function(){{ bbShowBanner('bb-manage-schools-banner', 'Network error.', true); }});
           }}
+
+          /* ── Restore District (AJAX) ──────────────────────────────────────── */
+          function bbRestoreDistrict(districtId, name) {{
+            if (!confirm('Restore district "' + name + '"? This will re-enable all its member schools.')) return;
+            fetch('/super-admin/districts/' + districtId + '/restore',
+              {{method:'POST', headers:{{'X-Requested-With':'XMLHttpRequest'}}}})
+              .then(function(r){{return r.json();}})
+              .then(function(d){{
+                if (d.ok) {{
+                  var card = document.getElementById('archived-district-' + districtId);
+                  if (card) card.remove();
+                  var grid = document.getElementById('archived-districts-grid');
+                  if (grid && !grid.querySelector('.archived-card')) {{
+                    grid.closest('.archived-section').remove();
+                  }}
+                  alert('District "' + (d.name || name) + '" restored. Reload to see it in the active grid.');
+                }} else {{
+                  alert('Restore failed: ' + (d.detail || 'Unknown error'));
+                }}
+              }})
+              .catch(function(){{ alert('Network error during restore.'); }});
+          }}
+
+          /* ── Purge District (AJAX, slug confirmation) ─────────────────────── */
+          function bbPurgeDistrictAjax(districtId, slug, inputId) {{
+            var input = document.getElementById(inputId);
+            if (!input || input.value.trim().toLowerCase() !== slug.toLowerCase()) {{
+              alert('Type the district slug exactly (' + slug + ') to confirm purge.');
+              return;
+            }}
+            if (!confirm('PERMANENTLY DELETE district "' + slug + '" and ALL its data? This cannot be undone.')) return;
+            var fd = new FormData();
+            fd.append('confirm_slug', input.value.trim());
+            fetch('/super-admin/districts/' + districtId + '/purge-json', {{method:'POST', body:fd,
+              headers:{{'X-Requested-With':'XMLHttpRequest'}}}})
+              .then(function(r){{return r.json();}})
+              .then(function(d){{
+                if (d.ok) {{
+                  var card = document.getElementById('archived-district-' + districtId);
+                  if (card) card.remove();
+                  var grid = document.getElementById('archived-districts-grid');
+                  if (grid && !grid.querySelector('.archived-card')) {{
+                    grid.closest('.archived-section').remove();
+                  }}
+                }} else {{
+                  alert('Purge failed: ' + (d.detail || 'Unknown error'));
+                }}
+              }})
+              .catch(function(){{ alert('Network error during purge.'); }});
+          }}
+
+          /* ── Archive School (AJAX) ────────────────────────────────────────── */
+          function bbArchiveSchoolAjax(slug) {{
+            if (!confirm('Archive school "' + slug + '"? Staff will lose admin access until restored.')) return;
+            fetch('/super-admin/schools/' + slug + '/archive-json',
+              {{method:'POST', headers:{{'X-Requested-With':'XMLHttpRequest'}}}})
+              .then(function(r){{return r.json();}})
+              .then(function(d){{
+                if (d.ok) {{
+                  /* Remove from _bbAllSchools so modal refreshes correctly */
+                  window._bbAllSchools = (window._bbAllSchools || []).filter(function(s){{ return s.slug !== slug; }});
+                  /* Remove from unassigned section if visible */
+                  var el = document.getElementById('unassigned-school-' + slug);
+                  if (el) el.remove();
+                  /* Remove from manage modal assigned list */
+                  bbRefreshSchoolLists(_bbManageDistrictId);
+                  bbShowBanner('bb-manage-schools-banner', 'School "' + slug + '" archived.', false);
+                }} else {{
+                  alert('Archive failed: ' + (d.detail || 'Unknown error'));
+                }}
+              }})
+              .catch(function(){{ alert('Network error.'); }});
+          }}
+
+          /* ── Restore School (AJAX) ────────────────────────────────────────── */
+          function bbRestoreSchoolAjax(slug) {{
+            if (!confirm('Restore school "' + slug + '"?')) return;
+            fetch('/super-admin/schools/' + slug + '/restore-json',
+              {{method:'POST', headers:{{'X-Requested-With':'XMLHttpRequest'}}}})
+              .then(function(r){{return r.json();}})
+              .then(function(d){{
+                if (d.ok) {{
+                  var card = document.getElementById('archived-school-' + slug);
+                  if (card) card.remove();
+                  var grid = document.getElementById('archived-schools-grid');
+                  if (grid && !grid.querySelector('.archived-card')) {{
+                    grid.closest('.archived-section').remove();
+                  }}
+                  alert('School "' + slug + '" restored. Reload to see it active.');
+                }} else {{
+                  alert('Restore failed: ' + (d.detail || 'Unknown error'));
+                }}
+              }})
+              .catch(function(){{ alert('Network error.'); }});
+          }}
+
+          /* ── Delete School Forever (AJAX, slug confirmation) ─────────────── */
+          function bbPurgeSchoolAjax(slug, inputId) {{
+            var input = document.getElementById(inputId);
+            if (!input || input.value.trim().toLowerCase() !== slug.toLowerCase()) {{
+              alert('Type the school slug exactly (' + slug + ') to confirm deletion.');
+              return;
+            }}
+            if (!confirm('PERMANENTLY DELETE school "' + slug + '" and ALL its data?')) return;
+            var fd = new FormData();
+            fd.append('confirm_slug', input.value.trim());
+            fetch('/super-admin/schools/' + slug + '/delete-json', {{method:'POST', body:fd,
+              headers:{{'X-Requested-With':'XMLHttpRequest'}}}})
+              .then(function(r){{return r.json();}})
+              .then(function(d){{
+                if (d.ok) {{
+                  var card = document.getElementById('archived-school-' + slug);
+                  if (card) card.remove();
+                  var grid = document.getElementById('archived-schools-grid');
+                  if (grid && !grid.querySelector('.archived-card')) {{
+                    grid.closest('.archived-section').remove();
+                  }}
+                }} else {{
+                  alert('Delete failed: ' + (d.detail || 'Unknown error'));
+                }}
+              }})
+              .catch(function(){{ alert('Network error.'); }});
+          }}
+
+          /* ── Create School in District (from Manage Schools modal) ────────── */
+          function bbCreateSchoolInDistrict() {{
+            var name = (document.getElementById('bb-create-school-name') || {{}}).value || '';
+            var slug = (document.getElementById('bb-create-school-slug') || {{}}).value || '';
+            name = name.trim(); slug = slug.trim();
+            if (!name) {{ bbShowBanner('bb-create-school-banner', 'School name is required.', true); return; }}
+            if (!slug) {{ bbShowBanner('bb-create-school-banner', 'School slug is required.', true); return; }}
+            var btn = document.getElementById('bb-create-school-btn');
+            if (btn) {{ btn.disabled = true; btn.textContent = 'Creating…'; }}
+            var fd = new FormData();
+            fd.append('name', name); fd.append('slug', slug);
+            if (_bbManageDistrictId) fd.append('district_id', _bbManageDistrictId);
+            fetch('/super-admin/schools/create-json', {{method:'POST', body:fd,
+              headers:{{'X-Requested-With':'XMLHttpRequest'}}}})
+              .then(function(r){{return r.json();}})
+              .then(function(d){{
+                if (btn) {{ btn.disabled = false; btn.textContent = 'Create School'; }}
+                if (d.ok) {{
+                  bbShowBanner('bb-create-school-banner', 'School "' + d.name + '" created!', false);
+                  /* Add to local school list so manage modal shows it */
+                  (window._bbAllSchools = window._bbAllSchools || []).push({{
+                    slug: d.slug, name: d.name, id: d.id,
+                    district_id: _bbManageDistrictId || null, is_archived: false
+                  }});
+                  bbRefreshSchoolLists(_bbManageDistrictId);
+                  document.getElementById('bb-create-school-name').value = '';
+                  document.getElementById('bb-create-school-slug').value = '';
+                }} else {{
+                  bbShowBanner('bb-create-school-banner', d.detail || 'Creation failed.', true);
+                }}
+              }})
+              .catch(function(){{
+                if (btn) {{ btn.disabled = false; btn.textContent = 'Create School'; }}
+                bbShowBanner('bb-create-school-banner', 'Network error.', true);
+              }});
+          }}
+
+          /* Auto-slug for create-school form */
+          document.addEventListener('DOMContentLoaded', function() {{
+            var sn = document.getElementById('bb-create-school-name');
+            var ss = document.getElementById('bb-create-school-slug');
+            if (sn && ss) {{
+              sn.addEventListener('input', function() {{
+                if (!ss._userEdited) {{
+                  ss.value = sn.value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+                }}
+              }});
+              ss.addEventListener('input', function() {{ ss._userEdited = true; }});
+            }}
+          }});
           </script>
 
           <!-- Create District Modal -->
@@ -6044,6 +6277,21 @@ def render_super_admin_page(
                   <div class="bb-school-list" id="bb-available-list"><div class="bb-empty-state">Loading…</div></div>
                 </div>
               </div>
+              <details style="margin-top:16px;">
+                <summary style="font-size:0.78rem;font-weight:600;color:var(--accent);cursor:pointer;padding:4px 0;">+ Create New School in this District</summary>
+                <div style="margin-top:10px;padding:14px;background:var(--bg);border:1px solid var(--border);border-radius:12px;">
+                  <div id="bb-create-school-banner" class="bb-banner"></div>
+                  <div class="bb-field">
+                    <label>School Name</label>
+                    <input id="bb-create-school-name" type="text" placeholder="e.g. Lincoln Elementary" />
+                  </div>
+                  <div class="bb-field">
+                    <label>Slug <span style="font-weight:400;text-transform:none;letter-spacing:0;">(auto-generated, can edit)</span></label>
+                    <input id="bb-create-school-slug" type="text" placeholder="lincoln-elementary" />
+                  </div>
+                  <button class="button button-primary" style="font-size:0.8rem;" onclick="bbCreateSchoolInDistrict()" id="bb-create-school-btn">Create School</button>
+                </div>
+              </details>
               <p style="font-size:0.75rem;color:var(--muted);margin-top:12px;">Changes apply immediately. Refresh the page to see updated school counts on district cards.</p>
             </div>
           </div>

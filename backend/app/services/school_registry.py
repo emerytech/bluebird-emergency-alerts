@@ -747,6 +747,21 @@ class SchoolRegistry:
     async def archive_district(self, district_id: int) -> Optional[DistrictRecord]:
         return await anyio.to_thread.run_sync(self._archive_district_sync, int(district_id))
 
+    def _restore_district_sync(self, district_id: int) -> Optional[DistrictRecord]:
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE districts SET is_archived = 0, archived_at = NULL, is_active = 1 WHERE id = ? AND is_archived = 1;",
+                (int(district_id),),
+            )
+            conn.execute(
+                "UPDATE schools SET is_archived = 0, archived_at = NULL, is_active = 1 WHERE district_id = ? AND is_archived = 1;",
+                (int(district_id),),
+            )
+        return self._get_district_sync(district_id)
+
+    async def restore_district(self, district_id: int) -> Optional[DistrictRecord]:
+        return await anyio.to_thread.run_sync(self._restore_district_sync, int(district_id))
+
     def _list_schools_for_district_sync(self, district_id: int) -> List[SchoolRecord]:
         with self._connect() as conn:
             rows = conn.execute(
