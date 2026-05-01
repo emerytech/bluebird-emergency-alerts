@@ -1063,6 +1063,13 @@ struct ContentView: View {
         }
     }
 
+    // Types that may trigger full-screen alarm state. Empty/missing type is treated
+    // as emergency for backward compatibility with older backend payloads.
+    private static let emergencyAlertTypes: Set<String> = [
+        "lockdown", "evacuation", "shelter", "secure", "hold",
+        "emergency", "fire", "medical", "drill",
+    ]
+
     private func handleIncomingAlarmNotification(_ userInfo: [AnyHashable: Any]?) {
         let aps = userInfo?["aps"] as? [AnyHashable: Any]
         let alert = aps?["alert"] as? [AnyHashable: Any]
@@ -1071,6 +1078,20 @@ struct ContentView: View {
             (alert?["body"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
             ?? (userInfo?["message"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
             ?? (userInfo?["body"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // HARD FAIL-SAFE: gate on push type before activating alarm state.
+        let pushType = (userInfo?["type"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let isEmergency = pushType.isEmpty || Self.emergencyAlertTypes.contains(pushType)
+
+        // Non-emergency push types (quiet requests, admin messages, help requests):
+        // refresh feeds only — never activate alarm state or sound.
+        guard isEmergency else {
+            #if DEBUG
+            print("[Push] HARD FAIL-SAFE: type='\(pushType)' is not an emergency type — alarm state unchanged")
+            #endif
+            Task { await refreshIncidentFeed() }
+            return
+        }
 
         // Tenant slug safety: if the push payload carries a tenant_slug (current APNs payload
         // does not, but future versions may), guard against cross-tenant state contamination.

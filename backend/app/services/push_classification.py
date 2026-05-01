@@ -58,6 +58,24 @@ def is_non_critical(extra_data: dict | None) -> bool:
     return classify_alert_type(extra_data) == _CLASSIFICATION_NON_CRITICAL
 
 
+def validate_critical_payload(extra_data: dict | None) -> None:
+    """
+    Backend fail-safe: raise ValueError if a payload requests critical treatment
+    (is_critical=true) but its type field is a known non-emergency type.
+
+    This prevents accidental or malformed payloads from triggering emergency
+    behavior on client devices.
+    """
+    data = extra_data or {}
+    caller_claims_critical = str(data.get("is_critical", "")).lower() in ("true", "1", "yes")
+    if caller_claims_critical and is_non_critical(data):
+        alert_type = str(data.get("type", "")).strip()
+        raise ValueError(
+            f"Invalid critical notification: type='{alert_type}' is a non-emergency type "
+            f"and cannot be sent as a critical alert."
+        )
+
+
 # ---------------------------------------------------------------------------
 # Sound configuration value object
 # ---------------------------------------------------------------------------

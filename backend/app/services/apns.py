@@ -12,7 +12,7 @@ import httpx
 import jwt
 
 from app.core.config import Settings
-from app.services.push_classification import SoundConfig, classify_alert_type
+from app.services.push_classification import SoundConfig, classify_alert_type, validate_critical_payload
 
 
 @dataclass(frozen=True)
@@ -219,6 +219,7 @@ class APNsClient:
             return []
         if not self.is_configured():
             return [APNsSendResult(token=t, ok=False, reason="apns_not_configured") for t in tokens]
+        validate_critical_payload(extra_data)  # backend fail-safe
         sem = asyncio.Semaphore(max(1, int(self._settings.APNS_CONCURRENCY)))
         cfg = sound_config or SoundConfig.default()
 

@@ -1,3 +1,8 @@
+@file:OptIn(
+    androidx.compose.foundation.layout.ExperimentalLayoutApi::class,
+    androidx.compose.material3.ExperimentalMaterial3Api::class,
+)
+
 package com.ets3d.bluebirdalertsandroid
 
 import android.content.Context
@@ -149,7 +154,7 @@ fun RosterScreen(
                                 contentAlignment = Alignment.Center,
                             ) {
                                 Text(
-                                    if (searchQuery.isBlank()) "No students in roster." else "No results for "$searchQuery".",
+                                    if (searchQuery.isBlank()) "No students in roster." else "No results for \"$searchQuery\".",
                                     color = Color(0xFF94A3B8),
                                 )
                             }

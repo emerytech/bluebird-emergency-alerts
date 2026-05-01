@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.SharedPreferences
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.*
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -21,6 +22,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
@@ -32,6 +34,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import kotlinx.coroutines.launch
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Design shortcuts (matches BlueBirdTheme.kt palette)
@@ -1010,17 +1013,7 @@ private fun LCHoldButtonStep(
                             .size(108.dp)
                             .graphicsLayer { scaleX = scale; scaleY = scale }
                             .clip(CircleShape)
-                            .background(color)
-                            .pointerInput(completed) {
-                                if (completed) return@pointerInput
-                                androidx.compose.ui.input.pointer.PointerInputScope::class
-                                awaitPointerEventScope {
-                                    while (true) {
-                                        val event = awaitPointerEvent()
-                                        // Handled by press detection below
-                                    }
-                                }
-                            },
+                            .background(color),
                         contentAlignment = Alignment.Center,
                     ) {
                         Icon(

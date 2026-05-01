@@ -26,6 +26,13 @@ private const val NON_CRITICAL_NOTIF_ID = 1004
 private val NON_CRITICAL_TYPES = setOf(
     "quiet_period_update", "quiet_request", "admin_message", "onboarding", "info"
 )
+// Types that are real emergency alerts — the ONLY types that may trigger
+// EmergencyAlarmTakeover, alarm sound, and full-screen notification behavior.
+// An empty/missing type is treated as emergency for backward compatibility.
+internal val EMERGENCY_ALERT_TYPES = setOf(
+    "lockdown", "evacuation", "shelter", "secure", "hold",
+    "emergency", "fire", "medical", "drill",
+)
 
 class BlueBirdFirebaseMessagingService : FirebaseMessagingService() {
     override fun onCreate() {
@@ -52,6 +59,9 @@ class BlueBirdFirebaseMessagingService : FirebaseMessagingService() {
         val alertType = message.data["type"] ?: ""
         val isHelpRequest = alertType == "help_request"
         val isNonCritical = alertType in NON_CRITICAL_TYPES
+        // HARD FAIL-SAFE: only real emergencies (or blank type for legacy) may trigger
+        // alarm state. Any non-emergency type must NEVER reach AlarmLaunchCoordinator.
+        val isEmergency = alertType.isBlank() || alertType in EMERGENCY_ALERT_TYPES
 
         // Detect whether this device belongs to the user who triggered the alert.
         val triggeredByUid = message.data["triggered_by_user_id"]?.toIntOrNull()
@@ -64,13 +74,20 @@ class BlueBirdFirebaseMessagingService : FirebaseMessagingService() {
             && storedUid != null
             && triggeredByUid == storedUid
 
-        AlarmLaunchCoordinator.publish(
-            title = title,
-            body = body,
-            tenantSlug = message.data["tenant_slug"],
-            isSilentForMe = isSilentForMe,
-            type = alertType,
-        )
+        // Only publish to AlarmLaunchCoordinator for actual emergency types.
+        // Non-emergency types (quiet requests, admin messages, help requests) must
+        // never activate emergency alarm state or trigger EmergencyAlarmTakeover.
+        if (isEmergency) {
+            AlarmLaunchCoordinator.publish(
+                title = title,
+                body = body,
+                tenantSlug = message.data["tenant_slug"],
+                isSilentForMe = isSilentForMe,
+                type = alertType,
+            )
+        } else {
+            android.util.Log.d("BlueBird", "Push type='$alertType' is non-emergency — skipping AlarmLaunchCoordinator")
+        }
 
         if (isSilentForMe) {
             // Sender gets a discreet confirmation — no siren, no vibration, no screen wake.

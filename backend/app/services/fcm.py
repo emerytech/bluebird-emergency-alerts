@@ -9,7 +9,7 @@ import firebase_admin
 from firebase_admin import credentials, exceptions as firebase_exceptions, messaging
 
 from app.core.config import Settings
-from app.services.push_classification import SoundConfig, classify_alert_type
+from app.services.push_classification import SoundConfig, classify_alert_type, validate_critical_payload
 
 
 @dataclass(frozen=True)
@@ -151,6 +151,7 @@ class FCMClient:
     ) -> List[FCMSendResult]:
         assert self._app is not None
         cfg = sound_config or SoundConfig.default()
+        validate_critical_payload(extra_data)  # backend fail-safe
         classification = classify_alert_type(extra_data)
         channel_id = cfg.fcm_channel_id(classification)
         fcm_sound = cfg.fcm_sound(classification)

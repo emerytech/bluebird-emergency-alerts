@@ -670,7 +670,16 @@ data class AlarmStatus(
     val silentForSender: Boolean = true,
     val isSilentForCurrentUser: Boolean = false,
     val alertId: Int? = null,
-)
+    // Tracks the push type that activated this alarm. Only EMERGENCY_ALERT_TYPES
+    // values are allowed here; set to "" when activated via the server-state API.
+    val alarmType: String = "",
+) {
+    // HARD FAIL-SAFE: EmergencyAlarmTakeover may only render when this is true.
+    // An empty/blank type is treated as emergency for backward compatibility with
+    // server-activated alarms that don't carry a push type.
+    val isValidEmergency: Boolean
+        get() = isActive && (alarmType.isBlank() || alarmType in EMERGENCY_ALERT_TYPES)
+}
 
 data class IncidentFeedItem(
     val id: Int,
@@ -951,7 +960,7 @@ class MainViewModel : ViewModel() {
         }
     }
 
-    fun handleAlarmLaunch(message: String, isSilentForMe: Boolean = false) {
+    fun handleAlarmLaunch(message: String, isSilentForMe: Boolean = false, alarmType: String = "") {
         val normalized = message.trim()
         _state.update {
             it.copy(
@@ -959,6 +968,7 @@ class MainViewModel : ViewModel() {
                     isActive = true,
                     message = normalized.ifBlank { it.alarm.message ?: "Emergency alert received." },
                     isSilentForCurrentUser = isSilentForMe,
+                    alarmType = alarmType,
                 ),
                 successMsg = null,
                 errorMsg = null,
@@ -1930,7 +1940,7 @@ class MainViewModel : ViewModel() {
                 val currentRoster = _state.value.incidentRoster
                 val uid = cachedUserId ?: 0
                 if (currentRoster != null && uid > 0) {
-                    val alertId = obj.optInt("alert_id").takeIf { it != 0 } ?: currentRoster.alertId
+                    val alertId = j.optInt("alert_id").takeIf { it != 0 } ?: currentRoster.alertId
                     viewModelScope.launch(Dispatchers.IO) {
                         runCatching { client!!.getIncidentRoster(alertId, uid) }
                             .onSuccess { roster -> _state.update { it.copy(incidentRoster = roster) } }
@@ -2666,11 +2676,19 @@ private fun MainScreen(
             feedTab = 1
             return@LaunchedEffect
         }
+        // HARD FAIL-SAFE — second layer. AlarmLaunchCoordinator should never publish
+        // non-emergency types, but if it does (e.g., via onNewIntent path), block here.
+        val isEmergencyEvent = event.type.isBlank() || event.type in EMERGENCY_ALERT_TYPES
+        if (!isEmergencyEvent) {
+            android.util.Log.e("BlueBird", "INVALID_CRITICAL_TRIGGER_UI: type='${event.type}' reached alarm launch path — blocked")
+            vm.refreshIncidentFeeds()
+            return@LaunchedEffect
+        }
         if (event.isSilentForMe) {
             // Sender gets discreet confirmation — no alarm takeover, no siren.
-            vm.handleAlarmLaunch(event.body, isSilentForMe = true)
+            vm.handleAlarmLaunch(event.body, isSilentForMe = true, alarmType = event.type)
         } else {
-            vm.handleAlarmLaunch(event.body)
+            vm.handleAlarmLaunch(event.body, alarmType = event.type)
         }
     }
 
@@ -2686,30 +2704,31 @@ private fun MainScreen(
     }
 
     AlarmSoundEffect(
-        isAlarmActive = state.alarm.isActive,
+        isAlarmActive = state.alarm.isValidEmergency,
         isTrainingAlarm = state.alarm.isTraining,
         silentForMe = state.alarm.isSilentForCurrentUser,
     )
     val alertFeedbackState = AlertFeedbackEffect(
-        isAlarmActive = state.alarm.isActive,
+        isAlarmActive = state.alarm.isValidEmergency,
         isTrainingAlarm = state.alarm.isTraining,
         hapticsEnabled = hapticAlertsOn,
         flashlightEnabled = flashlightAlertsOn,
         screenFlashEnabled = screenFlashAlertsOn,
         silentForMe = state.alarm.isSilentForCurrentUser,
     )
-    DisposableEffect(state.alarm.isActive) {
+    DisposableEffect(state.alarm.isValidEmergency) {
         val activity = ctx.findActivity()
-        activity?.applyAlarmWindowFlags(active = state.alarm.isActive)
+        activity?.applyAlarmWindowFlags(active = state.alarm.isValidEmergency)
         onDispose {
-            if (!state.alarm.isActive) {
+            if (!state.alarm.isValidEmergency) {
                 activity?.applyAlarmWindowFlags(active = false)
             }
         }
     }
 
     // Block back navigation while an alarm is active.
-    val alarmTakeoverActive = state.alarm.isActive && !state.alarm.isSilentForCurrentUser
+    // HARD FAIL-SAFE: only render takeover for validated emergency types.
+    val alarmTakeoverActive = state.alarm.isValidEmergency && !state.alarm.isSilentForCurrentUser
     BackHandler(enabled = alarmTakeoverActive) {}
 
     Scaffold(
@@ -3141,7 +3160,7 @@ private fun MainScreen(
                     }
 
                     if (activePanel == DashboardPanel.Roster && state.alarm.isActive) {
-                        val alertId = state.alarm.currentAlertId ?: 0
+                        val alertId = state.alarm.alertId ?: 0
                         if (alertId > 0) {
                             RosterScreen(
                                 alertId = alertId,
