@@ -26,6 +26,7 @@ from typing import Optional, cast
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi import HTTPException, status
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, StreamingResponse, JSONResponse
+from pydantic import BaseModel
 
 from app.web.landing import render_landing_page, render_login_portal, render_safety_page, render_request_demo_page
 from app.api.deps import require_api_key
