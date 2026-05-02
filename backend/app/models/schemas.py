@@ -735,6 +735,17 @@ class MeResponse(BaseModel):
     selected_tenant: str
 
 
+class MePermissionsResponse(BaseModel):
+    user_id: int
+    tenant_slug: str
+    role: str
+    permissions: List[str]
+    can_trigger_alarm: bool
+    can_deactivate_alarm: bool
+    is_dashboard_admin: bool
+    is_district_admin_or_higher: bool
+
+
 class SelectTenantRequest(BaseModel):
     tenant_slug: str = Field(..., min_length=1, max_length=120)
 

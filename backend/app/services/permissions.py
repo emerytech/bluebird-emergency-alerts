@@ -112,6 +112,13 @@ PERM_SETTINGS_EDIT_ALERTS: Final[str] = "settings.edit_alert_settings"
 PERM_SETTINGS_EDIT_ACCESS_CODES: Final[str] = "settings.edit_access_code_settings"
 PERM_SETTINGS_EDIT_DEVICES: Final[str] = "settings.edit_device_settings"
 
+# Messaging
+PERM_MESSAGES_SEND: Final[str] = "messages.send"
+PERM_MESSAGES_BROADCAST: Final[str] = "messages.broadcast"
+PERM_MESSAGES_DELETE: Final[str] = "messages.delete"
+PERM_MESSAGES_PIN: Final[str] = "messages.pin"
+PERM_MESSAGES_PRIORITY: Final[str] = "messages.priority"
+
 
 # ---------------------------------------------------------------------------
 # Role hierarchy (numeric levels for comparison)
@@ -145,6 +152,8 @@ _STANDARD_USER_PERMS: Final[set[str]] = {
     # Roster
     PERM_ROSTER_VIEW,
     PERM_ROSTER_CLAIM,
+    # Messaging
+    PERM_MESSAGES_SEND,
 }
 
 # Permissions shared by building_admin and legacy admin alias
@@ -196,6 +205,12 @@ _BUILDING_ADMIN_PERMS: Final[set[str]] = {
     PERM_ROSTER_VIEW,
     PERM_ROSTER_CLAIM,
     PERM_ROSTER_MANAGE,
+    # Messaging
+    PERM_MESSAGES_SEND,
+    PERM_MESSAGES_BROADCAST,
+    PERM_MESSAGES_DELETE,
+    PERM_MESSAGES_PIN,
+    PERM_MESSAGES_PRIORITY,
 }
 
 _ROLE_PERMISSIONS: Final[dict[str, set[str]]] = {
@@ -522,3 +537,11 @@ class PermissionCheck:
     role: str
     permission: str
     allowed: bool
+
+
+def get_role_permissions(role: str | None) -> list[str]:
+    """Return the sorted list of permission strings for role."""
+    normalized = normalize_role(role)
+    if normalized == ROLE_SUPER_ADMIN:
+        return [PERM_FULL_ACCESS]
+    return sorted(_ROLE_PERMISSIONS.get(normalized, set()))
