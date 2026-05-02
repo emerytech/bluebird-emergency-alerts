@@ -119,6 +119,167 @@ try {
         });
     }
 
+    // ── Accountability panel ───────────────────────────────────────────────────
+    var _currentAccountabilityAlertId = null;
+
+    function _loadFullAccountability(alertId) {
+      if (!alertId) return;
+      _currentAccountabilityAlertId = alertId;
+      fetch(BB_PATH_PREFIX + '/admin/alerts/' + alertId + '/full-accountability', { credentials: 'same-origin' })
+        .then(function(r) { return r.ok ? r.json() : Promise.reject(r.status); })
+        .then(function(data) {
+          _renderUnackedList(data.not_acknowledged || []);
+          _renderAckedList(data.acknowledged || []);
+          _renderMessagesList(data.messages || []);
+          // Update progress bar with fresh server data
+          _updateProgressBar(data.acknowledgement_count, data.expected_user_count, data.acknowledgement_percentage);
+        })
+        .catch(function() {
+          var el = document.getElementById('js-unack-list');
+          if (el) el.innerHTML = '<span class="mini-copy">Could not load accountability data.</span>';
+        });
+    }
+
+    function _renderUnackedList(users) {
+      var el = document.getElementById('js-unack-list');
+      if (!el) return;
+      if (!users.length) {
+        el.innerHTML = '<span class="mini-copy" style="color:#16a34a;">All users acknowledged ✓</span>';
+        return;
+      }
+      el.innerHTML = users.map(function(u) {
+        var statusColor = u.presence_status === 'online' ? '#16a34a' : (u.presence_status === 'idle' ? '#d97706' : '#6b7280');
+        var lastSeen = u.last_seen_at ? u.last_seen_at.slice(0, 16).replace('T', ' ') + ' UTC' : 'No device';
+        var deviceBadge = u.has_device
+          ? '<span style="font-size:0.68rem;background:#e0f2fe;color:#0369a1;border-radius:4px;padding:1px 5px;margin-left:4px;">device</span>'
+          : '<span style="font-size:0.68rem;background:#fee2e2;color:#dc2626;border-radius:4px;padding:1px 5px;margin-left:4px;">no device</span>';
+        return '<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 10px;background:rgba(0,0,0,0.03);border-radius:6px;">'
+          + '<div><div style="font-weight:600;">' + (u.name || 'User #' + u.user_id) + deviceBadge + '</div>'
+          + '<div style="font-size:0.72rem;color:var(--muted);">' + (u.role || '') + ' · ' + lastSeen + '</div></div>'
+          + '<span style="font-size:0.72rem;font-weight:700;color:' + statusColor + ';">' + (u.presence_status || 'offline') + '</span>'
+          + '</div>';
+      }).join('');
+    }
+
+    function _renderAckedList(users) {
+      var el = document.getElementById('js-acked-list');
+      if (!el) return;
+      if (!users.length) {
+        el.innerHTML = '<span class="mini-copy">No acknowledgements yet.</span>';
+        return;
+      }
+      el.innerHTML = users.map(function(u) {
+        var ackAt = u.acknowledged_at ? u.acknowledged_at.slice(0, 16).replace('T', ' ') + ' UTC' : '—';
+        return '<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 10px;background:rgba(22,163,74,0.05);border-radius:6px;border-left:3px solid #16a34a;">'
+          + '<div><div style="font-weight:600;">' + (u.name || 'User #' + u.user_id) + '</div>'
+          + '<div style="font-size:0.72rem;color:var(--muted);">' + (u.role || '') + '</div></div>'
+          + '<span style="font-size:0.72rem;color:#16a34a;">' + ackAt + '</span>'
+          + '</div>';
+      }).join('');
+    }
+
+    function _renderMessagesList(messages) {
+      var el = document.getElementById('js-messages-list');
+      if (!el) return;
+      if (!messages.length) {
+        el.innerHTML = '<span class="mini-copy">No messages yet.</span>';
+        return;
+      }
+      var badge = document.getElementById('acc-msg-badge');
+      var userMsgs = messages.filter(function(m) { return !m.is_broadcast; });
+      if (badge) { badge.textContent = userMsgs.length; badge.style.display = userMsgs.length ? '' : 'none'; }
+      el.innerHTML = messages.map(function(m) {
+        var ts = m.timestamp ? m.timestamp.slice(0, 16).replace('T', ' ') : '';
+        var prefix = m.is_broadcast
+          ? '<span style="font-size:0.68rem;background:#dbeafe;color:#1d4ed8;border-radius:4px;padding:1px 6px;font-weight:700;">BROADCAST</span>'
+          : '<span style="font-size:0.68rem;background:#f3f4f6;color:#374151;border-radius:4px;padding:1px 6px;">user</span>';
+        return '<div style="padding:8px 10px;background:rgba(0,0,0,0.03);border-radius:8px;border-left:3px solid '
+          + (m.is_broadcast ? '#3b82f6' : '#9ca3af') + ';">'
+          + prefix + ' <strong>' + (m.sender_label || 'User #' + m.sender_id) + '</strong>'
+          + ' <span style="font-size:0.72rem;color:var(--muted);">· ' + ts + '</span>'
+          + '<div style="margin-top:4px;font-size:0.85rem;">' + m.message + '</div>'
+          + '</div>';
+      }).join('');
+    }
+
+    function _updateProgressBar(ackCount, totalUsers, pct) {
+      var progressBar = document.getElementById('js-ack-progress-bar');
+      var progressLabel = document.getElementById('js-ack-progress-label');
+      var progressPctEl = document.getElementById('js-ack-progress-pct');
+      if (!progressBar) return;
+      var safePct = pct != null ? pct : (totalUsers > 0 ? Math.min(Math.round(ackCount / totalUsers * 100), 100) : 0);
+      var barColor = safePct >= 70 ? '#16a34a' : (safePct >= 30 ? '#d97706' : '#dc2626');
+      progressBar.style.width = safePct + '%';
+      progressBar.style.background = barColor;
+      if (progressLabel && totalUsers > 0) progressLabel.textContent = ackCount + ' / ' + totalUsers + ' acknowledged';
+      else if (progressLabel) progressLabel.textContent = ackCount + ' acknowledged';
+      if (progressPctEl && totalUsers > 0) { progressPctEl.textContent = Math.round(safePct) + '%'; progressPctEl.style.color = barColor; }
+    }
+
+    function switchAccTab(tab, btn) {
+      ['not-acked', 'acked', 'messages'].forEach(function(t) {
+        var el = document.getElementById('acc-tab-' + t);
+        if (el) el.style.display = (t === tab) ? '' : 'none';
+      });
+      document.querySelectorAll('.acc-tab').forEach(function(b) {
+        b.style.borderBottomColor = 'transparent';
+        b.style.color = 'var(--muted)';
+      });
+      if (btn) { btn.style.borderBottomColor = '#dc2626'; btn.style.color = '#dc2626'; }
+    }
+    window.switchAccTab = switchAccTab;
+
+    function adminRemindAll() {
+      var alertId = _currentAccountabilityAlertId || (typeof BB_CURRENT_ALERT_ID !== 'undefined' ? BB_CURRENT_ALERT_ID : null);
+      if (!alertId) return;
+      var btn = document.getElementById('remind-all-btn');
+      var fb = document.getElementById('remind-feedback');
+      if (btn) { btn.disabled = true; btn.textContent = 'Sending…'; }
+      fetch(BB_PATH_PREFIX + '/admin/alerts/' + alertId + '/remind-all', {
+        method: 'POST', credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' }, body: '{}',
+      }).then(function(r) { return r.json().then(function(d) { return { ok: r.ok, data: d }; }); })
+        .then(function(res) {
+          if (fb) {
+            fb.style.display = '';
+            fb.style.background = res.ok ? '#dcfce7' : '#fee2e2';
+            fb.style.color = res.ok ? '#166534' : '#dc2626';
+            fb.textContent = res.ok
+              ? '✓ Sent reminders to ' + (res.data.reminded_count || 0) + ' user(s). ' + (res.data.skipped_no_device || 0) + ' skipped (no device).'
+              : 'Error: ' + JSON.stringify(res.data);
+            setTimeout(function() { fb.style.display = 'none'; }, 6000);
+          }
+          if (btn) { btn.disabled = false; btn.textContent = 'Send Reminders'; }
+        }).catch(function() {
+          if (btn) { btn.disabled = false; btn.textContent = 'Send Reminders'; }
+        });
+    }
+    window.adminRemindAll = adminRemindAll;
+
+    function sendBroadcast() {
+      var input = document.getElementById('broadcast-input');
+      if (!input) return;
+      var message = input.value.trim();
+      if (!message) return;
+      var alertId = _currentAccountabilityAlertId || (typeof BB_CURRENT_ALERT_ID !== 'undefined' ? BB_CURRENT_ALERT_ID : null);
+      if (!alertId) { alert('No active alert.'); return; }
+      fetch(BB_PATH_PREFIX + '/admin/alerts/' + alertId + '/broadcast', {
+        method: 'POST', credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: message }),
+      }).then(function(r) { return r.json().then(function(d) { return { ok: r.ok, data: d }; }); })
+        .then(function(res) {
+          if (res.ok) {
+            input.value = '';
+            // Reload messages tab
+            if (_currentAccountabilityAlertId) _loadFullAccountability(_currentAccountabilityAlertId);
+          } else {
+            alert('Broadcast failed: ' + JSON.stringify(res.data));
+          }
+        }).catch(function() { alert('Network error sending broadcast.'); });
+    }
+    window.sendBroadcast = sendBroadcast;
+
     function updateSingleSchoolUI(data) {
       var pill = document.getElementById('js-alarm-status-pill');
       var ackPill = document.getElementById('js-ack-pill');
@@ -142,30 +303,24 @@ try {
         }
       }
 
-      // Progress bar
-      var progressBar = document.getElementById('js-ack-progress-bar');
-      var progressLabel = document.getElementById('js-ack-progress-label');
-      var progressPct = document.getElementById('js-ack-progress-pct');
-      if (progressBar && alarm.is_active) {
-        var totalUsers = (typeof BB_ACTIVE_USERS !== 'undefined' ? BB_ACTIVE_USERS : 0);
-        if (totalUsers > 0) {
-          var pct = Math.min(Math.round(ackCount / totalUsers * 100), 100);
-          var barColor = pct >= 90 ? '#16a34a' : (pct >= 60 ? '#d97706' : '#dc2626');
-          progressBar.style.width = pct + '%';
-          progressBar.style.background = barColor;
-          if (progressLabel) progressLabel.textContent = ackCount + ' / ' + totalUsers + ' acknowledged';
-          if (progressPct) { progressPct.textContent = pct + '%'; progressPct.style.color = barColor; }
-        }
+      // Progress bar — use server-computed percentage when available
+      if (alarm.is_active) {
+        _updateProgressBar(ackCount, alarm.expected_user_count || (typeof BB_ACTIVE_USERS !== 'undefined' ? BB_ACTIVE_USERS : 0), alarm.acknowledgement_percentage);
       }
 
-      // Reload full unacked list only when alert activates or deactivates.
-      // For ack-count updates the counts above are already updated inline,
-      // so we skip the full reload to avoid resetting scroll position.
       var evt = data.event;
       var isActivation = evt === 'alarm_activated' || evt === 'alert_triggered';
       var isDeactivation = evt === 'alarm_deactivated' || evt === 'tenant_alert_cleared';
-      if ((isActivation || isDeactivation) && alarm.current_alert_id) {
-        _loadUnacknowledged(alarm.current_alert_id);
+      var isAck = evt === 'tenant_acknowledgement_updated';
+      if (isActivation || isDeactivation) {
+        // Full reload: list positions reset, alarm ID may have changed
+        if (alarm.current_alert_id) _loadFullAccountability(alarm.current_alert_id);
+      } else if (isAck && _currentAccountabilityAlertId) {
+        // Lightweight reload: refresh lists without resetting scroll on progress bar
+        _loadFullAccountability(_currentAccountabilityAlertId);
+      } else if (evt === 'admin_broadcast' && _currentAccountabilityAlertId) {
+        // New broadcast: refresh messages tab
+        _loadFullAccountability(_currentAccountabilityAlertId);
       }
     }
 
@@ -244,9 +399,9 @@ try {
     document.addEventListener('DOMContentLoaded', function () {
       makeSingleSchoolWS();
       makeDistrictWS();
-      // Initial load of unacknowledged users if an alarm is already active
+      // Initial load of full accountability panel if an alarm is already active
       if (typeof BB_CURRENT_ALERT_ID !== 'undefined' && BB_CURRENT_ALERT_ID) {
-        _loadUnacknowledged(BB_CURRENT_ALERT_ID);
+        _loadFullAccountability(BB_CURRENT_ALERT_ID);
       }
     });
   })();
