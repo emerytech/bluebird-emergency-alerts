@@ -1106,3 +1106,153 @@ class RosterClaimHistoryOut(BaseModel):
 
 class RosterClaimHistoryResponse(BaseModel):
     history: List[RosterClaimHistoryOut]
+
+
+# ---------------------------------------------------------------------------
+# Batch Accountability
+# ---------------------------------------------------------------------------
+
+class BatchAccountabilityRequest(BaseModel):
+    user_id: int
+    students_present: List[int] = []
+    students_missing: List[int] = []
+    notes: Optional[str] = None
+
+
+class BatchAccountabilityResponse(BaseModel):
+    ok: bool
+    inserted: int = 0
+    updated: int = 0
+    total: int = 0
+
+
+class GradeRollupItem(BaseModel):
+    grade_level: str
+    total: int = 0
+    accounted: int = 0
+    missing: int = 0
+    unknown: int = 0
+
+
+class StaffRollupItem(BaseModel):
+    staff_label: str
+    claimed: int = 0
+    accounted: int = 0
+    missing: int = 0
+    unknown: int = 0
+
+
+class AccountabilityRollupResponse(BaseModel):
+    alert_id: int
+    total_students: int = 0
+    accounted: int = 0
+    missing: int = 0
+    unknown: int = 0
+    percentage_accounted: float = 0.0
+    by_grade: List[GradeRollupItem] = []
+    by_staff: List[StaffRollupItem] = []
+
+
+class MissingStudentOut(BaseModel):
+    student_id: int
+    first_name: str
+    last_name: str
+    grade_level: Optional[str] = None
+    student_ref: Optional[str] = None
+    status: str
+    claimed_by_label: Optional[str] = None
+    last_updated_at: Optional[str] = None
+
+
+class MissingStudentsResponse(BaseModel):
+    alert_id: int
+    students: List[MissingStudentOut] = []
+    total: int = 0
+
+
+class AccountabilityReportResponse(BaseModel):
+    alert_id: int
+    total_students: int = 0
+    accounted: int = 0
+    missing: int = 0
+    unknown: int = 0
+    percentage_accounted: float = 0.0
+    by_grade: List[GradeRollupItem] = []
+    by_staff: List[StaffRollupItem] = []
+    history_count: int = 0
+
+
+# ---------------------------------------------------------------------------
+# Group Chat / Messaging
+# ---------------------------------------------------------------------------
+
+class ChatMessageOut(BaseModel):
+    id: int
+    alert_id: Optional[int] = None
+    sender_user_id: int
+    sender_name: str
+    sender_role: str
+    message_body: str
+    message_type: str = "normal"
+    recipients_scope: str = "all_users"
+    created_at: str
+    is_deleted: bool = False
+    read_count: int = 0
+    priority: str = "normal"
+    is_pinned: bool = False
+    parent_message_id: Optional[int] = None
+    reply_count: int = 0
+
+
+class ChatSendRequest(BaseModel):
+    user_id: int
+    message: str = Field(..., min_length=1, max_length=4000)
+    message_type: str = "normal"
+    alert_id: Optional[int] = None
+    priority: str = "normal"
+
+
+class ChatSendResponse(BaseModel):
+    ok: bool
+    message: ChatMessageOut
+
+
+class ChatListResponse(BaseModel):
+    messages: List[ChatMessageOut]
+    total: int = 0
+    has_more: bool = False
+
+
+class ChatMarkReadRequest(BaseModel):
+    user_id: int
+    message_ids: List[int]
+
+
+class ChatMarkReadResponse(BaseModel):
+    ok: bool
+    marked: int = 0
+
+
+class ChatPinnedResponse(BaseModel):
+    messages: List[ChatMessageOut]
+
+
+class ChatPinRequest(BaseModel):
+    user_id: int
+    pinned: bool
+
+
+class ChatPriorityRequest(BaseModel):
+    user_id: int
+    priority: str
+
+
+class ChatReplyRequest(BaseModel):
+    user_id: int
+    message: str = Field(..., min_length=1, max_length=4000)
+    parent_message_id: int
+
+
+class ChatThreadResponse(BaseModel):
+    root: ChatMessageOut
+    replies: List[ChatMessageOut] = []
