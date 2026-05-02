@@ -3797,12 +3797,19 @@ def _render_customers_section(customers: object, section: str) -> str:
             if district_id else
             '<span style="font-size:0.72rem;color:var(--muted);">—</span>'
         )
+        org_cell = org if org else '<span style="color:var(--muted);">—</span>'
+        status_opts = "".join(
+            '<option value="{s}"{sel}>{label}</option>'.format(
+                s=s, sel=' selected' if s == status else '', label=s.title()
+            )
+            for s in ("lead", "active", "closed", "archived")
+        )
         rows_html += (
             f'<tr style="cursor:pointer;" onclick="bbCustomerOpen({cid});">'
             f'<td style="font-weight:600;">{name}</td>'
             f'<td><a href="mailto:{email}" onclick="event.stopPropagation();" '
             f'style="color:var(--accent);">{email}</a></td>'
-            f'<td>{org or "<span style=\"color:var(--muted);\">—</span>"}</td>'
+            f'<td>{org_cell}</td>'
             f'<td style="text-align:center;"><span style="font-size:0.7rem;font-weight:700;'
             f'color:{st_color};">{status.upper()}</span></td>'
             f'<td style="text-align:center;font-size:0.72rem;color:var(--muted);">{src_label}</td>'
@@ -3813,10 +3820,7 @@ def _render_customers_section(customers: object, section: str) -> str:
             f'style="display:inline;" onsubmit="event.preventDefault();bbUpdateCustomerStatus(this,{cid});">'
             f'<select name="status" style="font-size:0.72rem;padding:2px 6px;border-radius:4px;" '
             f'onchange="this.form.requestSubmit();">'
-            + "".join(
-                f'<option value="{s}"{" selected" if s == status else ""}>{s.title()}</option>'
-                for s in ("lead", "active", "closed", "archived")
-            )
+            + status_opts
             + f'</select></form>'
             f' <button class="button button-outline" style="font-size:0.72rem;padding:2px 8px;" '
             f'onclick="event.stopPropagation();bbCustomerOpen({cid});" type="button">View</button>'
@@ -8531,6 +8535,17 @@ def _render_tenant_settings_panels(
       {district_only_banner}
     </section>""")
 
+    _district_ai_section = (
+        '<section class="panel command-section" id="ts-ai-insights"' + hidden + '>'
+        '<div class="panel-header"><div>'
+        '<p class="eyebrow">District Settings</p>'
+        '<h2>AI Insights</h2>'
+        '<p class="card-copy">Enable AI-generated incident summaries. District admin access required.</p>'
+        '</div></div>'
+        + (locked_banner if not can_edit else "") + ai_body
+        + '</section>'
+    ) if is_district_admin else ""
+
     return f"""
     <section class="panel command-section" id="ts-notifications"{hidden}>
       <div class="panel-header"><div>
@@ -8579,15 +8594,7 @@ def _render_tenant_settings_panels(
       {ui_body}
     </section>
 
-    {"" if not is_district_admin else f"""
-    <section class="panel command-section" id="ts-ai-insights"{hidden}>
-      <div class="panel-header"><div>
-        <p class="eyebrow">District Settings</p>
-        <h2>AI Insights</h2>
-        <p class="card-copy">Enable AI-generated incident summaries. District admin access required.</p>
-      </div></div>
-      {locked_banner if not can_edit else ""}{ai_body}
-    </section>"""}
+    {_district_ai_section}
 
     <script>
     (function() {{
@@ -9185,7 +9192,7 @@ def _render_roster_section(
 
   <div style="display:flex;gap:0;flex-wrap:wrap;align-items:center;background:var(--bg-alt,#f1f5f9);border-radius:8px;padding:12px 20px;margin-bottom:20px;">
     <div style="text-align:center;padding:0 20px 0 0;margin-right:20px;border-right:1px solid var(--border,#e2e8f0);">
-      <div style="font-size:1.6rem;font-weight:700;color:var(--primary,#3b82f6);">{_total}</div>
+      <div class="roster-total-count" style="font-size:1.6rem;font-weight:700;color:var(--primary,#3b82f6);">{_total}</div>
       <div style="font-size:0.75rem;color:var(--text-muted,#94a3b8);">Total</div>
     </div>
     {_stats_chips}
@@ -9217,21 +9224,23 @@ def _render_roster_section(
       <h3 style="margin:0;font-size:1rem;">Import from CSV</h3>
       <button class="button button-secondary" style="padding:4px 12px;min-height:auto;" onclick="document.getElementById('roster-import-panel').style.display='none'">&times; Close</button>
     </div>
-    <p class="mini-copy" style="margin:0 0 12px;">Required headers: <code>first_name, last_name, grade_level</code> &mdash; optional: <code>student_ref</code></p>
+    <p class="mini-copy" style="margin:0 0 6px;">Required headers: <code>first_name, last_name, grade_level</code> &mdash; optional: <code>student_ref</code></p>
+    <p class="mini-copy" style="margin:0 0 12px;"><a href="#" onclick="rosterDownloadTemplate();return false;" style="color:var(--primary,#3b82f6);">&#11015; Download CSV template</a></p>
     <input type="file" id="roster-csv-file" accept=".csv" class="field" style="margin-bottom:10px;width:100%;box-sizing:border-box;" />
     <div style="display:flex;gap:8px;margin-bottom:10px;">
-      <button class="button" onclick="rosterCsvPreview()">Preview</button>
+      <button id="roster-preview-btn" class="button" onclick="rosterCsvPreview()">Preview</button>
     </div>
     <div id="roster-preview-area" style="display:none;">
       <div id="roster-preview-summary" style="font-size:0.9rem;margin-bottom:8px;padding:8px 12px;background:var(--bg,#fff);border-radius:6px;border:1px solid var(--border,#e2e8f0);"></div>
-      <pre id="roster-preview-errors" style="color:var(--red,#dc2626);font-size:0.82rem;margin:0 0 10px;white-space:pre-wrap;max-height:120px;overflow-y:auto;padding:8px;background:var(--bg,#fff);border-radius:6px;border:1px solid var(--border,#e2e8f0);"></pre>
+      <pre id="roster-preview-errors" style="color:var(--red,#dc2626);font-size:0.82rem;margin:0 0 8px;white-space:pre-wrap;max-height:120px;overflow-y:auto;padding:8px;background:var(--bg,#fff);border-radius:6px;border:1px solid var(--border,#e2e8f0);display:none;"></pre>
+      <div id="roster-preview-rows" style="display:none;max-height:160px;overflow-y:auto;border:1px solid var(--border,#e2e8f0);border-radius:6px;background:var(--bg,#fff);margin-bottom:8px;"></div>
       <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
         <label style="font-size:0.85rem;font-weight:600;">Conflict strategy:</label>
         <select id="roster-conflict-strategy" class="field" style="width:auto;">
           <option value="skip">Skip duplicates</option>
           <option value="overwrite">Overwrite duplicates</option>
         </select>
-        <button class="button" onclick="rosterCsvCommit()">Commit Import</button>
+        <button id="roster-commit-btn" class="button" onclick="rosterCsvCommit()">Commit Import</button>
       </div>
     </div>
     <p id="roster-import-status" style="margin-top:8px;font-size:0.9rem;"></p>
@@ -9247,11 +9256,11 @@ def _render_roster_section(
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px;">
       <div>
         <label class="field-label" style="font-size:0.8rem;font-weight:600;display:block;margin-bottom:4px;">First Name *</label>
-        <input id="roster-add-fn" type="text" class="field" placeholder="First name" style="width:100%;box-sizing:border-box;" />
+        <input id="roster-add-fn" type="text" class="field" placeholder="First name" style="width:100%;box-sizing:border-box;" onkeydown="if(event.key==='Enter')rosterAddStudent()" />
       </div>
       <div>
         <label class="field-label" style="font-size:0.8rem;font-weight:600;display:block;margin-bottom:4px;">Last Name *</label>
-        <input id="roster-add-ln" type="text" class="field" placeholder="Last name" style="width:100%;box-sizing:border-box;" />
+        <input id="roster-add-ln" type="text" class="field" placeholder="Last name" style="width:100%;box-sizing:border-box;" onkeydown="if(event.key==='Enter')rosterAddStudent()" />
       </div>
       <div>
         <label class="field-label" style="font-size:0.8rem;font-weight:600;display:block;margin-bottom:4px;">Grade</label>
@@ -9259,13 +9268,13 @@ def _render_roster_section(
       </div>
       <div>
         <label class="field-label" style="font-size:0.8rem;font-weight:600;display:block;margin-bottom:4px;">Student Ref</label>
-        <input id="roster-add-ref" type="text" class="field" placeholder="Optional ID / SIS ref" style="width:100%;box-sizing:border-box;" />
+        <input id="roster-add-ref" type="text" class="field" placeholder="Optional ID / SIS ref" style="width:100%;box-sizing:border-box;" onkeydown="if(event.key==='Enter')rosterAddStudent()" />
       </div>
     </div>
     <p id="roster-add-err" style="color:var(--red,#dc2626);font-size:0.85rem;display:none;margin-bottom:10px;"></p>
     <div style="display:flex;gap:8px;justify-content:flex-end;">
       <button class="button button-secondary" onclick="rosterCloseAdd()">Cancel</button>
-      <button class="button" onclick="rosterAddStudent()">Add Student</button>
+      <button id="roster-add-btn" class="button" onclick="rosterAddStudent()">Add Student</button>
     </div>
   </div>
 </div>
@@ -9280,11 +9289,11 @@ def _render_roster_section(
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px;">
       <div>
         <label class="field-label" style="font-size:0.8rem;font-weight:600;display:block;margin-bottom:4px;">First Name *</label>
-        <input id="roster-edit-fn" type="text" class="field" style="width:100%;box-sizing:border-box;" />
+        <input id="roster-edit-fn" type="text" class="field" style="width:100%;box-sizing:border-box;" onkeydown="if(event.key==='Enter')rosterSaveEdit()" />
       </div>
       <div>
         <label class="field-label" style="font-size:0.8rem;font-weight:600;display:block;margin-bottom:4px;">Last Name *</label>
-        <input id="roster-edit-ln" type="text" class="field" style="width:100%;box-sizing:border-box;" />
+        <input id="roster-edit-ln" type="text" class="field" style="width:100%;box-sizing:border-box;" onkeydown="if(event.key==='Enter')rosterSaveEdit()" />
       </div>
       <div>
         <label class="field-label" style="font-size:0.8rem;font-weight:600;display:block;margin-bottom:4px;">Grade</label>
@@ -9292,13 +9301,13 @@ def _render_roster_section(
       </div>
       <div>
         <label class="field-label" style="font-size:0.8rem;font-weight:600;display:block;margin-bottom:4px;">Student Ref</label>
-        <input id="roster-edit-ref" type="text" class="field" placeholder="Optional ID / SIS ref" style="width:100%;box-sizing:border-box;" />
+        <input id="roster-edit-ref" type="text" class="field" placeholder="Optional ID / SIS ref" style="width:100%;box-sizing:border-box;" onkeydown="if(event.key==='Enter')rosterSaveEdit()" />
       </div>
     </div>
     <p id="roster-edit-err" style="color:var(--red,#dc2626);font-size:0.85rem;display:none;margin-bottom:10px;"></p>
     <div style="display:flex;gap:8px;justify-content:flex-end;">
       <button class="button button-secondary" onclick="rosterCloseEdit()">Cancel</button>
-      <button class="button" onclick="rosterSaveEdit()">Save Changes</button>
+      <button id="roster-edit-btn" class="button" onclick="rosterSaveEdit()">Save Changes</button>
     </div>
   </div>
 </div>
@@ -9358,14 +9367,20 @@ def _render_roster_section(
     const gl = document.getElementById('roster-add-gl').value;
     const ref = document.getElementById('roster-add-ref').value.trim() || null;
     const errEl = document.getElementById('roster-add-err');
+    const btn = document.getElementById('roster-add-btn');
     errEl.style.display = 'none';
     if (!fn || !ln) {{ errEl.textContent = 'First and last name are required.'; errEl.style.display = ''; return; }}
-    const r = await fetch(_prefix + '/api/v1/roster/students?user_id=' + _uid(), {{
+    btn.disabled = true; btn.textContent = 'Adding…';
+    const r = await fetch(_prefix + '/roster/students?user_id=' + _uid(), {{
       method: 'POST', headers: _hdr(),
       body: JSON.stringify({{first_name: fn, last_name: ln, grade_level: gl, student_ref: ref}})
     }});
     if (r.ok) {{ window.location.reload(); }}
-    else {{ const d = await r.json().catch(function() {{ return {{}}; }}); errEl.textContent = d.detail || 'Error adding student.'; errEl.style.display = ''; }}
+    else {{
+      const d = await r.json().catch(function() {{ return {{}}; }});
+      errEl.textContent = d.detail || 'Error adding student.'; errEl.style.display = '';
+      btn.disabled = false; btn.textContent = 'Add Student';
+    }}
   }};
 
   // ── Edit modal ────────────────────────────────────────────────────────
@@ -9387,34 +9402,44 @@ def _render_roster_section(
     const gl = document.getElementById('roster-edit-gl').value;
     const ref = document.getElementById('roster-edit-ref').value.trim() || null;
     const errEl = document.getElementById('roster-edit-err');
+    const btn = document.getElementById('roster-edit-btn');
     errEl.style.display = 'none';
     if (!fn || !ln) {{ errEl.textContent = 'Name is required.'; errEl.style.display = ''; return; }}
-    const r = await fetch(_prefix + '/api/v1/roster/students/' + sid + '?user_id=' + _uid(), {{
+    btn.disabled = true; btn.textContent = 'Saving…';
+    const r = await fetch(_prefix + '/roster/students/' + sid + '?user_id=' + _uid(), {{
       method: 'PATCH', headers: _hdr(),
       body: JSON.stringify({{first_name: fn, last_name: ln, grade_level: gl, student_ref: ref}})
     }});
     if (r.ok) {{ window.location.reload(); }}
-    else {{ const d = await r.json().catch(function() {{ return {{}}; }}); errEl.textContent = d.detail || 'Error saving.'; errEl.style.display = ''; }}
+    else {{
+      const d = await r.json().catch(function() {{ return {{}}; }});
+      errEl.textContent = d.detail || 'Error saving.'; errEl.style.display = '';
+      btn.disabled = false; btn.textContent = 'Save Changes';
+    }}
   }};
 
   // ── Archive ───────────────────────────────────────────────────────────
   window.rosterArchiveStudent = async function(sid, name) {{
     if (!confirm('Archive "' + name + '"? They will be removed from the active roster.')) return;
-    const r = await fetch(_prefix + '/api/v1/roster/students/' + sid + '?user_id=' + _uid(), {{
+    const r = await fetch(_prefix + '/roster/students/' + sid + '?user_id=' + _uid(), {{
       method: 'DELETE', headers: {{'X-API-Key': _apiKey}}
     }});
     if (r.ok || r.status === 204) {{
       const row = document.querySelector('#roster-tbody tr[data-sid="' + sid + '"]');
       if (row) row.remove();
       const rows = document.querySelectorAll('#roster-tbody tr[data-name]');
+      const newTotal = rows.length;
       const lbl = document.getElementById('roster-count-label');
-      if (lbl) lbl.textContent = rows.length + ' student(s)';
+      if (lbl) lbl.textContent = newTotal + ' student(s)';
+      // Update stats bar total chip
+      const totalChip = document.querySelector('.roster-total-count');
+      if (totalChip) totalChip.textContent = newTotal;
     }} else {{ alert('Failed to archive student.'); }}
   }};
 
   // ── Export CSV ────────────────────────────────────────────────────────
   window.rosterExportCsv = async function() {{
-    const r = await fetch(_prefix + '/api/v1/roster/students?user_id=' + _uid(), {{
+    const r = await fetch(_prefix + '/roster/students?user_id=' + _uid(), {{
       headers: {{'X-API-Key': _apiKey}}
     }});
     if (!r.ok) {{ alert('Export failed.'); return; }}
@@ -9439,32 +9464,68 @@ def _render_roster_section(
     document.getElementById('roster-import-status').textContent = '';
     _importSession = null;
   }};
+  window.rosterDownloadTemplate = function() {{
+    const csv = 'first_name,last_name,grade_level,student_ref\nJane,Doe,5,\nJohn,Smith,3,S-1001\n';
+    const blob = new Blob([csv], {{type: 'text/csv'}});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = 'roster_template.csv';
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(function() {{ URL.revokeObjectURL(url); }}, 1000);
+  }};
   window.rosterCsvPreview = async function() {{
     const file = document.getElementById('roster-csv-file').files[0];
     if (!file) {{ alert('Select a CSV file first.'); return; }}
+    const btn = document.getElementById('roster-preview-btn');
+    btn.disabled = true; btn.textContent = 'Previewing…';
     const fd = new FormData(); fd.append('file', file);
-    const r = await fetch(_prefix + '/api/v1/roster/students/import/preview?user_id=' + _uid(), {{
+    const r = await fetch(_prefix + '/roster/students/import/preview?user_id=' + _uid(), {{
       method: 'POST', headers: {{'X-API-Key': _apiKey}}, body: fd
     }});
+    btn.disabled = false; btn.textContent = 'Preview';
     const d = await r.json().catch(function() {{ return {{}}; }});
     if (!r.ok) {{ alert(d.detail || 'Preview failed.'); return; }}
     _importSession = d.session_token;
     document.getElementById('roster-preview-area').style.display = '';
+    const validCount = d.valid_count || 0;
+    const errorCount = d.error_count || 0;
+    const dupCount = (d.duplicate_refs || []).length;
     document.getElementById('roster-preview-summary').innerHTML =
-      '<strong>' + (d.valid_count || 0) + '</strong> valid &nbsp;|&nbsp; ' +
-      '<strong>' + (d.error_count || 0) + '</strong> errors &nbsp;|&nbsp; ' +
-      '<strong>' + ((d.duplicate_refs || []).length) + '</strong> duplicate refs';
+      '<strong style="color:var(--green,#16a34a)">' + validCount + '</strong> valid' +
+      (errorCount ? ' &nbsp;|&nbsp; <strong style="color:var(--red,#dc2626)">' + errorCount + '</strong> errors' : '') +
+      (dupCount ? ' &nbsp;|&nbsp; <strong style="color:var(--yellow,#d97706)">' + dupCount + '</strong> duplicate refs' : '');
     const errEl = document.getElementById('roster-preview-errors');
-    errEl.textContent = (d.error_rows && d.error_rows.length)
-      ? d.error_rows.map(function(e) {{ return 'Row ' + e.line + ': ' + e.error; }}).join('\n') : '';
-    errEl.style.display = d.error_rows && d.error_rows.length ? '' : 'none';
+    if (d.error_rows && d.error_rows.length) {{
+      errEl.textContent = d.error_rows.map(function(e) {{ return 'Row ' + e.line + ': ' + e.error; }}).join('\n');
+      errEl.style.display = '';
+    }} else {{ errEl.style.display = 'none'; }}
+    // Show first 20 valid rows as a preview table
+    const rowsEl = document.getElementById('roster-preview-rows');
+    if (d.valid_rows && d.valid_rows.length) {{
+      function esc(s) {{ return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }}
+      const preview = d.valid_rows.slice(0, 20);
+      rowsEl.innerHTML = '<table style="width:100%;border-collapse:collapse;font-size:0.82rem;">'
+        + '<thead><tr style="background:var(--bg-alt,#f1f5f9);">'
+        + '<th style="padding:4px 8px;text-align:left;border-bottom:1px solid var(--border,#e2e8f0);">Name</th>'
+        + '<th style="padding:4px 8px;text-align:left;border-bottom:1px solid var(--border,#e2e8f0);">Grade</th>'
+        + '<th style="padding:4px 8px;text-align:left;border-bottom:1px solid var(--border,#e2e8f0);">Ref</th></tr></thead><tbody>'
+        + preview.map(function(s) {{
+          return '<tr><td style="padding:3px 8px;">' + esc(s.first_name + ' ' + s.last_name) + '</td>'
+            + '<td style="padding:3px 8px;">' + esc(s.grade_level) + '</td>'
+            + '<td style="padding:3px 8px;color:var(--muted,#64748b);">' + esc(s.student_ref || '—') + '</td></tr>';
+        }}).join('')
+        + (d.valid_rows.length > 20 ? '<tr><td colspan="3" style="padding:4px 8px;color:var(--muted,#64748b);">… and ' + (d.valid_rows.length - 20) + ' more</td></tr>' : '')
+        + '</tbody></table>';
+      rowsEl.style.display = '';
+    }} else {{ rowsEl.style.display = 'none'; }}
   }};
   window.rosterCsvCommit = async function() {{
     if (!_importSession) {{ alert('Preview the file first.'); return; }}
     const strategy = document.getElementById('roster-conflict-strategy').value;
     const statusEl = document.getElementById('roster-import-status');
-    statusEl.textContent = 'Importing…';
-    const r = await fetch(_prefix + '/api/v1/roster/students/import/commit?user_id=' + _uid(), {{
+    const btn = document.getElementById('roster-commit-btn');
+    statusEl.textContent = 'Importing…'; statusEl.style.color = '';
+    btn.disabled = true; btn.textContent = 'Importing…';
+    const r = await fetch(_prefix + '/roster/students/import/commit?user_id=' + _uid(), {{
       method: 'POST', headers: _hdr(),
       body: JSON.stringify({{session_token: _importSession, conflict_strategy: strategy}})
     }});
@@ -9476,6 +9537,7 @@ def _render_roster_section(
     }} else {{
       statusEl.textContent = d.detail || 'Import failed.';
       statusEl.style.color = 'var(--red,#dc2626)';
+      btn.disabled = false; btn.textContent = 'Commit Import';
     }}
   }};
 
@@ -9488,7 +9550,7 @@ def _render_roster_section(
     const sumEl = document.getElementById('roster-incident-summary');
     if (!tbody) return;
     tbody.innerHTML = '<tr><td colspan="4" class="empty-state">Loading…</td></tr>';
-    fetch(_prefix + '/api/v1/alerts/' + _alertId + '/roster?user_id=' + _uid(), {{
+    fetch(_prefix + '/alerts/' + _alertId + '/roster?user_id=' + _uid(), {{
       headers: {{'X-API-Key': _apiKey}}
     }}).then(function(r) {{
       if (!r.ok) {{ tbody.innerHTML = '<tr><td colspan="4" class="empty-state">Failed to load incident data.</td></tr>'; return; }}

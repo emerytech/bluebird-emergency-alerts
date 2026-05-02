@@ -1,12 +1,50 @@
 import SwiftUI
 
-private struct PressableScaleButtonStyle: ButtonStyle {
+// MARK: - Button Styles
+
+struct PressableScaleButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .scaleEffect(configuration.isPressed ? 0.985 : 1.0)
             .animation(.easeOut(duration: 0.14), value: configuration.isPressed)
     }
 }
+
+// MARK: - Shared button body
+
+private struct BBButton: View {
+    let title: String
+    let isLoading: Bool
+    let isEnabled: Bool
+    let color: Color
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: DSSpacing.sm) {
+                if isLoading {
+                    ProgressView()
+                        .progressViewStyle(.circular)
+                        .tint(.white)
+                        .scaleEffect(0.9)
+                }
+                Text(title)
+                    .font(DSTypography.button)
+                    .foregroundStyle(.white)
+            }
+            .frame(maxWidth: .infinity, minHeight: 46)
+            .background(
+                RoundedRectangle(cornerRadius: DSRadius.button, style: .continuous)
+                    .fill(color.opacity(isEnabled ? 1.0 : 0.55))
+            )
+            .shadow(color: isEnabled ? color.opacity(0.26) : .clear, radius: 8, x: 0, y: 3)
+        }
+        .buttonStyle(PressableScaleButtonStyle())
+        .disabled(!isEnabled)
+    }
+}
+
+// MARK: - PrimaryButton
 
 struct PrimaryButton: View {
     let title: String
@@ -27,29 +65,12 @@ struct PrimaryButton: View {
     }
 
     var body: some View {
-        Button(action: action) {
-            HStack(spacing: DSSpacing.sm) {
-                if isLoading {
-                    ProgressView()
-                        .progressViewStyle(.circular)
-                        .tint(.white)
-                        .scaleEffect(0.9)
-                }
-                Text(title)
-                    .font(DSTypography.button)
-                    .foregroundStyle(.white)
-            }
-            .frame(maxWidth: .infinity, minHeight: 46)
-            .background(
-                RoundedRectangle(cornerRadius: DSRadius.button, style: .continuous)
-                    .fill(DSColor.primary.opacity(isEnabled ? 1.0 : 0.55))
-            )
-            .shadow(color: isEnabled ? DSColor.primary.opacity(0.28) : .clear, radius: 8, x: 0, y: 3)
-        }
-        .buttonStyle(PressableScaleButtonStyle())
-        .disabled(!isEnabled)
+        BBButton(title: title, isLoading: isLoading, isEnabled: isEnabled,
+                 color: DSColor.primary, action: action)
     }
 }
+
+// MARK: - DangerButton
 
 struct DangerButton: View {
     let title: String
@@ -70,29 +91,12 @@ struct DangerButton: View {
     }
 
     var body: some View {
-        Button(action: action) {
-            HStack(spacing: DSSpacing.sm) {
-                if isLoading {
-                    ProgressView()
-                        .progressViewStyle(.circular)
-                        .tint(.white)
-                        .scaleEffect(0.9)
-                }
-                Text(title)
-                    .font(DSTypography.button)
-                    .foregroundStyle(.white)
-            }
-            .frame(maxWidth: .infinity, minHeight: 46)
-            .background(
-                RoundedRectangle(cornerRadius: DSRadius.button, style: .continuous)
-                    .fill(DSColor.danger.opacity(isEnabled ? 1.0 : 0.55))
-            )
-            .shadow(color: isEnabled ? DSColor.danger.opacity(0.24) : .clear, radius: 8, x: 0, y: 3)
-        }
-        .buttonStyle(PressableScaleButtonStyle())
-        .disabled(!isEnabled)
+        BBButton(title: title, isLoading: isLoading, isEnabled: isEnabled,
+                 color: DSColor.danger, action: action)
     }
 }
+
+// MARK: - TextInput
 
 struct TextInput: View {
     @Binding var text: String
@@ -130,6 +134,8 @@ struct TextInput: View {
     }
 }
 
+// MARK: - CardView
+
 struct CardView<Content: View>: View {
     @ViewBuilder let content: Content
 
@@ -146,6 +152,8 @@ struct CardView<Content: View>: View {
             .shadow(color: .black.opacity(0.06), radius: 8, x: 0, y: 3)
     }
 }
+
+// MARK: - SectionContainer
 
 struct SectionContainer<Content: View>: View {
     let title: String

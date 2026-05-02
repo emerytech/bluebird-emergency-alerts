@@ -9,13 +9,13 @@ private func statusLabel(_ s: String) -> String {
 
 private func statusColor(_ s: String?) -> Color {
     switch s {
-    case "present_with_me": return Color(red: 0.29, green: 0.86, blue: 0.50)
-    case "missing":         return Color(red: 0.94, green: 0.27, blue: 0.27)
-    case "injured":         return Color(red: 0.98, green: 0.60, blue: 0.09)
-    case "released":        return Color(red: 0.38, green: 0.65, blue: 0.98)
-    case "absent":          return Color(red: 0.98, green: 0.75, blue: 0.14)
-    default:                return Color(red: 0.58, green: 0.64, blue: 0.72)
-}
+    case "present_with_me": return DSColor.success
+    case "missing":         return DSColor.danger
+    case "injured":         return DSColor.warning
+    case "released":        return DSColor.info
+    case "absent":          return DSColor.warning
+    default:                return DSColor.offline
+    }
 }
 
 // MARK: - Main View
@@ -32,11 +32,27 @@ struct RosterView: View {
     @State private var gradeFilter = ""   // "" = all grades
     @State private var showAddSheet = false
     @State private var conflictInfo: ConflictInfo?
+    @State private var accountabilityMode = false
+    @State private var markedPresent: Set<Int> = []
+    @State private var markedMissing: Set<Int> = []
+    @State private var isSubmittingAccountability = false
 
     struct ConflictInfo {
         let message: String
         let row: RosterIncidentRow
         let status: String
+    }
+
+    private var accountabilityStudents: [RosterIncidentRow] {
+        (roster?.students ?? []).filter { !$0.isAddition }
+    }
+
+    private var filteredForAccountability: [RosterIncidentRow] {
+        accountabilityStudents.filter {
+            let matchesSearch = searchQuery.isEmpty || $0.fullName.localizedCaseInsensitiveContains(searchQuery)
+            let matchesGrade = gradeFilter.isEmpty || $0.gradeLevel == gradeFilter
+            return matchesSearch && matchesGrade
+        }
     }
 
     var availableGrades: [String] {
@@ -107,6 +123,32 @@ struct RosterView: View {
                     Spacer()
                     ProgressView()
                     Spacer()
+                } else if accountabilityMode {
+                    List(filteredForAccountability) { row in
+                        if let sid = row.studentId {
+                            AccountabilityRowCard(
+                                row: row,
+                                isPresent: markedPresent.contains(sid),
+                                isMissing: markedMissing.contains(sid),
+                                onMarkPresent: {
+                                    markedPresent.insert(sid)
+                                    markedMissing.remove(sid)
+                                },
+                                onMarkMissing: {
+                                    markedMissing.insert(sid)
+                                    markedPresent.remove(sid)
+                                },
+                                onClear: {
+                                    markedPresent.remove(sid)
+                                    markedMissing.remove(sid)
+                                }
+                            )
+                            .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+                            .listRowSeparator(.hidden)
+                            .listRowBackground(Color.clear)
+                        }
+                    }
+                    .listStyle(.plain)
                 } else if filtered.isEmpty {
                     Spacer()
                     Text({
@@ -142,7 +184,22 @@ struct RosterView: View {
                 ToolbarItem(placement: .primaryAction) {
                     if isLoading {
                         ProgressView().scaleEffect(0.8)
+                    } else {
+                        Button(accountabilityMode ? "Exit Roll Call" : "Roll Call") {
+                            accountabilityMode.toggle()
+                            if !accountabilityMode {
+                                markedPresent = []
+                                markedMissing = []
+                            }
+                        }
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(accountabilityMode ? DSColor.danger : DSColor.primary)
                     }
+                }
+            }
+            .safeAreaInset(edge: .bottom) {
+                if accountabilityMode {
+                    accountabilityBottomBar
                 }
             }
         }
@@ -171,15 +228,55 @@ struct RosterView: View {
     @ViewBuilder
     private func summaryBar(_ s: IncidentRosterSummary) -> some View {
         HStack(spacing: 24) {
-            SummaryChip(label: "Total",    count: s.total,         color: Color(red: 0.80, green: 0.84, blue: 0.89))
+            SummaryChip(label: "Total",    count: s.total,         color: DSColor.textSecondary)
             SummaryChip(label: "With Me",  count: s.presentWithMe, color: statusColor("present_with_me"))
             SummaryChip(label: "Missing",  count: s.missing,       color: statusColor("missing"))
-            SummaryChip(label: "Unclaimed",count: s.unclaimed,     color: Color(red: 0.58, green: 0.64, blue: 0.72))
+            SummaryChip(label: "Unclaimed",count: s.unclaimed,     color: DSColor.offline)
         }
         .frame(maxWidth: .infinity)
         .padding(.horizontal, 20)
         .padding(.vertical, 10)
-        .background(Color(red: 0.12, green: 0.16, blue: 0.23))
+        .background(DSColor.backgroundDeep)
+    }
+
+    // MARK: - Accountability bottom bar
+
+    @ViewBuilder
+    private var accountabilityBottomBar: some View {
+        let presentCount = markedPresent.count
+        let missingCount = markedMissing.count
+        let unmarkedCount = accountabilityStudents.count - presentCount - missingCount
+        VStack(spacing: 0) {
+            Divider()
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("\(presentCount) present · \(missingCount) missing · \(unmarkedCount) unmarked")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.primary)
+                    Text("Tap Submit to record batch accountability")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                if isSubmittingAccountability {
+                    ProgressView().scaleEffect(0.8).frame(width: 80, height: 36)
+                } else {
+                    Button {
+                        Task { await submitAccountability() }
+                    } label: {
+                        Text("Submit")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 20).padding(.vertical, 8)
+                            .background(DSColor.primary)
+                            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    }
+                    .disabled(markedPresent.isEmpty && markedMissing.isEmpty)
+                }
+            }
+            .padding(.horizontal, 16).padding(.vertical, 10)
+            .background(.ultraThinMaterial)
+        }
     }
 
     // MARK: - Actions
@@ -188,7 +285,11 @@ struct RosterView: View {
         isLoading = true
         defer { isLoading = false }
         do { roster = try await api.fetchIncidentRoster(alertId: alertId, userID: userID) }
-        catch { }
+        catch {
+            #if DEBUG
+            print("[RosterView] loadRoster failed: \(error)")
+            #endif
+        }
     }
 
     private func handleClaim(row: RosterIncidentRow, status: String) async {
@@ -214,21 +315,54 @@ struct RosterView: View {
             } else {
                 await loadRoster()
             }
-        } catch { }
+        } catch {
+            #if DEBUG
+            print("[RosterView] claimStudent failed: \(error)")
+            #endif
+        }
     }
 
     private func handleRelease(claimId: Int) async {
         do {
             try await api.releaseRosterClaim(alertId: alertId, claimId: claimId, userID: userID)
             await loadRoster()
-        } catch { }
+        } catch {
+            #if DEBUG
+            print("[RosterView] handleRelease failed: \(error)")
+            #endif
+        }
     }
 
     private func handleAddStudent(firstName: String, lastName: String, gradeLevel: String, note: String?) async {
         do {
             _ = try await api.addIncidentStudent(alertId: alertId, userID: userID, firstName: firstName, lastName: lastName, gradeLevel: gradeLevel, note: note)
             await loadRoster()
-        } catch { }
+        } catch {
+            #if DEBUG
+            print("[RosterView] handleAddStudent failed: \(error)")
+            #endif
+        }
+    }
+
+    private func submitAccountability() async {
+        isSubmittingAccountability = true
+        defer { isSubmittingAccountability = false }
+        do {
+            _ = try await api.submitAccountability(
+                alertId: alertId,
+                userID: userID,
+                studentsPresent: Array(markedPresent),
+                studentsMissing: Array(markedMissing)
+            )
+            accountabilityMode = false
+            markedPresent = []
+            markedMissing = []
+            await loadRoster()
+        } catch {
+            #if DEBUG
+            print("[RosterView] submitAccountability failed: \(error)")
+            #endif
+        }
     }
 }
 
@@ -246,7 +380,7 @@ private struct SummaryChip: View {
                 .foregroundStyle(color)
             Text(label)
                 .font(.caption2)
-                .foregroundStyle(Color(red: 0.58, green: 0.64, blue: 0.72))
+                .foregroundStyle(DSColor.offline)
         }
     }
 }
@@ -272,7 +406,7 @@ private struct RosterRowCard: View {
                             if row.isAddition {
                                 Text("added")
                                     .font(.caption2.weight(.medium))
-                                    .foregroundStyle(Color(red: 0.98, green: 0.75, blue: 0.14))
+                                    .foregroundStyle(DSColor.warning)
                                     .padding(.horizontal, 5).padding(.vertical, 2)
                                     .background(Color(red: 0.57, green: 0.25, blue: 0.06))
                                     .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
@@ -339,7 +473,7 @@ private struct RosterRowCard: View {
                         } label: {
                             Text("Release claim")
                                 .font(.caption.weight(.medium))
-                                .foregroundStyle(Color(red: 0.94, green: 0.27, blue: 0.27))
+                                .foregroundStyle(DSColor.danger)
                         }
                         .buttonStyle(.plain)
                     }
@@ -356,6 +490,70 @@ private struct RosterRowCard: View {
         }
         .background(Color(.secondarySystemGroupedBackground))
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+}
+
+// MARK: - Accountability Row Card
+
+private struct AccountabilityRowCard: View {
+    let row: RosterIncidentRow
+    let isPresent: Bool
+    let isMissing: Bool
+    let onMarkPresent: () -> Void
+    let onMarkMissing: () -> Void
+    let onClear: () -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(row.fullName)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.primary)
+                Text("Grade \(row.gradeLevel)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            HStack(spacing: 6) {
+                accountabilityButton(
+                    label: "Present",
+                    systemImage: "checkmark.circle.fill",
+                    isActive: isPresent,
+                    activeColor: DSColor.success
+                ) {
+                    if isPresent { onClear() } else { onMarkPresent() }
+                }
+                accountabilityButton(
+                    label: "Missing",
+                    systemImage: "xmark.circle.fill",
+                    isActive: isMissing,
+                    activeColor: DSColor.danger
+                ) {
+                    if isMissing { onClear() } else { onMarkMissing() }
+                }
+            }
+        }
+        .padding(12)
+        .background(Color(.secondarySystemGroupedBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    @ViewBuilder
+    private func accountabilityButton(label: String, systemImage: String, isActive: Bool, activeColor: Color, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(spacing: 3) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 22))
+                    .foregroundStyle(isActive ? activeColor : Color(.tertiaryLabel))
+                Text(label)
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(isActive ? activeColor : Color(.tertiaryLabel))
+            }
+            .frame(width: 58, height: 44)
+            .background(isActive ? activeColor.opacity(0.12) : Color(.tertiarySystemFill))
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        }
+        .buttonStyle(.plain)
     }
 }
 

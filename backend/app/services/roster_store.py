@@ -22,6 +22,8 @@ ALLOWED_CLAIM_STATUSES = frozenset(
 
 TAKEOVER_WINDOW_SECONDS = 30
 
+_ACCOUNTED_STATUSES = frozenset({"present_with_me", "absent", "injured", "released"})
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -236,6 +238,8 @@ class RosterStore:
         grade: Optional[str] = None,
         q: Optional[str] = None,
         include_archived: bool = False,
+        limit: Optional[int] = None,
+        offset: int = 0,
     ) -> list[StudentRecord]:
         conditions = []
         params: list = []
@@ -249,14 +253,39 @@ class RosterStore:
             conditions.append("(first_name LIKE ? OR last_name LIKE ? OR student_ref LIKE ?)")
             params.extend([like, like, like])
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        sql = (
+            f"SELECT id, created_at, updated_at, first_name, last_name, "
+            f"grade_level, student_ref, is_archived, archived_at "
+            f"FROM students {where} ORDER BY last_name, first_name"
+        )
+        if limit is not None:
+            sql += f" LIMIT {int(limit)} OFFSET {int(offset)}"
         with self._connect() as conn:
-            rows = conn.execute(
-                f"SELECT id, created_at, updated_at, first_name, last_name, "
-                f"grade_level, student_ref, is_archived, archived_at "
-                f"FROM students {where} ORDER BY last_name, first_name",
-                params,
-            ).fetchall()
+            rows = conn.execute(sql, params).fetchall()
         return [self._row_to_student(r) for r in rows]
+
+    def count_students_sync(
+        self,
+        *,
+        grade: Optional[str] = None,
+        q: Optional[str] = None,
+        include_archived: bool = False,
+    ) -> int:
+        conditions = []
+        params: list = []
+        if not include_archived:
+            conditions.append("is_archived = 0")
+        if grade:
+            conditions.append("grade_level = ?")
+            params.append(grade)
+        if q:
+            like = f"%{q}%"
+            conditions.append("(first_name LIKE ? OR last_name LIKE ? OR student_ref LIKE ?)")
+            params.extend([like, like, like])
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        with self._connect() as conn:
+            row = conn.execute(f"SELECT COUNT(*) FROM students {where}", params).fetchone()
+        return row[0] if row else 0
 
     def get_student_sync(self, student_id: int) -> Optional[StudentRecord]:
         with self._connect() as conn:
@@ -729,10 +758,216 @@ class RosterStore:
             ).fetchall()
         return [self._row_to_history(r) for r in rows]
 
+    # ── Version ───────────────────────────────────────────────────────────────
+
+    def get_roster_version_sync(self) -> str:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT MAX(updated_at) FROM students WHERE is_archived = 0"
+            ).fetchone()
+        return row[0] if row and row[0] else "0"
+
+    # ── Accountability ─────────────────────────────────────────────────────────
+
+    def get_accountability_rollup_sync(self, alert_id: int) -> dict:
+        with self._connect() as conn:
+            students = conn.execute(
+                "SELECT id, grade_level FROM students WHERE is_archived = 0"
+            ).fetchall()
+            additions = conn.execute(
+                "SELECT id, grade_level FROM roster_additions WHERE alert_id = ?",
+                (alert_id,),
+            ).fetchall()
+            claims = conn.execute(
+                "SELECT student_id, addition_id, claimed_by_label, status "
+                "FROM roster_claims WHERE alert_id = ?",
+                (alert_id,),
+            ).fetchall()
+
+        claim_by_student: dict[int, dict] = {}
+        claim_by_addition: dict[int, dict] = {}
+        for c in claims:
+            rec = {"label": c[2], "status": c[3]}
+            if c[0] is not None:
+                claim_by_student[c[0]] = rec
+            elif c[1] is not None:
+                claim_by_addition[c[1]] = rec
+
+        entries = []
+        for s in students:
+            sid, grade = s[0], s[1]
+            claim = claim_by_student.get(sid)
+            entries.append({
+                "grade": grade,
+                "status": claim["status"] if claim else "unknown",
+                "label": claim["label"] if claim else None,
+            })
+        for a in additions:
+            aid, grade = a[0], a[1]
+            claim = claim_by_addition.get(aid)
+            entries.append({
+                "grade": grade,
+                "status": claim["status"] if claim else "unknown",
+                "label": claim["label"] if claim else None,
+            })
+
+        total = len(entries)
+        accounted = sum(1 for e in entries if e["status"] in _ACCOUNTED_STATUSES)
+        missing = sum(1 for e in entries if e["status"] == "missing")
+        unknown = total - accounted - missing
+        percentage = round(accounted / total * 100, 1) if total else 0.0
+
+        grade_map: dict[str, dict] = {}
+        for e in entries:
+            g = e["grade"]
+            if g not in grade_map:
+                grade_map[g] = {"grade_level": g, "total": 0, "accounted": 0, "missing": 0, "unknown": 0}
+            grade_map[g]["total"] += 1
+            if e["status"] in _ACCOUNTED_STATUSES:
+                grade_map[g]["accounted"] += 1
+            elif e["status"] == "missing":
+                grade_map[g]["missing"] += 1
+            else:
+                grade_map[g]["unknown"] += 1
+
+        staff_map: dict[str, dict] = {}
+        for e in entries:
+            if e["label"] is None:
+                continue
+            lbl = e["label"]
+            if lbl not in staff_map:
+                staff_map[lbl] = {"staff_label": lbl, "claimed": 0, "accounted": 0, "missing": 0, "unknown": 0}
+            staff_map[lbl]["claimed"] += 1
+            if e["status"] in _ACCOUNTED_STATUSES:
+                staff_map[lbl]["accounted"] += 1
+            elif e["status"] == "missing":
+                staff_map[lbl]["missing"] += 1
+            else:
+                staff_map[lbl]["unknown"] += 1
+
+        return {
+            "alert_id": alert_id,
+            "total_students": total,
+            "accounted": accounted,
+            "missing": missing,
+            "unknown": unknown,
+            "percentage_accounted": percentage,
+            "by_grade": list(grade_map.values()),
+            "by_staff": list(staff_map.values()),
+        }
+
+    def list_missing_students_sync(
+        self,
+        alert_id: int,
+        *,
+        grade: Optional[str] = None,
+        q: Optional[str] = None,
+        include_unknown: bool = True,
+    ) -> list[dict]:
+        with self._connect() as conn:
+            students = conn.execute(
+                "SELECT id, first_name, last_name, grade_level, student_ref "
+                "FROM students WHERE is_archived = 0"
+            ).fetchall()
+            claims = conn.execute(
+                "SELECT student_id, claimed_by_label, status, last_updated_at "
+                "FROM roster_claims WHERE alert_id = ? AND student_id IS NOT NULL",
+                (alert_id,),
+            ).fetchall()
+
+        claim_map = {
+            c[0]: {"claimed_by_label": c[1], "status": c[2], "last_updated_at": c[3]}
+            for c in claims
+        }
+
+        result = []
+        for s in students:
+            sid, fn, ln, gl, ref = s
+            claim = claim_map.get(sid)
+            status = claim["status"] if claim else "unknown"
+
+            if status == "missing":
+                pass
+            elif status == "unknown" and include_unknown:
+                pass
+            else:
+                continue
+
+            if grade and gl != grade:
+                continue
+            if q:
+                ql = q.lower()
+                if (ql not in fn.lower() and ql not in ln.lower()
+                        and (not ref or ql not in ref.lower())):
+                    continue
+
+            result.append({
+                "student_id": sid,
+                "first_name": fn,
+                "last_name": ln,
+                "grade_level": gl,
+                "student_ref": ref,
+                "status": status,
+                "claimed_by_label": claim["claimed_by_label"] if claim else None,
+                "last_updated_at": claim["last_updated_at"] if claim else None,
+            })
+        return result
+
+    def batch_upsert_claims_sync(
+        self,
+        alert_id: int,
+        *,
+        student_ids_present: list[int],
+        student_ids_missing: list[int],
+        claimant_user_id: int,
+        claimant_label: str,
+        note: Optional[str] = None,
+    ) -> dict:
+        all_pairs = (
+            [(sid, "present_with_me") for sid in student_ids_present]
+            + [(sid, "missing") for sid in student_ids_missing]
+        )
+        if not all_pairs:
+            return {"inserted": 0, "updated": 0, "total": 0}
+
+        with self._connect() as conn:
+            existing = set(
+                r[0]
+                for r in conn.execute(
+                    "SELECT student_id FROM roster_claims "
+                    "WHERE alert_id = ? AND student_id IS NOT NULL",
+                    (alert_id,),
+                ).fetchall()
+            )
+
+        inserted = 0
+        updated = 0
+        for student_id, status in all_pairs:
+            is_new = student_id not in existing
+            self.upsert_claim_sync(
+                alert_id,
+                student_id=student_id,
+                status=status,
+                claimant_user_id=claimant_user_id,
+                claimant_label=claimant_label,
+                takeover_confirmed=True,
+                note=note,
+            )
+            if is_new:
+                inserted += 1
+                existing.add(student_id)
+            else:
+                updated += 1
+
+        return {"inserted": inserted, "updated": updated, "total": len(all_pairs)}
+
     # ── Async wrappers ────────────────────────────────────────────────────────
 
     async def list_students(self, **kw) -> list[StudentRecord]:
         return await anyio.to_thread.run_sync(lambda: self.list_students_sync(**kw))
+
+    async def count_students(self, **kw) -> int:
+        return await anyio.to_thread.run_sync(lambda: self.count_students_sync(**kw))
 
     async def get_student(self, student_id: int) -> Optional[StudentRecord]:
         return await anyio.to_thread.run_sync(lambda: self.get_student_sync(student_id))
@@ -772,6 +1007,18 @@ class RosterStore:
 
     async def list_claim_history(self, alert_id: int) -> list[RosterClaimHistoryRecord]:
         return await anyio.to_thread.run_sync(lambda: self.list_claim_history_sync(alert_id))
+
+    async def get_roster_version(self) -> str:
+        return await anyio.to_thread.run_sync(self.get_roster_version_sync)
+
+    async def get_accountability_rollup(self, alert_id: int) -> dict:
+        return await anyio.to_thread.run_sync(lambda: self.get_accountability_rollup_sync(alert_id))
+
+    async def list_missing_students(self, alert_id: int, **kw) -> list[dict]:
+        return await anyio.to_thread.run_sync(lambda: self.list_missing_students_sync(alert_id, **kw))
+
+    async def batch_upsert_claims(self, alert_id: int, **kw) -> dict:
+        return await anyio.to_thread.run_sync(lambda: self.batch_upsert_claims_sync(alert_id, **kw))
 
     # ── Private helpers ───────────────────────────────────────────────────────
 

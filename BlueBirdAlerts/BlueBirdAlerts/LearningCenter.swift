@@ -146,39 +146,197 @@ let LC_ALL_GUIDES: [LCGuide] = [
         ),
     ]),
 
-    // ── GUIDES 2–6 — SCAFFOLDED ──────────────────────────────────────────────
+    // ── GUIDE 2 — VIEW MESSAGES ──────────────────────────────────────────────
     LCGuide(id: .viewMessages, steps: [
         LCStep(
-            title: "Messages Overview",
-            description: "BlueBird Alerts includes a secure messaging system for communicating with staff before, during, and after emergencies. More training steps coming soon.",
+            title: "What Can You Send?",
+            description: "BlueBird Alerts has a full in-app messaging system. Messages are scoped to your school and only visible to authenticated staff — never sent over SMS or open email.",
+            kind: .iconGrid(items: [
+                ("message.fill",              "CHAT",      DSColor.primary),
+                ("megaphone.fill",            "BROADCAST", DSColor.warning),
+                ("exclamationmark.bubble.fill","PRIORITY",  DSColor.danger),
+                ("pin.fill",                  "PINNED",    DSColor.info),
+            ])
+        ),
+        LCStep(
+            title: "Messages During an Emergency",
+            description: "When an alarm is active, you can send and receive messages on the alert screen. Use this to share your location, report a situation, or coordinate with administration.",
+            kind: .mockNotification(
+                appName: "BlueBird Alerts",
+                title: "📩 New Message — Lincoln Elementary",
+                body: "Ms. Garcia: All students secured in gym. Accounting for 28 kids — 2 absent today."
+            )
+        ),
+        LCStep(
+            title: "Broadcasts from Admin",
+            description: "Administrators can send broadcast messages that appear for all staff. Priority broadcasts are highlighted and may trigger a sound even when the phone is on silent.",
+            kind: .mockNotification(
+                appName: "BlueBird Alerts",
+                title: "📢 Staff Broadcast — Lincoln Elementary",
+                body: "Admin: Law enforcement has arrived. Stay in place. Do NOT open doors until all-clear is given."
+            )
+        ),
+        LCStep(
+            title: "Reading Messages",
+            description: "Open the Messages tab at any time — during or outside a drill — to see the full conversation history for your school. Unread messages are marked with a blue dot.",
+            kind: .info(imageName: nil)
+        ),
+        LCStep(
+            title: "You're Ready",
+            description: "You know how to use BlueBird messaging before, during, and after emergencies. Use chat to share situational updates and broadcasts to reach all staff instantly.",
             kind: .info(imageName: nil)
         ),
     ]),
+
+    // ── GUIDE 3 — TEAM ASSIST ────────────────────────────────────────────────
     LCGuide(id: .teamAssist, steps: [
         LCStep(
-            title: "Team Assist Overview",
-            description: "Team Assist lets you silently request help from a colleague for non-emergency situations — a medical concern, an irate visitor, or a student issue. More steps coming soon.",
+            title: "When to Use Team Assist",
+            description: "Team Assist is for non-emergency situations where you need quiet backup from a colleague — without triggering a school-wide alarm.",
+            kind: .iconGrid(items: [
+                ("cross.case.fill",        "MEDICAL",   DSColor.danger),
+                ("person.fill.questionmark","VISITOR",   DSColor.warning),
+                ("person.fill.xmark",      "BEHAVIOR",  DSColor.info),
+                ("hand.raised.fill",       "SUPPORT",   DSColor.success),
+            ])
+        ),
+        LCStep(
+            title: "Silently Request Help",
+            description: "Tap the Team Assist button on the dashboard. Your request goes directly to your administrator and nearby staff — no announcement, no alarm sound.",
+            kind: .slideToConfirm(label: "Slide to Request Team Assist", iconName: "person.2.fill")
+        ),
+        LCStep(
+            title: "Who Gets Notified?",
+            description: "Your administrator receives a push notification and an in-app alert. They can acknowledge your request and coordinate a response without disrupting the school environment.",
+            kind: .mockNotification(
+                appName: "BlueBird Alerts",
+                title: "🤝 Team Assist Request — Room 214",
+                body: "Ms. Johnson needs assistance. Tap to view details and respond."
+            )
+        ),
+        LCStep(
+            title: "Team Assist vs. Emergency",
+            description: "Team Assist does NOT trigger a school-wide lockdown, evacuation, or any public protocol. If you need a full emergency response, use the hold-to-activate emergency button instead.",
+            kind: .info(imageName: nil)
+        ),
+        LCStep(
+            title: "You're Ready",
+            description: "Use Team Assist whenever you need quiet backup. Save the hold-to-activate button for true school-wide emergencies. When in doubt, activate — it's always better to respond than wait.",
             kind: .info(imageName: nil)
         ),
     ]),
+
+    // ── GUIDE 4 — ACCOUNT FOR YOURSELF ──────────────────────────────────────
     LCGuide(id: .accountForYourself, steps: [
         LCStep(
-            title: "Account for Yourself",
-            description: "During an active emergency, tap Acknowledge on the alert screen to mark yourself safe. Administrators see real-time counts of who has and hasn't responded. More steps coming soon.",
+            title: "Why It Matters",
+            description: "During an emergency, administrators need to know every staff member is safe. The acknowledgement system gives them a real-time count so they can focus resources where they're needed.",
+            kind: .iconGrid(items: [
+                ("checkmark.circle.fill",  "SAFE",      DSColor.success),
+                ("questionmark.circle.fill","UNKNOWN",   DSColor.warning),
+                ("xmark.circle.fill",      "MISSING",   DSColor.danger),
+                ("chart.bar.fill",         "LIVE COUNT", DSColor.primary),
+            ])
+        ),
+        LCStep(
+            title: "The Alert Screen",
+            description: "When an emergency activates, your phone shows a full-screen takeover. The acknowledgement counter at the top updates in real time as staff respond across the school.",
+            kind: .alarmTakeover(emergencyType: "LOCKDOWN")
+        ),
+        LCStep(
+            title: "Tap to Acknowledge",
+            description: "Tap the green Acknowledge button at the bottom of the alert screen. Your count is added instantly. You can still move, communicate, and use the app after acknowledging.",
+            kind: .acknowledgeButton
+        ),
+        LCStep(
+            title: "What Happens Next",
+            description: "After you tap Acknowledge, the button dims so you can't double-count. Administrators see your name marked safe in the accountability dashboard. You remain on the alert screen until cleared.",
+            kind: .info(imageName: nil)
+        ),
+        LCStep(
+            title: "You're Ready",
+            description: "In a real emergency: stay calm, secure your area, then acknowledge as soon as it is safe to do so. Even if you're with students, a quick tap takes seconds and helps administration immensely.",
             kind: .info(imageName: nil)
         ),
     ]),
+
+    // ── GUIDE 5 — ACCOUNT FOR STUDENTS ──────────────────────────────────────
     LCGuide(id: .accountForStudents, steps: [
         LCStep(
-            title: "Student Accountability",
-            description: "Administrators can track student status during an emergency using built-in roster tools. More steps coming soon.",
+            title: "Student Statuses",
+            description: "During an emergency, every student in your master roster needs a status. BlueBird tracks four states so administration knows exactly where every child is.",
+            kind: .iconGrid(items: [
+                ("checkmark.circle.fill",    "PRESENT",  DSColor.success),
+                ("xmark.circle.fill",        "MISSING",  DSColor.danger),
+                ("bandage.fill",             "INJURED",  DSColor.warning),
+                ("figure.walk",              "RELEASED", DSColor.info),
+            ])
+        ),
+        LCStep(
+            title: "Open the Roster",
+            description: "During an active alert, tap the 🎒 Roster button on the alarm banner — or open it from the dashboard. Your student list appears with current claim status from all staff.",
+            kind: .info(imageName: nil)
+        ),
+        LCStep(
+            title: "Claim a Student",
+            description: "Tap a student's name to claim them. Select their status — Present, Missing, Injured, or Released. Your name appears next to the claim so administration knows who reported it.",
+            kind: .slideToConfirm(label: "Slide to Claim Student Present", iconName: "list.bullet.clipboard.fill")
+        ),
+        LCStep(
+            title: "Roll Call Mode",
+            description: "Use Roll Call to batch-mark your entire class at once. Tap Present ✓ or Missing ✗ for each student, then hit Submit. All marks are sent in a single action — faster during a real drill.",
+            kind: .info(imageName: nil)
+        ),
+        LCStep(
+            title: "Conflicts & Takeovers",
+            description: "If a student has already been claimed by another teacher, you'll see a conflict warning. You can confirm a takeover if the child has moved to your supervision — this updates the record for everyone.",
+            kind: .info(imageName: nil)
+        ),
+        LCStep(
+            title: "You're Ready",
+            description: "Student accountability is team effort. Claim the students in your area, use Roll Call for speed, and communicate through messages when situations change. Every update helps administration respond faster.",
             kind: .info(imageName: nil)
         ),
     ]),
+
+    // ── GUIDE 6 — REUNIFICATION ──────────────────────────────────────────────
     LCGuide(id: .reunification, steps: [
         LCStep(
-            title: "Reunification Overview",
-            description: "After an emergency, BlueBird Alerts supports the reunification process with tracking and communication tools. More steps coming soon.",
+            title: "What Is Reunification?",
+            description: "Reunification is the controlled process of releasing students to parents or guardians after an emergency. It requires verification, documentation, and clear communication between staff.",
+            kind: .iconGrid(items: [
+                ("building.2.fill",        "SECURE AREA",  DSColor.danger),
+                ("person.2.wave.2.fill",   "PARENT ARRIVAL", DSColor.warning),
+                ("checkmark.shield.fill",  "VERIFICATION", DSColor.success),
+                ("figure.walk.departure",  "RELEASE",      DSColor.primary),
+            ])
+        ),
+        LCStep(
+            title: "Admin Broadcasts to Staff",
+            description: "During reunification, administrators use BlueBird broadcasts to coordinate staff assignments — who manages the parent check-in area, who verifies IDs, who escorts students.",
+            kind: .mockNotification(
+                appName: "BlueBird Alerts",
+                title: "📢 Reunification Starting — Lincoln Elementary",
+                body: "Admin: Parents arriving at front entrance. ID verification team report to lobby. All students remain in gym."
+            )
+        ),
+        LCStep(
+            title: "Student Release Tracking",
+            description: "Use the Roster to update each student's status to Released as they leave with a verified guardian. This keeps administration's count accurate and prevents students from leaving unrecorded.",
+            kind: .info(imageName: nil)
+        ),
+        LCStep(
+            title: "Communicate Status Changes",
+            description: "Use the Messages tab to report changes in real time — a student whose parent hasn't arrived, a guardian who can't be verified, or a child with a medical concern during the process.",
+            kind: .mockNotification(
+                appName: "BlueBird Alerts",
+                title: "📩 Message — Ms. Garcia",
+                body: "Marcus Chen's emergency contact is his aunt — she's listed as authorized pickup in the office file."
+            )
+        ),
+        LCStep(
+            title: "You're Ready",
+            description: "Reunification is the final phase of any emergency response. Stay at your assigned post, update student statuses as children are released, and communicate immediately if something doesn't look right.",
             kind: .info(imageName: nil)
         ),
     ]),

@@ -4,6 +4,10 @@ struct APIClient: Sendable {
     let baseURL: URL
     let apiKey: String
 
+    // Shared coders — JSONEncoder/Decoder are thread-safe after configuration.
+    private static let encoder = JSONEncoder()
+    private static let decoder = JSONDecoder()
+
     init(baseURL: URL, apiKey: String = "") {
         self.baseURL = baseURL
         self.apiKey = apiKey
@@ -20,7 +24,7 @@ struct APIClient: Sendable {
         let url = baseURL.appendingPathComponent("health")
         let (data, response) = try await URLSession.shared.data(from: url)
         try requireSuccess(response: response, data: data)
-        return try JSONDecoder().decode(HealthResponse.self, from: data)
+        return try Self.decoder.decode(HealthResponse.self, from: data)
     }
 
     func registerDevice(token: String, deviceId: String? = nil) async throws -> RegisterDeviceResponse {
@@ -29,11 +33,11 @@ struct APIClient: Sendable {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         withAPIKey(&request)
-        request.httpBody = try JSONEncoder().encode(RegisterDeviceRequest(deviceToken: token, deviceId: deviceId))
+        request.httpBody = try Self.encoder.encode(RegisterDeviceRequest(deviceToken: token, deviceId: deviceId))
 
         let (data, response) = try await URLSession.shared.data(for: request)
         try requireSuccess(response: response, data: data)
-        return try JSONDecoder().decode(RegisterDeviceResponse.self, from: data)
+        return try Self.decoder.decode(RegisterDeviceResponse.self, from: data)
     }
 
     func deregisterDevice(token: String, deviceId: String? = nil, userID: Int? = nil) async throws {
@@ -42,7 +46,7 @@ struct APIClient: Sendable {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         withAPIKey(&request)
-        request.httpBody = try JSONEncoder().encode(DeregisterDeviceRequest(deviceToken: token, deviceId: deviceId, userID: userID))
+        request.httpBody = try Self.encoder.encode(DeregisterDeviceRequest(deviceToken: token, deviceId: deviceId, userID: userID))
         let (data, response) = try await URLSession.shared.data(for: request)
         try requireSuccess(response: response, data: data)
     }
@@ -53,7 +57,7 @@ struct APIClient: Sendable {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         withAPIKey(&request)
-        request.httpBody = try JSONEncoder().encode(
+        request.httpBody = try Self.encoder.encode(
             PanicRequest(
                 userID: userID,
                 message: message,
@@ -65,7 +69,7 @@ struct APIClient: Sendable {
 
         let (data, response) = try await URLSession.shared.data(for: request)
         try requireSuccess(response: response, data: data)
-        return try JSONDecoder().decode(PanicResponse.self, from: data)
+        return try Self.decoder.decode(PanicResponse.self, from: data)
     }
 
     func devices() async throws -> DevicesResponse {
@@ -74,7 +78,7 @@ struct APIClient: Sendable {
         withAPIKey(&request)
         let (data, response) = try await URLSession.shared.data(for: request)
         try requireSuccess(response: response, data: data)
-        return try JSONDecoder().decode(DevicesResponse.self, from: data)
+        return try Self.decoder.decode(DevicesResponse.self, from: data)
     }
 
     func alerts(limit: Int = 5) async throws -> AlertsResponse {
@@ -87,7 +91,7 @@ struct APIClient: Sendable {
         withAPIKey(&request)
         let (data, response) = try await URLSession.shared.data(for: request)
         try requireSuccess(response: response, data: data)
-        return try JSONDecoder().decode(AlertsResponse.self, from: data)
+        return try Self.decoder.decode(AlertsResponse.self, from: data)
     }
 
     func activeIncidents() async throws -> IncidentListResponse {
@@ -96,7 +100,7 @@ struct APIClient: Sendable {
         withAPIKey(&request)
         let (data, response) = try await URLSession.shared.data(for: request)
         try requireSuccess(response: response, data: data)
-        return try JSONDecoder().decode(IncidentListResponse.self, from: data)
+        return try Self.decoder.decode(IncidentListResponse.self, from: data)
     }
 
     func alarmStatus() async throws -> AlarmStatusResponse {
@@ -105,7 +109,7 @@ struct APIClient: Sendable {
         withAPIKey(&request)
         let (data, response) = try await URLSession.shared.data(for: request)
         try requireSuccess(response: response, data: data)
-        return try JSONDecoder().decode(AlarmStatusResponse.self, from: data)
+        return try Self.decoder.decode(AlarmStatusResponse.self, from: data)
     }
 
     func deactivateAlarm(adminUserID: Int) async throws -> AlarmStatusResponse {
@@ -114,10 +118,10 @@ struct APIClient: Sendable {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         withAPIKey(&request)
-        request.httpBody = try JSONEncoder().encode(AlarmDeactivateRequest(userID: adminUserID))
+        request.httpBody = try Self.encoder.encode(AlarmDeactivateRequest(userID: adminUserID))
         let (data, response) = try await URLSession.shared.data(for: request)
         try requireSuccess(response: response, data: data)
-        return try JSONDecoder().decode(AlarmStatusResponse.self, from: data)
+        return try Self.decoder.decode(AlarmStatusResponse.self, from: data)
     }
 
     func acknowledgeAlert(alertId: Int, userID: Int) async throws {
@@ -126,7 +130,7 @@ struct APIClient: Sendable {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         withAPIKey(&request)
-        request.httpBody = try JSONEncoder().encode(["user_id": userID])
+        request.httpBody = try Self.encoder.encode(["user_id": userID])
         let (data, response) = try await URLSession.shared.data(for: request)
         try requireSuccess(response: response, data: data)
     }
@@ -137,7 +141,7 @@ struct APIClient: Sendable {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         withAPIKey(&request)
-        request.httpBody = try JSONEncoder().encode(["device_token": deviceToken, "push_provider": "apns"])
+        request.httpBody = try Self.encoder.encode(["device_token": deviceToken, "push_provider": "apns"])
         let (data, response) = try await URLSession.shared.data(for: request)
         try requireSuccess(response: response, data: data)
     }
@@ -160,7 +164,7 @@ struct APIClient: Sendable {
         withAPIKey(&request)
         let (data, response) = try await URLSession.shared.data(for: request)
         try requireSuccess(response: response, data: data)
-        return try JSONDecoder().decode(TeamAssistListResponse.self, from: data)
+        return try Self.decoder.decode(TeamAssistListResponse.self, from: data)
     }
 
     func activeTeamAssists() async throws -> TeamAssistListResponse {
@@ -173,7 +177,7 @@ struct APIClient: Sendable {
         withAPIKey(&request)
         let (data, response) = try await URLSession.shared.data(for: request)
         try requireSuccess(response: response, data: data)
-        return try JSONDecoder().decode([String: String].self, from: data)
+        return try Self.decoder.decode([String: String].self, from: data)
     }
 
     func createRequestHelp(userID: Int, type: String) async throws -> TeamAssistSummary {
@@ -182,10 +186,10 @@ struct APIClient: Sendable {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         withAPIKey(&request)
-        request.httpBody = try JSONEncoder().encode(TeamAssistCreateRequest(userID: userID, type: type))
+        request.httpBody = try Self.encoder.encode(TeamAssistCreateRequest(userID: userID, type: type))
         let (data, response) = try await URLSession.shared.data(for: request)
         try requireSuccess(response: response, data: data)
-        return try JSONDecoder().decode(TeamAssistSummary.self, from: data)
+        return try Self.decoder.decode(TeamAssistSummary.self, from: data)
     }
 
     func createTeamAssist(userID: Int, type: String) async throws -> TeamAssistSummary {
@@ -203,12 +207,12 @@ struct APIClient: Sendable {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         withAPIKey(&request)
-        request.httpBody = try JSONEncoder().encode(
+        request.httpBody = try Self.encoder.encode(
             TeamAssistActionPayload(userID: actorUserID, action: action, forwardToUserID: forwardToUserID)
         )
         let (data, response) = try await URLSession.shared.data(for: request)
         try requireSuccess(response: response, data: data)
-        return try JSONDecoder().decode(TeamAssistSummary.self, from: data)
+        return try Self.decoder.decode(TeamAssistSummary.self, from: data)
     }
 
     func updateTeamAssist(
@@ -231,10 +235,10 @@ struct APIClient: Sendable {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         withAPIKey(&request)
-        request.httpBody = try JSONEncoder().encode(TeamAssistCancelConfirmPayload(userID: actorUserID))
+        request.httpBody = try Self.encoder.encode(TeamAssistCancelConfirmPayload(userID: actorUserID))
         let (data, response) = try await URLSession.shared.data(for: request)
         try requireSuccess(response: response, data: data)
-        return try JSONDecoder().decode(TeamAssistSummary.self, from: data)
+        return try Self.decoder.decode(TeamAssistSummary.self, from: data)
     }
 
     func confirmTeamAssistCancel(teamAssistID: Int, actorUserID: Int) async throws -> TeamAssistSummary {
@@ -247,10 +251,10 @@ struct APIClient: Sendable {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         withAPIKey(&request)
-        request.httpBody = try JSONEncoder().encode(QuietPeriodRequestPayload(userID: userID, reason: reason, scheduledStartAt: scheduledStartAt, scheduledEndAt: scheduledEndAt))
+        request.httpBody = try Self.encoder.encode(QuietPeriodRequestPayload(userID: userID, reason: reason, scheduledStartAt: scheduledStartAt, scheduledEndAt: scheduledEndAt))
         let (data, response) = try await URLSession.shared.data(for: request)
         try requireSuccess(response: response, data: data)
-        return try JSONDecoder().decode(QuietPeriodRequestResponse.self, from: data)
+        return try Self.decoder.decode(QuietPeriodRequestResponse.self, from: data)
     }
 
     func adminQuietPeriodRequests(adminUserID: Int, limit: Int = 120) async throws -> QuietPeriodAdminListResponse {
@@ -266,7 +270,7 @@ struct APIClient: Sendable {
         withAPIKey(&request)
         let (data, response) = try await URLSession.shared.data(for: request)
         try requireSuccess(response: response, data: data)
-        return try JSONDecoder().decode(QuietPeriodAdminListResponse.self, from: data)
+        return try Self.decoder.decode(QuietPeriodAdminListResponse.self, from: data)
     }
 
     func approveQuietPeriodRequest(requestID: Int, adminUserID: Int) async throws -> QuietPeriodRequestResponse {
@@ -275,10 +279,10 @@ struct APIClient: Sendable {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         withAPIKey(&request)
-        request.httpBody = try JSONEncoder().encode(QuietPeriodAdminActionPayload(adminUserID: adminUserID))
+        request.httpBody = try Self.encoder.encode(QuietPeriodAdminActionPayload(adminUserID: adminUserID))
         let (data, response) = try await URLSession.shared.data(for: request)
         try requireSuccess(response: response, data: data)
-        return try JSONDecoder().decode(QuietPeriodRequestResponse.self, from: data)
+        return try Self.decoder.decode(QuietPeriodRequestResponse.self, from: data)
     }
 
     func denyQuietPeriodRequest(requestID: Int, adminUserID: Int) async throws -> QuietPeriodRequestResponse {
@@ -287,10 +291,10 @@ struct APIClient: Sendable {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         withAPIKey(&request)
-        request.httpBody = try JSONEncoder().encode(QuietPeriodAdminActionPayload(adminUserID: adminUserID))
+        request.httpBody = try Self.encoder.encode(QuietPeriodAdminActionPayload(adminUserID: adminUserID))
         let (data, response) = try await URLSession.shared.data(for: request)
         try requireSuccess(response: response, data: data)
-        return try JSONDecoder().decode(QuietPeriodRequestResponse.self, from: data)
+        return try Self.decoder.decode(QuietPeriodRequestResponse.self, from: data)
     }
 
     func myQuietRequest(userID: Int) async throws -> QuietPeriodRequestResponse {
@@ -301,7 +305,7 @@ struct APIClient: Sendable {
         withAPIKey(&request)
         let (data, response) = try await URLSession.shared.data(for: request)
         try requireSuccess(response: response, data: data)
-        return try JSONDecoder().decode(QuietPeriodRequestResponse.self, from: data)
+        return try Self.decoder.decode(QuietPeriodRequestResponse.self, from: data)
     }
 
     func quietPeriodStatus(userID: Int) async throws -> QuietPeriodRequestResponse {
@@ -312,7 +316,7 @@ struct APIClient: Sendable {
         withAPIKey(&request)
         let (data, response) = try await URLSession.shared.data(for: request)
         try requireSuccess(response: response, data: data)
-        return try JSONDecoder().decode(QuietPeriodRequestResponse.self, from: data)
+        return try Self.decoder.decode(QuietPeriodRequestResponse.self, from: data)
     }
 
     func cancelQuietRequest(requestID: Int, userID: Int) async throws -> QuietPeriodRequestResponse {
@@ -324,7 +328,7 @@ struct APIClient: Sendable {
         withAPIKey(&request)
         let (data, response) = try await URLSession.shared.data(for: request)
         try requireSuccess(response: response, data: data)
-        return try JSONDecoder().decode(QuietPeriodRequestResponse.self, from: data)
+        return try Self.decoder.decode(QuietPeriodRequestResponse.self, from: data)
     }
 
     func alarmPushStats(userID: Int) async throws -> PushDeliveryStatsResponse {
@@ -335,7 +339,7 @@ struct APIClient: Sendable {
         withAPIKey(&request)
         let (data, response) = try await URLSession.shared.data(for: request)
         try requireSuccess(response: response, data: data)
-        return try JSONDecoder().decode(PushDeliveryStatsResponse.self, from: data)
+        return try Self.decoder.decode(PushDeliveryStatsResponse.self, from: data)
     }
 
     func auditLog(
@@ -359,14 +363,14 @@ struct APIClient: Sendable {
         withAPIKey(&request)
         let (data, response) = try await URLSession.shared.data(for: request)
         try requireSuccess(response: response, data: data)
-        return try JSONDecoder().decode(AuditLogResponse.self, from: data)
+        return try Self.decoder.decode(AuditLogResponse.self, from: data)
     }
 
     func listSchools() async throws -> SchoolsCatalogResponse {
         let url = Config.backendBaseURL.appendingPathComponent("schools")
         let (data, response) = try await URLSession.shared.data(from: url)
         try requireSuccess(response: response, data: data)
-        return try JSONDecoder().decode(SchoolsCatalogResponse.self, from: data)
+        return try Self.decoder.decode(SchoolsCatalogResponse.self, from: data)
     }
 
     func me(userID: Int) async throws -> MeResponse {
@@ -379,7 +383,7 @@ struct APIClient: Sendable {
         withAPIKey(&request)
         let (data, response) = try await URLSession.shared.data(for: request)
         try requireSuccess(response: response, data: data)
-        return try JSONDecoder().decode(MeResponse.self, from: data)
+        return try Self.decoder.decode(MeResponse.self, from: data)
     }
 
     func districtOverview(userID: Int) async throws -> DistrictOverviewResponse {
@@ -392,7 +396,7 @@ struct APIClient: Sendable {
         withAPIKey(&request)
         let (data, response) = try await URLSession.shared.data(for: request)
         try requireSuccess(response: response, data: data)
-        return try JSONDecoder().decode(DistrictOverviewResponse.self, from: data)
+        return try Self.decoder.decode(DistrictOverviewResponse.self, from: data)
     }
 
     func login(username: String, password: String) async throws -> MobileLoginResponse {
@@ -400,11 +404,11 @@ struct APIClient: Sendable {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONEncoder().encode(MobileLoginRequest(loginName: username, password: password))
+        request.httpBody = try Self.encoder.encode(MobileLoginRequest(loginName: username, password: password))
 
         let (data, response) = try await URLSession.shared.data(for: request)
         try requireSuccess(response: response, data: data)
-        return try JSONDecoder().decode(MobileLoginResponse.self, from: data)
+        return try Self.decoder.decode(MobileLoginResponse.self, from: data)
     }
 
     func messageAdmin(userID: Int?, message: String) async throws -> AdminMessageResponse {
@@ -413,10 +417,10 @@ struct APIClient: Sendable {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         withAPIKey(&request)
-        request.httpBody = try JSONEncoder().encode(MessageAdminRequest(userID: userID, message: message))
+        request.httpBody = try Self.encoder.encode(MessageAdminRequest(userID: userID, message: message))
         let (data, response) = try await URLSession.shared.data(for: request)
         try requireSuccess(response: response, data: data)
-        return try JSONDecoder().decode(AdminMessageResponse.self, from: data)
+        return try Self.decoder.decode(AdminMessageResponse.self, from: data)
     }
 
     func listMessageRecipients() async throws -> [MessageRecipient] {
@@ -425,7 +429,7 @@ struct APIClient: Sendable {
         withAPIKey(&request)
         let (data, response) = try await URLSession.shared.data(for: request)
         try requireSuccess(response: response, data: data)
-        let users = try JSONDecoder().decode(UsersResponse.self, from: data).users
+        let users = try Self.decoder.decode(UsersResponse.self, from: data).users
         return users
             .filter { $0.isActive && $0.role.lowercased() != "admin" }
             .map { MessageRecipient(userID: $0.userID, label: "\($0.name) (\($0.role))") }
@@ -438,7 +442,7 @@ struct APIClient: Sendable {
         withAPIKey(&request)
         let (data, response) = try await URLSession.shared.data(for: request)
         try requireSuccess(response: response, data: data)
-        let users = try JSONDecoder().decode(UsersResponse.self, from: data).users
+        let users = try Self.decoder.decode(UsersResponse.self, from: data).users
         return users
             .filter { $0.isActive }
             .map { MessageRecipient(userID: $0.userID, label: "\($0.name) (\($0.role))") }
@@ -456,7 +460,7 @@ struct APIClient: Sendable {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         withAPIKey(&request)
-        request.httpBody = try JSONEncoder().encode(
+        request.httpBody = try Self.encoder.encode(
             AdminSendMessageRequest(
                 adminUserID: adminUserID,
                 message: message,
@@ -466,7 +470,7 @@ struct APIClient: Sendable {
         )
         let (data, response) = try await URLSession.shared.data(for: request)
         try requireSuccess(response: response, data: data)
-        return try JSONDecoder().decode(AdminSendMessageResponse.self, from: data)
+        return try Self.decoder.decode(AdminSendMessageResponse.self, from: data)
     }
 
     func sendAlertMessage(alertId: Int, userID: Int, message: String, recipientId: Int? = nil) async throws -> AlertMessageOut {
@@ -475,10 +479,10 @@ struct APIClient: Sendable {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         withAPIKey(&request)
-        request.httpBody = try JSONEncoder().encode(AlertMessageSendRequest(userID: userID, message: message, recipientId: recipientId))
+        request.httpBody = try Self.encoder.encode(AlertMessageSendRequest(userID: userID, message: message, recipientId: recipientId))
         let (data, response) = try await URLSession.shared.data(for: request)
         try requireSuccess(response: response, data: data)
-        return try JSONDecoder().decode(AlertMessageOut.self, from: data)
+        return try Self.decoder.decode(AlertMessageOut.self, from: data)
     }
 
     func getAlertMessages(alertId: Int, userID: Int) async throws -> [AlertMessageOut] {
@@ -488,7 +492,7 @@ struct APIClient: Sendable {
         withAPIKey(&request)
         let (data, response) = try await URLSession.shared.data(for: request)
         try requireSuccess(response: response, data: data)
-        return try JSONDecoder().decode(AlertMessageListResponse.self, from: data).messages
+        return try Self.decoder.decode(AlertMessageListResponse.self, from: data).messages
     }
 
     func broadcastAlertMessage(alertId: Int, userID: Int, message: String) async throws -> AlertMessageOut {
@@ -497,10 +501,10 @@ struct APIClient: Sendable {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         withAPIKey(&request)
-        request.httpBody = try JSONEncoder().encode(AlertBroadcastRequest(userID: userID, message: message))
+        request.httpBody = try Self.encoder.encode(AlertBroadcastRequest(userID: userID, message: message))
         let (data, response) = try await URLSession.shared.data(for: request)
         try requireSuccess(response: response, data: data)
-        return try JSONDecoder().decode(AlertMessageOut.self, from: data)
+        return try Self.decoder.decode(AlertMessageOut.self, from: data)
     }
 
     func remindUnacknowledged(alertId: Int, adminUserID: Int) async throws -> AlertRemindResponse {
@@ -509,10 +513,10 @@ struct APIClient: Sendable {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         withAPIKey(&request)
-        request.httpBody = try JSONEncoder().encode(["user_id": adminUserID])
+        request.httpBody = try Self.encoder.encode(["user_id": adminUserID])
         let (data, response) = try await URLSession.shared.data(for: request)
         try requireSuccess(response: response, data: data)
-        return try JSONDecoder().decode(AlertRemindResponse.self, from: data)
+        return try Self.decoder.decode(AlertRemindResponse.self, from: data)
     }
 
     private func requireSuccess(response: URLResponse, data: Data) throws {
@@ -528,7 +532,7 @@ struct APIClient: Sendable {
     }
 
     private func parseAPIError(data: Data) -> String {
-        if let error = try? JSONDecoder().decode(FastAPIError.self, from: data) {
+        if let error = try? Self.decoder.decode(FastAPIError.self, from: data) {
             return error.message
         }
         return String(data: data, encoding: .utf8) ?? "<non-utf8 response>"
@@ -1385,6 +1389,40 @@ private struct AddIncidentStudentRequest: Encodable {
     }
 }
 
+// MARK: - Batch Accountability
+
+struct BatchAccountabilityResult: Decodable {
+    let ok: Bool
+    let inserted: Int
+    let updated: Int
+    let total: Int
+}
+
+// MARK: - Master Roster
+
+struct MasterStudent: Codable, Identifiable {
+    let id: Int
+    let firstName: String
+    let lastName: String
+    let gradeLevel: String
+    let studentRef: String?
+
+    var fullName: String { "\(firstName) \(lastName)" }
+
+    enum CodingKeys: String, CodingKey {
+        case firstName = "first_name"
+        case lastName = "last_name"
+        case gradeLevel = "grade_level"
+        case studentRef = "student_ref"
+        case id = "student_id"
+    }
+}
+
+private struct MasterRosterResponse: Decodable {
+    let students: [MasterStudent]
+    let total: Int
+}
+
 // MARK: - Onboarding API methods (platform-level — use Config.backendBaseURL as baseURL)
 
 extension APIClient {
@@ -1393,10 +1431,10 @@ extension APIClient {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONEncoder().encode(ValidateCodeRequest(code: code, tenantSlug: tenantSlug))
+        request.httpBody = try Self.encoder.encode(ValidateCodeRequest(code: code, tenantSlug: tenantSlug))
         let (data, response) = try await URLSession.shared.data(for: request)
         try requireSuccess(response: response, data: data)
-        return try JSONDecoder().decode(ValidateCodeResponse.self, from: data)
+        return try Self.decoder.decode(ValidateCodeResponse.self, from: data)
     }
 
     func createAccountFromCode(code: String, tenantSlug: String, name: String, loginName: String, password: String) async throws -> ValidateCodeResponse {
@@ -1404,12 +1442,12 @@ extension APIClient {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONEncoder().encode(
+        request.httpBody = try Self.encoder.encode(
             CreateAccountFromCodeRequest(code: code, tenantSlug: tenantSlug, name: name, loginName: loginName, password: password)
         )
         let (data, response) = try await URLSession.shared.data(for: request)
         try requireSuccess(response: response, data: data)
-        return try JSONDecoder().decode(ValidateCodeResponse.self, from: data)
+        return try Self.decoder.decode(ValidateCodeResponse.self, from: data)
     }
 
     func validateSetupCode(code: String) async throws -> ValidateSetupCodeResponse {
@@ -1417,10 +1455,10 @@ extension APIClient {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONEncoder().encode(ValidateSetupCodeRequest(code: code))
+        request.httpBody = try Self.encoder.encode(ValidateSetupCodeRequest(code: code))
         let (data, response) = try await URLSession.shared.data(for: request)
         try requireSuccess(response: response, data: data)
-        return try JSONDecoder().decode(ValidateSetupCodeResponse.self, from: data)
+        return try Self.decoder.decode(ValidateSetupCodeResponse.self, from: data)
     }
 
     func createDistrictAdmin(code: String, name: String, loginName: String, password: String) async throws -> ValidateSetupCodeResponse {
@@ -1428,12 +1466,12 @@ extension APIClient {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONEncoder().encode(
+        request.httpBody = try Self.encoder.encode(
             CreateDistrictAdminRequest(code: code, name: name, loginName: loginName, password: password)
         )
         let (data, response) = try await URLSession.shared.data(for: request)
         try requireSuccess(response: response, data: data)
-        return try JSONDecoder().decode(ValidateSetupCodeResponse.self, from: data)
+        return try Self.decoder.decode(ValidateSetupCodeResponse.self, from: data)
     }
 
     // ── Roster ─────────────────────────────────────────────────────────────────
@@ -1445,7 +1483,7 @@ extension APIClient {
         withAPIKey(&request)
         let (data, response) = try await URLSession.shared.data(for: request)
         try requireSuccess(response: response, data: data)
-        return try JSONDecoder().decode(IncidentRoster.self, from: data)
+        return try Self.decoder.decode(IncidentRoster.self, from: data)
     }
 
     func fetchRosterSummary(alertId: Int, userID: Int) async throws -> IncidentRosterSummary {
@@ -1455,7 +1493,7 @@ extension APIClient {
         withAPIKey(&request)
         let (data, response) = try await URLSession.shared.data(for: request)
         try requireSuccess(response: response, data: data)
-        return try JSONDecoder().decode(IncidentRosterSummary.self, from: data)
+        return try Self.decoder.decode(IncidentRosterSummary.self, from: data)
     }
 
     func claimStudent(alertId: Int, studentId: Int, userID: Int, status: String, takeoverConfirmed: Bool = false) async throws -> RosterClaimResult {
@@ -1465,10 +1503,10 @@ extension APIClient {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         withAPIKey(&request)
-        request.httpBody = try JSONEncoder().encode(RosterClaimRequest(userID: userID, status: status, takeoverConfirmed: takeoverConfirmed))
+        request.httpBody = try Self.encoder.encode(RosterClaimRequest(userID: userID, status: status, takeoverConfirmed: takeoverConfirmed))
         let (data, response) = try await URLSession.shared.data(for: request)
         try requireSuccess(response: response, data: data)
-        return try JSONDecoder().decode(RosterClaimResult.self, from: data)
+        return try Self.decoder.decode(RosterClaimResult.self, from: data)
     }
 
     func claimAddition(alertId: Int, additionId: Int, userID: Int, status: String, takeoverConfirmed: Bool = false) async throws -> RosterClaimResult {
@@ -1478,10 +1516,10 @@ extension APIClient {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         withAPIKey(&request)
-        request.httpBody = try JSONEncoder().encode(RosterClaimRequest(userID: userID, status: status, takeoverConfirmed: takeoverConfirmed))
+        request.httpBody = try Self.encoder.encode(RosterClaimRequest(userID: userID, status: status, takeoverConfirmed: takeoverConfirmed))
         let (data, response) = try await URLSession.shared.data(for: request)
         try requireSuccess(response: response, data: data)
-        return try JSONDecoder().decode(RosterClaimResult.self, from: data)
+        return try Self.decoder.decode(RosterClaimResult.self, from: data)
     }
 
     func releaseRosterClaim(alertId: Int, claimId: Int, userID: Int) async throws {
@@ -1501,10 +1539,49 @@ extension APIClient {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         withAPIKey(&request)
-        request.httpBody = try JSONEncoder().encode(AddIncidentStudentRequest(userID: userID, firstName: firstName, lastName: lastName, gradeLevel: gradeLevel, note: note))
+        request.httpBody = try Self.encoder.encode(AddIncidentStudentRequest(userID: userID, firstName: firstName, lastName: lastName, gradeLevel: gradeLevel, note: note))
         let (data, response) = try await URLSession.shared.data(for: request)
         try requireSuccess(response: response, data: data)
-        return try JSONDecoder().decode(RosterIncidentRow.self, from: data)
+        return try Self.decoder.decode(RosterIncidentRow.self, from: data)
+    }
+
+    func fetchRosterVersion(userID: Int) async throws -> String {
+        var comps = URLComponents(url: baseURL.appendingPathComponent("roster/students/version"), resolvingAgainstBaseURL: false)!
+        comps.queryItems = [URLQueryItem(name: "user_id", value: String(userID))]
+        var request = URLRequest(url: comps.url!)
+        withAPIKey(&request)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try requireSuccess(response: response, data: data)
+        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        return (json?["version"] as? String) ?? ""
+    }
+
+    func submitAccountability(alertId: Int, userID: Int, studentsPresent: [Int], studentsMissing: [Int], notes: String? = nil) async throws -> BatchAccountabilityResult {
+        let url = baseURL.appendingPathComponent("alerts/\(alertId)/accountability")
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        withAPIKey(&request)
+        var body: [String: Any] = [
+            "user_id": userID,
+            "students_present": studentsPresent,
+            "students_missing": studentsMissing,
+        ]
+        if let notes = notes, !notes.isEmpty { body["notes"] = notes }
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try requireSuccess(response: response, data: data)
+        return try Self.decoder.decode(BatchAccountabilityResult.self, from: data)
+    }
+
+    func fetchMasterRoster(userID: Int) async throws -> [MasterStudent] {
+        var comps = URLComponents(url: baseURL.appendingPathComponent("roster/students"), resolvingAgainstBaseURL: false)!
+        comps.queryItems = [URLQueryItem(name: "user_id", value: String(userID))]
+        var request = URLRequest(url: comps.url!)
+        withAPIKey(&request)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try requireSuccess(response: response, data: data)
+        return try Self.decoder.decode(MasterRosterResponse.self, from: data).students
     }
 
     // ── Emergency Actions ──────────────────────────────────────────────────────

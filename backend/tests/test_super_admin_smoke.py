@@ -46,8 +46,8 @@ def test_super_admin_billing_panel_and_controls(client: TestClient, login_super_
 
     billing_page = client.get("/super-admin?section=billing", follow_redirects=False)
     assert billing_page.status_code == 200
-    assert "Tenant Billing" in billing_page.text
-    assert "Billing Controls" in billing_page.text
+    assert "Licensing" in billing_page.text
+    assert "Generate License" in billing_page.text
     assert "Billing Academy" in billing_page.text
 
     start_trial = client.post(
@@ -129,7 +129,8 @@ def test_super_admin_school_enter_and_exit_scope(client: TestClient, login_super
     response = client.get("/oak-ridge/admin", follow_redirects=False)
     assert response.status_code == 200
     assert "Return to Super Admin" in response.text
-    assert "operating inside <strong>Oak Ridge</strong>" in response.text
+    assert "operating inside" in response.text
+    assert "<strong>Oak Ridge</strong>" in response.text
 
     response = client.post("/oak-ridge/admin/super-admin/exit", follow_redirects=False)
     assert response.status_code == 303

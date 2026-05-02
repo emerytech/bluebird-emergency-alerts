@@ -60,14 +60,6 @@ private enum AppDateFormatters {
     }
 }
 
-private struct PressableScaleButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .scaleEffect(configuration.isPressed ? 0.985 : 1.0)
-            .animation(.easeOut(duration: 0.14), value: configuration.isPressed)
-    }
-}
-
 private struct SafetyActionItem: Identifiable {
     let id: String
     let title: String
@@ -623,6 +615,7 @@ struct ContentView: View {
     @State private var showTeamAssistPicker = false
     @State private var showMessagingCenter = false
     @State private var showRosterView = false
+    @State private var showMasterRosterView = false
     @State private var locationShareStatus: LocationShareStatus = .idle
     @State private var autoShareLocationEnabled = false
     @State private var autoShareTimer: Timer? = nil
@@ -665,7 +658,6 @@ struct ContentView: View {
     @State private var districtTenants: [TenantOverviewItem] = []
     @State private var wsReconnectGeneration: Int = 0
     @State private var pendingAdminEvents: [AdminEvent] = []
-    @State private var isWsConnected: Bool = false
 
     private var api: APIClient {
         APIClient(baseURL: appState.selectedTenantURL, apiKey: Config.backendApiKey)
@@ -1414,7 +1406,7 @@ struct ContentView: View {
                         } label: {
                             Label("Student Roster", systemImage: "person.3.fill")
                                 .font(.headline.weight(.bold))
-                                .foregroundStyle(Color(red: 0.26, green: 0.87, blue: 0.50))
+                                .foregroundStyle(DSColor.success)
                                 .frame(maxWidth: .infinity, minHeight: 52)
                                 .background(Color.white.opacity(0.12))
                                 .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
@@ -1429,14 +1421,14 @@ struct ContentView: View {
                                 HStack(spacing: 8) {
                                     switch locationShareStatus {
                                     case .sharing:
-                                        ProgressView().tint(Color(red: 0.98, green: 0.75, blue: 0.14))
+                                        ProgressView().tint(DSColor.warning)
                                             .scaleEffect(0.85)
                                     case .shared:
                                         Image(systemName: "checkmark.circle.fill")
-                                            .foregroundStyle(Color(red: 0.98, green: 0.75, blue: 0.14))
+                                            .foregroundStyle(DSColor.warning)
                                     default:
                                         Image(systemName: "location.fill")
-                                            .foregroundStyle(Color(red: 0.98, green: 0.75, blue: 0.14))
+                                            .foregroundStyle(DSColor.warning)
                                     }
                                     Text(locationShareStatus == .sharing ? "Sharing…"
                                          : locationShareStatus == .shared ? "Location Shared"
@@ -1444,7 +1436,7 @@ struct ContentView: View {
                                          : locationShareStatus == .error ? "Location Unavailable"
                                          : "Share My Location")
                                         .font(.headline.weight(.bold))
-                                        .foregroundStyle(Color(red: 0.98, green: 0.75, blue: 0.14))
+                                        .foregroundStyle(DSColor.warning)
                                 }
                                 .frame(maxWidth: .infinity, minHeight: 52)
                                 .background(Color.white.opacity(0.12))
@@ -1460,7 +1452,7 @@ struct ContentView: View {
                         } label: {
                             Label("Call 911", systemImage: "phone.fill")
                                 .font(.headline.weight(.bold))
-                                .foregroundStyle(Color(red: 0.94, green: 0.27, blue: 0.27))
+                                .foregroundStyle(DSColor.danger)
                                 .frame(maxWidth: .infinity, minHeight: 52)
                                 .background(Color.white.opacity(0.12))
                                 .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
@@ -1500,7 +1492,6 @@ struct ContentView: View {
         alarmCurrentUserAcknowledged = true
         alarmAcknowledgementCount += 1
         defer { isUpdatingAlarm = false }
-        let api = APIClient(baseURL: appState.serverURL, apiKey: Config.backendApiKey)
         do {
             try await api.acknowledgeAlert(alertId: alertId, userID: userID)
         } catch {
@@ -1526,7 +1517,6 @@ struct ContentView: View {
             return
         }
         do {
-            let api = APIClient(baseURL: appState.serverURL, apiKey: Config.backendApiKey)
             try await api.shareLocation(
                 alertId: alertId,
                 userID: userID,
@@ -1696,14 +1686,12 @@ struct ContentView: View {
                         let ackRowColor: Color = isFullyAcked ? DSColor.success : Color.white.opacity(0.88)
                         // Any admin broadcast during an active alarm is treated as urgent
                         let hasCritical = !alarmBroadcasts.isEmpty
-                        let msgRowColor: Color = hasCritical
-                            ? Color(red: 1, green: 0.60, blue: 0)
-                            : DSColor.primary
+                        let msgRowColor: Color = hasCritical ? DSColor.warning : DSColor.primary
 
                         HStack(spacing: 14) {
                             // 👥 Acknowledgements
                             HStack(spacing: 4) {
-                                Text("👥").font(.caption).foregroundStyle(ackRowColor)
+                                Image(systemName: "person.2.fill").font(.caption).foregroundStyle(ackRowColor)
                                 Text(alarmExpectedUserCount > 0
                                      ? "\(alarmAcknowledgementCount) / \(alarmExpectedUserCount)"
                                      : "\(alarmAcknowledgementCount) acknowledged")
@@ -1721,9 +1709,9 @@ struct ContentView: View {
                             // 🎒 Roster accountability — tap to open Roster
                             if let rs = rosterLiveSummary, rs.total > 0 {
                                 let allAccounted = rs.unclaimed == 0
-                                let rosterColor: Color = allAccounted ? DSColor.success : Color(red: 0.98, green: 0.75, blue: 0.14)
+                                let rosterColor: Color = allAccounted ? DSColor.success : DSColor.warning
                                 HStack(spacing: 4) {
-                                    Text("🎒").font(.caption)
+                                    Image(systemName: "backpack.fill").font(.caption).foregroundStyle(rosterColor)
                                     Text(allAccounted ? "\(rs.total) accounted" : "\(rs.unclaimed) unaccounted")
                                         .font(.caption.weight(.semibold))
                                         .foregroundStyle(rosterColor)
@@ -1739,7 +1727,7 @@ struct ContentView: View {
                             // 💬 Admin updates — tap to open Messaging
                             if !alarmBroadcasts.isEmpty {
                                 HStack(spacing: 4) {
-                                    Text("💬").font(.caption).foregroundStyle(msgRowColor)
+                                    Image(systemName: "bubble.left.fill").font(.caption).foregroundStyle(msgRowColor)
                                     Text("\(alarmBroadcasts.count) update\(alarmBroadcasts.count == 1 ? "" : "s")")
                                         .font(.caption.weight(.semibold))
                                         .foregroundStyle(msgRowColor)
@@ -1895,6 +1883,22 @@ struct ContentView: View {
                     .shadow(color: DSColor.quietAccent.opacity(0.16), radius: 8, x: 0, y: 3)
                     .buttonStyle(PressableScaleButtonStyle())
                 }
+                Button {
+                    showMasterRosterView = true
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "person.3.fill")
+                        Text("Student Roster")
+                    }
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity, minHeight: 46)
+                    .background(DSColor.success)
+                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                }
+                .shadow(color: DSColor.success.opacity(0.16), radius: 8, x: 0, y: 3)
+                .buttonStyle(PressableScaleButtonStyle())
+
                 if isDistrictSession {
                     Button {
                         showDistrictView = true
@@ -2698,6 +2702,9 @@ struct ContentView: View {
             if let alertId = alarmAlertId, let userID = appState.userID {
                 RosterView(alertId: alertId, userID: userID, api: api)
             }
+        }
+        .sheet(isPresented: $showMasterRosterView) {
+            MasterRosterView(api: api, userID: appState.userID ?? 0)
         }
         .confirmationDialog("Call 911?", isPresented: $show911Confirm, titleVisibility: .visible) {
             Button("Call 911", role: .destructive) {
@@ -3530,7 +3537,6 @@ struct ContentView: View {
                     if !connectedOnce {
                         connectedOnce = true
                         delay = 2_000_000_000
-                        isWsConnected = true
                         #if DEBUG
                         print("[WS] Connected: \(slug)")
                         #endif
@@ -3556,7 +3562,6 @@ struct ContentView: View {
                 }
             }
             pingTask.cancel()
-            isWsConnected = false
             wsTask.cancel(with: .normalClosure, reason: nil)
             guard !Task.isCancelled else { return }
             #if DEBUG
@@ -3636,6 +3641,7 @@ struct ContentView: View {
             alarmBroadcasts = []
             alertOverlayMessage = ""
             overlayMessageSentFeedback = false
+            showRosterView = false
             syncAlarmAudio()
             updateAlertFeedbackState()
             Task { await refreshIncidentFeed() }
@@ -4064,6 +4070,8 @@ private struct SettingsView: View {
     @State private var isLoadingDebugData = false
     @AppStorage(DSThemePreference.storageKey) private var themeModeRaw = DSThemeMode.system.rawValue
     @State private var showLearningCenter = false
+    @State private var showMasterRoster = false
+    @State private var isDownloadingRoster = false
 
     private var api: APIClient {
         APIClient(baseURL: appState.serverURL, apiKey: Config.backendApiKey)
@@ -4211,6 +4219,53 @@ private struct SettingsView: View {
                                     .foregroundStyle(DSColor.primary)
                             }
                         }
+                    }
+
+                    // Roster
+                    settingsCard {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Text("Student Roster")
+                                .font(.headline)
+                                .foregroundStyle(DSColor.textPrimary)
+                            let syncDate = MasterRosterStore.lastSyncDate
+                            if let d = syncDate {
+                                Text("Last synced \(d.formatted(.relative(presentation: .named)))")
+                                    .font(.caption)
+                                    .foregroundStyle(DSColor.textSecondary)
+                            }
+                            HStack(spacing: 10) {
+                                Button {
+                                    showMasterRoster = true
+                                } label: {
+                                    Label("View Roster", systemImage: "person.3.fill")
+                                        .font(.subheadline.weight(.semibold))
+                                        .foregroundStyle(DSColor.primary)
+                                }
+                                Spacer()
+                                Button {
+                                    Task {
+                                        guard let userID = appState.userID else { return }
+                                        isDownloadingRoster = true
+                                        defer { isDownloadingRoster = false }
+                                        if let students = try? await api.fetchMasterRoster(userID: userID) {
+                                            MasterRosterStore.save(students)
+                                        }
+                                    }
+                                } label: {
+                                    if isDownloadingRoster {
+                                        ProgressView().scaleEffect(0.8)
+                                    } else {
+                                        Label("Download", systemImage: "arrow.clockwise")
+                                            .font(.subheadline.weight(.semibold))
+                                            .foregroundStyle(DSColor.primary)
+                                    }
+                                }
+                                .disabled(isDownloadingRoster)
+                            }
+                        }
+                    }
+                    .sheet(isPresented: $showMasterRoster) {
+                        MasterRosterView(api: api, userID: appState.userID ?? 0)
                     }
 
                     // Sign Out

@@ -54,6 +54,7 @@ final class DSTokenStore {
 
     private var tokens: [String: Any] = [:]
     private var didLoad = false
+    private var numberCache: [String: CGFloat] = [:]
 
     private init() {}
 
@@ -71,7 +72,6 @@ final class DSTokenStore {
             URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
                 .appendingPathComponent("design")
                 .appendingPathComponent("tokens.json"),
-            URL(fileURLWithPath: "/Users/temery/Documents/BlueBird Alerts/BlueBird-Alerts/design/tokens.json"),
         ]
         for url in candidates where FileManager.default.fileExists(atPath: url.path) {
             if let loaded = loadJSON(url: url) {
@@ -101,12 +101,16 @@ final class DSTokenStore {
         fallback: CGFloat,
     ) -> CGFloat {
         loadIfNeeded()
+        let cacheKey = candidates.joined(separator: "|")
+        if let cached = numberCache[cacheKey] { return cached }
         for path in candidates {
             if let value = valueForPath(path),
                let n = asCGFloat(value) {
+                numberCache[cacheKey] = n
                 return n
             }
         }
+        numberCache[cacheKey] = fallback
         return fallback
     }
 

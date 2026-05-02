@@ -47,7 +47,7 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClie
     # Reset module-level in-memory rate-limiter stores so tests don't bleed into each other.
     routes_mod = sys.modules.get("app.api.routes")
     if routes_mod is not None:
-        for store_name in ("_alarm_rate_store", "_code_rate_store"):
+        for store_name in ("_alarm_rate_store", "_code_rate_store", "_login_rate_store"):
             store = getattr(routes_mod, store_name, None)
             if isinstance(store, dict):
                 store.clear()

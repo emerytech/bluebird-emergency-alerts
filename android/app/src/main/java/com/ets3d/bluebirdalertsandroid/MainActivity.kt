@@ -59,6 +59,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -809,6 +810,9 @@ data class UiState(
     val incidentRoster: IncidentRoster? = null,
     val isLoadingRoster: Boolean = false,
     val rosterLiveSummary: IncidentRosterSummary? = null,
+    val masterStudents: List<MasterStudent> = emptyList(),
+    val isLoadingMasterRoster: Boolean = false,
+    val isSubmittingAccountability: Boolean = false,
     // Non-null while a non-critical sound should be played; cleared immediately after.
     val pendingNonCriticalSound: String? = null,
 )
@@ -865,6 +869,74 @@ data class RosterClaimResult(
     val conflictClaimedByLabel: String?,
     val conflictClaimedSecondsAgo: Double?,
 )
+
+data class MasterStudent(
+    val id: Int,
+    val firstName: String,
+    val lastName: String,
+    val gradeLevel: String,
+    val studentRef: String?,
+) {
+    val fullName: String get() = "$firstName $lastName"
+}
+
+data class BatchAccountabilityResult(
+    val ok: Boolean,
+    val inserted: Int,
+    val updated: Int,
+    val total: Int,
+)
+
+// ── Local master roster storage ────────────────────────────────────────────────
+private const val MASTER_ROSTER_FILE = "master_roster.json"
+private const val PREF_ROSTER_SYNC_TS = "master_roster_sync_ts"
+private const val PREF_ROSTER_VERSION = "master_roster_version"
+
+private fun saveMasterRosterLocally(ctx: Context, students: List<MasterStudent>, version: String? = null) {
+    val arr = JSONArray()
+    for (s in students) {
+        arr.put(JSONObject()
+            .put("student_id", s.id)
+            .put("first_name", s.firstName)
+            .put("last_name", s.lastName)
+            .put("grade_level", s.gradeLevel)
+            .apply { if (s.studentRef != null) put("student_ref", s.studentRef) else put("student_ref", JSONObject.NULL) }
+        )
+    }
+    ctx.openFileOutput(MASTER_ROSTER_FILE, Context.MODE_PRIVATE).bufferedWriter().use { it.write(arr.toString()) }
+    ctx.getSharedPreferences("bluebird_prefs", Context.MODE_PRIVATE).edit()
+        .putLong(PREF_ROSTER_SYNC_TS, System.currentTimeMillis())
+        .apply { if (version != null) putString(PREF_ROSTER_VERSION, version) }
+        .apply()
+}
+
+private fun loadMasterRosterLocally(ctx: Context): List<MasterStudent> {
+    return runCatching {
+        val text = ctx.openFileInput(MASTER_ROSTER_FILE).bufferedReader().readText()
+        val arr = JSONArray(text)
+        buildList {
+            for (i in 0 until arr.length()) {
+                val j = arr.getJSONObject(i)
+                val ref = j.optString("student_ref").trim().takeIf { it.isNotEmpty() && !it.equals("null", ignoreCase = true) }
+                add(MasterStudent(
+                    id = j.getInt("student_id"),
+                    firstName = j.optString("first_name"),
+                    lastName = j.optString("last_name"),
+                    gradeLevel = j.optString("grade_level"),
+                    studentRef = ref,
+                ))
+            }
+        }
+    }.getOrDefault(emptyList())
+}
+
+private fun masterRosterLastSync(ctx: Context): Long =
+    ctx.getSharedPreferences("bluebird_prefs", Context.MODE_PRIVATE)
+        .getLong(PREF_ROSTER_SYNC_TS, 0L)
+
+private fun masterRosterVersion(ctx: Context): String? =
+    ctx.getSharedPreferences("bluebird_prefs", Context.MODE_PRIVATE)
+        .getString(PREF_ROSTER_VERSION, null)
 
 // ── ViewModel ──────────────────────────────────────────────────────────────────
 class MainViewModel : ViewModel() {
@@ -1645,6 +1717,53 @@ class MainViewModel : ViewModel() {
         }
     }
 
+    fun submitAccountability(ctx: Context, alertId: Int, studentsPresent: List<Int>, studentsMissing: List<Int>, onSuccess: () -> Unit) {
+        val userId = getUserId(ctx).toIntOrNull() ?: return
+        _state.update { it.copy(isSubmittingAccountability = true) }
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { client!!.submitAccountability(alertId, userId, studentsPresent, studentsMissing) }
+                .onSuccess {
+                    _state.update { it.copy(isSubmittingAccountability = false) }
+                    withContext(Dispatchers.Main) { onSuccess() }
+                }
+                .onFailure { e ->
+                    _state.update { it.copy(isSubmittingAccountability = false, errorMsg = e.message ?: "Submit failed.") }
+                }
+        }
+    }
+
+    fun loadMasterRoster(ctx: Context, forceNetwork: Boolean = false) {
+        val cached = loadMasterRosterLocally(ctx)
+        if (cached.isNotEmpty()) _state.update { it.copy(masterStudents = cached) }
+        _state.update { it.copy(isLoadingMasterRoster = true) }
+        viewModelScope.launch(Dispatchers.IO) {
+            val userId = getUserId(ctx).toIntOrNull() ?: 0
+            val shouldDownload = when {
+                forceNetwork -> true
+                cached.isEmpty() -> true
+                else -> {
+                    val cachedVer = masterRosterVersion(ctx)
+                    val remoteVer = runCatching { client!!.getRosterVersion(userId) }.getOrNull()
+                    remoteVer != null && remoteVer != cachedVer
+                }
+            }
+            if (!shouldDownload) {
+                _state.update { it.copy(isLoadingMasterRoster = false) }
+                return@launch
+            }
+            runCatching {
+                val students = client!!.getStudents(userId)
+                val version = runCatching { client!!.getRosterVersion(userId) }.getOrNull()
+                saveMasterRosterLocally(ctx, students, version)
+                students
+            }
+            .onSuccess { students ->
+                _state.update { it.copy(masterStudents = students, isLoadingMasterRoster = false) }
+            }
+            .onFailure { _state.update { it.copy(isLoadingMasterRoster = false) } }
+        }
+    }
+
     fun loadDistrictOverview(ctx: Context) {
         val userId = getUserId(ctx).toIntOrNull() ?: return
         viewModelScope.launch(Dispatchers.IO) {
@@ -1921,10 +2040,13 @@ class MainViewModel : ViewModel() {
             "alarm_deactivated", "tenant_alert_cleared" -> {
                 AlarmAudioController.stop()
                 _state.update { s ->
-                    s.copy(alarm = s.alarm.copy(
-                        isActive = false, message = null, isTraining = false,
-                        trainingLabel = null, broadcasts = emptyList(),
-                    ))
+                    s.copy(
+                        alarm = s.alarm.copy(
+                            isActive = false, message = null, isTraining = false,
+                            trainingLabel = null, broadcasts = emptyList(),
+                        ),
+                        incidentRoster = null,
+                    )
                 }
             }
             "quiet_request_created", "quiet_request_updated" -> {
@@ -2727,7 +2849,10 @@ private fun MainScreen(
         }
     }
 
-    LaunchedEffect(Unit) { vm.init(ctx) }
+    LaunchedEffect(Unit) {
+        vm.init(ctx)
+        vm.loadMasterRoster(ctx)
+    }
     LaunchedEffect(isAdmin) {
         if (!isAdmin) return@LaunchedEffect
         vm.refreshAdminRecipients()
@@ -3060,6 +3185,9 @@ private fun MainScreen(
                         setScreenFlashAlertsEnabled(ctx, enabled)
                     },
                     onDarkModeChanged = onDarkModeChanged,
+                    onDownloadRoster = { vm.loadMasterRoster(ctx, forceNetwork = true) },
+                    isDownloadingRoster = state.isLoadingMasterRoster,
+                    rosterSyncMs = masterRosterLastSync(ctx),
                 )
             } else if (showDistrictView) {
                 DistrictOverviewScreen(
@@ -3307,14 +3435,24 @@ private fun MainScreen(
                         }
                     }
 
-                    if (activePanel == DashboardPanel.Roster && state.alarm.isActive) {
-                        val alertId = state.alarm.alertId ?: 0
-                        if (alertId > 0) {
-                            RosterScreen(
-                                alertId = alertId,
-                                ctx = ctx,
+                    if (activePanel == DashboardPanel.Roster) {
+                        if (state.alarm.isActive) {
+                            val alertId = state.alarm.alertId ?: 0
+                            if (alertId > 0) {
+                                RosterScreen(
+                                    alertId = alertId,
+                                    ctx = ctx,
+                                    onDismiss = { activePanel = DashboardPanel.Home },
+                                    vm = vm,
+                                )
+                            }
+                        } else {
+                            MasterRosterScreen(
+                                students = state.masterStudents,
+                                isLoading = state.isLoadingMasterRoster,
+                                lastSyncMs = masterRosterLastSync(ctx),
+                                onRefresh = { vm.loadMasterRoster(ctx, forceNetwork = true) },
                                 onDismiss = { activePanel = DashboardPanel.Home },
-                                vm = vm,
                             )
                         }
                     }
@@ -7082,6 +7220,9 @@ private fun SettingsScreen(
     onFlashlightAlertsChanged: (Boolean) -> Unit,
     onScreenFlashAlertsChanged: (Boolean) -> Unit,
     onDarkModeChanged: (Boolean) -> Unit,
+    onDownloadRoster: () -> Unit = {},
+    isDownloadingRoster: Boolean = false,
+    rosterSyncMs: Long = 0L,
 ) {
     val ctx = LocalContext.current
     val userName = remember { getUserName(ctx) }
@@ -7266,6 +7407,51 @@ private fun SettingsScreen(
                         }
                         TextButton(onClick = { showLearningCenter = true }) {
                             Text("Open", color = BlueLight, fontWeight = FontWeight.SemiBold)
+                        }
+                    }
+                }
+            }
+        }
+
+        // Roster card
+        item {
+            Surface(
+                color = SurfaceMain,
+                shape = RoundedCornerShape(20.dp),
+                shadowElevation = 4.dp,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Column(
+                    modifier = Modifier.padding(horizontal = 18.dp, vertical = 14.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    Text("Student Roster", color = TextPri, fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
+                    if (rosterSyncMs > 0L) {
+                        val syncAgo = (System.currentTimeMillis() - rosterSyncMs) / 60_000
+                        val syncLabel = when {
+                            syncAgo < 1 -> "just now"
+                            syncAgo < 60 -> "${syncAgo}m ago"
+                            syncAgo < 1440 -> "${syncAgo / 60}h ago"
+                            else -> "${syncAgo / 1440}d ago"
+                        }
+                        Text("Last synced $syncLabel", color = TextMuted, fontSize = 12.sp)
+                    } else {
+                        Text("Not yet downloaded", color = TextMuted, fontSize = 12.sp)
+                    }
+                    Button(
+                        onClick = onDownloadRoster,
+                        enabled = !isDownloadingRoster,
+                        modifier = Modifier.fillMaxWidth().height(44.dp),
+                        shape = RoundedCornerShape(12.dp),
+                    ) {
+                        if (isDownloadingRoster) {
+                            CircularProgressIndicator(modifier = Modifier.size(18.dp), color = Color.White, strokeWidth = 2.dp)
+                            Spacer(Modifier.width(8.dp))
+                            Text("Downloading…", fontWeight = FontWeight.SemiBold)
+                        } else {
+                            Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("Download Student Roster", fontWeight = FontWeight.SemiBold)
                         }
                     }
                 }
@@ -8967,6 +9153,55 @@ internal class BackendClient(baseUrl: String, private val apiKey: String) {
             .withAuth().post(body.toString().toRequestBody(json)).build()
         http.newCall(req).execute().use { res ->
             return parseIncidentRow(JSONObject(requireSuccess(res)))
+        }
+    }
+
+    fun submitAccountability(alertId: Int, userId: Int, studentsPresent: List<Int>, studentsMissing: List<Int>): BatchAccountabilityResult {
+        val body = JSONObject()
+            .put("user_id", userId)
+            .put("students_present", JSONArray(studentsPresent))
+            .put("students_missing", JSONArray(studentsMissing))
+        val req = Request.Builder()
+            .url("$base/alerts/$alertId/accountability")
+            .withAuth().post(body.toString().toRequestBody(json)).build()
+        http.newCall(req).execute().use { res ->
+            val j = JSONObject(requireSuccess(res))
+            return BatchAccountabilityResult(
+                ok = j.optBoolean("ok", false),
+                inserted = j.optInt("inserted", 0),
+                updated = j.optInt("updated", 0),
+                total = j.optInt("total", 0),
+            )
+        }
+    }
+
+    fun getRosterVersion(userId: Int): String {
+        val req = Request.Builder()
+            .url("$base/roster/students/version?user_id=$userId")
+            .withAuth().build()
+        http.newCall(req).execute().use { res ->
+            val body = requireSuccess(res)
+            return JSONObject(body).optString("version", "")
+        }
+    }
+
+    fun getStudents(userId: Int): List<MasterStudent> {
+        val req = Request.Builder().url("$base/roster/students?user_id=$userId").withAuth().build()
+        http.newCall(req).execute().use { res ->
+            val body = requireSuccess(res)
+            val arr = JSONObject(body).optJSONArray("students") ?: return emptyList()
+            return buildList {
+                for (i in 0 until arr.length()) {
+                    val j = arr.getJSONObject(i)
+                    add(MasterStudent(
+                        id = j.getInt("student_id"),
+                        firstName = j.optString("first_name"),
+                        lastName = j.optString("last_name"),
+                        gradeLevel = j.optString("grade_level"),
+                        studentRef = j.optNullableString("student_ref"),
+                    ))
+                }
+            }
         }
     }
 

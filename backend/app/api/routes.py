@@ -2751,6 +2751,29 @@ async def deactivate_alarm(
             "training_label": pre_state.training_label,
         },
     )
+    # Emit final accountability snapshot so connected dashboards show terminal state
+    if pre_state.is_active:
+        try:
+            _final_alert = await _alert_log(request).latest_alert()
+            if _final_alert is not None:
+                _final_rollup = await _roster_store(request).get_accountability_rollup(_final_alert.id)
+                if _final_rollup.get("total_students", 0) > 0:
+                    await _event_bus(request).emit(Event(
+                        event_type=EventType.STUDENTS_ACCOUNTED,
+                        tenant_slug=_tenant(request).slug,
+                        payload={
+                            "event": "student_accountability.updated",
+                            "alert_id": _final_alert.id,
+                            "accounted": _final_rollup["accounted"],
+                            "missing": _final_rollup["missing"],
+                            "unknown": _final_rollup["unknown"],
+                            "total_students": _final_rollup["total_students"],
+                            "percentage_accounted": _final_rollup["percentage_accounted"],
+                        },
+                        user_id=admin_user_id,
+                    ))
+        except Exception:
+            pass  # never block deactivation on accountability snapshot failure
     await _publish_alert_event(request, event="alert_cleared")
     return AlarmStatusResponse(
         is_active=bool(_state_field(state, "is_active", False)),
@@ -13643,7 +13666,7 @@ async def submit_accountability(
     _: None = Depends(require_api_key),
 ) -> BatchAccountabilityResponse:
     _assert_tenant_resolved(request)
-    user = await _require_active_user_with_permission(
+    await _require_active_user_with_permission(
         _users(request), body.user_id, permission=PERM_ROSTER_CLAIM
     )
     alert = await _alert_log(request).get_alert(alert_id)
@@ -13653,7 +13676,8 @@ async def submit_accountability(
     if not body.students_present and not body.students_missing:
         return BatchAccountabilityResponse(ok=True, inserted=0, updated=0, total=0)
 
-    user_label = getattr(user, "name", None) or getattr(user, "login_name", "") or f"user:{body.user_id}"
+    user_obj = await _users(request).get_user(body.user_id)
+    user_label = (user_obj.name if user_obj and user_obj.name else None) or f"user:{body.user_id}"
     result = await _roster_store(request).batch_upsert_claims(
         alert_id,
         student_ids_present=body.students_present,

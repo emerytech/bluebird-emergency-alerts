@@ -9,12 +9,16 @@ import android.content.Context
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -62,6 +66,17 @@ fun RosterScreen(
     var pendingClaimStatus by remember { mutableStateOf("present_with_me") }
     var conflictMessage by remember { mutableStateOf<String?>(null) }
     var pendingTakeoverRow by remember { mutableStateOf<RosterIncidentRow?>(null) }
+    var accountabilityMode by remember { mutableStateOf(false) }
+    var markedPresent by remember { mutableStateOf(emptySet<Int>()) }
+    var markedMissing by remember { mutableStateOf(emptySet<Int>()) }
+    val isSubmittingAccountability = state.isSubmittingAccountability
+
+    LaunchedEffect(accountabilityMode) {
+        if (!accountabilityMode) {
+            markedPresent = emptySet()
+            markedMissing = emptySet()
+        }
+    }
 
     LaunchedEffect(alertId) { vm.loadIncidentRoster(ctx, alertId) }
 
@@ -71,6 +86,18 @@ fun RosterScreen(
             val matchesGrade = gradeFilter.isBlank() || row.gradeLevel == gradeFilter
             matchesSearch && matchesGrade
         } ?: emptyList()
+    }
+
+    val accountabilityStudents = remember(roster) {
+        roster?.students?.filter { !it.isAddition } ?: emptyList()
+    }
+
+    val filteredAccountability = remember(accountabilityStudents, searchQuery, gradeFilter) {
+        accountabilityStudents.filter { row ->
+            val matchesSearch = searchQuery.isBlank() || row.fullName.contains(searchQuery, ignoreCase = true)
+            val matchesGrade = gradeFilter.isBlank() || row.gradeLevel == gradeFilter
+            matchesSearch && matchesGrade
+        }
     }
 
     // Unique grades present in the loaded roster for the dropdown
@@ -89,8 +116,70 @@ fun RosterScreen(
                         Icon(Icons.Default.Close, contentDescription = "Close")
                     }
                 },
+                actions = {
+                    TextButton(onClick = { accountabilityMode = !accountabilityMode }) {
+                        Text(
+                            if (accountabilityMode) "Exit" else "Roll Call",
+                            color = if (accountabilityMode) Color(0xFFEF4444) else Color(0xFF4D88FF),
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 14.sp,
+                        )
+                    }
+                },
             )
-        }
+        },
+        bottomBar = {
+            if (accountabilityMode) {
+                val presentCount = markedPresent.size
+                val missingCount = markedMissing.size
+                val unmarkedCount = accountabilityStudents.size - presentCount - missingCount
+                Surface(
+                    color = Color(0xFF1E293B),
+                    tonalElevation = 3.dp,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text(
+                                "$presentCount present · $missingCount missing · $unmarkedCount unmarked",
+                                color = Color(0xFFCBD5E1),
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                            Text(
+                                "Tap Submit to record batch accountability",
+                                color = Color(0xFF64748B),
+                                fontSize = 11.sp,
+                            )
+                        }
+                        Button(
+                            onClick = {
+                                vm.submitAccountability(ctx, alertId, markedPresent.toList(), markedMissing.toList()) {
+                                    accountabilityMode = false
+                                }
+                            },
+                            enabled = !isSubmittingAccountability && (markedPresent.isNotEmpty() || markedMissing.isNotEmpty()),
+                        ) {
+                            if (isSubmittingAccountability) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(16.dp),
+                                    strokeWidth = 2.dp,
+                                    color = Color.White,
+                                )
+                            } else {
+                                Text("Submit")
+                            }
+                        }
+                    }
+                }
+            }
+        },
     ) { padding ->
         Column(modifier = Modifier.fillMaxSize().padding(padding)) {
             // Summary bar
@@ -167,6 +256,40 @@ fun RosterScreen(
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     CircularProgressIndicator()
                 }
+            } else if (accountabilityMode) {
+                LazyColumn(
+                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    items(filteredAccountability, key = { it.rowId }) { row ->
+                        row.studentId?.let { sid ->
+                            AccountabilityRowCard(
+                                row = row,
+                                isPresent = sid in markedPresent,
+                                isMissing = sid in markedMissing,
+                                onMarkPresent = {
+                                    markedPresent = markedPresent + sid
+                                    markedMissing = markedMissing - sid
+                                },
+                                onMarkMissing = {
+                                    markedMissing = markedMissing + sid
+                                    markedPresent = markedPresent - sid
+                                },
+                                onClear = {
+                                    markedPresent = markedPresent - sid
+                                    markedMissing = markedMissing - sid
+                                },
+                            )
+                        }
+                    }
+                    if (filteredAccountability.isEmpty() && !isLoading) {
+                        item {
+                            Box(Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) {
+                                Text("No students to mark.", color = Color(0xFF94A3B8))
+                            }
+                        }
+                    }
+                }
             } else {
                 LazyColumn(
                     contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
@@ -188,7 +311,7 @@ fun RosterScreen(
                             },
                             onRelease = { claimId ->
                                 vm.releaseRosterClaim(ctx, alertId, claimId)
-                            },
+                        },
                         )
                     }
                     if (filtered.isEmpty() && !isLoading) {
@@ -348,6 +471,65 @@ private fun RosterRowCard(
 }
 
 @Composable
+private fun AccountabilityRowCard(
+    row: RosterIncidentRow,
+    isPresent: Boolean,
+    isMissing: Boolean,
+    onMarkPresent: () -> Unit,
+    onMarkMissing: () -> Unit,
+    onClear: () -> Unit,
+) {
+    val presentColor = Color(0xFF4ADE80)
+    val missingColor = Color(0xFFEF4444)
+    val neutralColor = Color(0xFF94A3B8)
+    val borderColor = Color(0xFF334155)
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(10.dp),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B)),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(row.fullName, color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
+                Text("Grade ${row.gradeLevel}", color = Color(0xFF94A3B8), fontSize = 12.sp)
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(
+                    onClick = { if (isPresent) onClear() else onMarkPresent() },
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        containerColor = if (isPresent) presentColor.copy(alpha = 0.18f) else Color.Transparent,
+                        contentColor = if (isPresent) presentColor else neutralColor,
+                    ),
+                    border = BorderStroke(1.dp, if (isPresent) presentColor else borderColor),
+                    modifier = Modifier.height(36.dp),
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
+                ) {
+                    Text("✓ Present", fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                }
+                OutlinedButton(
+                    onClick = { if (isMissing) onClear() else onMarkMissing() },
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        containerColor = if (isMissing) missingColor.copy(alpha = 0.18f) else Color.Transparent,
+                        contentColor = if (isMissing) missingColor else neutralColor,
+                    ),
+                    border = BorderStroke(1.dp, if (isMissing) missingColor else borderColor),
+                    modifier = Modifier.height(36.dp),
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
+                ) {
+                    Text("✗ Missing", fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun FlowRow(
     modifier: Modifier = Modifier,
     horizontalArrangement: Arrangement.Horizontal = Arrangement.Start,
@@ -436,6 +618,185 @@ private fun AddIncidentStudentDialog(
                         },
                         enabled = firstName.isNotBlank() && lastName.isNotBlank(),
                     ) { Text("Add") }
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Master Roster Screen (non-alarm, offline-capable)
+
+private val GRADE_ORDER = listOf("PreK", "K") + (1..12).map { it.toString() } + listOf("Other")
+
+@Composable
+fun MasterRosterScreen(
+    students: List<MasterStudent>,
+    isLoading: Boolean,
+    lastSyncMs: Long,
+    onRefresh: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var search by remember { mutableStateOf("") }
+    var gradeFilter by remember { mutableStateOf("") }
+
+    val availableGrades = remember(students) {
+        val grades = students.map { it.gradeLevel }.toSet()
+        GRADE_ORDER.filter { it in grades }
+    }
+
+    val filtered = remember(students, search, gradeFilter) {
+        students.filter {
+            val matchSearch = search.isBlank() || it.fullName.contains(search, ignoreCase = true)
+            val matchGrade = gradeFilter.isEmpty() || it.gradeLevel == gradeFilter
+            matchSearch && matchGrade
+        }
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color(0xFF0D1220))
+            .padding(bottom = 16.dp),
+    ) {
+        // Header
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column {
+                Text("Student Roster", color = Color(0xFFE8EEFF), fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                if (lastSyncMs > 0L) {
+                    val syncAgo = (System.currentTimeMillis() - lastSyncMs) / 60_000
+                    val label = when {
+                        syncAgo < 1 -> "just now"
+                        syncAgo < 60 -> "${syncAgo}m ago"
+                        syncAgo < 1440 -> "${syncAgo / 60}h ago"
+                        else -> "${syncAgo / 1440}d ago"
+                    }
+                    Text("Synced $label", color = Color(0xFF8FA4C0), fontSize = 12.sp)
+                }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                if (isLoading) {
+                    CircularProgressIndicator(modifier = Modifier.size(20.dp), color = Color(0xFF4D88FF), strokeWidth = 2.dp)
+                } else {
+                    IconButton(onClick = onRefresh, modifier = Modifier.size(36.dp)) {
+                        Icon(Icons.Default.Refresh, contentDescription = "Sync", tint = Color(0xFF4D88FF))
+                    }
+                }
+                IconButton(onClick = onDismiss, modifier = Modifier.size(36.dp)) {
+                    Icon(Icons.Default.Close, contentDescription = "Close", tint = Color(0xFF8FA4C0))
+                }
+            }
+        }
+
+        // Search
+        OutlinedTextField(
+            value = search,
+            onValueChange = { search = it },
+            placeholder = { Text("Search students…", color = Color(0xFF8FA4C0)) },
+            leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null, tint = Color(0xFF8FA4C0)) },
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp),
+            singleLine = true,
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedBorderColor = Color(0xFF4D88FF),
+                unfocusedBorderColor = Color(0xFF1E2D45),
+                focusedTextColor = Color(0xFFE8EEFF),
+                unfocusedTextColor = Color(0xFFE8EEFF),
+                cursorColor = Color(0xFF4D88FF),
+            ),
+            shape = RoundedCornerShape(10.dp),
+        )
+
+        // Grade filter chips
+        if (availableGrades.isNotEmpty()) {
+            LazyRow(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                item { GradeChip(label = "All", selected = gradeFilter.isEmpty()) { gradeFilter = "" } }
+                items(availableGrades) { g ->
+                    GradeChip(label = "Gr $g", selected = gradeFilter == g) { gradeFilter = g }
+                }
+            }
+        }
+
+        // Content
+        when {
+            students.isEmpty() && !isLoading -> {
+                Box(Modifier.fillMaxWidth().padding(vertical = 32.dp), contentAlignment = Alignment.Center) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Text("No roster downloaded", color = Color(0xFFE8EEFF), fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
+                        Text("Tap Sync to download from your school's server.", color = Color(0xFF8FA4C0), fontSize = 13.sp)
+                        Button(onClick = onRefresh, enabled = !isLoading) {
+                            Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("Download Roster")
+                        }
+                    }
+                }
+            }
+            filtered.isEmpty() -> {
+                Box(Modifier.fillMaxWidth().padding(vertical = 24.dp), contentAlignment = Alignment.Center) {
+                    Text("No results", color = Color(0xFF8FA4C0), fontSize = 14.sp)
+                }
+            }
+            else -> {
+                LazyColumn(
+                    modifier = Modifier.fillMaxWidth(),
+                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    items(filtered, key = { it.id }) { student ->
+                        MasterStudentRow(student)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun GradeChip(label: String, selected: Boolean, onClick: () -> Unit) {
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(50),
+        color = if (selected) Color(0xFF1B3B72) else Color(0xFF1A2640),
+        border = if (selected) androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF4D88FF)) else null,
+    ) {
+        Text(
+            label,
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp),
+            color = if (selected) Color(0xFF4D88FF) else Color(0xFF8FA4C0),
+            fontSize = 12.sp,
+            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+        )
+    }
+}
+
+@Composable
+private fun MasterStudentRow(student: MasterStudent) {
+    Surface(
+        shape = RoundedCornerShape(10.dp),
+        color = Color(0xFF1A2640),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(student.fullName, color = Color(0xFFE8EEFF), fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Grade ${student.gradeLevel}", color = Color(0xFF8FA4C0), fontSize = 12.sp)
+                    if (!student.studentRef.isNullOrBlank()) {
+                        Text("· ${student.studentRef}", color = Color(0xFF566880), fontSize = 12.sp)
+                    }
                 }
             }
         }
