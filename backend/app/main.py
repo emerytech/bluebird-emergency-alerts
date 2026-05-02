@@ -15,6 +15,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from app.api.routes import router
 from app.core.config import Settings
+from app.core.event_bus import EventBus
 from app.core.logging import configure_logging
 from app.services.apns import APNsClient
 from app.services.access_code_service import AccessCodeService
@@ -728,6 +729,7 @@ async def lifespan(app: FastAPI):
     app.state.tenant_billing_store = tenant_billing_store
     app.state.quiet_state_store = quiet_state_store
     app.state.alert_hub = AlertHub()
+    app.state.event_bus = EventBus()
     app.state.school_registry = school_registry
     app.state.user_tenant_store = user_tenant_store
     app.state.tenant_manager = tenant_manager
