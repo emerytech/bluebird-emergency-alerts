@@ -1,4 +1,3 @@
-import Combine
 import SwiftUI
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -244,10 +243,12 @@ final class LearningCenterStore: ObservableObject {
 // ─────────────────────────────────────────────────────────────────────────────
 
 enum LCAnalytics {
+    private static let isoFormatter = ISO8601DateFormatter()
+
     static func track(_ event: String, guideID: String? = nil, step: Int? = nil) {
         var info: [String: Any] = [
             "event": event,
-            "timestamp": ISO8601DateFormatter().string(from: .now),
+            "timestamp": isoFormatter.string(from: .now),
         ]
         if let g = guideID { info["guide_id"] = g }
         if let s = step    { info["step"] = s }
@@ -265,7 +266,6 @@ final class LCSimulationState: ObservableObject {
     @Published var isActivated   = false
     @Published var acknowledged  = false
     @Published var ackCount      = 2
-    let totalUsers               = 14
 
     func reset() {
         isActivated  = false
@@ -514,7 +514,6 @@ struct LCGuideIntroView: View {
 
 struct LCGuideStepView: View {
     let guide: LCGuide
-    let startStep: Int
 
     @Environment(\.dismiss)       private var dismiss
     @EnvironmentObject             private var appState: AppState
@@ -525,7 +524,6 @@ struct LCGuideStepView: View {
 
     init(guide: LCGuide, startStep: Int = 0) {
         self.guide = guide
-        self.startStep = startStep
         _currentStep = State(initialValue: startStep)
     }
 
@@ -752,7 +750,6 @@ private struct LCSlideToConfirmView: View {
 
             GeometryReader { geo in
                 let maxDrag = geo.size.width - thumbSz - 8
-                let progress = maxDrag > 0 ? min(dragOffset / maxDrag, 1.0) : 0
 
                 ZStack(alignment: .leading) {
                     RoundedRectangle(cornerRadius: trackH / 2)
