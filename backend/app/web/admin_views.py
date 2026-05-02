@@ -107,7 +107,7 @@ def _render_next_steps_panel(
         plural = "s" if unread_messages != 1 else ""
         items.append(("✉", f"{unread_messages} unread message{plural}",
                        "Staff have sent messages to the admin dashboard.",
-                       f"{prefix}/admin?section=dashboard#messages"))
+                       f"{prefix}/admin?section=messaging"))
 
     if help_requests_active > 0:
         plural = "s" if help_requests_active != 1 else ""
@@ -6843,10 +6843,34 @@ def render_super_admin_page(
                   onsubmit="return confirm('Pull the latest main branch on the server now?');">
               <button class="button button-primary" type="submit" {'disabled' if not git_pull_configured else ''}>Pull Latest Main</button>
             </form>
-            <form method="post" action="/super-admin/server/restart"
-                  onsubmit="return confirm('Restart the backend service now? The dashboard will be unavailable for a few seconds.');">
-              <button class="button button-danger" type="submit">Restart service</button>
-            </form>
+            <button class="button button-danger" type="button"
+                    onclick="document.getElementById('bb-restart-modal').style.display='flex';">
+              Restart service
+            </button>
+          </div>
+
+          <!-- Restart confirmation modal -->
+          <div id="bb-restart-modal" style="display:none;position:fixed;inset:0;z-index:9999;
+               background:rgba(0,0,0,0.55);align-items:center;justify-content:center;">
+            <div style="background:var(--surface,#1e293b);border:1px solid #ef4444;border-radius:14px;
+                        padding:28px 32px;max-width:420px;width:90%;box-shadow:0 8px 32px rgba(0,0,0,0.5);">
+              <p style="font-size:1.1rem;font-weight:700;color:#fca5a5;margin:0 0 10px;">
+                ⚠ Restart backend service?
+              </p>
+              <p style="color:var(--muted,#94a3b8);font-size:0.9rem;margin:0 0 20px;">
+                The dashboard and all mobile apps will be unreachable for several seconds.
+                Active alarms remain in the database and will recover automatically.
+              </p>
+              <div style="display:flex;gap:10px;justify-content:flex-end;">
+                <button class="button button-secondary" type="button"
+                        onclick="document.getElementById('bb-restart-modal').style.display='none';">
+                  Cancel
+                </button>
+                <form method="post" action="/super-admin/server/restart" style="display:inline;">
+                  <button class="button button-danger" type="submit">Yes, restart now</button>
+                </form>
+              </div>
+            </div>
           </div>
           <p class="mini-copy" style="margin-top:14px;">
             {'Uses <code>SERVER_RESTART_COMMAND</code> env var.' if server_info.get("restart_configured") == "yes" else 'No <code>SERVER_RESTART_COMMAND</code> set — restart falls back to a self-restart of the running process.'}
@@ -7498,6 +7522,51 @@ def _render_drill_report_rows(alerts: Sequence[AlertRecord], prefix: str) -> str
     return "".join(rows)
 
 
+def _render_help_request_analytics_card(data: Optional[dict]) -> str:
+    if not data:
+        return ""
+    total = data.get("total", 0)
+    cancelled = data.get("cancelled", 0)
+    breakdown = data.get("breakdown", [])
+    rate = f"{(cancelled / total * 100):.0f}%" if total > 0 else "—"
+    breakdown_rows = "".join(
+        f'<tr><td style="text-transform:capitalize;">{escape(str(cat))}</td>'
+        f'<td style="text-align:right;font-variant-numeric:tabular-nums;">{cnt}</td></tr>'
+        for cat, cnt in breakdown
+    ) or '<tr><td colspan="2" class="empty-state">No cancellation data yet.</td></tr>'
+    return f"""
+            <div style="margin-top:28px;">
+              <div class="panel-header" style="margin-bottom:12px;">
+                <div>
+                  <p class="eyebrow">Help Request Analytics</p>
+                  <h3 style="font-size:1.05rem;font-weight:700;margin:0;">Cancellation &amp; Completion Rates</h3>
+                  <p class="card-copy" style="margin-top:4px;">Aggregated help request outcomes across all incidents.</p>
+                </div>
+              </div>
+              <div style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:18px;">
+                <div style="background:var(--card);border-radius:10px;padding:16px 22px;min-width:120px;">
+                  <div style="font-size:1.6rem;font-weight:800;line-height:1;">{total}</div>
+                  <div class="mini-copy" style="margin-top:4px;">Total requests</div>
+                </div>
+                <div style="background:var(--card);border-radius:10px;padding:16px 22px;min-width:120px;">
+                  <div style="font-size:1.6rem;font-weight:800;line-height:1;">{cancelled}</div>
+                  <div class="mini-copy" style="margin-top:4px;">Cancelled</div>
+                </div>
+                <div style="background:var(--card);border-radius:10px;padding:16px 22px;min-width:120px;">
+                  <div style="font-size:1.6rem;font-weight:800;line-height:1;">{rate}</div>
+                  <div class="mini-copy" style="margin-top:4px;">Cancellation rate</div>
+                </div>
+              </div>
+              {"" if not breakdown else f'''<div style="max-width:420px;">
+                <p class="mini-copy" style="margin-bottom:6px;font-weight:600;">Cancellation reasons</p>
+                <table class="data-table" style="font-size:0.82rem;">
+                  <thead><tr><th>Reason</th><th style="text-align:right;">Count</th></tr></thead>
+                  <tbody>{breakdown_rows}</tbody>
+                </table>
+              </div>'''}
+            </div>"""
+
+
 def _render_audit_event_rows(events: Sequence[AuditEventRecord]) -> str:
     if not events:
         return '<tr><td colspan="5" class="empty-state">No audit events recorded yet.</td></tr>'
@@ -8143,6 +8212,8 @@ def _render_tenant_settings_panels(
     a = settings.alerts
     d = settings.devices
     ac = settings.access_codes
+    ui = settings.ui
+    ai = settings.ai_insights
 
     def _yesno(val: bool) -> str:
         color = "#16a34a" if val else "#9ca3af"
@@ -8288,12 +8359,19 @@ def _render_tenant_settings_panels(
             + _row_ro("Allow scheduling", _yesno(q.allow_scheduling))
             + _row_ro("Max duration", f'<strong>{q.max_duration_minutes}</strong> min')
             + _row_ro("Default duration", f'<strong>{q.default_duration_minutes}</strong> min')
-            # District-only quiet period fields (read-only view)
+            # District-only quiet period fields
             + (
                 _row_ro("District admin approves all", _yesno(q.district_admin_can_approve_all))
                 + _row_ro("Building admin scope", f'<code>{escape(q.building_admin_scope)}</code>')
                 + _row_ro("Allow self-approval", _yesno(q.allow_self_approval))
-                if is_district_admin else ""
+                if is_district_admin else (
+                    _row_ro("District admin approves all",
+                            '<span style="color:var(--muted);font-size:0.82rem;">🔒 District admin only</span>')
+                    + _row_ro("Building admin scope",
+                              '<span style="color:var(--muted);font-size:0.82rem;">🔒 District admin only</span>')
+                    + _row_ro("Allow self-approval",
+                              '<span style="color:var(--muted);font-size:0.82rem;">🔒 District admin only</span>')
+                )
             )
             + '</div>'
         )
@@ -8331,9 +8409,23 @@ def _render_tenant_settings_panels(
         )
 
     # ── Devices ──────────────────────────────────────────────────────────────
+    _enrollment_warning = (
+        '<div style="background:#fef3c7;border:1px solid #d97706;border-radius:6px;'
+        'padding:10px 14px;margin-bottom:14px;font-size:0.88rem;color:#92400e;">'
+        '<strong>⚠ Enrollment closed</strong> — new devices cannot register. '
+        'Existing enrolled devices are unaffected and can still re-register after token rotation.'
+        '</div>'
+    ) if not d.enrollment_open else ""
+
     if can_edit:
         devices_body = (
             '<form id="tsf-devices" class="stack" style="max-width:580px;" onsubmit="return false;">'
+            + _enrollment_warning
+            + _cb("tsf-dv", "enrollment_open",
+                  "Device enrollment open",
+                  d.enrollment_open,
+                  hint="When OFF, new devices are blocked. Previously enrolled devices can always re-register.")
+            + '<hr style="border:none;border-top:1px solid var(--border);margin:12px 0;"/>'
             + _cb("tsf-dv", "device_status_reporting_enabled",
                   "Device status reporting enabled", d.device_status_reporting_enabled)
             + _num("tsf-dv", "mark_device_stale_after_minutes",
@@ -8346,6 +8438,8 @@ def _render_tenant_settings_panels(
     else:
         devices_body = (
             '<div style="max-width:580px;">'
+            + _enrollment_warning
+            + _row_ro("Device enrollment", _yesno(d.enrollment_open))
             + _row_ro("Status reporting", _yesno(d.device_status_reporting_enabled))
             + _row_ro("Mark stale after", f'<strong>{d.mark_device_stale_after_minutes}</strong> min')
             + _row_ro("Exclude inactive from push", _yesno(d.exclude_inactive_devices_from_push))
@@ -8376,6 +8470,45 @@ def _render_tenant_settings_panels(
             + _row_ro("Auto-archive revoked", _yesno(ac.auto_archive_revoked_enabled))
             + _row_ro("Archive revoked after",
                       f'<strong>{ac.auto_archive_revoked_after_days}</strong> days')
+            + '</div>'
+        )
+
+    # ── UI preferences ───────────────────────────────────────────────────────
+    if can_edit:
+        ui_body = (
+            '<form id="tsf-ui" class="stack" style="max-width:580px;" onsubmit="return false;">'
+            + _sel("tsf-ui", "theme_mode", "Theme mode", ui.theme_mode,
+                   [("system", "System — follow device setting"),
+                    ("light", "Light"),
+                    ("dark", "Dark")])
+            + _cb("tsf-ui", "show_guided_tour", "Show guided tour on first login", ui.show_guided_tour)
+            + _save("tsf-ui", "ui", "ts-ui-status")
+            + '</form>'
+        )
+    else:
+        ui_body = (
+            '<div style="max-width:580px;">'
+            + _row_ro("Theme mode", f'<code>{escape(ui.theme_mode)}</code>')
+            + _row_ro("Show guided tour", _yesno(ui.show_guided_tour))
+            + '</div>'
+        )
+
+    # ── AI Insights ──────────────────────────────────────────────────────────
+    if can_edit and is_district_admin:
+        ai_body = (
+            '<form id="tsf-ai_insights" class="stack" style="max-width:580px;" onsubmit="return false;">'
+            + _cb("tsf-ai", "enabled", "AI Insights enabled", ai.enabled,
+                  "Enables automatic AI-generated summaries for incident reports.")
+            + _cb("tsf-ai", "debug_mode", "Debug mode", ai.debug_mode,
+                  "Logs additional AI context. For troubleshooting only.")
+            + _save("tsf-ai_insights", "ai_insights", "ts-ai-status")
+            + '</form>'
+        )
+    elif is_district_admin:
+        ai_body = (
+            '<div style="max-width:580px;">'
+            + _row_ro("AI Insights enabled", _yesno(ai.enabled))
+            + _row_ro("Debug mode", _yesno(ai.debug_mode))
             + '</div>'
         )
 
@@ -8436,6 +8569,25 @@ def _render_tenant_settings_panels(
       </div></div>
       {locked_banner}{ac_body}
     </section>
+
+    <section class="panel command-section" id="ts-ui"{hidden}>
+      <div class="panel-header"><div>
+        <p class="eyebrow">School Settings</p>
+        <h2>Display &amp; UI preferences</h2>
+        <p class="card-copy">Control app theme and onboarding experience for this school.</p>
+      </div></div>
+      {ui_body}
+    </section>
+
+    {"" if not is_district_admin else f"""
+    <section class="panel command-section" id="ts-ai-insights"{hidden}>
+      <div class="panel-header"><div>
+        <p class="eyebrow">District Settings</p>
+        <h2>AI Insights</h2>
+        <p class="card-copy">Enable AI-generated incident summaries. District admin access required.</p>
+      </div></div>
+      {locked_banner if not can_edit else ""}{ai_body}
+    </section>"""}
 
     <script>
     (function() {{
@@ -8499,6 +8651,7 @@ def _render_settings_panels(
               <tr>
                 <td style="white-space:nowrap;">{escape(rec.changed_at[:19].replace("T", " "))}</td>
                 <td>{escape(rec.field)} {undone_badge}</td>
+                <td style="color:var(--muted);font-size:0.85rem;">{escape(rec.changed_by_label or "—")}</td>
                 <td style="color:var(--muted);font-size:0.85rem;">{old_display}</td>
                 <td style="font-size:0.85rem;">{new_display}</td>
                 <td>{undo_btn}</td>
@@ -8510,6 +8663,7 @@ def _render_settings_panels(
                 <tr style="border-bottom:1px solid var(--border);color:var(--muted);">
                   <th style="text-align:left;padding:8px 10px;">When</th>
                   <th style="text-align:left;padding:8px 10px;">Field</th>
+                  <th style="text-align:left;padding:8px 10px;">Changed by</th>
                   <th style="text-align:left;padding:8px 10px;">Before</th>
                   <th style="text-align:left;padding:8px 10px;">After</th>
                   <th style="text-align:left;padding:8px 10px;"></th>
@@ -8562,6 +8716,379 @@ def _render_settings_panels(
           </div>
           {history_html}
         </section>"""
+
+
+def _render_accountability_section(
+    rollup: "Optional[dict]",
+    prefix: str,
+    section_style: str,
+    alarm_active: bool = False,
+    alert_id: "Optional[int]" = None,
+) -> str:
+    _alert_id_js = "null" if not alert_id else str(int(alert_id))
+
+    if not alarm_active or not alert_id:
+        return f"""
+<section class="panel command-section" id="accountability"{section_style}>
+  <div class="panel-header">
+    <div>
+      <p class="eyebrow">Student Accountability</p>
+      <h2>Accountability Dashboard</h2>
+      <p class="card-copy">Real-time student accountability tracking is available during an active alarm or drill.</p>
+    </div>
+  </div>
+  <div class="empty-state" style="padding:40px;text-align:center;color:var(--text-muted,#94a3b8);">
+    <div style="font-size:2rem;margin-bottom:12px;">🟢</div>
+    <div style="font-size:1rem;font-weight:600;">No active alarm</div>
+    <div style="margin-top:6px;font-size:0.875rem;">Accountability data will appear here when an alarm or drill is active.</div>
+  </div>
+</section>"""
+
+    total = rollup.get("total_students", 0) if rollup else 0
+    accounted = rollup.get("accounted", 0) if rollup else 0
+    missing = rollup.get("missing", 0) if rollup else 0
+    unknown = rollup.get("unknown", 0) if rollup else 0
+    pct = rollup.get("percentage_accounted", 0.0) if rollup else 0.0
+    by_grade = rollup.get("by_grade", []) if rollup else []
+    by_staff = rollup.get("by_staff", []) if rollup else []
+
+    pct_int = int(pct)
+    bar_color = "#22c55e" if pct >= 90 else ("#f59e0b" if pct >= 50 else "#ef4444")
+
+    # Summary cards
+    _cards = f"""
+    <div class="metrics-grid" style="grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:20px;" id="acct-cards">
+      <article class="metric-card">
+        <div class="meta">Total Students</div>
+        <div class="metric-value" id="acct-total" style="font-size:1.6rem;">{total}</div>
+      </article>
+      <article class="metric-card" style="border-left:3px solid #22c55e;">
+        <div class="meta">Accounted</div>
+        <div class="metric-value" id="acct-accounted" style="font-size:1.6rem;color:#22c55e;">{accounted}</div>
+      </article>
+      <article class="metric-card" style="border-left:3px solid #ef4444;">
+        <div class="meta">Missing</div>
+        <div class="metric-value" id="acct-missing" style="font-size:1.6rem;color:#ef4444;">{missing}</div>
+      </article>
+      <article class="metric-card" style="border-left:3px solid #94a3b8;">
+        <div class="meta">Unknown</div>
+        <div class="metric-value" id="acct-unknown" style="font-size:1.6rem;color:#94a3b8;">{unknown}</div>
+      </article>
+      <article class="metric-card" style="border-left:3px solid {bar_color};">
+        <div class="meta">Accounted %</div>
+        <div class="metric-value" id="acct-pct" style="font-size:1.6rem;color:{bar_color};">{pct_int}%</div>
+      </article>
+    </div>
+    <div style="background:var(--bg-alt,#f1f5f9);border-radius:8px;padding:12px 16px;margin-bottom:20px;">
+      <div style="display:flex;justify-content:space-between;margin-bottom:6px;font-size:0.85rem;font-weight:600;">
+        <span id="acct-bar-label">{accounted} / {total} accounted</span>
+        <span id="acct-bar-pct" style="color:{bar_color};">{pct_int}%</span>
+      </div>
+      <div style="background:var(--border,#e2e8f0);border-radius:4px;height:10px;overflow:hidden;">
+        <div id="acct-bar" style="background:{bar_color};height:100%;width:{pct_int}%;transition:width 0.4s;"></div>
+      </div>
+    </div>"""
+
+    # Tabs
+    _tabs = """
+    <div style="display:flex;gap:0;border-bottom:1px solid var(--border,#e2e8f0);margin-bottom:16px;">
+      <button class="acct-tab" id="acct-tab-missing" onclick="acctTab('missing')"
+        style="padding:8px 18px;background:none;border:none;border-bottom:2px solid var(--primary,#3b82f6);
+        color:var(--primary,#3b82f6);font-weight:600;cursor:pointer;font-size:0.9rem;">🔴 Missing / Unknown</button>
+      <button class="acct-tab" id="acct-tab-accounted" onclick="acctTab('accounted')"
+        style="padding:8px 18px;background:none;border:none;border-bottom:2px solid transparent;
+        color:var(--muted,#64748b);cursor:pointer;font-size:0.9rem;">✅ Accounted</button>
+      <button class="acct-tab" id="acct-tab-grade" onclick="acctTab('grade')"
+        style="padding:8px 18px;background:none;border:none;border-bottom:2px solid transparent;
+        color:var(--muted,#64748b);cursor:pointer;font-size:0.9rem;">📚 By Grade</button>
+      <button class="acct-tab" id="acct-tab-staff" onclick="acctTab('staff')"
+        style="padding:8px 18px;background:none;border:none;border-bottom:2px solid transparent;
+        color:var(--muted,#64748b);cursor:pointer;font-size:0.9rem;">👤 By Staff</button>
+    </div>"""
+
+    # Grade breakdown table
+    _grade_rows = "".join(
+        f'<tr>'
+        f'<td><strong>Grade {escape(str(g.get("grade_level","?")))}</strong></td>'
+        f'<td>{g.get("total",0)}</td>'
+        f'<td style="color:#22c55e;font-weight:600;">{g.get("accounted",0)}</td>'
+        f'<td style="color:#ef4444;font-weight:600;">{g.get("missing",0)}</td>'
+        f'<td style="color:#94a3b8;">{g.get("unknown",0)}</td>'
+        f'<td>'
+        f'<div style="background:#e2e8f0;border-radius:3px;height:6px;width:80px;overflow:hidden;">'
+        f'<div style="background:#22c55e;height:100%;width:{round(g.get("accounted",0)/g.get("total",1)*100)}%;"></div>'
+        f'</div>'
+        f'</td>'
+        f'</tr>'
+        for g in by_grade
+    ) or '<tr><td colspan="6" class="empty-state">No data yet.</td></tr>'
+
+    # Staff breakdown table
+    _staff_rows = "".join(
+        f'<tr>'
+        f'<td><strong>{escape(str(s.get("staff_label","Unknown")))}</strong></td>'
+        f'<td>{s.get("claimed",0)}</td>'
+        f'<td style="color:#22c55e;font-weight:600;">{s.get("accounted",0)}</td>'
+        f'<td style="color:#ef4444;font-weight:600;">{s.get("missing",0)}</td>'
+        f'<td style="color:#94a3b8;">{s.get("unknown",0)}</td>'
+        f'</tr>'
+        for s in by_staff
+    ) or '<tr><td colspan="5" class="empty-state">No claims submitted yet.</td></tr>'
+
+    return f"""
+<section class="panel command-section" id="accountability"{section_style}>
+  <div class="panel-header">
+    <div>
+      <p class="eyebrow">Live Accountability</p>
+      <h2>Student Accountability Dashboard</h2>
+      <p class="card-copy">Track student accountability in real time during an active alarm or drill.
+        Staff submit who is with them — admins see the live rollup.</p>
+    </div>
+    <div>
+      <button class="button" onclick="acctRefresh()" style="margin-right:8px;">↻ Refresh</button>
+    </div>
+  </div>
+
+  {_cards}
+  {_tabs}
+
+  <!-- Missing / Unknown tab -->
+  <div id="acct-view-missing">
+    <div style="display:flex;gap:8px;margin-bottom:12px;">
+      <input type="text" id="acct-search-missing" placeholder="Search students…"
+        oninput="acctFilterMissing()" class="text-input"
+        style="flex:1;padding:8px 12px;border:1px solid var(--border,#e2e8f0);border-radius:6px;font-size:0.9rem;" />
+      <select id="acct-grade-filter" onchange="acctFilterMissing()"
+        style="padding:8px;border:1px solid var(--border,#e2e8f0);border-radius:6px;font-size:0.9rem;">
+        <option value="">All Grades</option>
+        {"".join(f'<option value="{escape(str(g.get("grade_level","?")))}">{escape(str(g.get("grade_level","?")))}</option>' for g in by_grade)}
+      </select>
+    </div>
+    <table class="admin-table" style="width:100%;" id="acct-missing-table">
+      <thead>
+        <tr>
+          <th>Name</th><th>Grade</th><th>Status</th>
+          <th>Claimed By</th><th>Last Updated</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody id="acct-missing-tbody">
+        <tr><td colspan="6" class="empty-state">Loading…</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- Accounted tab -->
+  <div id="acct-view-accounted" style="display:none;">
+    <table class="admin-table" style="width:100%;" id="acct-accounted-table">
+      <thead>
+        <tr><th>Name</th><th>Grade</th><th>Status</th><th>Claimed By</th><th>Last Updated</th></tr>
+      </thead>
+      <tbody id="acct-accounted-tbody">
+        <tr><td colspan="5" class="empty-state">Loading…</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- By Grade tab -->
+  <div id="acct-view-grade" style="display:none;">
+    <table class="admin-table" style="width:100%;" id="acct-grade-table">
+      <thead>
+        <tr><th>Grade</th><th>Total</th><th>Accounted</th><th>Missing</th><th>Unknown</th><th>Progress</th></tr>
+      </thead>
+      <tbody id="acct-grade-tbody">{_grade_rows}</tbody>
+    </table>
+  </div>
+
+  <!-- By Staff tab -->
+  <div id="acct-view-staff" style="display:none;">
+    <table class="admin-table" style="width:100%;" id="acct-staff-table">
+      <thead>
+        <tr><th>Staff Member</th><th>Claimed</th><th>Accounted</th><th>Missing</th><th>Unknown</th></tr>
+      </thead>
+      <tbody id="acct-staff-tbody">{_staff_rows}</tbody>
+    </table>
+  </div>
+
+  <script>
+  (function() {{
+    var _acctAlertId = {_alert_id_js};
+    var _acctCurrentTab = 'missing';
+    var _acctMissingData = [];
+    var _acctAccountedData = [];
+
+    window.acctTab = function(name) {{
+      _acctCurrentTab = name;
+      var views = ['missing','accounted','grade','staff'];
+      views.forEach(function(v) {{
+        var el = document.getElementById('acct-view-' + v);
+        var btn = document.getElementById('acct-tab-' + v);
+        if (el) el.style.display = v === name ? '' : 'none';
+        if (btn) {{
+          btn.style.borderBottomColor = v === name ? 'var(--primary,#3b82f6)' : 'transparent';
+          btn.style.color = v === name ? 'var(--primary,#3b82f6)' : 'var(--muted,#64748b)';
+          btn.style.fontWeight = v === name ? '600' : '400';
+        }}
+      }});
+      if ((name === 'missing' || name === 'accounted') && _acctAlertId) acctLoadStudents();
+    }};
+
+    window.acctFilterMissing = function() {{
+      var q = (document.getElementById('acct-search-missing') || {{}}).value || '';
+      var grade = (document.getElementById('acct-grade-filter') || {{}}).value || '';
+      var rows = _acctMissingData.filter(function(s) {{
+        var nm = (s.first_name + ' ' + s.last_name).toLowerCase();
+        return (!q || nm.includes(q.toLowerCase())) && (!grade || s.grade_level === grade);
+      }});
+      acctRenderMissing(rows);
+    }};
+
+    window.acctMarkStatus = function(studentId, newStatus) {{
+      if (!_acctAlertId) return;
+      fetch(window.location.origin + '/{prefix}api/alerts/' + _acctAlertId + '/roster/students/' + studentId + '/claim', {{
+        method: 'POST',
+        headers: {{'Content-Type': 'application/json', 'X-API-Key': window._BB_WS_API_KEY || ''}},
+        body: JSON.stringify({{user_id: window._BB_CURRENT_USER_ID || 0, status: newStatus}})
+      }}).then(function() {{ acctLoadStudents(); }}).catch(function() {{}});
+    }};
+
+    window.acctLoadStudents = function() {{
+      if (!_acctAlertId) return;
+      fetch(window.location.origin + '/{prefix}api/alerts/' + _acctAlertId + '/accountability/missing?user_id=' + (window._BB_CURRENT_USER_ID || 0) + '&include_unknown=true', {{
+        headers: {{'X-API-Key': window._BB_WS_API_KEY || ''}}
+      }}).then(function(r) {{ return r.json(); }}).then(function(data) {{
+        _acctMissingData = data.students || [];
+        acctFilterMissing();
+      }}).catch(function() {{}});
+
+      fetch(window.location.origin + '/{prefix}api/alerts/' + _acctAlertId + '/roster?user_id=' + (window._BB_CURRENT_USER_ID || 0), {{
+        headers: {{'X-API-Key': window._BB_WS_API_KEY || ''}}
+      }}).then(function(r) {{ return r.json(); }}).then(function(data) {{
+        var ACCT = new Set(['present_with_me','absent','injured','released']);
+        _acctAccountedData = (data.students || []).filter(function(s) {{
+          return s.claim && ACCT.has(s.claim.status);
+        }});
+        acctRenderAccounted(_acctAccountedData);
+      }}).catch(function() {{}});
+    }};
+
+    function statusBadge(s) {{
+      var colors = {{
+        present_with_me:'#22c55e', missing:'#ef4444', injured:'#f97316',
+        released:'#60a5fa', absent:'#fbbf24', unknown:'#94a3b8', unclaimed:'#94a3b8'
+      }};
+      var c = colors[s] || '#94a3b8';
+      return '<span style="background:' + c + '20;color:' + c + ';padding:2px 8px;border-radius:4px;font-size:0.8rem;font-weight:600;">' + (s||'unclaimed').replace(/_/g,' ') + '</span>';
+    }}
+
+    window.acctRenderMissing = function(rows) {{
+      var tbody = document.getElementById('acct-missing-tbody');
+      if (!tbody) return;
+      if (!rows.length) {{ tbody.innerHTML = '<tr><td colspan="6" class="empty-state">No missing or unknown students.</td></tr>'; return; }}
+      tbody.innerHTML = rows.map(function(s) {{
+        var updated = s.last_updated_at ? s.last_updated_at.substring(0,16).replace('T',' ') : '—';
+        return '<tr data-sid="' + s.student_id + '">' +
+          '<td><strong>' + s.first_name + ' ' + s.last_name + '</strong></td>' +
+          '<td>' + s.grade_level + '</td>' +
+          '<td>' + statusBadge(s.status) + '</td>' +
+          '<td>' + (s.claimed_by_label || '—') + '</td>' +
+          '<td>' + updated + '</td>' +
+          '<td>' +
+            '<button class="button button-small" onclick="acctMarkStatus(' + s.student_id + ',\'present_with_me\')" style="margin-right:4px;">✓ Accounted</button>' +
+            '<button class="button button-small button-danger" onclick="acctMarkStatus(' + s.student_id + ',\'missing\')">✗ Missing</button>' +
+          '</td>' +
+        '</tr>';
+      }}).join('');
+    }};
+
+    window.acctRenderAccounted = function(rows) {{
+      var tbody = document.getElementById('acct-accounted-tbody');
+      if (!tbody) return;
+      if (!rows.length) {{ tbody.innerHTML = '<tr><td colspan="5" class="empty-state">No students accounted for yet.</td></tr>'; return; }}
+      tbody.innerHTML = rows.map(function(s) {{
+        var updated = s.claim && s.claim.last_updated_at ? s.claim.last_updated_at.substring(0,16).replace('T',' ') : '—';
+        return '<tr>' +
+          '<td><strong>' + s.first_name + ' ' + s.last_name + '</strong></td>' +
+          '<td>' + s.grade_level + '</td>' +
+          '<td>' + statusBadge(s.claim ? s.claim.status : '') + '</td>' +
+          '<td>' + (s.claim ? s.claim.claimed_by_label : '—') + '</td>' +
+          '<td>' + updated + '</td>' +
+        '</tr>';
+      }}).join('');
+    }};
+
+    window.acctRefresh = function() {{
+      if (!_acctAlertId) return;
+      fetch(window.location.origin + '/{prefix}api/alerts/' + _acctAlertId + '/accountability/rollup?user_id=' + (window._BB_CURRENT_USER_ID || 0), {{
+        headers: {{'X-API-Key': window._BB_WS_API_KEY || ''}}
+      }}).then(function(r) {{ return r.json(); }}).then(function(d) {{
+        acctUpdateCards(d);
+      }}).catch(function() {{}});
+      acctLoadStudents();
+    }};
+
+    window.acctUpdateCards = function(d) {{
+      function setText(id, v) {{ var el = document.getElementById(id); if(el) el.textContent = v; }}
+      var total = d.total_students || 0;
+      var acc = d.accounted || 0;
+      var mis = d.missing || 0;
+      var unk = d.unknown || 0;
+      var pct = Math.round(d.percentage_accounted || 0);
+      var barColor = pct >= 90 ? '#22c55e' : (pct >= 50 ? '#f59e0b' : '#ef4444');
+      setText('acct-total', total);
+      setText('acct-accounted', acc);
+      setText('acct-missing', mis);
+      setText('acct-unknown', unk);
+      setText('acct-pct', pct + '%');
+      setText('acct-bar-label', acc + ' / ' + total + ' accounted');
+      setText('acct-bar-pct', pct + '%');
+      var bar = document.getElementById('acct-bar');
+      if (bar) {{ bar.style.width = pct + '%'; bar.style.background = barColor; }}
+
+      // Update grade table
+      var gradeBodyEl = document.getElementById('acct-grade-tbody');
+      if (gradeBodyEl && d.by_grade) {{
+        gradeBodyEl.innerHTML = (d.by_grade || []).map(function(g) {{
+          var w = Math.round((g.accounted || 0) / (g.total || 1) * 100);
+          return '<tr><td><strong>Grade ' + g.grade_level + '</strong></td><td>' + g.total + '</td>' +
+            '<td style="color:#22c55e;font-weight:600;">' + g.accounted + '</td>' +
+            '<td style="color:#ef4444;font-weight:600;">' + g.missing + '</td>' +
+            '<td style="color:#94a3b8;">' + g.unknown + '</td>' +
+            '<td><div style="background:#e2e8f0;border-radius:3px;height:6px;width:80px;overflow:hidden;">' +
+            '<div style="background:#22c55e;height:100%;width:' + w + '%;"></div></div></td></tr>';
+        }}).join('') || '<tr><td colspan="6" class="empty-state">No data.</td></tr>';
+      }}
+
+      // Update staff table
+      var staffBodyEl = document.getElementById('acct-staff-tbody');
+      if (staffBodyEl && d.by_staff) {{
+        staffBodyEl.innerHTML = (d.by_staff || []).map(function(s) {{
+          return '<tr><td><strong>' + (s.staff_label || 'Unknown') + '</strong></td><td>' + s.claimed + '</td>' +
+            '<td style="color:#22c55e;font-weight:600;">' + s.accounted + '</td>' +
+            '<td style="color:#ef4444;font-weight:600;">' + s.missing + '</td>' +
+            '<td style="color:#94a3b8;">' + s.unknown + '</td></tr>';
+        }}).join('') || '<tr><td colspan="5" class="empty-state">No claims yet.</td></tr>';
+      }}
+    }};
+
+    // WebSocket handler for live updates
+    document.addEventListener('bb:ws:message', function(e) {{
+      var msg = e.detail;
+      if (!msg) return;
+      var evt = msg.event || '';
+      if (evt === 'student_accountability.updated' && msg.alert_id == _acctAlertId) {{
+        acctUpdateCards(msg);
+        if (_acctCurrentTab === 'missing' || _acctCurrentTab === 'accounted') acctLoadStudents();
+      }}
+    }});
+
+    // Auto-load on section entry
+    if (_acctAlertId) {{
+      setTimeout(function() {{ acctLoadStudents(); }}, 100);
+    }}
+  }})();
+  </script>
+</section>"""
 
 
 def _render_roster_section(
@@ -9065,6 +9592,8 @@ def render_admin_page(
     can_edit_tenant_settings: bool = False,
     billing_banner: Optional[dict] = None,
     roster_students: Sequence[object] = (),
+    accountability_rollup: Optional[dict] = None,
+    help_request_analytics: Optional[dict] = None,
 ) -> str:
     prefix = escape(school_path_prefix)
     role_counts = Counter(user.role for user in users)
@@ -9081,7 +9610,7 @@ def render_admin_page(
     alarm_status_class = "danger" if alarm_state.is_active and not alarm_state.is_training else ("warn" if alarm_state.is_active else "ok")
     alarm_status_label = "TRAINING ACTIVE" if alarm_state.is_active and alarm_state.is_training else ("ALARM ACTIVE" if alarm_state.is_active else "Alarm clear")
     security_feedback = f"{_render_flash(flash_message, 'success')}{_render_flash(flash_error, 'error')}"
-    section = active_section if active_section in {"dashboard", "user-management", "access-codes", "quiet-periods", "audit-logs", "settings", "drill-reports", "district", "devices", "analytics", "district-reports", "demo-analytics", "roster"} else "dashboard"
+    section = active_section if active_section in {"dashboard", "user-management", "access-codes", "quiet-periods", "audit-logs", "settings", "drill-reports", "district", "devices", "analytics", "district-reports", "demo-analytics", "roster", "accountability", "messaging"} else "dashboard"
     _billing_banner_html = _render_billing_banner(billing_banner or {})
     _demo_banner_html = (
         '<div style="background:#fef3c7;border-bottom:2px solid #d97706;padding:8px 20px;'
@@ -9536,12 +10065,22 @@ def render_admin_page(
           </div>
         """
         super_admin_banner_html = f"""
-        <section class="panel command-section">
-          <div class="flash success">
-            <strong>Super Admin Access</strong><br />
-            You are operating inside <strong>{escape(school_name)}</strong> as platform super admin <strong>{escape(super_admin_actor_name or 'superadmin')}</strong>. Actions here affect this school directly.
-          </div>
-        </section>
+        <div style="position:sticky;top:0;z-index:900;background:#7f1d1d;color:#fecaca;
+                    padding:10px 20px;display:flex;align-items:center;gap:12px;
+                    border-bottom:2px solid #ef4444;font-size:0.88rem;">
+          <span style="font-size:1.1rem;">🔴</span>
+          <span><strong>Super Admin Mode</strong> — operating inside
+            <strong>{escape(school_name)}</strong> as
+            <strong>{escape(super_admin_actor_name or 'superadmin')}</strong>.
+            All actions are recorded against the super admin account.</span>
+          <form method="post" action="{prefix}/admin/super-admin/exit" style="margin-left:auto;">
+            <button class="button" type="submit"
+              style="background:#991b1b;color:#fca5a5;border:1px solid #ef4444;
+                     min-height:28px;padding:0 12px;font-size:0.82rem;">
+              Exit school &rarr;
+            </button>
+          </form>
+        </div>
         """
     else:
         super_admin_recorded_badge_html = ""
@@ -10395,16 +10934,18 @@ def render_admin_page(
           <p class="nav-label">Command Deck</p>
           <nav class="nav-list">
             {_nav_item("dashboard", "Dashboard")}
+            {_nav_item("messaging", "Messaging", str(unread_admin_messages) if unread_admin_messages else None)}
             {_nav_item("user-management", "User Management", str(_um_badge_count) if _um_badge_count else None)}
             {_nav_item("roster", "Student Roster")}
+            {_nav_item("accountability", "Accountability", "🔴" if alarm_state.is_active else None)}
             {_nav_item("drill-reports", "Drill Reports")}
-            {_nav_item("audit-logs", "Audit Logs")}
             {_nav_item("analytics", "Analytics")}
+            {_nav_item("audit-logs", "Audit Logs")}
+            {_nav_item("devices", "Active Devices")}
             {_nav_item("district-reports", "District Reports") if show_district_nav else ""}
+            {_nav_item("district", "District Overview") if show_district_nav else ""}
             {_nav_item("demo-analytics", "📊 Demo Analytics") if is_demo_mode else ""}
             {_nav_item("settings", "Settings")}
-            {_nav_item("district", "District Overview") if show_district_nav else ""}
-            {_nav_item("devices", "Active Devices")}
           </nav>
         </div>
       </section>
@@ -10441,7 +10982,7 @@ def render_admin_page(
             <article class="metric-card"><div class="meta">Devices</div><div class="metric-value">{len(devices)}</div></article>
             <article class="metric-card"><div class="meta">Recent alerts</div><div class="metric-value">{len(alerts)}</div></article>
             <article class="metric-card"><div class="meta">User reports</div><div class="metric-value">{len(reports)}</div></article>
-            <article class="metric-card"><div class="meta">Open messages</div><div class="metric-value">{unread_admin_messages}</div></article>
+            <article class="metric-card" style="cursor:pointer;" onclick="window.location='{prefix}/admin?section=messaging'"><div class="meta">Open messages</div><div class="metric-value">{unread_admin_messages}</div></article>
             <article class="metric-card"><div class="meta">Active help requests</div><div class="metric-value">{len(request_help_active)}</div></article>
             <article class="metric-card"><div class="meta">Quiet period requests{_help_tip('Staff requests to suppress non-emergency notification sounds during sensitive activities (tests, performances).')}</div><div class="metric-value">{len(quiet_periods_active)}</div></article>
           </div>
@@ -10470,6 +11011,8 @@ def render_admin_page(
         {_render_settings_panels(prefix, school_name, school_slug, settings_history, _section_style, effective_settings=effective_settings, can_edit=can_edit_tenant_settings, is_district_admin=is_district_admin)}
 
         {_render_roster_section(roster_students, prefix, _section_style("roster"), ws_api_key, alarm_active=alarm_state.is_active, alert_id=current_alert_id)}
+
+        {_render_accountability_section(accountability_rollup, prefix, _section_style("accountability"), alarm_active=alarm_state.is_active, alert_id=current_alert_id)}
 
         <section class="panel command-section" id="security"{_section_style("settings")}>
           <div class="panel-header">
@@ -10728,6 +11271,7 @@ def render_admin_page(
                 {_render_drill_report_rows(alerts, prefix)}
               </tbody>
             </table>
+            {_render_help_request_analytics_card(help_request_analytics)}
           </section>
 
           <!-- 9.2: Per-building analytics (lazy-loaded) -->
@@ -11012,54 +11556,57 @@ def render_admin_page(
           {_um_bulk_modal()}
           {_um_view_as_modal()}
 
-          <section class="panel command-section span-5" id="reports"{_section_style("dashboard")}>
-            <div class="panel-header">
-              <div>
-                <p class="eyebrow">Admin Broadcasts</p>
-                <h2>Send official updates</h2>
-                <p class="card-copy">Post short verified updates that all signed-in mobile users will see on their app status screen.</p>
-              </div>
-            </div>
-            {super_admin_recorded_badge_html}
-            <form method="post" action="{prefix}/admin/broadcasts/create" class="stack">
-              <div class="field">
-                <label for="broadcast_message">Broadcast message</label>
-                <textarea id="broadcast_message" name="message" placeholder="Police on site. Stay barricaded until further notice."></textarea>
-              </div>
-              <div class="checkbox-row">
-                <input type="checkbox" name="send_push" value="1" id="send_push_broadcast" />
-                <label for="send_push_broadcast">Send this update as a push notification too</label>
-              </div>
-              <div class="button-row">
-                <button class="button button-primary" type="submit">Post update</button>
-              </div>
-            </form>
-            <table class="data-table" style="margin-top:16px;">
-              <thead>
-                <tr><th>Created</th><th>By</th><th>Message</th></tr>
-              </thead>
-              <tbody>
-                {_render_broadcast_rows(broadcasts)}
-              </tbody>
-            </table>
-          </section>
-
-          <section class="panel command-section span-12" id="messages"{_section_style("dashboard")}>
+          <section class="panel command-section span-12" id="messaging"{_section_style("messaging")}>
             <div class="panel-header">
               <div>
                 <p class="eyebrow">Messaging</p>
-                <h2>User messages inbox {'<span class="count-badge">' + str(unread_admin_messages) + '</span>' if unread_admin_messages > 0 else ''}</h2>
-                <p class="card-copy">Review incoming mobile messages and reply directly from the admin console.</p>
+                <h2>Broadcasts &amp; User Inbox {'<span class="count-badge">' + str(unread_admin_messages) + '</span>' if unread_admin_messages > 0 else ''}</h2>
+                <p class="card-copy">Send official broadcast updates to all users and review incoming messages from the mobile app.</p>
               </div>
             </div>
-            <div class="table-wrap"><table class="data-table">
-              <thead>
-                <tr><th>ID</th><th>Created</th><th>From</th><th>Message</th><th>Status</th><th>Response</th><th>Action</th></tr>
-              </thead>
-              <tbody>
-                {_render_admin_message_rows(admin_messages, school_path_prefix)}
-              </tbody>
-            </table></div>
+            {super_admin_recorded_badge_html}
+
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-bottom:32px;align-items:start;">
+              <div>
+                <p class="eyebrow" style="margin-bottom:10px;">Send Broadcast</p>
+                <form method="post" action="{prefix}/admin/broadcasts/create" class="stack">
+                  <div class="field">
+                    <label for="broadcast_message">Broadcast message</label>
+                    <textarea id="broadcast_message" name="message" placeholder="Police on site. Stay barricaded until further notice."></textarea>
+                  </div>
+                  <div class="checkbox-row">
+                    <input type="checkbox" name="send_push" value="1" id="send_push_broadcast" />
+                    <label for="send_push_broadcast">Send as push notification too</label>
+                  </div>
+                  <div class="button-row">
+                    <button class="button button-primary" type="submit">Post update</button>
+                  </div>
+                </form>
+              </div>
+              <div>
+                <p class="eyebrow" style="margin-bottom:10px;">Recent Broadcasts</p>
+                <table class="data-table">
+                  <thead>
+                    <tr><th>Created</th><th>By</th><th>Message</th></tr>
+                  </thead>
+                  <tbody>
+                    {_render_broadcast_rows(broadcasts)}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div style="border-top:1px solid var(--border);padding-top:24px;">
+              <p class="eyebrow" style="margin-bottom:10px;">User Messages Inbox</p>
+              <div class="table-wrap"><table class="data-table">
+                <thead>
+                  <tr><th>ID</th><th>Created</th><th>From</th><th>Message</th><th>Status</th><th>Response</th><th>Action</th></tr>
+                </thead>
+                <tbody>
+                  {_render_admin_message_rows(admin_messages, school_path_prefix)}
+                </tbody>
+              </table></div>
+            </div>
           </section>
 
           <section class="panel command-section span-12" id="request-help"{_section_style("dashboard")}>
@@ -11576,6 +12123,7 @@ def render_admin_page(
 
     var _NAV = [
       {{t:'nav', i:'📊', l:'Dashboard', d:'Main overview', u:_PREFIX+'/admin?section=dashboard'}},
+      {{t:'nav', i:'💬', l:'Messaging', d:'Broadcasts and user message inbox', u:_PREFIX+'/admin?section=messaging'}},
       {{t:'nav', i:'👤', l:'User Management', d:'Accounts and roles', u:_PREFIX+'/admin?section=user-management'}},
       {{t:'nav', i:'🔑', l:'Access Codes', d:'Staff self-registration codes', u:_PREFIX+'/admin?section=user-management&tab=codes'}},
       {{t:'nav', i:'📱', l:'Active Devices', d:'Registered devices and sessions', u:_PREFIX+'/admin?section=devices'}},

@@ -53,6 +53,7 @@ from app.models.schemas import (
     IncidentCreateRequest,
     IncidentListResponse,
     IncidentSummary,
+    MePermissionsResponse,
     MeResponse,
     SelectTenantRequest,
     SelectTenantResponse,
@@ -134,6 +135,25 @@ from app.models.schemas import (
     AddIncidentStudentRequest,
     RosterClaimHistoryOut,
     RosterClaimHistoryResponse,
+    BatchAccountabilityRequest,
+    BatchAccountabilityResponse,
+    AccountabilityRollupResponse,
+    GradeRollupItem,
+    StaffRollupItem,
+    MissingStudentOut,
+    MissingStudentsResponse,
+    AccountabilityReportResponse,
+    ChatMessageOut,
+    ChatMarkReadRequest,
+    ChatMarkReadResponse,
+    ChatPinRequest,
+    ChatPinnedResponse,
+    ChatPriorityRequest,
+    ChatReplyRequest,
+    ChatThreadResponse,
+    ChatSendRequest,
+    ChatSendResponse,
+    ChatListResponse,
 )
 from app.services.access_code_service import AccessCodeService
 from app.services.demo_live_engine import DemoLiveEngine
@@ -146,6 +166,7 @@ from app.services.customer_store import CustomerStore, VALID_STATUSES as CUSTOME
 from app.services.health_monitor import HealthMonitor
 from app.services.alert_log import AlertLog
 from app.services.audit_log_service import AuditLogService, AuditEventRecord
+from app.services.timeline_service import TimelineService
 from app.services.drill_report_service import DrillReportService
 from app.services.drill_report_pdf import generate_pdf
 from app.services.onboarding_pdf import (
@@ -174,11 +195,17 @@ from app.services.permissions import (
     PERM_ROSTER_CLAIM,
     PERM_ROSTER_MANAGE,
     PERM_ROSTER_VIEW,
+    PERM_MESSAGES_SEND,
+    PERM_MESSAGES_BROADCAST,
+    PERM_MESSAGES_DELETE,
+    PERM_MESSAGES_PIN,
+    PERM_MESSAGES_PRIORITY,
     PERM_SUBMIT_QUIET_REQUEST,
     PERM_TRIGGER_OWN_TENANT_ALERTS,
     ROLE_ADMIN,
     ROLE_BUILDING_ADMIN,
     ROLE_DISTRICT_ADMIN,
+    ROLE_LAW_ENFORCEMENT,
     ROLE_SUPER_ADMIN,
     can,
     can_any,
@@ -189,11 +216,14 @@ from app.services.permissions import (
     can_generate_codes,
     can_view_settings,
     filter_settings_for_role,
+    get_role_permissions,
     is_dashboard_role,
     is_district_admin_or_higher,
+    normalize_role,
     role_display_label,
     valid_tenant_roles,
 )
+from app.core.event_bus import Event, EventBus, EventType
 from app.services.quiet_period_store import QuietPeriodStore
 from app.services.report_store import AdminMessageRecord, ReportStore
 from app.services.platform_admin_store import PlatformAdminStore
@@ -499,8 +529,16 @@ def _message_store(req: Request):
     return _tenant(req).message_store  # type: ignore[attr-defined]
 
 
+def _chat_store(req: Request):
+    return _tenant(req).chat_store  # type: ignore[attr-defined]
+
+
 def _roster_store(req: Request):
     return _tenant(req).roster_store  # type: ignore[attr-defined]
+
+
+def _timeline_svc(req: Request) -> TimelineService:
+    return _tenant(req).timeline_service  # type: ignore[attr-defined]
 
 
 def _ea_store(req: Request):
@@ -557,7 +595,7 @@ def _pop_flash(request: Request) -> tuple[Optional[str], Optional[str]]:
 
 def _admin_section(value: Optional[str]) -> str:
     normalized = str(value or "").strip().lower()
-    if normalized in {"dashboard", "user-management", "access-codes", "quiet-periods", "audit-logs", "settings", "drill-reports", "district", "devices", "analytics", "district-reports", "roster"}:
+    if normalized in {"dashboard", "user-management", "access-codes", "quiet-periods", "audit-logs", "settings", "drill-reports", "district", "devices", "analytics", "district-reports", "roster", "accountability", "messaging"}:
         return normalized
     return "dashboard"
 
@@ -890,6 +928,10 @@ def _alert_hub(request: Request):
     return request.app.state.alert_hub  # type: ignore[attr-defined]
 
 
+def _event_bus(request: Request) -> EventBus:
+    return request.app.state.event_bus  # type: ignore[attr-defined]
+
+
 def _assert_tenant_resolved(request: Request) -> None:
     """
     Belt-and-suspenders guard: raise 400 if tenant context was not bound by the
@@ -920,6 +962,20 @@ async def _active_alert_metadata(request: Request, *, user_id: Optional[int] = N
     if user_id is not None and int(user_id) > 0:
         user_ack = await _alert_log(request).has_acknowledged(alert_id=latest.id, user_id=int(user_id))
     return latest.id, ack_count, user_ack, expected_count
+
+
+_ALERT_EVENT_TYPE_MAP: dict[str, EventType] = {
+    "alert_triggered": EventType.ALERT_TRIGGERED,
+    "alert_cleared": EventType.ALERT_DEACTIVATED,
+    "tenant_acknowledgement_updated": EventType.ALERT_ACKNOWLEDGED,
+}
+
+_SIMPLE_EVENT_TYPE_MAP: dict[str, EventType] = {
+    "new_user_message": EventType.MESSAGE_SENT,
+    "admin_broadcast": EventType.ADMIN_BROADCAST,
+    "admin_reply": EventType.ADMIN_REPLY,
+    "student_accountability.updated": EventType.STUDENTS_ACCOUNTED,
+}
 
 
 async def _publish_alert_event(
@@ -967,7 +1023,12 @@ async def _publish_alert_event(
         payload["alert_id"] = int(alert_id)
     if extra:
         payload.update(extra)
-    await _alert_hub(request).publish(effective_slug, payload)
+    event_type = _ALERT_EVENT_TYPE_MAP.get(event, EventType.GENERIC)
+    await _event_bus(request).emit(Event(
+        event_type=event_type,
+        tenant_slug=effective_slug,
+        payload=payload,
+    ))
 
 
 async def _publish_simple_event(
@@ -984,7 +1045,12 @@ async def _publish_simple_event(
     }
     if extra:
         payload.update(extra)
-    await _alert_hub(request).publish(effective_slug, payload)
+    event_type = _SIMPLE_EVENT_TYPE_MAP.get(event, EventType.GENERIC)
+    await _event_bus(request).emit(Event(
+        event_type=event_type,
+        tenant_slug=effective_slug,
+        payload=payload,
+    ))
 
 
 async def _platform_activity_feed(
@@ -2038,6 +2104,7 @@ async def alerts_websocket(websocket: WebSocket, tenant_slug: str) -> None:
     ws_device_id: Optional[str] = websocket.query_params.get("device_id") or None
 
     hub = websocket.app.state.alert_hub  # type: ignore[attr-defined]
+    bus: EventBus = websocket.app.state.event_bus  # type: ignore[attr-defined]
     await hub.connect(school.slug, websocket)
 
     # Mark device(s) online — best-effort, never blocks the connection.
@@ -2047,6 +2114,24 @@ async def alerts_websocket(websocket: WebSocket, tenant_slug: str) -> None:
             await _ws_registry.set_ws_presence(
                 device_id=ws_device_id, user_id=ws_user_id, connected=True
             )
+        except Exception:
+            pass
+
+    # Emit USER_ONLINE through event bus so all subscribers (e.g. district
+    # dashboards) learn about the presence change without polling.
+    if ws_user_id is not None:
+        try:
+            await bus.emit(Event(
+                event_type=EventType.USER_ONLINE,
+                tenant_slug=school.slug,
+                user_id=ws_user_id,
+                payload={
+                    "event": "user_online",
+                    "tenant_slug": school.slug,
+                    "user_id": ws_user_id,
+                    "device_id": ws_device_id,
+                },
+            ))
         except Exception:
             pass
 
@@ -2073,6 +2158,21 @@ async def alerts_websocket(websocket: WebSocket, tenant_slug: str) -> None:
                 await _ws_registry.set_ws_presence(
                     device_id=ws_device_id, user_id=ws_user_id, connected=False
                 )
+            except Exception:
+                pass
+        if ws_user_id is not None:
+            try:
+                await bus.emit(Event(
+                    event_type=EventType.USER_OFFLINE,
+                    tenant_slug=school.slug,
+                    user_id=ws_user_id,
+                    payload={
+                        "event": "user_offline",
+                        "tenant_slug": school.slug,
+                        "user_id": ws_user_id,
+                        "device_id": ws_device_id,
+                    },
+                ))
             except Exception:
                 pass
 
@@ -2401,6 +2501,73 @@ async def get_audit_log(
     )
 
 
+async def _seed_incident_chat(request: Request, alert_id: int, actor_label: Optional[str]) -> None:
+    """
+    Create a pinned system broadcast that opens the incident channel for this alert.
+    Idempotent: skipped if a seed already exists.  Non-throwing: failures are logged
+    but never surface to the caller — alert activation must not be blocked by chat.
+    """
+    try:
+        store = _chat_store(request)
+        if await store.incident_seed_exists(alert_id):
+            return
+        label = actor_label or "System"
+        seed = await store.send(
+            sender_user_id=0,
+            sender_name="System",
+            sender_role="system",
+            message_body=f"🚨 Incident channel opened by {label}. Use this thread to coordinate.",
+            message_type="broadcast",
+            recipients_scope="all_users",
+            alert_id=alert_id,
+            priority="critical",
+        )
+        await store.set_pin(seed.id, True)
+        tenant_slug = _tenant(request).slug
+        bus = _event_bus(request)
+        # message.new — clients append seed to their chat list
+        await bus.emit(Event(
+            event_type=EventType.MESSAGE_SENT,
+            tenant_slug=tenant_slug,
+            payload={
+                "event": "message.new",
+                "id": seed.id,
+                "alert_id": seed.alert_id,
+                "sender_user_id": seed.sender_user_id,
+                "sender_name": seed.sender_name,
+                "sender_role": seed.sender_role,
+                "message_body": seed.message_body,
+                "message_type": seed.message_type,
+                "recipients_scope": seed.recipients_scope,
+                "created_at": seed.created_at,
+                "priority": seed.priority,
+                "is_pinned": True,
+                "parent_message_id": None,
+                "reply_count": 0,
+            },
+        ))
+        # message.pinned — clients refresh their pinned section
+        await bus.emit(Event(
+            event_type=EventType.MESSAGE_PINNED,
+            tenant_slug=tenant_slug,
+            payload={
+                "event": "message.pinned",
+                "id": seed.id,
+                "pinned": True,
+                "pinned_by_user_id": 0,
+            },
+        ))
+        logger.info(
+            "_seed_incident_chat: created seed id=%d alert_id=%d tenant=%s",
+            seed.id, alert_id, tenant_slug,
+        )
+    except Exception:
+        logger.exception(
+            "_seed_incident_chat: failed for alert_id=%d tenant=%s",
+            alert_id, getattr(_tenant(request), "slug", "?"),
+        )
+
+
 @router.post("/alarm/activate", response_model=AlarmStatusResponse)
 async def activate_alarm(
     body: AlarmActivateRequest,
@@ -2534,6 +2701,7 @@ async def activate_alarm(
         },
     )
     await _publish_alert_event(request, event="alert_triggered", alert_id=alert_id)
+    await _seed_incident_chat(request, alert_id, _current_school_actor_label(request))
 
     return AlarmStatusResponse(
         is_active=bool(_state_field(state, "is_active", False)),
@@ -2730,7 +2898,7 @@ async def admin_dashboard(
     _admin_role = str(getattr(request.state.admin_user, "role", "")).strip().lower()
     # Gate district section to district_admin and super_admin only
     if selected_section == "district":
-        if _admin_role not in {"district_admin", "super_admin"}:
+        if not is_district_admin_or_higher(_admin_role):
             selected_section = "dashboard"
     flash_message, flash_error = _pop_flash(request)
     assignments = await _user_tenants(request).list_assignments_for_users(
@@ -2767,6 +2935,17 @@ async def admin_dashboard(
     _roster_students: list = []
     if selected_section == "roster":
         _roster_students = await _roster_store(request).list_students()
+
+    _accountability_rollup: Optional[dict] = None
+    if selected_section == "accountability" and alarm_state.is_active and _latest_alert is not None:
+        _accountability_rollup = await _roster_store(request).get_accountability_rollup(_latest_alert.id)
+
+    _hr_analytics: Optional[dict] = None
+    if selected_section == "drill-reports":
+        try:
+            _hr_analytics = await _incident_store(request).help_request_cancellation_analytics()
+        except Exception:
+            pass
 
     _settings_history: list = []
     _effective_settings = None
@@ -2854,6 +3033,8 @@ async def admin_dashboard(
         can_edit_tenant_settings=_can_edit_tenant_settings,
         billing_banner=_billing_banner,
         roster_students=_roster_students,
+        accountability_rollup=_accountability_rollup,
+        help_request_analytics=_hr_analytics,
     )
     return HTMLResponse(content=html)
 
@@ -3409,7 +3590,7 @@ async def admin_district_reorder_schools(request: Request) -> JSONResponse:
     if _session_user_id(request) is None and not _super_admin_school_access_here(request):
         return JSONResponse({"error": "Unauthorized"}, status_code=401)
     _admin_role = str(getattr(request.state.admin_user, "role", "")).strip().lower()
-    if _admin_role not in {"district_admin", "super_admin"}:
+    if not is_district_admin_or_higher(_admin_role):
         return JSONResponse({"error": "Forbidden"}, status_code=403)
 
     school = request.state.school
@@ -3709,7 +3890,7 @@ async def admin_totp_submit(
 async def admin_revoke_device_session(request: Request, session_id: int) -> RedirectResponse:
     await _require_dashboard_admin(request)
     _actor_role = str(getattr(request.state.admin_user, "role", "")).strip().lower()
-    if _actor_role not in {"district_admin", "super_admin"}:
+    if not is_district_admin_or_higher(_actor_role):
         _set_flash(request, error="Only district administrators can revoke device sessions.")
         return RedirectResponse(url=_school_url(request, "/admin?section=devices"), status_code=status.HTTP_303_SEE_OTHER)
     revoked = await _sessions(request).invalidate_by_id(session_id)
@@ -6763,7 +6944,7 @@ async def admin_update_user_tenant_assignments(
     actor_role = str(getattr(actor, "role", "")).strip().lower()
     if not (
         bool(getattr(request.state, "super_admin_school_access", False))
-        or actor_role == "district_admin"
+        or actor_role == ROLE_DISTRICT_ADMIN
         or can(actor_role, PERM_MANAGE_ASSIGNED_TENANTS)
     ):
         _set_flash(request, error="Only district admins can change cross-tenant assignments.")
@@ -6773,7 +6954,7 @@ async def admin_update_user_tenant_assignments(
     if target_user is None:
         _set_flash(request, error=f"User #{int(user_id)} was not found.")
         return RedirectResponse(url="/admin?section=user-management#users", status_code=status.HTTP_303_SEE_OTHER)
-    if target_user.role not in {"district_admin", "law_enforcement"}:
+    if target_user.role not in {ROLE_DISTRICT_ADMIN, ROLE_LAW_ENFORCEMENT}:
         _set_flash(request, error="Only district-admin and law-enforcement users support multi-tenant assignment.")
         return RedirectResponse(url="/admin?section=user-management#users", status_code=status.HTTP_303_SEE_OTHER)
 
@@ -7095,7 +7276,7 @@ async def admin_view_as_user(user_id: int, request: Request) -> JSONResponse:
     actor = getattr(request.state, "admin_user", None)
     actor_role = str(getattr(actor, "role", "") or "").strip().lower()
 
-    _view_as_roles = {ROLE_DISTRICT_ADMIN, ROLE_SUPER_ADMIN, ROLE_BUILDING_ADMIN, "admin"}
+    _view_as_roles = {ROLE_DISTRICT_ADMIN, ROLE_SUPER_ADMIN, ROLE_BUILDING_ADMIN, ROLE_ADMIN}
     if actor_role not in _view_as_roles:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions for view-as")
 
@@ -7104,7 +7285,7 @@ async def admin_view_as_user(user_id: int, request: Request) -> JSONResponse:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
     # building_admin / admin cannot view DA or SA accounts
-    if actor_role in {ROLE_BUILDING_ADMIN, "admin"} and user.role in {ROLE_DISTRICT_ADMIN, ROLE_SUPER_ADMIN}:
+    if actor_role in {ROLE_BUILDING_ADMIN, ROLE_ADMIN} and user.role in {ROLE_DISTRICT_ADMIN, ROLE_SUPER_ADMIN}:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cannot view users with higher privilege")
 
     alarm_state = await _alarm_store(request).get_state()
@@ -7272,12 +7453,12 @@ async def admin_building_analytics(
     actor = getattr(request.state, "admin_user", None)
     actor_role = str(getattr(actor, "role", "") or "").strip().lower()
 
-    if actor_role not in {ROLE_DISTRICT_ADMIN, ROLE_SUPER_ADMIN, ROLE_BUILDING_ADMIN, "admin"}:
+    if actor_role not in {ROLE_DISTRICT_ADMIN, ROLE_SUPER_ADMIN, ROLE_BUILDING_ADMIN, ROLE_ADMIN}:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
 
     cutoff_str = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
 
-    if actor_role in {ROLE_DISTRICT_ADMIN, ROLE_SUPER_ADMIN}:
+    if is_district_admin_or_higher(actor_role):
         schools = await _district_accessible_schools(request, actor)
     else:
         schools = [getattr(request.state, "admin_effective_school", request.state.school)]
@@ -7744,7 +7925,7 @@ async def get_alert_messages(
     if alert is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Alert not found")
 
-    is_admin = user.role in {ROLE_ADMIN, ROLE_BUILDING_ADMIN, ROLE_DISTRICT_ADMIN, ROLE_SUPER_ADMIN}
+    is_admin = can_any(user.role, {PERM_MANAGE_OWN_TENANT_USERS, PERM_MANAGE_ASSIGNED_TENANT_USERS, PERM_FULL_ACCESS})
     records = await _message_store(request).get_messages(
         alert_id=alert_id,
         user_id=user.id,
@@ -8404,6 +8585,58 @@ async def get_me(
     )
 
 
+@router.get("/me/permissions", response_model=MePermissionsResponse)
+async def get_me_permissions(
+    request: Request,
+    user_id: int = Query(...),
+    _: None = Depends(require_api_key),
+) -> MePermissionsResponse:
+    """
+    Return the authoritative permission map for a user in the current tenant context.
+
+    Clients use this response to drive UI visibility (show/hide buttons, enable/disable
+    actions).  The response is always derived from server-side role logic — clients
+    must never implement permission logic independently.
+
+    For district_admin users accessing an assigned tenant, call this endpoint with the
+    appropriate tenant context (X-Tenant-Slug header or API key) to get the permissions
+    for that specific tenant.
+    """
+    _assert_tenant_resolved(request)
+    user = await _users(request).get_user(user_id)
+    if user is None or not user.is_active:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Active user not found")
+
+    current_school = request.state.school
+    effective_role = str(user.role).strip().lower()
+
+    # For district_admin users who may be accessing an assigned tenant with a
+    # different role_for_tenant, resolve the effective role for this tenant.
+    if effective_role == ROLE_DISTRICT_ADMIN:
+        all_schools = await _schools(request).list_schools()
+        if str(getattr(current_school, "slug", "")) not in {str(getattr(s, "slug", "")) for s in all_schools
+                                                             if str(getattr(s, "slug", "")) == str(getattr(current_school, "slug", ""))}:
+            assignments = await _user_tenants(request).list_assignments(
+                user_id=int(user.id),
+                home_tenant_id=int(current_school.id),
+            )
+            for assignment in assignments:
+                if int(assignment.tenant_id) == int(current_school.id) and assignment.role_for_tenant:
+                    effective_role = str(assignment.role_for_tenant).strip().lower()
+                    break
+
+    return MePermissionsResponse(
+        user_id=user.id,
+        tenant_slug=str(getattr(current_school, "slug", "")),
+        role=effective_role,
+        permissions=get_role_permissions(effective_role),
+        can_trigger_alarm=can_trigger_alarm(effective_role),
+        can_deactivate_alarm=_can_deactivate_alarm(effective_role),
+        is_dashboard_admin=is_dashboard_role(effective_role) or normalize_role(effective_role) == ROLE_SUPER_ADMIN,
+        is_district_admin_or_higher=is_district_admin_or_higher(effective_role),
+    )
+
+
 @router.post("/me/selected-tenant", response_model=SelectTenantResponse)
 async def select_tenant(
     body: SelectTenantRequest,
@@ -8733,6 +8966,22 @@ async def register_device(
     """
     Registers a device token for future push notifications.
     """
+
+    # ── Enrollment gate ──────────────────────────────────────────────────────
+    # When enrollment is closed, only previously-enrolled devices may re-register
+    # (e.g. after token rotation or app reinstall). Truly new devices are blocked
+    # so admins can control who joins a tenant's device fleet.
+    _device_settings = (await _settings_store(request).get_effective_settings()).devices
+    if not _device_settings.enrollment_open:
+        _is_known = await _registry(request).is_device_known(
+            device_id=body.device_id,
+            token=body.device_token,
+        )
+        if not _is_known:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Device enrollment is currently closed. Contact your administrator.",
+            )
 
     registered = await _registry(request).register(
         token=body.device_token,
@@ -9453,6 +9702,7 @@ async def panic(
         ))
 
     await _publish_alert_event(request, event="alert_triggered", alert_id=alert_id)
+    await _seed_incident_chat(request, alert_id, web_label)
 
     return PanicResponse(
         alert_id=alert_id,
@@ -11137,6 +11387,18 @@ async def admin_update_access_code_settings(request: Request) -> JSONResponse:
     return await _update_settings_category(request, "access_codes")
 
 
+@router.post("/admin/settings/ui", include_in_schema=False)
+async def admin_update_ui_settings(request: Request) -> JSONResponse:
+    """Update UI/display settings for the current tenant. Building admin or higher."""
+    return await _update_settings_category(request, "ui")
+
+
+@router.post("/admin/settings/ai_insights", include_in_schema=False)
+async def admin_update_ai_insights_settings(request: Request) -> JSONResponse:
+    """Update AI Insights settings for the current tenant. District admin or higher only."""
+    return await _update_settings_category(request, "ai_insights")
+
+
 @router.post("/admin/settings/reset", include_in_schema=False)
 async def admin_reset_settings(request: Request) -> JSONResponse:
     """Reset all tenant settings to factory defaults. District admin or higher only."""
@@ -12750,6 +13012,34 @@ def _claim_dict_to_out(d: dict) -> RosterClaimOut:
     )
 
 
+@router.get("/roster/students/version")
+async def get_roster_version(
+    request: Request,
+    user_id: int = Query(...),
+    _: None = Depends(require_api_key),
+) -> dict:
+    _assert_tenant_resolved(request)
+    await _require_active_user_with_permission(_users(request), user_id, permission=PERM_ROSTER_VIEW)
+    version = await _roster_store(request).get_roster_version()
+    return {"version": version}
+
+
+@router.get("/roster/students/template")
+async def get_roster_csv_template(
+    _: None = Depends(require_api_key),
+) -> StreamingResponse:
+    csv_content = "first_name,last_name,grade_level,student_ref\nJane,Doe,5,\nJohn,Smith,3,S-1001\n"
+
+    def iterfile():
+        yield csv_content
+
+    return StreamingResponse(
+        iterfile(),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=roster_template.csv"},
+    )
+
+
 @router.get("/roster/students", response_model=StudentListResponse)
 async def list_students(
     request: Request,
@@ -12757,13 +13047,18 @@ async def list_students(
     grade_level: Optional[str] = Query(default=None),
     q: Optional[str] = Query(default=None),
     include_archived: bool = Query(default=False),
+    limit: Optional[int] = Query(default=None, ge=1, le=2000),
+    offset: int = Query(default=0, ge=0),
     _: None = Depends(require_api_key),
 ) -> StudentListResponse:
     _assert_tenant_resolved(request)
     await _require_active_user_with_permission(_users(request), user_id, permission=PERM_ROSTER_VIEW)
-    records = await _roster_store(request).list_students(
-        grade=grade_level, q=q, include_archived=include_archived
+    store = _roster_store(request)
+    records = await store.list_students(
+        grade=grade_level, q=q, include_archived=include_archived,
+        limit=limit, offset=offset,
     )
+    total = await store.count_students(grade=grade_level, q=q, include_archived=include_archived)
     return StudentListResponse(
         students=[
             StudentSummary(
@@ -12775,7 +13070,7 @@ async def list_students(
             )
             for r in records
         ],
-        total=len(records),
+        total=total,
     )
 
 
@@ -12817,6 +13112,12 @@ async def create_student(
         grade_level=body.grade_level,
         student_ref=body.student_ref,
     )
+    await _event_bus(request).emit(Event(
+        event_type=EventType.ROSTER_UPDATED,
+        tenant_slug=_tenant(request).slug,
+        payload={"event": "roster.student.created", "student_id": record.id},
+        user_id=user_id,
+    ))
     return StudentDetail(
         student_id=record.id,
         first_name=record.first_name,
@@ -12847,6 +13148,12 @@ async def update_student(
     )
     if record is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Student not found")
+    await _event_bus(request).emit(Event(
+        event_type=EventType.ROSTER_UPDATED,
+        tenant_slug=_tenant(request).slug,
+        payload={"event": "roster.student.updated", "student_id": record.id},
+        user_id=user_id,
+    ))
     return StudentDetail(
         student_id=record.id,
         first_name=record.first_name,
@@ -12870,6 +13177,12 @@ async def archive_student(
     ok = await _roster_store(request).archive_student(student_id)
     if not ok:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Student not found")
+    await _event_bus(request).emit(Event(
+        event_type=EventType.ROSTER_UPDATED,
+        tenant_slug=_tenant(request).slug,
+        payload={"event": "roster.student.archived", "student_id": student_id},
+        user_id=user_id,
+    ))
 
 
 # ── CSV import ────────────────────────────────────────────────────────────────
@@ -12923,6 +13236,13 @@ async def roster_import_commit(
         )
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid or expired import session")
+    if result.inserted > 0:
+        await _event_bus(request).emit(Event(
+            event_type=EventType.ROSTER_UPDATED,
+            tenant_slug=_tenant(request).slug,
+            payload={"event": "roster.import.committed", "inserted": result.inserted},
+            user_id=user_id,
+        ))
     return ImportResultOut(inserted=result.inserted, skipped=result.skipped_duplicates)
 
 
@@ -12994,6 +13314,119 @@ async def get_incident_roster_summary(
         injured=s["injured"],
         released=s["released"],
     )
+
+
+@router.get("/alerts/{alert_id}/timeline")
+async def get_alert_timeline(
+    alert_id: int,
+    request: Request,
+    user_id: int = Query(...),
+    _: None = Depends(require_api_key),
+) -> JSONResponse:
+    """Return the ordered event timeline for an incident. Admin only."""
+    _assert_tenant_resolved(request)
+    await _require_admin_user(_users(request), user_id)
+    alert = await _alert_log(request).get_alert(alert_id)
+    if alert is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Alert not found")
+    events = await _timeline_svc(request).build(alert_id)
+    duration_ms = events[-1].relative_ms if events else 0
+    return JSONResponse({
+        "alert_id": alert_id,
+        "total_events": len(events),
+        "duration_ms": duration_ms,
+        "events": [
+            {
+                "event_id": ev.event_id,
+                "event_type": ev.event_type,
+                "timestamp": ev.timestamp,
+                "relative_ms": ev.relative_ms,
+                "actor": ev.actor,
+                "payload": ev.payload,
+            }
+            for ev in events
+        ],
+    })
+
+
+@router.post("/alerts/{alert_id}/summary")
+async def get_alert_summary(
+    alert_id: int,
+    request: Request,
+    user_id: int = Query(...),
+    _: None = Depends(require_api_key),
+) -> JSONResponse:
+    """Generate an AI-powered incident summary via Claude. Admin only."""
+    _assert_tenant_resolved(request)
+    await _require_admin_user(_users(request), user_id)
+    alert = await _alert_log(request).get_alert(alert_id)
+    if alert is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Alert not found")
+
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="AI summary unavailable: ANTHROPIC_API_KEY not configured",
+        )
+
+    try:
+        import anthropic as _anthropic  # noqa: PLC0415
+    except ImportError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="AI summary unavailable: anthropic package not installed",
+        )
+
+    events = await _timeline_svc(request).build(alert_id)
+
+    def _fmt_event(ev) -> str:
+        label = ev.payload.get("body") or ev.payload.get("message") or ""
+        label = str(label)[:120].replace("\n", " ")
+        actor = ev.actor or "unknown"
+        return f"[+{ev.relative_ms // 1000}s] {ev.event_type} by {actor}: {label}"
+
+    timeline_text = "\n".join(_fmt_event(ev) for ev in events) or "(no events)"
+
+    prompt = (
+        f"You are analyzing an emergency incident timeline for a school safety system.\n"
+        f"Alert message: {alert.message!r}\n"
+        f"Training drill: {alert.is_training}\n\n"
+        f"TIMELINE:\n{timeline_text}\n\n"
+        "Return a JSON object with exactly these fields:\n"
+        '  "summary": string — 2-3 factual sentences\n'
+        '  "key_actions": array of strings — 3-5 most important actions taken\n'
+        '  "missing_students": array of strings — names flagged missing (empty if none)\n'
+        '  "risk_indicators": array of strings — unresolved safety concerns (empty if none)\n'
+        '  "confidence_score": float 0.0-1.0 based on data completeness\n'
+        '  "response_time_ms": int, ms from alert to first acknowledgement (-1 if unknown)\n'
+        '  "total_participants": int, unique actors who took any action\n'
+        "Return ONLY valid JSON, no markdown."
+    )
+
+    try:
+        client = _anthropic.AsyncAnthropic(api_key=api_key)
+        msg = await client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=1024,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw = msg.content[0].text.strip()
+        # Strip accidental markdown fences
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+        result = json.loads(raw)
+    except Exception as exc:
+        logger.exception("AI summary failed for alert_id=%d", alert_id)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"AI summary generation failed: {exc}",
+        )
+
+    result.setdefault("alert_id", alert_id)
+    return JSONResponse(result)
 
 
 @router.post("/alerts/{alert_id}/roster/students", response_model=IncidentRosterRow, status_code=201)
@@ -13199,6 +13632,170 @@ async def get_roster_claim_history(
     )
 
 
+# ── Student accountability ────────────────────────────────────────────────────
+
+@router.post("/alerts/{alert_id}/accountability", response_model=BatchAccountabilityResponse, status_code=200)
+async def submit_accountability(
+    alert_id: int,
+    body: BatchAccountabilityRequest,
+    request: Request,
+    _: None = Depends(require_api_key),
+) -> BatchAccountabilityResponse:
+    _assert_tenant_resolved(request)
+    user = await _require_active_user_with_permission(
+        _users(request), body.user_id, permission=PERM_ROSTER_CLAIM
+    )
+    alert = await _alert_log(request).get_alert(alert_id)
+    if alert is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Alert not found")
+
+    if not body.students_present and not body.students_missing:
+        return BatchAccountabilityResponse(ok=True, inserted=0, updated=0, total=0)
+
+    user_label = getattr(user, "name", None) or getattr(user, "login_name", "") or f"user:{body.user_id}"
+    result = await _roster_store(request).batch_upsert_claims(
+        alert_id,
+        student_ids_present=body.students_present,
+        student_ids_missing=body.students_missing,
+        claimant_user_id=body.user_id,
+        claimant_label=user_label,
+        note=body.notes,
+    )
+
+    rollup = await _roster_store(request).get_accountability_rollup(alert_id)
+    await _event_bus(request).emit(Event(
+        event_type=EventType.STUDENTS_ACCOUNTED,
+        tenant_slug=_tenant(request).slug,
+        payload={
+            "event": "student_accountability.updated",
+            "alert_id": alert_id,
+            "submitted_by_user_id": body.user_id,
+            "submitted_by_label": user_label,
+            "accounted": rollup["accounted"],
+            "missing": rollup["missing"],
+            "unknown": rollup["unknown"],
+            "total_students": rollup["total_students"],
+            "percentage_accounted": rollup["percentage_accounted"],
+        },
+        user_id=body.user_id,
+    ))
+    return BatchAccountabilityResponse(
+        ok=True,
+        inserted=result["inserted"],
+        updated=result["updated"],
+        total=result["total"],
+    )
+
+
+@router.get("/alerts/{alert_id}/accountability/rollup", response_model=AccountabilityRollupResponse)
+async def get_accountability_rollup(
+    alert_id: int,
+    request: Request,
+    user_id: int = Query(...),
+    _: None = Depends(require_api_key),
+) -> AccountabilityRollupResponse:
+    _assert_tenant_resolved(request)
+    await _require_active_user_with_permission(_users(request), user_id, permission=PERM_ROSTER_VIEW)
+    alert = await _alert_log(request).get_alert(alert_id)
+    if alert is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Alert not found")
+    data = await _roster_store(request).get_accountability_rollup(alert_id)
+    return AccountabilityRollupResponse(
+        alert_id=data["alert_id"],
+        total_students=data["total_students"],
+        accounted=data["accounted"],
+        missing=data["missing"],
+        unknown=data["unknown"],
+        percentage_accounted=data["percentage_accounted"],
+        by_grade=[GradeRollupItem(**g) for g in data["by_grade"]],
+        by_staff=[StaffRollupItem(
+            staff_label=s["staff_label"],
+            claimed=s["claimed"],
+            accounted=s["accounted"],
+            missing=s["missing"],
+            unknown=s["unknown"],
+        ) for s in data["by_staff"]],
+    )
+
+
+@router.get("/alerts/{alert_id}/accountability/missing", response_model=MissingStudentsResponse)
+async def list_missing_students(
+    alert_id: int,
+    request: Request,
+    user_id: int = Query(...),
+    grade_level: Optional[str] = Query(default=None),
+    q: Optional[str] = Query(default=None),
+    include_unknown: bool = Query(default=True),
+    _: None = Depends(require_api_key),
+) -> MissingStudentsResponse:
+    _assert_tenant_resolved(request)
+    await _require_active_user_with_permission(_users(request), user_id, permission=PERM_ROSTER_VIEW)
+    alert = await _alert_log(request).get_alert(alert_id)
+    if alert is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Alert not found")
+    rows = await _roster_store(request).list_missing_students(
+        alert_id, grade=grade_level, q=q, include_unknown=include_unknown
+    )
+    students = [
+        MissingStudentOut(
+            student_id=r["student_id"],
+            first_name=r["first_name"],
+            last_name=r["last_name"],
+            grade_level=r["grade_level"],
+            student_ref=r["student_ref"],
+            status=r["status"],
+            claimed_by_label=r["claimed_by_label"],
+            last_updated_at=r["last_updated_at"],
+        )
+        for r in rows
+    ]
+    return MissingStudentsResponse(alert_id=alert_id, students=students, total=len(students))
+
+
+@router.get("/alerts/{alert_id}/accountability/report", response_model=AccountabilityReportResponse)
+async def get_accountability_report(
+    alert_id: int,
+    request: Request,
+    user_id: int = Query(...),
+    _: None = Depends(require_api_key),
+) -> AccountabilityReportResponse:
+    _assert_tenant_resolved(request)
+    await _require_active_user_with_permission(_users(request), user_id, permission=PERM_ROSTER_MANAGE)
+    alert = await _alert_log(request).get_alert(alert_id)
+    if alert is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Alert not found")
+    data = await _roster_store(request).get_accountability_rollup(alert_id)
+    history = await _roster_store(request).list_claim_history(alert_id)
+    return AccountabilityReportResponse(
+        alert_id=data["alert_id"],
+        total_students=data["total_students"],
+        accounted=data["accounted"],
+        missing=data["missing"],
+        unknown=data["unknown"],
+        percentage_accounted=data["percentage_accounted"],
+        by_grade=[GradeRollupItem(**g) for g in data["by_grade"]],
+        by_staff=[StaffRollupItem(
+            staff_label=s["staff_label"],
+            claimed=s["claimed"],
+            accounted=s["accounted"],
+            missing=s["missing"],
+            unknown=s["unknown"],
+        ) for s in data["by_staff"]],
+        history_count=len(history),
+    )
+
+
+# ── Admin — real-time accountability rollup (web dashboard) ───────────────────
+
+@router.get("/admin/alerts/{alert_id}/accountability-rollup", include_in_schema=False)
+async def admin_accountability_rollup(alert_id: int, request: Request) -> JSONResponse:
+    await _require_dashboard_admin(request)
+    store = _roster_store(request)
+    data = await store.get_accountability_rollup(alert_id)
+    missing = await store.list_missing_students(alert_id, include_unknown=True)
+    return JSONResponse({**data, "missing_students": missing})
+
+
 # ── Emergency Actions: Location + Analytics ───────────────────────────────────
 
 import json as _json_mod
@@ -13319,3 +13916,394 @@ async def get_emergency_analytics(
     await _require_dashboard_admin(request)
     summary = await _ea_store(request).event_summary_for_incident(alert_id)
     return JSONResponse({"ok": True, "alert_id": alert_id, **summary})
+
+# ===========================================================================
+# Group Chat — tenant-wide messaging (all staff + admins)
+# ===========================================================================
+
+_CHAT_MSG_TYPES = {"normal", "broadcast"}
+_CHAT_RATE_LIMIT = 5       # messages per window
+_CHAT_RATE_WINDOW = 30     # seconds
+
+
+def _chat_msg_out(m) -> ChatMessageOut:
+    return ChatMessageOut(
+        id=m.id,
+        alert_id=m.alert_id,
+        sender_user_id=m.sender_user_id,
+        sender_name=m.sender_name,
+        sender_role=m.sender_role,
+        message_body=m.message_body,
+        message_type=m.message_type,
+        recipients_scope=m.recipients_scope,
+        created_at=m.created_at,
+        is_deleted=m.is_deleted,
+        read_count=getattr(m, "read_count", 0),
+        priority=getattr(m, "priority", "normal"),
+        is_pinned=getattr(m, "is_pinned", False),
+        parent_message_id=getattr(m, "parent_message_id", None),
+        reply_count=getattr(m, "reply_count", 0),
+    )
+
+
+@router.post("/chat/messages", response_model=ChatSendResponse)
+async def chat_send(
+    body: ChatSendRequest,
+    request: Request,
+    _: None = Depends(require_api_key),
+) -> ChatSendResponse:
+    """
+    Send a group chat message.  Any active staff or admin user may send
+    normal messages.  Only admins may send broadcast messages.
+    Rate limit: 5 messages per 30 seconds per user.
+    """
+    _assert_tenant_resolved(request)
+    await _require_active_user_with_permission(
+        _users(request), body.user_id, permission=PERM_MESSAGES_SEND
+    )
+    # Fetch full user record for role + display name (permission check already validated active status)
+    _chat_user = await _users(request).get_user(body.user_id)
+    role = str(getattr(_chat_user, "role", "") or "")
+
+    if body.message_type == "broadcast" and not can(role, PERM_MESSAGES_BROADCAST):
+        raise HTTPException(status_code=403, detail="Only admins may send broadcast messages")
+
+    if body.priority == "critical" and not can(role, PERM_MESSAGES_PRIORITY):
+        raise HTTPException(status_code=403, detail="Only admins may send critical priority messages")
+
+    # Rate limit: 5 messages per 30 seconds
+    since_ts = (datetime.now(timezone.utc) - timedelta(seconds=_CHAT_RATE_WINDOW)).isoformat()
+    recent = await _chat_store(request).count_sent_since(body.user_id, since_ts)
+    if recent >= _CHAT_RATE_LIMIT:
+        raise HTTPException(status_code=429, detail=f"Rate limit: max {_CHAT_RATE_LIMIT} messages per {_CHAT_RATE_WINDOW}s")
+
+    sender_name = (
+        getattr(_chat_user, "name", None)
+        or getattr(_chat_user, "login_name", None)
+        or f"user:{body.user_id}"
+    )
+    recipients_scope = "all_users" if body.message_type == "normal" else "admins_only"
+
+    record = await _chat_store(request).send(
+        sender_user_id=body.user_id,
+        sender_name=sender_name,
+        sender_role=role,
+        message_body=body.message,
+        message_type=body.message_type,
+        recipients_scope=recipients_scope,
+        alert_id=body.alert_id,
+        priority=body.priority,
+    )
+
+    msg_out = _chat_msg_out(record)
+    tenant_slug = _tenant(request).slug
+    await _event_bus(request).emit(Event(
+        event_type=EventType.MESSAGE_SENT,
+        tenant_slug=tenant_slug,
+        payload={
+            "event": "message.new",
+            "id": record.id,
+            "alert_id": record.alert_id,
+            "sender_user_id": record.sender_user_id,
+            "sender_name": record.sender_name,
+            "sender_role": record.sender_role,
+            "message_body": record.message_body,
+            "message_type": record.message_type,
+            "recipients_scope": record.recipients_scope,
+            "created_at": record.created_at,
+            "priority": record.priority,
+            "is_pinned": record.is_pinned,
+        },
+        user_id=body.user_id,
+    ))
+    return ChatSendResponse(ok=True, message=msg_out)
+
+
+@router.get("/chat/messages", response_model=ChatListResponse)
+async def chat_list(
+    request: Request,
+    user_id: int = Query(...),
+    alert_id: Optional[int] = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=100),
+    before_id: Optional[int] = Query(default=None),
+    _: None = Depends(require_api_key),
+) -> ChatListResponse:
+    """
+    Fetch recent group chat messages, newest-last (ascending).
+    Pass before_id for pagination (load older messages).
+    """
+    _assert_tenant_resolved(request)
+    await _require_active_user_with_permission(
+        _users(request), user_id, permission=PERM_MESSAGES_SEND
+    )
+    _list_user = await _users(request).get_user(user_id)
+    role = str(getattr(_list_user, "role", "") or "")
+    is_admin = can(role, PERM_MESSAGES_BROADCAST)
+
+    messages = await _chat_store(request).list_messages(
+        alert_id=alert_id,
+        limit=limit + 1,
+        before_id=before_id,
+        is_admin=is_admin,
+    )
+    has_more = len(messages) > limit
+    if has_more:
+        messages = messages[:-1]
+
+    return ChatListResponse(
+        messages=[_chat_msg_out(m) for m in messages],
+        total=len(messages),
+        has_more=has_more,
+    )
+
+
+@router.delete("/chat/messages/{message_id}", response_model=None)
+async def chat_delete(
+    message_id: int,
+    request: Request,
+    user_id: int = Query(...),
+    _: None = Depends(require_api_key),
+) -> JSONResponse:
+    """Soft-delete a message.  Admins only."""
+    _assert_tenant_resolved(request)
+    await _require_active_user_with_permission(
+        _users(request), user_id, permission=PERM_MESSAGES_DELETE
+    )
+    deleted = await _chat_store(request).delete(message_id, user_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Message not found or already deleted")
+
+    tenant_slug = _tenant(request).slug
+    await _event_bus(request).emit(Event(
+        event_type=EventType.MESSAGE_SENT,
+        tenant_slug=tenant_slug,
+        payload={
+            "event": "message.deleted",
+            "id": message_id,
+            "deleted_by_user_id": user_id,
+        },
+        user_id=user_id,
+    ))
+    return JSONResponse({"ok": True})
+
+
+@router.post("/chat/messages/mark-read", response_model=ChatMarkReadResponse)
+async def chat_mark_read(
+    body: ChatMarkReadRequest,
+    request: Request,
+    _: None = Depends(require_api_key),
+) -> ChatMarkReadResponse:
+    """
+    Batch mark messages as read for a user.  Idempotent — safe to call
+    multiple times with the same message IDs.  Emits a MESSAGE_READ event
+    so other clients can update their seen-by counts in real time.
+    """
+    _assert_tenant_resolved(request)
+    await _require_active_user_with_permission(
+        _users(request), body.user_id, permission=PERM_MESSAGES_SEND
+    )
+
+    marked = await _chat_store(request).mark_read_batch(body.user_id, body.message_ids)
+
+    tenant_slug = _tenant(request).slug
+    await _event_bus(request).emit(Event(
+        event_type=EventType.MESSAGE_READ,
+        tenant_slug=tenant_slug,
+        payload={
+            "event": "message.read",
+            "user_id": body.user_id,
+            "message_ids": body.message_ids,
+        },
+        user_id=body.user_id,
+    ))
+    return ChatMarkReadResponse(ok=True, marked=marked)
+
+
+@router.get("/chat/messages/pinned", response_model=ChatPinnedResponse)
+async def chat_list_pinned(
+    request: Request,
+    user_id: int = Query(...),
+    _: None = Depends(require_api_key),
+) -> ChatPinnedResponse:
+    """Return all currently pinned messages visible to this user."""
+    _assert_tenant_resolved(request)
+    await _require_active_user_with_permission(
+        _users(request), user_id, permission=PERM_MESSAGES_SEND
+    )
+    _pin_user = await _users(request).get_user(user_id)
+    role = str(getattr(_pin_user, "role", "") or "")
+    is_admin = can(role, PERM_MESSAGES_BROADCAST)
+
+    messages = await _chat_store(request).list_pinned(is_admin=is_admin)
+    return ChatPinnedResponse(messages=[_chat_msg_out(m) for m in messages])
+
+
+@router.patch("/chat/messages/{message_id}/pin", response_model=ChatSendResponse)
+async def chat_pin(
+    message_id: int,
+    body: ChatPinRequest,
+    request: Request,
+    _: None = Depends(require_api_key),
+) -> ChatSendResponse:
+    """Pin or unpin a message.  Admins only."""
+    _assert_tenant_resolved(request)
+    await _require_active_user_with_permission(
+        _users(request), body.user_id, permission=PERM_MESSAGES_PIN
+    )
+
+    updated = await _chat_store(request).set_pin(message_id, body.pinned)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Message not found or deleted")
+
+    tenant_slug = _tenant(request).slug
+    await _event_bus(request).emit(Event(
+        event_type=EventType.MESSAGE_PINNED,
+        tenant_slug=tenant_slug,
+        payload={
+            "event": "message.pinned",
+            "id": message_id,
+            "pinned": body.pinned,
+            "pinned_by_user_id": body.user_id,
+        },
+        user_id=body.user_id,
+    ))
+    return JSONResponse({"ok": True, "id": message_id, "pinned": body.pinned})
+
+
+@router.patch("/chat/messages/{message_id}/priority", response_model=None)
+async def chat_set_priority(
+    message_id: int,
+    body: ChatPriorityRequest,
+    request: Request,
+    _: None = Depends(require_api_key),
+) -> JSONResponse:
+    """Set the priority of a message.  Admins only for critical."""
+    _assert_tenant_resolved(request)
+    await _require_active_user_with_permission(
+        _users(request), body.user_id, permission=PERM_MESSAGES_PRIORITY
+    )
+
+    updated = await _chat_store(request).set_priority(message_id, body.priority)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Message not found or deleted")
+
+    tenant_slug = _tenant(request).slug
+    await _event_bus(request).emit(Event(
+        event_type=EventType.MESSAGE_PRIORITY,
+        tenant_slug=tenant_slug,
+        payload={
+            "event": "message.priority_changed",
+            "id": message_id,
+            "priority": body.priority,
+            "changed_by_user_id": body.user_id,
+        },
+        user_id=body.user_id,
+    ))
+    return JSONResponse({"ok": True, "id": message_id, "priority": body.priority})
+
+
+@router.post("/chat/messages/reply", response_model=ChatSendResponse)
+async def chat_reply(
+    body: ChatReplyRequest,
+    request: Request,
+    _: None = Depends(require_api_key),
+) -> ChatSendResponse:
+    """
+    Post a reply to a root message.  Replies use the parent's recipients_scope
+    so broadcast thread replies stay admin-only.  No nested threads: the parent
+    must itself be a root message (parent_message_id IS NULL).
+    Rate limit shares the same window as regular sends.
+    """
+    _assert_tenant_resolved(request)
+    await _require_active_user_with_permission(
+        _users(request), body.user_id, permission=PERM_MESSAGES_SEND
+    )
+    _reply_user = await _users(request).get_user(body.user_id)
+    role = str(getattr(_reply_user, "role", "") or "")
+
+    # Validate parent exists and is a root message
+    parent = await _chat_store(request).get_message(body.parent_message_id)
+    if parent is None:
+        raise HTTPException(status_code=404, detail="Parent message not found or deleted")
+    if parent.parent_message_id is not None:
+        raise HTTPException(status_code=400, detail="Cannot reply to a reply — only one level of threading is supported")
+
+    # Enforce scope: replies to admin-only broadcasts require broadcast permission
+    if parent.recipients_scope == "admins_only" and not can(role, PERM_MESSAGES_BROADCAST):
+        raise HTTPException(status_code=403, detail="Only admins may reply to admin-only messages")
+
+    # Rate limit (shared with normal send)
+    since_ts = (datetime.now(timezone.utc) - timedelta(seconds=_CHAT_RATE_WINDOW)).isoformat()
+    recent = await _chat_store(request).count_sent_since(body.user_id, since_ts)
+    if recent >= _CHAT_RATE_LIMIT:
+        raise HTTPException(status_code=429, detail=f"Rate limit: max {_CHAT_RATE_LIMIT} messages per {_CHAT_RATE_WINDOW}s")
+
+    sender_name = (
+        getattr(_reply_user, "name", None)
+        or getattr(_reply_user, "login_name", None)
+        or f"user:{body.user_id}"
+    )
+
+    record = await _chat_store(request).send(
+        sender_user_id=body.user_id,
+        sender_name=sender_name,
+        sender_role=role,
+        message_body=body.message,
+        message_type="normal",
+        recipients_scope=parent.recipients_scope,
+        alert_id=parent.alert_id,
+        priority="normal",
+        parent_message_id=body.parent_message_id,
+    )
+
+    msg_out = _chat_msg_out(record)
+    tenant_slug = _tenant(request).slug
+    await _event_bus(request).emit(Event(
+        event_type=EventType.THREAD_REPLY,
+        tenant_slug=tenant_slug,
+        payload={
+            "event": "thread.reply",
+            "id": record.id,
+            "parent_message_id": body.parent_message_id,
+            "alert_id": record.alert_id,
+            "sender_user_id": record.sender_user_id,
+            "sender_name": record.sender_name,
+            "sender_role": record.sender_role,
+            "message_body": record.message_body,
+            "recipients_scope": record.recipients_scope,
+            "created_at": record.created_at,
+            "priority": record.priority,
+        },
+        user_id=body.user_id,
+    ))
+    return ChatSendResponse(ok=True, message=msg_out)
+
+
+@router.get("/chat/threads/{message_id}", response_model=ChatThreadResponse)
+async def chat_get_thread(
+    message_id: int,
+    request: Request,
+    user_id: int = Query(...),
+    _: None = Depends(require_api_key),
+) -> ChatThreadResponse:
+    """
+    Fetch a thread: the root message and all its replies, in chronological order.
+    """
+    _assert_tenant_resolved(request)
+    await _require_active_user_with_permission(
+        _users(request), user_id, permission=PERM_MESSAGES_SEND
+    )
+    _thread_user = await _users(request).get_user(user_id)
+    role = str(getattr(_thread_user, "role", "") or "")
+    is_admin = can(role, PERM_MESSAGES_BROADCAST)
+
+    root = await _chat_store(request).get_message(message_id)
+    if root is None:
+        raise HTTPException(status_code=404, detail="Message not found or deleted")
+    if root.parent_message_id is not None:
+        raise HTTPException(status_code=400, detail="Requested message is a reply, not a root message")
+    if not is_admin and root.recipients_scope == "admins_only":
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    replies = await _chat_store(request).list_thread(message_id, is_admin=is_admin)
+    return ChatThreadResponse(root=_chat_msg_out(root), replies=[_chat_msg_out(r) for r in replies])
