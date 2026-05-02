@@ -11944,7 +11944,7 @@ def render_admin_page(
                     var match = r.textContent.toLowerCase().includes(q);
                     r.style.display = match ? '' : 'none';
                     var detId = r.getAttribute('onclick') || '';
-                    var m = detId.match(/bbDsToggle\('([^']+)'\)/);
+                    var m = detId.match(/bbDsToggle\\('([^']+)'\\)/);
                     if (m) {{
                       var det = document.getElementById(m[1]);
                       if (det && !match) det.style.display = 'none';
