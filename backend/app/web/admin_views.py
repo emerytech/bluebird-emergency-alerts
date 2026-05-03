@@ -9135,13 +9135,13 @@ def _render_roster_section(
         f'<td>{escape(getattr(s,"student_ref","") or "—")}</td>'
         f'<td>'
         f'<button class="button button-small" onclick="rosterOpenEdit({getattr(s,"id","")}'
-        f',{json.dumps(getattr(s,"first_name",""))}'
-        f',{json.dumps(getattr(s,"last_name",""))}'
-        f',{json.dumps(getattr(s,"grade_level",""))}'
-        f',{json.dumps(getattr(s,"student_ref","") or "")})">Edit</button> '
+        f',{escape(json.dumps(getattr(s,"first_name","")))},'
+        f'{escape(json.dumps(getattr(s,"last_name","")))},'
+        f'{escape(json.dumps(getattr(s,"grade_level","")))},'
+        f'{escape(json.dumps(getattr(s,"student_ref","") or ""))})">Edit</button> '
         f'<button class="button button-small button-danger"'
         f' onclick="rosterArchiveStudent({getattr(s,"id","")},'
-        f'{json.dumps(getattr(s,"first_name","") + " " + getattr(s,"last_name",""))})">Archive</button>'
+        f'{escape(json.dumps(getattr(s,"first_name","") + " " + getattr(s,"last_name","")))})">Archive</button>'
         f'</td>'
         f'</tr>'
         for s in _student_list
@@ -9371,14 +9371,19 @@ def _render_roster_section(
     errEl.style.display = 'none';
     if (!fn || !ln) {{ errEl.textContent = 'First and last name are required.'; errEl.style.display = ''; return; }}
     btn.disabled = true; btn.textContent = 'Adding…';
-    const r = await fetch(_prefix + '/roster/students?user_id=' + _uid(), {{
-      method: 'POST', headers: _hdr(),
-      body: JSON.stringify({{first_name: fn, last_name: ln, grade_level: gl, student_ref: ref}})
-    }});
-    if (r.ok) {{ window.location.reload(); }}
-    else {{
-      const d = await r.json().catch(function() {{ return {{}}; }});
-      errEl.textContent = d.detail || 'Error adding student.'; errEl.style.display = '';
+    try {{
+      const r = await fetch(_prefix + '/roster/students?user_id=' + _uid(), {{
+        method: 'POST', headers: _hdr(),
+        body: JSON.stringify({{first_name: fn, last_name: ln, grade_level: gl, student_ref: ref}})
+      }});
+      if (r.ok) {{ window.location.reload(); }}
+      else {{
+        const d = await r.json().catch(function() {{ return {{}}; }});
+        errEl.textContent = d.detail || 'Error adding student.'; errEl.style.display = '';
+        btn.disabled = false; btn.textContent = 'Add Student';
+      }}
+    }} catch(e) {{
+      errEl.textContent = 'Network error — please try again.'; errEl.style.display = '';
       btn.disabled = false; btn.textContent = 'Add Student';
     }}
   }};
@@ -9406,14 +9411,19 @@ def _render_roster_section(
     errEl.style.display = 'none';
     if (!fn || !ln) {{ errEl.textContent = 'Name is required.'; errEl.style.display = ''; return; }}
     btn.disabled = true; btn.textContent = 'Saving…';
-    const r = await fetch(_prefix + '/roster/students/' + sid + '?user_id=' + _uid(), {{
-      method: 'PATCH', headers: _hdr(),
-      body: JSON.stringify({{first_name: fn, last_name: ln, grade_level: gl, student_ref: ref}})
-    }});
-    if (r.ok) {{ window.location.reload(); }}
-    else {{
-      const d = await r.json().catch(function() {{ return {{}}; }});
-      errEl.textContent = d.detail || 'Error saving.'; errEl.style.display = '';
+    try {{
+      const r = await fetch(_prefix + '/roster/students/' + sid + '?user_id=' + _uid(), {{
+        method: 'PATCH', headers: _hdr(),
+        body: JSON.stringify({{first_name: fn, last_name: ln, grade_level: gl, student_ref: ref}})
+      }});
+      if (r.ok) {{ window.location.reload(); }}
+      else {{
+        const d = await r.json().catch(function() {{ return {{}}; }});
+        errEl.textContent = d.detail || 'Error saving.'; errEl.style.display = '';
+        btn.disabled = false; btn.textContent = 'Save Changes';
+      }}
+    }} catch(e) {{
+      errEl.textContent = 'Network error — please try again.'; errEl.style.display = '';
       btn.disabled = false; btn.textContent = 'Save Changes';
     }}
   }};
@@ -9439,21 +9449,23 @@ def _render_roster_section(
 
   // ── Export CSV ────────────────────────────────────────────────────────
   window.rosterExportCsv = async function() {{
-    const r = await fetch(_prefix + '/roster/students?user_id=' + _uid(), {{
-      headers: {{'X-API-Key': _apiKey}}
-    }});
-    if (!r.ok) {{ alert('Export failed.'); return; }}
-    const d = await r.json();
-    const csvRows = (d.students || []).map(function(s) {{
-      return [s.first_name, s.last_name, s.grade_level, s.student_ref || '']
-        .map(function(v) {{ return '"' + String(v).replace(/"/g, '""') + '"'; }}).join(',');
-    }});
-    const csv = 'first_name,last_name,grade_level,student_ref\n' + csvRows.join('\n');
-    const blob = new Blob([csv], {{type: 'text/csv'}});
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a'); a.href = url; a.download = 'roster.csv';
-    document.body.appendChild(a); a.click(); document.body.removeChild(a);
-    setTimeout(function() {{ URL.revokeObjectURL(url); }}, 1000);
+    try {{
+      const r = await fetch(_prefix + '/roster/students?user_id=' + _uid(), {{
+        headers: {{'X-API-Key': _apiKey}}
+      }});
+      if (!r.ok) {{ alert('Export failed (' + r.status + ').'); return; }}
+      const d = await r.json();
+      const csvRows = (d.students || []).map(function(s) {{
+        return [s.first_name, s.last_name, s.grade_level, s.student_ref || '']
+          .map(function(v) {{ return '"' + String(v).replace(/"/g, '""') + '"'; }}).join(',');
+      }});
+      const csv = 'first_name,last_name,grade_level,student_ref\n' + csvRows.join('\n');
+      const blob = new Blob([csv], {{type: 'text/csv'}});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a'); a.href = url; a.download = 'roster.csv';
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      setTimeout(function() {{ URL.revokeObjectURL(url); }}, 1000);
+    }} catch(e) {{ alert('Export failed: ' + (e.message || 'network error')); }}
   }};
 
   // ── Import CSV ────────────────────────────────────────────────────────
@@ -9477,6 +9489,7 @@ def _render_roster_section(
     if (!file) {{ alert('Select a CSV file first.'); return; }}
     const btn = document.getElementById('roster-preview-btn');
     btn.disabled = true; btn.textContent = 'Previewing…';
+    try {{
     const fd = new FormData(); fd.append('file', file);
     const r = await fetch(_prefix + '/roster/students/import/preview?user_id=' + _uid(), {{
       method: 'POST', headers: {{'X-API-Key': _apiKey}}, body: fd
@@ -9517,6 +9530,7 @@ def _render_roster_section(
         + '</tbody></table>';
       rowsEl.style.display = '';
     }} else {{ rowsEl.style.display = 'none'; }}
+    }} catch(e) {{ btn.disabled = false; btn.textContent = 'Preview'; alert('Network error — please try again.'); }}
   }};
   window.rosterCsvCommit = async function() {{
     if (!_importSession) {{ alert('Preview the file first.'); return; }}
@@ -9525,17 +9539,23 @@ def _render_roster_section(
     const btn = document.getElementById('roster-commit-btn');
     statusEl.textContent = 'Importing…'; statusEl.style.color = '';
     btn.disabled = true; btn.textContent = 'Importing…';
-    const r = await fetch(_prefix + '/roster/students/import/commit?user_id=' + _uid(), {{
-      method: 'POST', headers: _hdr(),
-      body: JSON.stringify({{session_token: _importSession, conflict_strategy: strategy}})
-    }});
-    const d = await r.json().catch(function() {{ return {{}}; }});
-    if (r.ok) {{
-      statusEl.textContent = '✓ Imported: ' + (d.inserted || 0) + ' added, ' + (d.skipped || 0) + ' skipped.';
-      statusEl.style.color = 'var(--green,#16a34a)';
-      setTimeout(function() {{ window.location.reload(); }}, 1500);
-    }} else {{
-      statusEl.textContent = d.detail || 'Import failed.';
+    try {{
+      const r = await fetch(_prefix + '/roster/students/import/commit?user_id=' + _uid(), {{
+        method: 'POST', headers: _hdr(),
+        body: JSON.stringify({{session_token: _importSession, conflict_strategy: strategy}})
+      }});
+      const d = await r.json().catch(function() {{ return {{}}; }});
+      if (r.ok) {{
+        statusEl.textContent = '✓ Imported: ' + (d.inserted || 0) + ' added, ' + (d.skipped || 0) + ' skipped.';
+        statusEl.style.color = 'var(--green,#16a34a)';
+        setTimeout(function() {{ window.location.reload(); }}, 1500);
+      }} else {{
+        statusEl.textContent = d.detail || 'Import failed.';
+        statusEl.style.color = 'var(--red,#dc2626)';
+        btn.disabled = false; btn.textContent = 'Commit Import';
+      }}
+    }} catch(e) {{
+      statusEl.textContent = 'Network error — please try again.';
       statusEl.style.color = 'var(--red,#dc2626)';
       btn.disabled = false; btn.textContent = 'Commit Import';
     }}
