@@ -4937,8 +4937,8 @@ def render_super_admin_page(
         edit_btn = ""
         manage_schools_btn = ""
         if did and is_district:
-            js_slug = json.dumps(slug_raw)
-            js_name = json.dumps(raw_name)
+            js_slug = escape(json.dumps(slug_raw))
+            js_name = escape(json.dumps(raw_name))
             js_did  = str(did)
             edit_btn = (
                 f'<button class="button button-secondary" type="button"'
@@ -5906,9 +5906,9 @@ def render_super_admin_page(
                       + '<div class="district-card-meta"><span><strong>0</strong> schools</span></div>'
                       + '<div class="district-card-actions">'
                       + '<button class="button button-secondary" type="button" style="font-size:0.75rem;padding:5px 12px;"'
-                      + ' onclick="bbOpenEditDistrictModal(' + JSON.stringify(d.slug) + ',' + JSON.stringify(d.name) + ')">Edit</button>'
+                      + ' onclick="bbOpenEditDistrictModal(' + JSON.stringify(d.slug).replace(/"/g,'&quot;') + ',' + JSON.stringify(d.name).replace(/"/g,'&quot;') + ')">Edit</button>'
                       + '<button class="button button-secondary" type="button" style="font-size:0.75rem;padding:5px 12px;"'
-                      + ' onclick="bbOpenManageSchoolsModal(' + JSON.stringify(d.slug) + ',' + JSON.stringify(d.name) + ',0)">Manage Schools</button>'
+                      + ' onclick="bbOpenManageSchoolsModal(' + JSON.stringify(d.slug).replace(/"/g,'&quot;') + ',' + JSON.stringify(d.name).replace(/"/g,'&quot;') + ',' + (d.id||0) + ')">Manage Schools</button>'
                       + '</div>';
                     grid.insertBefore(card, grid.firstChild);
                   }}
