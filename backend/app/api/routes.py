@@ -13130,12 +13130,18 @@ async def create_student(
 ) -> StudentDetail:
     _assert_tenant_resolved(request)
     await _require_active_user_with_permission(_users(request), user_id, permission=PERM_ROSTER_MANAGE)
+    tenant_slug = _tenant(request).slug
+    logger.info(
+        "ROSTER_CREATE tenant=%s user_id=%s first_name=%r last_name=%r grade_level=%r ref=%r",
+        tenant_slug, user_id, body.first_name, body.last_name, body.grade_level, body.student_ref,
+    )
     record = await _roster_store(request).create_student(
         first_name=body.first_name,
         last_name=body.last_name,
         grade_level=body.grade_level,
         student_ref=body.student_ref,
     )
+    logger.info("ROSTER_CREATE_OK tenant=%s student_id=%s", tenant_slug, record.id)
     await _event_bus(request).emit(Event(
         event_type=EventType.ROSTER_UPDATED,
         tenant_slug=_tenant(request).slug,
@@ -13253,17 +13259,27 @@ async def roster_import_commit(
 ) -> ImportResultOut:
     _assert_tenant_resolved(request)
     await _require_active_user_with_permission(_users(request), user_id, permission=PERM_ROSTER_MANAGE)
+    tenant_slug = _tenant(request).slug
+    logger.info(
+        "ROSTER_IMPORT_COMMIT tenant=%s user_id=%s strategy=%s",
+        tenant_slug, user_id, body.conflict_strategy,
+    )
     try:
         result = await _roster_store(request).commit_import(
             session_token=body.session_token,
             conflict_strategy=body.conflict_strategy,
         )
     except ValueError:
+        logger.warning("ROSTER_IMPORT_COMMIT_FAIL tenant=%s invalid_session", tenant_slug)
         raise HTTPException(status_code=400, detail="Invalid or expired import session")
+    logger.info(
+        "ROSTER_IMPORT_COMMIT_OK tenant=%s inserted=%s skipped=%s",
+        tenant_slug, result.inserted, result.skipped_duplicates,
+    )
     if result.inserted > 0:
         await _event_bus(request).emit(Event(
             event_type=EventType.ROSTER_UPDATED,
-            tenant_slug=_tenant(request).slug,
+            tenant_slug=tenant_slug,
             payload={"event": "roster.import.committed", "inserted": result.inserted},
             user_id=user_id,
         ))
