@@ -9313,10 +9313,9 @@ def _render_roster_section(
 </div>
 
 <script>
-(function() {{
-  const _apiKey = {json.dumps(api_key)};
-  const _prefix = {json.dumps(prefix)};
-  const _alertId = {_alert_id_js};
+var _apiKey = {json.dumps(api_key)};
+var _prefix = {json.dumps(prefix)};
+var _alertId = {_alert_id_js};
 
   function _uid() {{ return (typeof BB_USER_ID !== 'undefined' ? BB_USER_ID : 0); }}
   function _hdr() {{ return {{'Content-Type': 'application/json', 'X-API-Key': _apiKey}}; }}
@@ -9354,13 +9353,13 @@ def _render_roster_section(
 
   // ── Add modal ─────────────────────────────────────────────────────────
   window.rosterOpenAdd = function() {{
-    ['roster-add-fn','roster-add-ln','roster-add-ref'].forEach(function(id) {{ document.getElementById(id).value = ''; }});
-    document.getElementById('roster-add-gl').value = 'K';
-    document.getElementById('roster-add-err').style.display = 'none';
-    document.getElementById('roster-add-modal').style.display = 'flex';
-    setTimeout(function() {{ document.getElementById('roster-add-fn').focus(); }}, 60);
+    ['roster-add-fn','roster-add-ln','roster-add-ref'].forEach(function(id) {{ var el = document.getElementById(id); if (el) el.value = ''; }});
+    var _gl = document.getElementById('roster-add-gl'); if (_gl) _gl.value = 'K';
+    var _err = document.getElementById('roster-add-err'); if (_err) _err.style.display = 'none';
+    var _modal = document.getElementById('roster-add-modal'); if (_modal) _modal.style.display = 'flex';
+    setTimeout(function() {{ var _fn = document.getElementById('roster-add-fn'); if (_fn) _fn.focus(); }}, 60);
   }};
-  window.rosterCloseAdd = function() {{ document.getElementById('roster-add-modal').style.display = 'none'; }};
+  window.rosterCloseAdd = function() {{ var _m = document.getElementById('roster-add-modal'); if (_m) _m.style.display = 'none'; }};
   window.rosterAddStudent = async function() {{
     const fn = document.getElementById('roster-add-fn').value.trim();
     const ln = document.getElementById('roster-add-ln').value.trim();
@@ -9471,9 +9470,9 @@ def _render_roster_section(
   // ── Import CSV ────────────────────────────────────────────────────────
   var _importSession = null;
   window.rosterShowImport = function() {{
-    document.getElementById('roster-import-panel').style.display = '';
-    document.getElementById('roster-preview-area').style.display = 'none';
-    document.getElementById('roster-import-status').textContent = '';
+    var _p = document.getElementById('roster-import-panel'); if (_p) _p.style.display = '';
+    var _a = document.getElementById('roster-preview-area'); if (_a) _a.style.display = 'none';
+    var _s = document.getElementById('roster-import-status'); if (_s) _s.textContent = '';
     _importSession = null;
   }};
   window.rosterDownloadTemplate = function() {{
@@ -9613,7 +9612,6 @@ def _render_roster_section(
       if (tbody) tbody.innerHTML = '<tr><td colspan="4" class="empty-state">Error loading incident roster.</td></tr>';
     }});
   }}
-}})();
 </script>
 """
 
