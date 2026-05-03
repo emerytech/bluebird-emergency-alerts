@@ -17,7 +17,7 @@ enum LCGuideID: String, CaseIterable {
         switch self {
         case .initiateEmergency:  return "Initiate an Emergency"
         case .viewMessages:       return "View Messages"
-        case .teamAssist:         return "Team Assist"
+        case .teamAssist:         return "Help Request"
         case .accountForYourself: return "Account for Yourself"
         case .accountForStudents: return "Account for Students"
         case .reunification:      return "Reunification"
@@ -31,7 +31,7 @@ enum LCGuideID: String, CaseIterable {
         case .viewMessages:
             return "Learn how to send and receive messages during and outside of emergencies."
         case .teamAssist:
-            return "Learn how to request team assistance for non-emergency situations."
+            return "Learn how to send a quiet help request for non-emergency situations."
         case .accountForYourself:
             return "Learn how to mark yourself safe during an emergency."
         case .accountForStudents:
@@ -117,7 +117,7 @@ let LC_ALL_GUIDES: [LCGuide] = [
         ),
         LCStep(
             title: "Hold to Activate",
-            description: "Hold the circular button for your school's configured duration (typically 3 seconds). The ring fills as you hold. All staff receive an immediate alert the moment you release.",
+            description: "Hold the circular button for your school's configured duration (typically 3 seconds). The ring fills as you hold. When you release, select the emergency type and confirm — all staff receive the alert instantly.",
             kind: .holdButton(emergencyType: "LOCKDOWN", color: DSColor.danger)
         ),
         LCStep(
@@ -188,11 +188,11 @@ let LC_ALL_GUIDES: [LCGuide] = [
         ),
     ]),
 
-    // ── GUIDE 3 — TEAM ASSIST ────────────────────────────────────────────────
+    // ── GUIDE 3 — HELP REQUEST ───────────────────────────────────────────────
     LCGuide(id: .teamAssist, steps: [
         LCStep(
-            title: "When to Use Team Assist",
-            description: "Team Assist is for non-emergency situations where you need quiet backup from a colleague — without triggering a school-wide alarm.",
+            title: "When to Send a Help Request",
+            description: "Help Request is for non-emergency situations where you need quiet backup from a colleague — without triggering a school-wide alarm.",
             kind: .iconGrid(items: [
                 ("cross.case.fill",        "MEDICAL",   DSColor.danger),
                 ("person.fill.questionmark","VISITOR",   DSColor.warning),
@@ -202,26 +202,26 @@ let LC_ALL_GUIDES: [LCGuide] = [
         ),
         LCStep(
             title: "Silently Request Help",
-            description: "Tap the Team Assist button on the dashboard. Your request goes directly to your administrator and nearby staff — no announcement, no alarm sound.",
-            kind: .slideToConfirm(label: "Slide to Request Team Assist", iconName: "person.2.fill")
+            description: "Tap the Help Request button on the dashboard. Your request goes directly to your administrator and nearby staff — no announcement, no alarm sound.",
+            kind: .slideToConfirm(label: "Slide to Send Help Request", iconName: "person.2.fill")
         ),
         LCStep(
             title: "Who Gets Notified?",
             description: "Your administrator receives a push notification and an in-app alert. They can acknowledge your request and coordinate a response without disrupting the school environment.",
             kind: .mockNotification(
                 appName: "BlueBird Alerts",
-                title: "🤝 Team Assist Request — Room 214",
+                title: "🤝 Help Request — Room 214",
                 body: "Ms. Johnson needs assistance. Tap to view details and respond."
             )
         ),
         LCStep(
-            title: "Team Assist vs. Emergency",
-            description: "Team Assist does NOT trigger a school-wide lockdown, evacuation, or any public protocol. If you need a full emergency response, use the hold-to-activate emergency button instead.",
+            title: "Help Request vs. Emergency",
+            description: "A Help Request does NOT trigger a school-wide lockdown, evacuation, or any public protocol. If you need a full emergency response, use the hold-to-activate emergency button instead.",
             kind: .info(imageName: nil)
         ),
         LCStep(
             title: "You're Ready",
-            description: "Use Team Assist whenever you need quiet backup. Save the hold-to-activate button for true school-wide emergencies. When in doubt, activate — it's always better to respond than wait.",
+            description: "Use Help Request whenever you need quiet backup. Save the hold-to-activate button for true school-wide emergencies. When in doubt, activate — it's always better to respond than wait.",
             kind: .info(imageName: nil)
         ),
     ]),

@@ -7535,7 +7535,7 @@ private fun NotificationSoundPreviewCard(ctx: Context) {
             SoundPreviewRow("Quiet Request", "HIGH priority · non-critical", NotificationType.QUIET_REQUEST, "quiet_request", longArrayOf(0L, 60L)),
             SoundPreviewRow("Quiet Approved", "HIGH priority · non-critical", NotificationType.QUIET_APPROVED, "quiet_approved", longArrayOf(0L, 40L)),
             SoundPreviewRow("Message Received", "NORMAL priority · non-critical", NotificationType.MESSAGE, "message_received", null),
-            SoundPreviewRow("Team Assist", "HIGH priority · non-critical", NotificationType.TEAM_ASSIST, "team_assist", longArrayOf(0L, 50L, 60L, 50L)),
+            SoundPreviewRow("Help Request", "HIGH priority · non-critical", NotificationType.TEAM_ASSIST, "team_assist", longArrayOf(0L, 50L, 60L, 50L)),
             SoundPreviewRow("System Notice", "LOW priority · non-critical", NotificationType.SYSTEM, "system_notice", null),
         )
     }

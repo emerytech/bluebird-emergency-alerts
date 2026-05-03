@@ -4206,7 +4206,7 @@ def _render_training_section(training_records: object, section: str) -> str:
     _GUIDE_TITLES = {
         "initiate_emergency":   "Initiate an Emergency",
         "view_messages":        "View Messages",
-        "team_assist":          "Team Assist",
+        "team_assist":          "Help Request",
         "account_for_yourself": "Account for Yourself",
         "account_for_students": "Account for Students",
         "reunification":        "Reunification",
